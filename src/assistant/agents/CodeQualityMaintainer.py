@@ -320,7 +320,7 @@ class CodeQualityMaintainer:
                 f"# {title}\n\n{body}" for title, body in sections
             )
             html_report = self._markdown_to_html(combined_md)
-            self._send_email("Floxy Nightly Code Quality Report", html_report)
+            self._send_email("Keep Nightly Code Quality Report", html_report)
         else:
             info("CodeQualityMaintainer: nothing to report, skipping email.")
         info("CodeQualityMaintainer: nightly run complete.")
@@ -409,7 +409,7 @@ class CodeQualityMaintainer:
             report = self._run_claude(self._auto_merge_prompt(candidates), "auto-merge-tests")
             if report:
                 html_report = self._markdown_to_html(f"# Auto-Merge Test PRs\n\n{report}")
-                self._send_email("Floxy Auto-Merge Test PRs Report", html_report)
+                self._send_email("Keep Auto-Merge Test PRs Report", html_report)
             else:
                 info("CodeQualityMaintainer: auto-merge produced no report, skipping email.")
         except Exception as e:
@@ -553,7 +553,7 @@ class CodeQualityMaintainer:
         if result:
             try:
                 html_report = CodeQualityMaintainer._markdown_to_html(f"# Self-analysis\n\n{result}")
-                CodeQualityMaintainer._send_email("Floxy Self-analysis Report", html_report)
+                CodeQualityMaintainer._send_email("Keep Self-analysis Report", html_report)
             except Exception as e:
                 error(f"CodeQualityMaintainer: failed to email self-analysis report: {e}")
         else:

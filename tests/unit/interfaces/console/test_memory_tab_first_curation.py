@@ -88,5 +88,5 @@ class TestFirstCurationNotice:
         screen = TUIScreen(40, HEIGHT)
         tab.draw(screen, 0)
         assert screen.row_text(1, CONTENT_TOP, 40).strip() == FIRST_CURATION_LABEL
-        assert screen.row_text(1, CONTENT_TOP + 1, 40).strip().startswith("Floxy is building")
+        assert screen.row_text(1, CONTENT_TOP + 1, 40).strip().startswith("Keep is building")
         assert row(screen, CONTENT_TOP + 2) == "# Memory"

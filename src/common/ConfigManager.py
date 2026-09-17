@@ -15,7 +15,7 @@ from typing import Optional, Any
 REQUIRED_KEYS = ("api_keys.anthropic", "vault.key")
 # Written when config.yaml is missing (first start, or after //wipe), so the user has a file
 # to put the keys into rather than a traceback.
-SKELETON = """# Floxy AI configuration. config.example.yaml documents every setting; the assistant can
+SKELETON = """# Keep AI configuration. config.example.yaml documents every setting; the assistant can
 # set up the optional integrations itself once it runs. These two values are required:
 api_keys:
   anthropic:

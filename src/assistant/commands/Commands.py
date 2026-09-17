@@ -209,11 +209,11 @@ class Commands:
                 lines = f.readlines()
         except FileNotFoundError:
             error(f"Server log {SERVER_LOG_PATH} not found")
-            return "# Floxy AI Server Logs\nLog file not found."
+            return "# Keep AI Server Logs\nLog file not found."
         tail = "".join(lines[-SERVER_LOG_TAIL_LINES:])
         tail = re.sub(r'\x1b\[[0-9;]*m', '', tail)
         info(f"Server logs fetched: last {min(len(lines), SERVER_LOG_TAIL_LINES)} of {len(lines)} lines, {len(tail)} chars")
-        return f"# Floxy AI Server Logs\n{tail}"
+        return f"# Keep AI Server Logs\n{tail}"
 
     def cmd_open_url(self, parameter_string: str):
         self.background_command(self.web_access.fetch_webpage, parameter_string, lane=self.BROWSER_LANE)

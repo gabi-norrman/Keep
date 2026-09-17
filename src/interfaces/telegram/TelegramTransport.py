@@ -439,7 +439,7 @@ class TelegramTransport(Integration, ChatTransport):
         chat_id = update.effective_chat.id
         info(f"Telegram /start from chat_id: {chat_id}")
         await update.message.reply_text(
-            f"Hello! I'm Floxy AI.\n\nYour chat ID is: {chat_id}\n\n"
+            f"Hello! I'm Keep AI.\n\nYour chat ID is: {chat_id}\n\n"
             f"Send me a message and I'll respond."
         )
 

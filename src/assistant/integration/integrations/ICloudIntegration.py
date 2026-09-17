@@ -549,7 +549,7 @@ class ICloudIntegration(Integration):
         self._fresh_signins_this_recovery = 0
         system_note(self.name, f"iCloud auto-2FA could not recover: {why}. Auto-recovery paused for "
                                f"{self.AUTO_SMS_FAILURE_COOLDOWN_SECONDS // 3600}h. Manual attention "
-                               "needed in the Floxy TUI console (iCloud tab).")
+                               "needed in the Keep TUI console (iCloud tab).")
 
     def _auto_request_sms(self, reason: str, fresh_signin: bool = False):
         """Request an SMS 2FA code without user interaction. Falls back to a fresh
@@ -861,7 +861,7 @@ class ICloudIntegration(Integration):
     def _notify_2fa_required(self):
         """Send notification when 2FA is required."""
         system_note(self.name, "iCloud session expired. Attempting automatic SMS 2FA — "
-                               "manual entry available in Floxy TUI console (iCloud tab) if it doesn't recover.")
+                               "manual entry available in Keep TUI console (iCloud tab) if it doesn't recover.")
 
     @staticmethod
     def _is_reauthentication_error(exc: Exception) -> bool:

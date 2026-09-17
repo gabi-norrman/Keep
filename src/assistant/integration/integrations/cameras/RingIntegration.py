@@ -37,11 +37,11 @@ class _RingTfaHandler(TfaCodeHandler):
     def _notification_message(self) -> str:
         return (
             "Ring 2FA required. Attempting automatic code retrieval from text message. "
-            "Manual entry available in Floxy TUI console (Ring tab) if needed."
+            "Manual entry available in Keep TUI console (Ring tab) if needed."
         )
 
 
-USER_AGENT = "Floxy/1.0"
+USER_AGENT = "Keep/1.0"
 
 
 class RingIntegration(Integration):
@@ -101,7 +101,7 @@ class RingIntegration(Integration):
         if not self._tfa_handler.is_waiting:
             info("Ring: ignoring auto-detected 2FA code — not awaiting 2FA (unrequested Ring login)")
             system_note(self._tfa_handler.service_name,
-                        "⚠️ A Ring 2FA code arrived but Floxy did not request one. "
+                        "⚠️ A Ring 2FA code arrived but Keep did not request one. "
                         "This likely means someone signed in to the Ring account elsewhere. "
                         "Ignoring the code.")
             return

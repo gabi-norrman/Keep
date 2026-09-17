@@ -77,7 +77,7 @@ class iCloudTab(AuthTab):
         screen.reset_color()
         y += 1
         screen.set_color(COLOR_GRAY)
-        screen.write_at(4, y, self._devices_list or "(none yet — ask Floxy to set one up, or copy an id above into icloud.devices)")
+        screen.write_at(4, y, self._devices_list or "(none yet — ask Keep to set one up, or copy an id above into icloud.devices)")
         return y
 
     def _entry_hint(self) -> Optional[Tuple[str, Color]]:

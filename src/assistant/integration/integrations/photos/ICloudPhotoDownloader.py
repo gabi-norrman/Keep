@@ -190,7 +190,7 @@ class ICloudPhotoDownloader(SingletonMixin):
         """Leave a system note when the iCloud session refresh fails (may need 2FA)."""
         system_note("icloud_photos",
             "iCloud Photos: session refresh failed — photo downloads are broken. "
-            "You may need to complete 2FA in the Floxy TUI console (iCloud tab). "
+            "You may need to complete 2FA in the Keep TUI console (iCloud tab). "
             f"Error: {exc}"
         )
 

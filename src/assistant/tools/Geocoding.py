@@ -27,7 +27,7 @@ def reverse_geocode(latitude: float, longitude: float, timeout: int = 5) -> Opti
             "format": "json",
             "addressdetails": 1,
         }
-        headers = {"User-Agent": "Floxy-AI-Assistant/1.0"}
+        headers = {"User-Agent": "Keep-AI-Assistant/1.0"}
 
         response = requests.get(url, params=params, headers=headers, timeout=timeout)
         if response.status_code != 200:

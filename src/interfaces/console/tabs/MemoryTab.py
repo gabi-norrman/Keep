@@ -21,7 +21,7 @@ from interfaces.console.widgets.SecretMarks import mark_masks
 COLOR_DATE_LABEL = Color(180, 140, 255)
 
 FIRST_CURATION_LABEL = "Heads up"
-FIRST_CURATION_NOTICE = ("Floxy is building its memory for the first time. What you read here is a "
+FIRST_CURATION_NOTICE = ("Keep is building its memory for the first time. What you read here is a "
                          "work in progress and may look wrong until that finishes.")
 
 

@@ -1,4 +1,4 @@
-# Example configuration for the Floxy AI server
+# Example configuration for the Keep AI server
 
 # This file doubles as the assistant's documentation of every setting. So the notes
 # on what a setting does, where its value comes from and what depends on what are written for the
@@ -67,7 +67,7 @@ tesla:
 
 # iCloud Find My iPhone. apple_id + password are enough to start (photos, device listing);
 # the devices list is what find_phone / locate_user answer to. Fill it from the iCloud tab in
-# the TUI (copy each baUUID) or ask Floxy: icloud_devices() lists them and config_set writes the entries.
+# the TUI (copy each baUUID) or ask Keep: icloud_devices() lists them and config_set writes the entries.
 icloud:
   apple_id: your_apple_id@icloud.com
   password: YOUR_APPLE_ID_PASSWORD  # Regular password, not app-specific
@@ -125,7 +125,7 @@ home_assistant:
   # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
   prompt_filters: []
 
-# The "Self Improvement" integration: Floxy analysing and changing its own code — the
+# The "Self Improvement" integration: Keep analysing and changing its own code — the
 # self_analysis / self_improvement commands and the nightly code-quality runs — through the
 # Claude Code CLI on the server machine. Enable with `enabled_integrations: [Self Improvement]`.
 # The setup is on the server machine itself, by hand:
@@ -149,7 +149,7 @@ chat:
 
 # Looking for the user's own Telegram messages ("read my Telegram")?
 # That is the "Telegram Feed" integration, section telegram_feed — not this one.
-# This section is the Telegram bot users chat with Floxy through. It is an interface
+# This section is the Telegram bot users chat with Keep through. It is an interface
 # (interfaces.telegram, on by default) that list_integrations shows as "Telegram": without a
 # bot_token it is listed as not configured. Setup is bot_token via config_request, then
 # restart_integration("Telegram") — no server restart. Its switch is interfaces.telegram.enabled,
@@ -162,7 +162,7 @@ telegram_bot:
   link_previews: false  # true = Telegram renders preview cards for URLs in the bot's replies; needs restart_integration("Telegram")
 
 # The "Telegram Feed" integration: a Telethon client logged into the owner's own Telegram
-# account, feeding their chats into the history. Not the bot users talk to Floxy through (section
+# account, feeding their chats into the history. Not the bot users talk to Keep through (section
 # telegram_bot); only set up when the user asks for their Telegram messages to be read. After these two keys the
 # account itself must be signed in: telegram_login(phone) from the console chat (the code and the 2FA password go
 # through the masked prompt), or the console's Telegram tab.

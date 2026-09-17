@@ -629,7 +629,7 @@ class TestCmdServerLogs:
         log_file.write_text("line1\nline2\n")
         with patch("assistant.commands.Commands.SERVER_LOG_PATH", str(log_file)):
             result = Commands._fetch_server_logs(None)
-        assert result.startswith("# Floxy AI Server Logs")
+        assert result.startswith("# Keep AI Server Logs")
         assert "line1" in result and "line2" in result
         mock_home.error_logs.assert_not_called()
 

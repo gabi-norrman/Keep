@@ -36,7 +36,7 @@ class WeatherIntegration(Integration):
         if lat is None or lon is None:
             return "(Weather not configured: location.home is missing)"
         base_url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={lat}&lon={lon}"
-        response = requests.get(base_url, headers={'User-Agent': 'Floxy_0.1'})
+        response = requests.get(base_url, headers={'User-Agent': 'Keep_0.1'})
         if response.status_code != 200:
             raise RuntimeError("Failed to fetch weather data.")
 
@@ -142,7 +142,7 @@ class WeatherIntegration(Integration):
             return "(Precipitation not configured: location.home is missing)"
         trace("Fetching short term precipitation data from YR....")
         base_url = f"https://api.met.no/weatherapi/nowcast/2.0/complete?lat={lat}&lon={lon}"
-        response = requests.get(base_url, headers={'User-Agent': 'Floxy_0.1'})
+        response = requests.get(base_url, headers={'User-Agent': 'Keep_0.1'})
 
         if response.status_code == 200:
             j = response.json()

@@ -715,7 +715,7 @@ class IMessageIntegration(Integration, Feed):
             self._notify_contact_cache_empty()
             return None, (
                 f"contact cache is empty — could not look up '{candidate}'. "
-                "Floxy likely needs Full Disk Access to read the AddressBook."
+                "Keep likely needs Full Disk Access to read the AddressBook."
             )
         return None, f"unknown contact: {candidate} (cache has {len(self._name_to_handle)} names)"
 
@@ -825,14 +825,14 @@ class IMessageIntegration(Integration, Feed):
         self._notified_cache_empty = True
         system_note(self.name,
             "iMessage: contact cache is empty — name-based recipients can't be resolved. "
-            "Likely cause: Floxy is missing Full Disk Access (System Settings → "
+            "Likely cause: Keep is missing Full Disk Access (System Settings → "
             "Privacy & Security → Full Disk Access). Sends to raw phone numbers / emails still work."
         )
 
     @classmethod
     def _notify_automation_permission_needed(cls):
         system_note("imessage",
-            "iMessage send blocked: Floxy is not authorized to control Messages. "
+            "iMessage send blocked: Keep is not authorized to control Messages. "
             "Grant access in System Settings → Privacy & Security → Automation, then retry."
         )
 

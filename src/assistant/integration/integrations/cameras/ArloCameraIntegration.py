@@ -77,7 +77,7 @@ class _ArloTfaHandler(TfaCodeHandler):
     def _notification_message(self) -> str:
         return (
             "Arlo 2FA required. Attempting automatic code retrieval from email. "
-            "Manual entry available in Floxy TUI console (Arlo tab) if needed."
+            "Manual entry available in Keep TUI console (Arlo tab) if needed."
         )
 
     def _start_email_polling(self):
@@ -112,7 +112,7 @@ class _ArloTfaHandler(TfaCodeHandler):
                 system_note(self.service_name,
                             "Arlo 2FA code not found in email after "
                             f"{EMAIL_POLL_MAX_ATTEMPTS * EMAIL_POLL_INTERVAL // 60} minutes of polling. "
-                            "Enter it manually in the Floxy TUI console (Arlo tab).")
+                            "Enter it manually in the Keep TUI console (Arlo tab).")
         except Exception as e:
             error(f"Arlo: Email polling error: {e}")
 

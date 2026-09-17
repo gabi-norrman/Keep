@@ -300,7 +300,7 @@ def _parse_args():
         DevelopmentConfig.RUNNING_UNDER_TEST = True
         note("Running as TestSuite")
 
-    note("Floxy AI Server starting...")
+    note("Keep AI Server starting...")
     if DevelopmentConfig.LOCAL_DEVELOPMENT_MODE:
         trace("LOCAL_DEVELOPMENT_MODE enabled")
     if PREPEND_USER_QUERY_OVERRIDE is None:

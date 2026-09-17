@@ -282,7 +282,7 @@ class TestExecuteAutoMergeRun:
         mock_claude.assert_called_once_with(CodeQualityMaintainer._auto_merge_prompt([7, 9]), "auto-merge-tests")
         mock_email.assert_called_once()
         subject, html = mock_email.call_args[0]
-        assert subject == "Floxy Auto-Merge Test PRs Report"
+        assert subject == "Keep Auto-Merge Test PRs Report"
         assert "Merged PR #42" in html
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
@@ -430,7 +430,7 @@ class TestAnalyzeCode:
         CodeQualityMaintainer.analyze_code("some bug")
         mock_email.assert_called_once()
         subject, html = mock_email.call_args[0]
-        assert subject == "Floxy Self-analysis Report"
+        assert subject == "Keep Self-analysis Report"
         assert "Self-analysis" in html
         assert "Found a bug" in html
         assert "Details here" in html
@@ -1081,7 +1081,7 @@ class TestExecuteNightlyRun:
                     maintainer._execute_nightly_run()
                     mock_email.assert_called_once()
                     subject, html = mock_email.call_args[0]
-                    assert subject == "Floxy Nightly Code Quality Report"
+                    assert subject == "Keep Nightly Code Quality Report"
                     assert "Bug Analysis" in html
                     assert "Test Generation" in html
 

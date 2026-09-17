@@ -6,7 +6,7 @@ Designed to run on Python 3.12.
 
 ### Virtual Environment
 
-Make sure `python` points to 3.12, then from the `Floxy/` root folder:
+Make sure `python` points to 3.12, then from the `Keep/` root folder:
 
 ```bash
 python3.12 -m venv .venv
