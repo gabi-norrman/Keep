@@ -1,0 +1,150 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+Floxy AI is a home automation voice assistant: a Python server (`floxy_ai_server.py`) providing an intelligent AI
+assistant that the user can speak to, with multiple LLM backends (GPT, Claude, Gemini, Ollama). This repository is the
+server. Its clients are called "Outposts" — they act as "mics": local ones are microphones on the server machine,
+remote ones (Android / iOS apps, not part of this repository) run on-device STT and send text to the server.
+
+The system uses a predefined wake word, uses on-device and cloud speech-to-text, then sends the user query as text to 
+the server. The server uses an LLM to process the query and can either play back the audio through local speakers or 
+send the stream back to the client for playback. 
+
+## Git Workflow
+
+- **Only commit when explicitly asked** — never commit automatically after completing work.
+- **Always use the `/commit` command** when committing changes. Never commit manually.
+
+## Code Style
+
+- Keep code concise and readable
+- NO trivial comments - only add comments when they add real value
+- Follow existing patterns in each codebase
+- Python: Class files use uppercase naming (e.g., `VoiceSynthesizer.py` contains `class VoiceSynthesizer`)
+
+## Logging
+Always add `info()` / `trace()` calls for important operations, decision points, and "nothing to do" 
+outcomes (e.g., empty query results, skipped items). We are aiming for a system that's very easy to debug - good logging
+helps with this!
+
+## Development Commands
+
+**Working directory**: the repository root — the server runs from it and cwd-relative names (`log/…`, `res/…`) assume it
+**Python venv**: `.venv` in the repository root (`python3.12 -m venv .venv && pip install -r requirements.txt -r requirements-voice.txt`)
+**Main server program**: `floxy_ai_server.py`
+**Config location**: `config.yaml`
+**Config example**: `config.example.yaml` — **always update this when adding/changing config keys**
+
+**Running Python scripts**:
+```bash
+# Run from the repository root since imports are relative to it:
+source .venv/bin/activate && python <script.py>
+```
+
+## Architecture
+
+### Core Components
+
+**Layout**: the root holds only scripts (`floxy_ai_server.py`, `tui.py`, `*.sh`), config, data (`res/`, `cache/`, `log/`, `voice_id/`, `floxy.db`) and `tests/`; the three source packages live under `src/` and are imported without a `src.` prefix (`from common.x import …`). `pytest.ini` adds `src` via `pythonpath`; `floxy_ai_server.py` and every external script insert `<root>/src` at the front of `sys.path`. `common/Paths.py` (`AISERVER_DIR` — the repository root, `REPO_DIR` — the same, `SRC_DIR`, `RES_DIR`, `CACHE_DIR`, `LOG_DIR`, `VOICE_ID_DIR`, `CONFIG_PATH`) is the one place that knows where the tree is — never do `Path(__file__).parents[N]` arithmetic in a package module.
+- `floxy_ai_server.py` — thin launcher: `build(port, testsuite) -> Server` constructs the `Assistant` and starts every enabled interface; `main()` serves (only under `__main__`)
+- `src/common/` — logging, ConfigManager, Paths, DevelopmentConfig, FloxyDatabase, monitors, RequirementsChecker
+- `src/assistant/` — the assistant proper; it never imports `interfaces.*`
+  - `Assistant.py` (facade: `stream(RequestContext) -> AssistantEvents`, handler pool), 
+  - `commands/` (Commands, CommandProcessor, light/music/photo handlers; `Toolkits.py` — the command references the LLM loads on demand)
+  - `agents/CodeQualityMaintainer.py` runs the Claude Code CLI on the repo: the nightly bug-analysis / test-generation / auto-merge runs and the `self_analysis` / `self_improvement` commands.
+  - self-setup: `list_integrations` / `config_help` / `config_request` / `restart_integration` let the assistant configure an integration itself.
+- `src/interfaces/` — one package per way of reaching the assistant, each an `Interface` (`enabled(config)`, `start(assistant, app)`, `start_async()`, `stop()`); a disabled interface's module is never imported
+  - `http/` — HttpInterface (Quart app, `/stream`, `/health`, hypercorn, signals), `routes.py`, `WireFormat.py`
+  - `voice/` — VoiceInterface (whole VoiceToVoice stack: microphones, TTS, server audio, speaker id, iOS overlay), `VoiceTurnGate.py`
+  - `chat/` — the chat contract every chat UI shares: `ChatTransport` ABC + `Draft` protocol (what a platform implements)
+  - `telegram/` — TelegramInterface + `TelegramTransport` (the bot, a thin `ChatTransport`: update parsing, `TelegramDraft` send/edit/flood handling, status line, approval keyboards)
+  - `console/` — ConsoleInterface + `ConsoleTransport` (the TUI's chat, a `ChatTransport` rendering into the Home tab's `ChatPane`) + entire TUI
+
+**Request Flow**: `interfaces/*` build a `RequestContext` → `Assistant.stream()` → `RequestProcessor` → `DialogManager` → LLM; commands run through `assistant/commands/CommandProcessor` and each round's result is persisted as a `command` history row (`MessageHistory.add_command_result`, rendered verbatim on the user side so the next turn still sees it); the events stream back to the interface (HTTP renders them with `WireFormat`; chat interfaces — Telegram and the TUI Home chat — through `interfaces/chat/ChatSession` → the transport's `Draft`).
+
+## Testing Strategy
+
+Unit tests are pytest under `tests/unit`.
+
+Before discovering test coverage gaps, verify findings by checking ALL test directories in tests/ (including 
+integration/, slow/ etc). Do not report a module as untested without searching for its name across the entire test
+tree.
+
+**Test data is fictional — the unit tests are public.** Never copy a value from `config.yaml`, `memory.md`,
+`floxy.db`, the vault, the logs or a real conversation into a test, a fixture or a comment; invent one that
+exercises the same code path. Use the standing cast and nothing from the real household:
+- people: the owner **Marcus** (the unit conftest pins `owner_name` to it), family **Charlotte**, **Frances**,
+  **Ingeborg**; outsiders Alice, Bob, Carol, Dave
+- phone `+46701740605` (the 070-174 06 05…99 range is reserved for fiction), mail `m@mlab.test` or
+  `*@example.com`, plate `KEP 47L`, personal id `19850203-1234`, hosts `*.local` / `*.example`, IPs from
+  `192.0.2.0/24` or `100.64.0.0/10`, the house in `tests/unit/data/home/` (synthetic — regenerate its
+  `*rendered.md` with the real renderer, never by hand)
+- a test must pass with `FLOXY_CONFIG=config.example.yaml`: patch the config values it depends on
+
+**Always run unit tests** — they complete swiftly:
+```bash
+source .venv/bin/activate && python -m pytest tests/unit --override-ini="log_cli=false" -q --tb=short 2>&1 | grep -E "^(FAILED|ERROR) |^=+ .*(passed|failed|error)"
+```
+
+**When to run them — the "code first, tests in the background" flow.** The suite is cheap; stopping mid-implementation to chase every failure is not. So:
+1. Implement the whole change without touching or running tests.
+2. When the code is done, run the unit suite **once** and report to the user: what was built plus the count and shape of the failures.
+3. Spawn a **forked** background agent (`subagent_type: "fork"` — it inherits the conversation, so it knows what changed and why) to fix the failures. Keep taking new work meanwhile; relay the agent's result when it reports.
+4. The agent edits files under `tests/` **only**. If a failure looks like a real bug in the new code, it reports that back instead of bending the test to match the bug.
+5. While the agent runs, avoid editing the files its failures point at, and say so if asked for changes there — two editors on one file clobber each other.
+
+Skip the background agent when the failures are few and trivial (a renamed symbol, a changed log line): fixing those inline is faster than spawning. The agent dies with the session, so if the user is about to leave, fix inline instead.
+
+**Why these flags?** `pytest.ini` runs the suite on 8 xdist workers (`--dist worksteal`; more workers measured slower on the 8P+2E cores) with 
+`log_cli=true` and `-s`. `tests/unit/conftest.py` also orders the collection from the previous run's durations (`.pytest_cache/v/floxy/slow-tests`, so a fresh checkout's first run is a little slower) and freezes the heap at session 
+end so the workers exit fast. It also keeps the garbage collector off during collection and freezes the collected heap, opens SQLite without fsync and stubs `sounddevice` (no PortAudio init per worker). The wall time is ~7 s, of which ~3.5 s is every worker importing the tree at collection — that is the floor, so keep the run phase lean: no real sleeps or timeouts above ~50 ms in a test, and nothing that touches the real machine (Photos library, audio). 
+
+The suites outside `tests/unit` (`tests/prompt`, `tests/memory`, …) and `tests/unit/private` are **not part of this
+repository**: they are built from a real household's data and are linked in (gitignored symlinks) on the maintainer's
+machine only, together with `testsuite_prompt.md`, the prompt those suites run against. When they are present: they are
+LLM/prompt-related and slow — only run them when changes affect LLM communication or prompts:
+```bash
+source .venv/bin/activate && python -m pytest tests/ --override-ini="log_cli=false" -q --tb=short 2>&1 | grep -E "^(FAILED|ERROR) |^=+ .*(passed|failed|error)"
+```
+
+**NOTE**: The prompt/integration tests spin up real server instances on fixed ports (8801+). Only one test suite run at a time per machine — concurrent runs will collide on ports and cause spurious "killed" failures.
+
+## Key Files
+
+- `floxy_ai_server.py` - Launcher (`build()` + `main()`)
+- `src/assistant/Assistant.py` - The facade every interface calls
+- `src/assistant/DialogManager.py` - Core dialog logic
+- `src/assistant/RequestProcessor.py` - One request: prompt → LLM → commands → history
+- `src/interfaces/Interface.py` - The interface contract; implementations in `src/interfaces/{http,voice,telegram,console}`
+- `src/interfaces/chat/ChatTransport.py` - What a chat platform implements; `ChatSession.py` is the shared reply/intake logic; `ChatHub.py` the Notifier
+- `src/interfaces/console/ConsoleTransport.py` - The TUI as a chat transport; `widgets/ChatPane.py` is the Codex-style pane it draws into; `HistoryFeed.py` puts the dialog history in the same pane
+- `config.yaml` - API keys and configuration
+- `requirements.txt` - Python dependencies
+- `log/floxy.out` - Log file from latest run on the server GREAT for DEBUGGING!
+- `res/prompt.md` - The prompt template send to the AI; the command references live in `res/toolkits/<name>.md` (shared by both prompts), only the core commands are in the template
+- `testsuite_prompt.md` - (private, present only when linked) the prompt the prompt test suite runs against. When it is present, MIRROR any change you make to prompt.md into it (its `# COMMAND SYSTEM` block must match byte for byte — `tests/unit/private/test_testsuite_prompt_mirror.py` checks)
+
+## Dependencies
+
+### Python
+- **Requirements files**: `requirements.txt`, `requirements-voice.txt` (the voice stack)
+- **Virtual environment**: `.venv` in the repository root
+- **IMPORTANT**: Always activate venv before running Python: `source .venv/bin/activate`
+
+### Testing Python Code
+When testing code that imports `assistant`, `common` or `interfaces`:
+1. Scripts importing these modules need `config.yaml` to exist
+2. Always activate venv: `source .venv/bin/activate`
+3. `ConfigManager` resolves `config.yaml` as `$FLOXY_CONFIG` if set, else `common.Paths.CONFIG_PATH` (= `config.yaml` in the root)
+
+### System
+- Python 3.12
+- brew: mpv, portaudio
+- Porcupine wake word models
+- Spacy model: `en_core_web_sm`
+
+## Database
+- SQLite database: `floxy.db`

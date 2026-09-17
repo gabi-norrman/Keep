@@ -1,0 +1,815 @@
+import base64
+import difflib
+import threading
+import time
+import os
+import traceback
+import uuid
+from datetime import datetime
+
+from .TimeOfDay import TimeOfDay
+from .sections.MusicZonesSectionGenerator import MusicZonesSectionGenerator
+from .sections.MemorySectionGenerator import MemorySectionGenerator
+from .sections.VaultSectionGenerator import VaultSectionGenerator
+from .sections.WeatherSectionGenerator import WeatherSectionGenerator
+from .sections.PrecipitationSectionGenerator import PrecipitationSectionGenerator
+from .sections.HomeSectionGenerator import HomeSectionGenerator
+from .sections.CalendarDataSectionGenerator import CalendarDataSectionGenerator
+from .sections.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
+from .MessageHistory import MessageHistory
+from .sections.TeslaSectionGenerator import TeslaSectionGenerator
+from .sections.iCloudSectionGenerator import iCloudSectionGenerator
+from common.FloxyDatabase import FloxyDatabase
+from common.ConfigManager import config
+from common.logging import info, trace, fine
+from common.Paths import SRC_DIR
+
+# Frames from these AIServer/src packages count as "ours" in the section-update trigger trace.
+_OWN_PACKAGE_DIRS = tuple(f"{SRC_DIR / pkg}/" for pkg in ("assistant", "common", "interfaces"))
+
+
+class PromptManager:
+    """Assembles the live system prompt from its template and sections and builds the LLM message list.
+
+    Section updates are folded in as small transient history notes where possible so the cached
+    system-prompt bytes stay stable; a full rebuild happens only on cold start, large diffs or
+    once per cache TTL.
+    """
+
+    # When a section updates: if the unified diff against the baseline (the bytes
+    # baked into the currently-active prompt) is small enough, emit it as a
+    # transient history note instead of rebuilding the prompt. Keeps the cached
+    # system prompt bytes stable so Anthropic's 1h ephemeral cache stays warm.
+    _DIFF_SIZE_THRESHOLD = 600
+    # Hard ceiling on how long we'll keep delta-patching before forcing a full
+    # rebuild — matches the 1h cache TTL set in ClaudeLLM._build_cached_system.
+    _FULL_REBUILD_INTERVAL_S = 3600
+    # A carried section (Toolkits.CARRIED_SECTIONS) is never re-baked into the prompt, so its
+    # notes accumulate until the LLM loads the toolkit again; past this many chars of notes
+    # one pointer note replaces them and tracking stops until the next load.
+    _CARRIED_NOTES_BUDGET = 3000
+    # {PHOTO_COUNT} refresh cadence. The live count creeps up as photos sync, and
+    # re-reading it on every rebuild changes the prompt bytes for no user-visible
+    # benefit. Fetch once at server start, then at most daily; rendered with a ~
+    # prefix since the value is approximate between refreshes.
+    _PHOTO_COUNT_REFRESH_S = 24 * 3600
+
+    def __init__(self, test_suite: bool = False):
+        self.prompt = ""
+        self._messages = None
+        self.test_suite = test_suite
+        self._prompt_lock = threading.Lock()
+        self._last_assembly_time = 0
+        self._on_prompt_assembled_callbacks = []
+        # Snapshot of each section's content at the time of the last full assembly —
+        # the bytes baked into the currently-active prompt. Used to detect a cold
+        # start (no baseline → rebuild).
+        self._section_baselines: dict[str, str] = {}
+        # The last content the LLM has actually been told about for each section:
+        # the baseline if untouched, otherwise the `+` side of the most recent
+        # delta note we emitted. Each new delta diffs against THIS (not the frozen
+        # baseline), so notes form an append-only changelog — a later change adds a
+        # fresh note instead of re-stating earlier ones under a new timestamp.
+        self._section_current: dict[str, str] = {}
+        # Cached {PHOTO_COUNT} value and when it was fetched (see _PHOTO_COUNT_REFRESH_S).
+        self._photo_count: int | None = None
+        self._photo_count_fetched_at = 0.0
+
+        # Initialize section generators. Note: the current time/date is intentionally
+        # NOT a section. It used to be (`{TIME_DATE}`), but it sat in the volatile
+        # tail and changed every minute — invalidating the 5-min message-level
+        # cache on every turn. It's now appended to the trailing user message in
+        # get_messages() instead, where it lives in the uncached suffix and never
+        # invalidates anything.
+        self.sections = {
+            'memory': MemorySectionGenerator(self),
+            'vault': VaultSectionGenerator(self),
+            'weather': WeatherSectionGenerator(self),
+            'precipitation': PrecipitationSectionGenerator(self),
+            'home': HomeSectionGenerator(self),
+            'calendar': CalendarDataSectionGenerator(self),
+            'sonos': SonosFavoritesSectionGenerator(self),
+            'music_zones': MusicZonesSectionGenerator(self),
+            'car_info': TeslaSectionGenerator(self),
+            'phones': iCloudSectionGenerator(self),
+        }
+        self._assert_unique_section_names(self.sections)
+
+        # Conversation history is no longer a prompt section — it's appended as
+        # message items at request time (see get_messages).
+        self.message_history = MessageHistory()
+
+        # Prompt test suite: a fixed set of pre-rendered history turns loaded from a
+        # fixture (see load_test_suite_history). Kept separate from message_history so
+        # the live, mutable history never feeds the test prompt — test queries must not
+        # accumulate into what subsequent tests see.
+        self._test_history_messages: list[dict] = []
+        self._test_toolkit_messages: list[dict] = []
+
+        self._section_positions = self._compute_section_positions()
+
+        if test_suite:
+            # For test suite, just load test prompt immediately
+            self._load_test_suite_prompt()
+        else:
+            # Start all section generators; each one's first fetch triggers a cheap
+            # rebuild as it lands (a cold boot rebuilds a handful of times — fine).
+            info("Starting prompt section generators...")
+            for name, section in self.sections.items():
+                section.start()
+            self._assemble_prompt()
+
+    def _compute_section_positions(self) -> dict[str, int]:
+        """Map of section_key -> placeholder position in the prompt template.
+        Sections whose placeholder is missing are omitted (callers fall back to alpha order)."""
+        template_path = self._test_suite_template_path() if self.test_suite else "res/prompt.md"
+        try:
+            with open(template_path, "r") as f:
+                template = f.read()
+        except OSError as e:
+            info(f"Could not read {template_path} for section order ({e})")
+            return {}
+
+        positions = {}
+        for section_key in self.sections:
+            idx = template.find("{" + section_key.upper() + "}")
+            if idx >= 0:
+                positions[section_key] = idx
+        if absent := [key for key in self.sections if key not in positions]:
+            info(f"Sections without a placeholder in {template_path} (they reach the LLM through a toolkit, "
+                 f"see Toolkits.CARRIED_SECTIONS): {', '.join(absent)}")
+        return positions
+
+    @staticmethod
+    def _test_suite_template_path() -> str:
+        """testsuite_prompt.md has a household's data baked in, so it is not part of the repository;
+        a checkout without it runs the test suite on the production template with empty sections."""
+        if os.path.exists("testsuite_prompt.md"):
+            return "testsuite_prompt.md"
+        info("No testsuite_prompt.md in this checkout, the test suite runs on res/prompt.md.")
+        return "res/prompt.md"
+
+    def _load_test_suite_prompt(self):
+        """Load test suite prompt."""
+        info("In testsuite, loading testsuite prompt.")
+        template_path = self._test_suite_template_path()
+        with open(template_path, "r") as file:
+            template = file.read()
+        # The data sections are baked into the test-suite prompt; only the config-driven
+        # values and the toolkit index are substituted. The production template, the stand-in
+        # when that file is absent, still has the section placeholders: they are blanked.
+        sections = {} if template_path == "testsuite_prompt.md" else {key: "" for key in self.sections}
+        self.prompt = self._substitute(template, sections, photo_count=self._TEST_SUITE_PHOTO_COUNT)
+        self._messages = [{"role": "system", "content": self.prompt}]
+        self._test_toolkit_messages = self._all_toolkits_loaded()
+
+    def _all_toolkits_loaded(self) -> list[dict]:
+        """The prompt test suite checks a single reply, so it cannot afford a load round: every
+        toolkit is put in front of the model as if one `load_toolkit(...)` call had fetched them
+        all earlier in the conversation — the same two turns production produces."""
+        from assistant.commands import Toolkits
+        toolkits = Toolkits.TOOLKITS
+        call = "load_toolkit(" + ", ".join(f'"{t.name}"' for t in toolkits) + ")"
+        # A fixture like the rest of the test prompt: the count is baked, the DB may be absent.
+        substitute = lambda text: self._substitute(text, {}, photo_count=self._TEST_SUITE_PHOTO_COUNT)
+        result = "result: \n" + "\n\n".join(Toolkits.render(t, substitute) for t in toolkits)
+        info(f"Test suite: all {len(toolkits)} toolkits appended to the history ({len(result)} chars)")
+        return [{"role": "assistant", "content": call}, {"role": "user", "content": result}]
+
+    @staticmethod
+    def _wake_interval_minutes_str() -> str:
+        """Single source of truth for the periodic wake-up cadence advertised to the
+        LLM — mirrors the autonomous action manager's actual sleep interval."""
+        from ..agents.AutonomousActionManager import PERIODIC_CHECK_INTERVAL_MINUTES
+        return f"{PERIODIC_CHECK_INTERVAL_MINUTES:.0f}"
+
+    @staticmethod
+    def _get_trigger_trace() -> str:
+        """Extract the two most relevant caller frames from the stack, skipping internal plumbing."""
+        plumbing = {'_assemble_prompt', 'on_section_updated', 'notify_update',
+                    '_update_content', '_start_monitoring_wrapper', '_get_trigger_trace'}
+        frames = traceback.extract_stack()
+        interesting = []
+        for frame in frames:
+            if frame.name in plumbing:
+                continue
+            if not frame.filename.startswith(_OWN_PACKAGE_DIRS):
+                continue
+            interesting.append(frame)
+        result_frames = interesting[-2:]
+        if not result_frames:
+            return ""
+        parts = []
+        for f in result_frames:
+            filename = os.path.basename(f.filename)
+            parts.append(f"{filename}:{f.lineno} {f.name}")
+        return " → ".join(parts)
+
+    @staticmethod
+    def _assert_unique_section_names(sections: dict) -> None:
+        """on_section_updated routes incoming notifications by generator.section_name.
+        If two generators share that display name, _find_section_by_name returns the
+        first match and the second section's updates get mis-attributed (its baseline
+        never refreshes) — so fail fast at startup rather than silently misroute deltas.
+        """
+        names = [getattr(gen, "section_name", None) for gen in sections.values()]
+        if len(set(names)) != len(names):
+            duplicates = sorted({n for n in names if names.count(n) > 1})
+            raise RuntimeError(
+                f"Duplicate section_name(s) across PromptSectionGenerators: {duplicates}. "
+                "Each generator's section_name must be unique."
+            )
+
+    def _find_section_by_name(self, section_name: str) -> tuple[str, "PromptSectionGenerator"] | tuple[None, None]:
+        """Resolve a generator's display name (e.g. "Weather", "CalendarData") to the
+        (placeholder_key, generator) pair. Generators identify themselves via the
+        display name passed to PromptSectionGenerator.__init__, but self.sections is
+        keyed by the lowercase placeholder slug used in res/prompt.md — so we have to
+        translate. Returns (None, None) if no match (e.g. a generator that fired late
+        for a section we no longer track)."""
+        for key, gen in self.sections.items():
+            if getattr(gen, "section_name", None) == section_name:
+                return key, gen
+        return None, None
+
+    def on_section_updated(self, section_name: str):
+        """
+        Callback method called by PromptSectionGenerators when they update.
+
+        For each update we choose between two paths to keep the LLM's prompt cache warm:
+          - Small diff against the section's LAST-SEEN state (the +side of the most
+            recent note, or the baseline if untouched) and we're still inside the 1h
+            window → append a transient "section updated" note to MessageHistory and
+            keep the prompt bytes unchanged. Notes accumulate as an append-only
+            changelog: each is stamped at the moment its change happened and diffs
+            only against the immediately preceding state, so a later change to the
+            same section adds a fresh note instead of re-stating earlier changes.
+          - Large diff, missing baseline, or expired window → full rebuild (which
+            re-snapshots all baselines, resets last-seen state, and drops the
+            now-obsolete transient notes).
+
+        The state read + diff decision + transient emission all happen under
+        _prompt_lock so we can't race with a parallel _assemble_prompt and end up
+        diffing against state that's about to be invalidated, or appending a delta
+        whose content is already in a freshly-rebuilt prompt.
+        """
+        if self.test_suite and "history" in self.sections:
+            return
+
+        # Translate display name → placeholder key (see _find_section_by_name).
+        # During tests we sometimes assign DummySections lacking .section_name and
+        # invoke this with the placeholder key directly; fall back to that.
+        with self._prompt_lock:
+            key, section = self._find_section_by_name(section_name)
+            if section is None and section_name in self.sections:
+                key, section = section_name, self.sections[section_name]
+            if section is None:
+                return
+            from assistant.commands import Toolkits
+            if key in Toolkits.CARRIED_SECTIONS:
+                pre_heat_messages = self._on_carried_section_updated_locked(section_name, key, section.get_content())
+                if pre_heat_messages is not None:
+                    trace(f"Pre-heating after delta note — section={section_name}")
+                    self._fire_prompt_callbacks(pre_heat_messages)
+                return
+            if key not in self._section_positions and self._section_positions:
+                # Not in the template (its data reaches the LLM another way, e.g. rendered
+                # into a toolkit on load): nothing to diff the prompt against.
+                trace(f"Section '{section_name}' has no placeholder in the prompt template — no delta note")
+                return
+
+            baseline = self._section_baselines.get(key)
+            # Diff against what the LLM was last told, not the frozen baseline:
+            # the +side of the most recent note for this section, or the baseline
+            # if it hasn't changed since the last rebuild.
+            prev = self._section_current.get(key, baseline)
+            new_content = section.get_content()
+            window_expired = time.time() - self._last_assembly_time >= self._FULL_REBUILD_INTERVAL_S
+
+            do_full_rebuild = False
+            pre_heat_messages = None
+
+            if baseline is None or window_expired:
+                if baseline is not None:
+                    info(f"Full prompt rebuild — section={section_name} reason=1h window expired")
+                do_full_rebuild = True
+            elif new_content == prev:
+                # Nothing changed since the last state the LLM saw — no-op. (A revert
+                # baseline→A→baseline is just another honest A→baseline delta below.)
+                return
+            else:
+                # Incremental diff against the previous state. Each note is an
+                # independent, append-only changelog entry — we do NOT clear earlier
+                # notes for this section; they describe real changes the LLM should
+                # keep seeing, stamped at the time they happened.
+                diff = self._compute_section_delta(prev, new_content)
+                if 0 < len(diff) <= self._DIFF_SIZE_THRESHOLD:
+                    self._emit_transient_section_update_locked(section_name, key, diff)
+                    # Advance last-seen state so the next change diffs against this one.
+                    self._section_current[key] = new_content
+                    # The note extends the request prefix, so pre-heat it too — the
+                    # prefix before the note is already cached, making this cheap.
+                    pre_heat_messages = self._resolved_messages_locked()
+                else:
+                    info(f"Full prompt rebuild — section={section_name} reason=diff too large ({len(diff)} chars)")
+                    # trace(f"Full prompt rebuild diff — section={section_name}:\n{diff}")
+                    do_full_rebuild = True
+
+        if pre_heat_messages is not None:
+            trace(f"Pre-heating after delta note — section={section_name}")
+            self._fire_prompt_callbacks(pre_heat_messages)
+            return
+
+        # _assemble_prompt acquires _prompt_lock itself, so call it outside our with block.
+        if do_full_rebuild:
+            self._assemble_prompt(section_name, force=self.test_suite and "history" not in self.sections)
+
+    @staticmethod
+    def _compute_section_delta(old: str, new: str) -> str:
+        """Minimal +/- diff between baseline and new content. Empty if no textual diff.
+
+        Strips the file-header lines ("--- " / "+++ ") and the hunk headers ("@@ ... @@"),
+        and uses n=0 so no context lines are emitted — the LLM only needs to see what
+        was removed and what was added. Shorter output also means more updates fit under
+        _DIFF_SIZE_THRESHOLD, so we stay on the delta path longer."""
+        diff_lines = list(difflib.unified_diff(
+            old.splitlines(), new.splitlines(),
+            n=0, lineterm="",
+        ))
+        # Slice off the two file-header lines rather than filtering by prefix — actual
+        # content lines starting with "--" or "++" pick up the diff's leading "-"/"+",
+        # becoming "---foo" / "+++bar", which a prefix filter would incorrectly drop.
+        if len(diff_lines) >= 2 and diff_lines[0].startswith("--- ") and diff_lines[1].startswith("+++ "):
+            diff_lines = diff_lines[2:]
+        # Drop hunk headers ("@@ -54,3 +54,3 @@"). Content lines starting with "@@"
+        # would appear as "+@@..." / "-@@..." in the diff (they have the +/- prefix)
+        # so this strict startswith check leaves real content untouched.
+        diff_lines = [line for line in diff_lines if not line.startswith("@@")]
+        return "\n".join(diff_lines)
+
+    def _on_carried_section_updated_locked(self, section_name: str, key: str, new_content: str) -> list | None:
+        """A section a toolkit carries is never in the prompt: its baseline is what the last
+        `load_toolkit` sent (carried_data) and a note goes out only while that toolkit is in
+        the LLM's window. A change too big for one note, or one that would push the section's
+        notes past _CARRIED_NOTES_BUDGET, becomes a single "load it again" pointer and ends the
+        tracking until the next load. Caller holds _prompt_lock; returns the messages to
+        pre-heat after a note, else None."""
+        from assistant.commands import Toolkits
+        toolkit = Toolkits.CARRIED_SECTIONS[key]
+        heading = Toolkits.SECTION_HEADINGS.get(key, section_name)
+        prev = self._section_current.get(key)
+        if prev is None:
+            # No baseline: nothing was sent since this process started (the row in the window
+            # is from before a restart), or a pointer note ended the tracking. Either way the
+            # LLM's copy is stale while the reference is in its window, so one pointer note —
+            # not one per change — tells it to load again.
+            if toolkit not in self.message_history.loaded_toolkits():
+                trace(f"Section '{section_name}' changed but was never sent (no load_toolkit yet) — no delta note")
+                return None
+            if any(e.get("section") == key for e in self.message_history.transient_entries):
+                trace(f"Section '{section_name}' changed, its pointer note is already out — nothing to add")
+                return None
+            info(f"Section '{section_name}' changed with the {toolkit} toolkit in the window but no baseline "
+                 f"(sent before a restart?) — one pointer note tells the LLM to load it again")
+            self._add_transient_note_locked(key, self._reload_pointer(heading, toolkit))
+            return self._resolved_messages_locked()
+        if new_content == prev:
+            return None
+        if toolkit not in self.message_history.loaded_toolkits():
+            info(f"Section '{section_name}' changed but the {toolkit} toolkit left the window — tracking stops")
+            self._section_current.pop(key)
+            self.message_history.clear_transient_entries_for_section(key)
+            return None
+        diff = self._compute_section_delta(prev, new_content)
+        if not diff:
+            return None
+        accumulated = sum(len(e["content"]) for e in self.message_history.transient_entries if e.get("section") == key)
+        if len(diff) <= self._DIFF_SIZE_THRESHOLD and accumulated + len(diff) <= self._CARRIED_NOTES_BUDGET:
+            trace(f"Adding section delta: {section_name} ({len(diff)} chars, {accumulated} chars of notes before it)")
+            self._add_transient_note_locked(key, f"{heading} updated:\n{diff}")
+            self._section_current[key] = new_content
+        else:
+            info(f"Section '{section_name}' changed too much for notes ({len(diff)} chars on top of {accumulated}) "
+                 f"— one pointer note replaces them, tracking stops until the next load_toolkit({toolkit})")
+            self.message_history.clear_transient_entries_for_section(key)
+            self._add_transient_note_locked(key, self._reload_pointer(heading, toolkit))
+            self._section_current.pop(key)
+        return self._resolved_messages_locked()
+
+    @staticmethod
+    def _reload_pointer(heading: str, toolkit: str) -> str:
+        return (f"{heading} has changed since it was sent: run `load_toolkit({toolkit})` for the current state.")
+
+    def _emit_transient_section_update_locked(self, section_name: str, key: str, diff: str):
+        """Append an in-memory-only note describing a small section change.
+
+        Caller MUST hold self._prompt_lock — keeps the baseline-read / decision /
+        emit sequence atomic with respect to full rebuilds.
+
+        `section_name` is the human-facing display name shown in the note body;
+        `key` is the stable placeholder slug used to tag the entry (so all of a
+        section's accumulated notes can be dropped together on a full rebuild).
+
+        Rendered to the LLM as a user-role turn with a "System (HH:MM): ..." prefix
+        (MessageHistory.render_messages collapses role="system" entries that way);
+        we phrase the body so the final string reads naturally, e.g.
+        "System (10:30): Prompt section `weather` updated:\\n@@ ..."
+        """
+        trace(f"Adding section delta: {section_name} ({len(diff)} chars)")
+        self._add_transient_note_locked(key, f"Prompt section `{section_name}` updated:\n{diff}")
+
+    def _add_transient_note_locked(self, key: str, content: str):
+        self.message_history.add_transient_entry(
+            role="system",
+            content=content,
+            timestamp=time.time(),
+            source="prompt_delta",
+            section=key,
+        )
+
+    def is_night_mode_active(self) -> bool:
+        """Whether home automation currently reports Night mode (the live snapshot).
+
+        Callers (the autonomous-action night guards) must NOT read self.prompt for
+        this: when Night flips via a small section delta the system-prompt bytes are
+        intentionally frozen (only a transient note is emitted), so self.prompt lags
+        the real state by up to the 1h rebuild interval. The home section's live
+        snapshot reflects the flip immediately.
+        """
+        section = self.sections.get('home')
+        if section is None:
+            return False
+        try:
+            return section.is_night()
+        except Exception as e:
+            trace(f"Night-mode check failed, assuming not Night: {e}")
+            return False
+
+    @staticmethod
+    def current_time_note() -> str:
+        """The "(Current time: HH:MM, Weekday, YYYY-MM-DD)" clock note.
+
+        Single source of truth for the format. Appended to the trailing user turn so
+        the LLM always has a clock without rewriting the cached system prompt bytes.
+        Shared by get_messages() and the autonomous-action check, which builds its own
+        message list and must inject the same clock — AUTONOMOUS_ACTION_PROMPT asks the
+        model to compare elapsed time against the current time.
+        """
+        now = datetime.now()
+        return (
+            f"(Current time: {now.strftime('%H:%M')}, "
+            f"{now.strftime('%A')}, {now.strftime('%Y-%m-%d')})"
+        )
+
+    def on_prompt_assembled(self, callback):
+        """Register a callback fired whenever the byte prefix of the next request
+        changes — after a full prompt rebuild AND after a delta note is appended —
+        so KV-cache pre-heating can cover both paths.
+        Callback signature: callback(messages: list[dict])"""
+        self._on_prompt_assembled_callbacks.append(callback)
+
+    def _resolved_messages_locked(self) -> list[dict]:
+        """The byte prefix every real request shares: system prompt with per-request
+        placeholders resolved, plus live history (including transient delta notes).
+        get_messages() adds only the per-request tail on top of this (time note,
+        thinking instruction, incoming query), so pre-heating these exact bytes
+        warms the KV prefix real requests reuse. Caller must hold _prompt_lock."""
+        messages = [dict(m) for m in self._messages]
+
+        if TimeOfDay.get_current() == TimeOfDay.DAY:
+            whisper = ""
+        else:
+            whisper = "It is late or very early, so whisper. Keep responses extra short."
+
+        if messages and messages[0].get("role") == "system":
+            content = messages[0]["content"]
+            content = content.replace("[THINKING]", "")
+            content = content.replace("[WHISPER]", whisper)
+            messages[0] = {"role": "system", "content": content}
+
+        if not self.test_suite:
+            messages.extend(self.message_history.get_history_messages())
+        return messages
+
+    def _fire_prompt_callbacks(self, messages: list[dict]):
+        """Invoke the registered pre-heat callbacks. Never called under _prompt_lock —
+        callbacks may do slow work (network requests to the LLM backend)."""
+        for callback in self._on_prompt_assembled_callbacks:
+            try:
+                callback(messages)
+            except Exception as e:
+                trace(f"Post-assembly callback failed (non-critical): {e}")
+
+    def _get_photo_count(self) -> int:
+        """The {PHOTO_COUNT} value, fetched at server start and refreshed at most
+        daily. The live count creeps up continuously as photos sync; re-reading it
+        on every prompt rebuild would change the cached prompt bytes for a number
+        nobody needs to be exact (it's rendered with a ~ prefix). On a failed
+        refresh, keep serving the stale count rather than flapping the bytes.
+        """
+        age = time.time() - self._photo_count_fetched_at
+        if self._photo_count is not None and age < self._PHOTO_COUNT_REFRESH_S:
+            return self._photo_count
+        try:
+            self._photo_count = FloxyDatabase.get_instance().get_photo_count()
+            self._photo_count_fetched_at = time.time()
+            trace(f"Photo count refreshed: ~{self._photo_count} (next refresh in 24h)")
+        except Exception as e:
+            if self._photo_count is None:
+                raise
+            trace(f"Photo count refresh failed, keeping stale value {self._photo_count}: {e}")
+        return self._photo_count
+
+    def _assemble_prompt(self, section_name: str = "", *, force: bool = False):
+        """Assemble the complete prompt from all sections."""
+        # In test suite mode, we use a static prompt and never reassemble
+        if self.test_suite and not force:
+            return
+
+        trigger_trace = self._get_trigger_trace()
+        fine(f"Prompt regeneration because of {section_name} ({trigger_trace})")
+
+        with self._prompt_lock:
+            # Load base template
+            with open("res/prompt.md", "r") as file:
+                prompt = file.read()
+
+            # Snapshot baselines from the SAME get_content() calls the substitution uses,
+            # so on_section_updated diffs against the exact bytes that landed in self.prompt.
+            # A carried section (Toolkits.CARRIED_SECTIONS) is not in the prompt: its baseline
+            # is what the last load_toolkit sent, and it survives the rebuild with its notes.
+            from assistant.commands import Toolkits
+            new_baselines = {key: gen.get_content() for key, gen in self.sections.items()
+                             if key not in Toolkits.CARRIED_SECTIONS}
+            self.prompt = self._substitute(prompt, new_baselines)
+            self._messages = [{"role": "system", "content": self.prompt}]
+
+            # Re-baseline for the next round of delta decisions, and drop any pending
+            # transient deltas — the new prompt already contains their content.
+            # Both happen under _prompt_lock to keep on_section_updated atomic with
+            # rebuilds: a racing delta thread can't read a stale baseline or leave a
+            # transient note alive past the rebuild that already absorbed its content.
+            self._section_baselines = new_baselines
+            # Reset last-seen state to the freshly-baked bytes: the new prompt now
+            # contains everything, so the next delta diffs against the baseline again. A
+            # carried section keeps its last-sent state and every note of it — including a
+            # "load it again" pointer, which has no state left but still has to be seen.
+            carried = {key: content for key, content in self._section_current.items()
+                       if key in Toolkits.CARRIED_SECTIONS}
+            self._section_current = dict(new_baselines) | carried
+            self.message_history.clear_transient_entries(keep_sections=tuple(Toolkits.CARRIED_SECTIONS))
+
+            # Update last assembly time
+            self._last_assembly_time = time.time()
+            messages_copy = self._resolved_messages_locked()
+
+        self._fire_prompt_callbacks(messages_copy)
+
+    _TEST_SUITE_PHOTO_COUNT = "~43034"
+
+    def _substitute(self, text: str, sections: dict[str, str], photo_count: str | None = None) -> str:
+        """Fill every placeholder the templates and toolkit files use: the sections given,
+        then {TOOLKITS} (assistant.commands.Toolkits), {PHOTO_COUNT}
+        (`photo_count` if given, else the DB's, refreshed at most daily), {WAKE_WORD} and
+        {WAKE_INTERVAL_MINUTES} (config-driven)."""
+        from assistant.commands import Toolkits
+        for key, content in sections.items():
+            text = text.replace("{" + key.upper() + "}", content)
+        if "{TOOLKITS}" in text:
+            text = text.replace("{TOOLKITS}", Toolkits.render_index())
+        if "{PHOTO_COUNT}" in text:
+            text = text.replace("{PHOTO_COUNT}", photo_count or f"~{self._get_photo_count()}")
+        text = text.replace("{WAKE_WORD}", config.get('wake_word', 'Michelle'))
+        return text.replace("{WAKE_INTERVAL_MINUTES}", self._wake_interval_minutes_str())
+
+    def render_template(self, text: str) -> str:
+        """`text` with the placeholders filled from the sections' current content — what a
+        toolkit reference goes through when load_toolkit renders it."""
+        with self._prompt_lock:
+            sections = {key: gen.get_content() for key, gen in self.sections.items()}
+        return self._substitute(text, sections)
+
+    def carried_data(self, toolkit, record: bool = True) -> str:
+        """The toolkit's carried sections (Toolkits.CARRIED_SECTIONS) rendered as load_toolkit
+        sends them after the reference, current as of now; empty for a toolkit that carries
+        none. What goes out becomes the section's last-seen state, so later changes reach the
+        LLM as delta notes while the toolkit stays in its window, and the notes of the previous
+        send are dropped: this text supersedes them. `record=False` renders without any of
+        that — for a send that never reaches the shared history (the autonomous check's own
+        messages), which must not pass for the baseline the history's readers were sent."""
+        from assistant.commands import Toolkits
+        if not toolkit.sections:
+            return ""
+        with self._prompt_lock:
+            contents = {key: self.sections[key].get_content() for key in toolkit.sections if key in self.sections}
+            if record:
+                for key, content in contents.items():
+                    self._section_current[key] = content
+                    self.message_history.clear_transient_entries_for_section(key)
+        data = Toolkits.render_sections(toolkit, contents)
+        info(f"load_toolkit: {toolkit.name} brings its {', '.join(contents) or 'missing'} data ({len(data)} chars"
+             f"{'' if record else ', not recorded as the baseline'})")
+        return data
+
+    def untracked_sections(self, toolkit) -> list[str]:
+        """The toolkit's carried sections whose last-sent state is unknown: nothing was sent
+        since this process started (a restart with the reference still in the window) or a
+        pointer note ended the tracking. A toolkit in the window with one of these needs its
+        data sent again before the LLM can be trusted with it."""
+        if not toolkit.sections:
+            return []
+        with self._prompt_lock:
+            return [key for key in toolkit.sections if key in self.sections and key not in self._section_current]
+
+    def get_messages(self, extended_thinking: bool = False) -> list[dict]:
+        """Get the current messages (for LLM)."""
+        with self._prompt_lock:
+            # Shared byte prefix (system prompt + live history) — same bytes the
+            # pre-heat callbacks warm, so the KV cache prefix is fully reusable.
+            # The test suite uses a fixed fixture instead of the live, mutable history,
+            # but the turns are rendered identically (MessageHistory.render_messages),
+            # so the LLM receives the same message structure either way.
+            messages = self._resolved_messages_locked()
+            if self.test_suite:
+                messages.extend(self._test_history_messages)
+                messages.extend(self._test_toolkit_messages)
+
+            # Inject current time as a user-role note attached to the trailing turn.
+            # This used to be a `{TIME_DATE}` section in the system prompt, which
+            # rewrote the prompt bytes every minute and invalidated the 5-min
+            # message-level KV cache on every clock tick. Putting it on the last
+            # user turn (which is never cached — DialogManager.stream_llm_response
+            # merges the incoming query into this same turn) costs zero cache hits.
+            # Skipped in test_suite so unit tests don't depend on wall-clock time.
+            if not self.test_suite:
+                MessageHistory.append_user_turn(messages, self.current_time_note())
+
+            # Append the thinking instruction as a user message. This keeps the
+            # system message identical to the pre-heat, so the KV cache prefix is
+            # fully reusable. If history already ends in a user turn (e.g. an
+            # unanswered incoming message or a system event), merge into it rather
+            # than appending a second consecutive user turn — Gemini and other
+            # providers reject same-role adjacency.
+            if extended_thinking:
+                trace("Using extended thinking mode.")
+                thinking_instruction = "If the query is complex enough to warrant it, start your reply by explaining your thinking inside a <thinking> tag. Skip the tag for simple queries. If you do think, ALL reasoning must stay inside the <thinking> tag. NO other tags are allowed."
+                MessageHistory.append_user_turn(messages, thinking_instruction)
+
+            return messages
+
+    def get_section_stats(self) -> list[tuple[str, int, float]]:
+        """
+        Get statistics for all sections for TUI visualization.
+        Returns list of tuples: (section_name, size_bytes, last_update_time)
+
+        A section without a placeholder in the template (one a toolkit carries, see
+        Toolkits.CARRIED_SECTIONS) is not in the prompt: it gets no bar, and its bytes are
+        not subtracted from the static size. They show in the history bar once loaded.
+        """
+        stats = []
+        total_dynamic_size = 0
+
+        in_prompt = [key for key in self.sections if key in self._section_positions or not self._section_positions]
+        ordered_keys = sorted(in_prompt, key=lambda k: (self._section_positions.get(k, float('inf')), k))
+
+        for section_key in ordered_keys:
+            section_generator = self.sections[section_key]
+            content = section_generator.get_content()
+            size_bytes = len(content.encode('utf-8'))
+            last_update = section_generator.last_update_time
+            stats.append((section_key, size_bytes, last_update))
+            total_dynamic_size += size_bytes
+
+        # History is sent as message items, not in the prompt — report it separately
+        # (and exclude it from the static-size math below). Size the actual payload
+        # (rendered message turns) rather than the console text rendering, so the bar
+        # reflects the bytes sent to the LLM.
+        history_bytes = sum(
+            len(msg["content"].encode('utf-8'))
+            for msg in self.message_history.get_history_messages()
+        )
+        stats.append(('history', history_bytes, self.message_history.last_update_time))
+
+        # Calculate static portion (total prompt - all dynamic sections).
+        total_prompt_size = len(self.prompt.encode('utf-8'))
+        static_size = total_prompt_size - total_dynamic_size
+
+        stats.append(('static', static_size, 0.0))
+
+        return stats
+
+    def load_test_suite_history(self, path: str):
+        """Load the prompt test suite's fixed history fixture (see get_messages). Like
+        testsuite_prompt.md it is built from a real household and absent from a public checkout."""
+        if not os.path.exists(path):
+            info(f"No {path} in this checkout, the test suite runs without a history fixture.")
+            return
+        self._test_history_messages = MessageHistory.load_fixture_messages(path)
+        info(f"Loaded {len(self._test_history_messages)} test-suite history turns from {path}")
+
+    def update_history(self, user_name: str, user_query: str, assistant_reply: str,
+                       source: str = None, location: str = None, pre_heat: bool = True):
+        """Update conversation history with a user-assistant exchange.
+
+        pre_heat=False for mid-request bookkeeping (command follow-up rounds):
+        the follow-up inference starts immediately after and would race the
+        pre-heat on the single-slot Ollama server — and the follow-up itself
+        warms the same prefix anyway. The request's terminal exchange passes
+        True."""
+        self.message_history.add_exchange(user_name, user_query, assistant_reply, source, location)
+
+        # The rendered exchange extends the request prefix (the assistant's own
+        # generated tokens are NOT reusable — history is re-rendered with turn
+        # wrappers and timestamps, so the bytes differ). Warm it now, while the
+        # runner is idle right after the turn, instead of at the next query.
+        if not pre_heat:
+            trace("Skipping pre-heat: mid-request history update (follow-up round pending).")
+            return
+        if not self._on_prompt_assembled_callbacks:
+            return
+        with self._prompt_lock:
+            messages = self._resolved_messages_locked()
+        self._fire_prompt_callbacks(messages)
+
+    def add_command_result(self, result: str, cap: bool = True):
+        """Persist a command round's result so later turns still see it (no pre-heat:
+        the follow-up round that consumes it starts right away). `cap=False` for a
+        toolkit reference, which is stored whole."""
+        self.message_history.add_command_result(result, cap=cap)
+
+    @staticmethod
+    def save_prompt_to_file(messages: list[dict]):
+        """Save the full messages array sent to the LLM to log/prompts directory."""
+        from common.logging import disable_file_logging, masked_for_log
+        if disable_file_logging:
+            return
+        try:
+            os.makedirs("log/prompts", exist_ok=True)
+            unique_id = str(uuid.uuid4())
+            prompt_file = f"log/prompts/{unique_id}.md"
+
+            # The history holds real values (redaction happens at the LLM boundary), so the
+            # dump is masked like every other log artefact.
+            formatted = masked_for_log(PromptManager._format_messages(messages))
+
+            with open(prompt_file, "w") as f:
+                f.write(formatted)
+
+            prompt_file2 = "log/current_prompt.md"
+            with open(prompt_file2, "w") as f:
+                f.write(formatted)
+
+            trace(f"Prompt saved to {prompt_file} ({len(formatted)} bytes)")
+        except Exception as e:
+            trace(f"Error during prompt save: {e}")
+
+    @staticmethod
+    def _format_messages(messages: list[dict]) -> str:
+        """Format the full messages list into a readable log file."""
+        parts = []
+        image_index = 0
+        prompt_id = str(uuid.uuid4())[:8]
+        for msg in messages:
+            role = msg.get("role", "unknown").upper()
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text_parts.append(block["text"])
+                        elif block.get("type") == "image":
+                            path = PromptManager._save_image_block(block, prompt_id, image_index)
+                            image_index += 1
+                            text_parts.append(f"[IMAGE: {path}]" if path else "[IMAGE]")
+                content = "\n".join(text_parts)
+            parts.append(f"# [{role}]\n\n{content}")
+        return "\n\n---\n\n".join(parts)
+
+    @staticmethod
+    def _save_image_block(block: dict, prompt_id: str, index: int) -> str | None:
+        from common.logging import disable_file_logging
+        if disable_file_logging:
+            return None
+        try:
+            source = block.get("source", block)
+            data_b64 = source.get("data", "")
+            media_type = source.get("media_type", "image/jpeg")
+            ext = "png" if "png" in media_type else "jpg"
+
+            os.makedirs("log/images", exist_ok=True)
+            filename = f"prompt_{prompt_id}_{index}.{ext}"
+            path = f"log/images/{filename}"
+
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(data_b64))
+            return path
+        except Exception:
+            return None
+
+    def stop(self):
+        """Stop all background threads and clean up resources."""
+        for name, section in self.sections.items():
+            if hasattr(section, 'stop'):
+                section.stop()
+

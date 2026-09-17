@@ -1,0 +1,526 @@
+"""One conversation on one chat transport: what the user sends becomes an assistant request,
+and the assistant's event stream becomes chat messages through the transport's `Draft`.
+
+Shared by every chat interface. Owns the intake rules (reply quoting, reaction phrasing,
+voice transcription, video description, album batching), the reply state machine (progress
+while nothing is visible, streaming updates, one bubble per LLM round, message splitting,
+NO-reply suppression for reactions, the command status line) and supersede-on-new-message.
+Nothing here knows which platform is on the other side.
+"""
+import base64
+import html
+import queue
+import threading
+import time
+from typing import Optional
+
+from assistant.Assistant import AssistantBusy
+from assistant.AssistantEvents import Done, Notice, RoundEnd, Thinking, ThinkingDone, Token
+from assistant.AssistantRequest import SYSTEM_USER, RequestContext
+from assistant.commands.DebugCommands import DebugCommands
+from common.logging import error, info, note, trace
+from interfaces.chat import MediaIntake, RichText
+from interfaces.chat.ChatTypes import (KIND_PHOTO, KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE,
+                                       PHASE_COMMANDS, PHASE_THINKING, PHASE_WAITING, IncomingMessage, Progress)
+
+
+class _Request:
+    """One in-flight reply. Shared between the producer thread iterating the assistant
+    stream and the worker rendering it, so cancelling (a newer message arrived) kills the
+    assistant request even when the cancel lands before the dispatch returned."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.stream = None
+        self.cancelled = False
+
+    def attach(self, stream) -> bool:
+        """Record the dispatched stream; returns False (and kills it) when already cancelled."""
+        with self._lock:
+            self.stream = stream
+            if self.cancelled:
+                stream.kill()
+                return False
+            return True
+
+    def cancel(self):
+        with self._lock:
+            self.cancelled = True
+            if self.stream is not None:
+                self.stream.kill()
+
+
+class _Album:
+    """Photos arriving together (a media group, or one photo waiting for its caption text)."""
+
+    def __init__(self, sender: str):
+        self.sender = sender
+        self.images: list[dict] = []
+        self.captions: list[str] = []
+        self.timer: Optional[threading.Timer] = None
+        # Photos the transport announced (`expect_photo`) but is still downloading; the
+        # album is not dispatched while any are outstanding.
+        self.pending = 0
+        self.touched = time.monotonic()
+
+
+class ChatSession:
+    # How long the reply loop waits for the next assistant event before reporting progress;
+    # the visible "still working" signal through slow thinking and commands.
+    SPINNER_TICK_SECONDS = 0.5
+    # Photos sharing a group id (an album) trickle in one message each; a lone photo only
+    # waits a moment for a caption sent as a separate text.
+    ALBUM_DEBOUNCE_SECONDS = 0.5
+    PHOTO_DEBOUNCE_SECONDS = 0.05
+    # An announced photo that neither arrives nor is dropped within this time (a transport
+    # that lost track of its download) stops holding the album back.
+    ALBUM_DOWNLOAD_TIMEOUT_SECONDS = 30.0
+    REPLY_QUOTE_MAX = 80
+    REACTION_QUOTE_MAX = 40
+
+    # Reactions ask the LLM to reply with bare "NO" when it has nothing to say (an empty reply
+    # makes the model hallucinate). These recognise a NO reply — the final value and partial
+    # prefixes seen mid-stream — so it never flashes into the chat.
+    _NO_REPLY_PREFIXES = {'', '"', "'", 'n', 'no', '"n', '"no', '"no"', "'n", "'no", "'no'"}
+
+    def __init__(self, hub, transport, conversation):
+        self._hub = hub
+        self._transport = transport
+        self._conversation = conversation
+        self._lock = threading.Lock()
+        self._request: Optional[_Request] = None
+        self._album: Optional[_Album] = None
+
+    @property
+    def conversation(self):
+        return self._conversation
+
+    @property
+    def busy(self) -> bool:
+        return self._request is not None
+
+    def _log_prefix(self) -> str:
+        return f"{self._transport.name} [{self._conversation}]"
+
+    # --- intake ---------------------------------------------------------------------------
+
+    def submit(self, msg: IncomingMessage):
+        """Hand the user's message to the assistant; never blocks the caller."""
+        if msg.kind == KIND_PHOTO:
+            self._add_to_album(msg)
+            return
+        if msg.kind == KIND_TEXT and DebugCommands.is_command(msg.text):
+            self._debug_command(msg)
+            return
+        with self._lock:
+            album = self._album
+        if msg.kind == KIND_TEXT and album is not None:
+            with self._lock:
+                album.captions.append(msg.text)
+                self._reset_album_timer(album, self.PHOTO_DEBOUNCE_SECONDS)
+            info(f"{self._log_prefix()} text folded into photo batch: {msg.text}")
+            self._hub.record(self._transport, self._conversation, "user", msg.text)
+            return
+        self._cancel_album()
+        self._start(msg)
+
+    def open(self, query: str):
+        """A turn the server starts in this conversation (the first-run brief): *query*
+        goes to the assistant as a system turn, not as something the user said, and the
+        reply is rendered like any other. Never blocks the caller."""
+        info(f"{self._log_prefix()}: opening the conversation with a system turn")
+        self._cancel_album()
+        self._start(IncomingMessage(conversation=self._conversation, sender=SYSTEM_USER, text=query))
+
+    def _debug_command(self, msg: IncomingMessage):
+        """A `//NAME` query is answered by DebugCommands, never by the assistant. Off the
+        transport's thread: //wipe zips the database and takes seconds."""
+        info(f"{self._log_prefix()}: debug command {msg.text}")
+        self._hub.record(self._transport, self._conversation, "user", msg.text)
+
+        def _run():
+            reply = DebugCommands.for_assistant(self._hub.assistant).handle(msg.text)
+            self._hub.record(self._transport, self._conversation, "assistant", reply)
+            self._transport.send_text(self._conversation, f"<pre>{html.escape(reply)}</pre>")
+
+        threading.Thread(target=_run, name=f"{self._transport.name}Debug", daemon=True).start()
+
+    def cancel(self):
+        """Drop the pending album and kill the in-flight reply (its draft is discarded)."""
+        self._cancel_album()
+        with self._lock:
+            request = self._request
+        if request is not None:
+            info(f"{self._log_prefix()}: cancelling the in-flight reply")
+            request.cancel()
+
+    def _start(self, msg: IncomingMessage, images: Optional[list] = None):
+        request = _Request()
+        with self._lock:
+            previous = self._request
+            self._request = request
+        if previous is not None:
+            info(f"{self._log_prefix()}: cancelling previous response (new message arrived)")
+            previous.cancel()
+        threading.Thread(target=self._serve, args=(request, msg, images),
+                         name=f"{self._transport.name}Chat", daemon=True).start()
+
+    # --- albums ---------------------------------------------------------------------------
+
+    def expect_photo(self, sender: str, group_id: Optional[str] = None):
+        """The transport is downloading a photo for this conversation: open (or keep) the
+        album now and hold its dispatch until the photo arrives through `submit` or the
+        transport gives it up with `photo_dropped`. Album members download concurrently, so
+        without this a slow member would miss the batch and become a request of its own."""
+        with self._lock:
+            album = self._album
+            if album is None:
+                album = self._album = _Album(sender)
+            album.pending += 1
+            album.touched = time.monotonic()
+            self._reset_album_timer(album, self._album_debounce(group_id))
+        trace(f"{self._log_prefix()}: photo announced ({album.pending} downloading, {len(album.images)} batched)")
+
+    def photo_dropped(self):
+        """An announced photo will not arrive (its download failed)."""
+        with self._lock:
+            album = self._album
+            if album is None or not album.pending:
+                trace(f"{self._log_prefix()}: dropped photo was not being awaited, nothing to release")
+                return
+            album.pending -= 1
+            album.touched = time.monotonic()
+            self._reset_album_timer(album, self.ALBUM_DEBOUNCE_SECONDS)
+        info(f"{self._log_prefix()}: announced photo dropped ({album.pending} still downloading)")
+
+    def _album_debounce(self, group_id: Optional[str]) -> float:
+        return self.ALBUM_DEBOUNCE_SECONDS if group_id else self.PHOTO_DEBOUNCE_SECONDS
+
+    def _add_to_album(self, msg: IncomingMessage):
+        with self._lock:
+            album = self._album
+            if album is None:
+                album = self._album = _Album(msg.sender)
+            if album.pending:
+                album.pending -= 1
+                album.touched = time.monotonic()
+            if msg.text:
+                album.captions.append(msg.text)
+            for att in msg.attachments:
+                album.images.append({'data': base64.b64encode(att.data).decode('utf-8'),
+                                     'media_type': att.mime_type})
+            self._reset_album_timer(album, self._album_debounce(msg.group_id))
+        info(f"{self._log_prefix()} photo batched ({len(album.images)} so far, {album.pending} downloading): "
+             f"{msg.text or '[no caption]'}")
+        self._hub.record(self._transport, self._conversation, "user", f"[photo] {msg.text or '[no caption]'}")
+
+    def _reset_album_timer(self, album: _Album, delay: float):
+        if album.timer is not None:
+            album.timer.cancel()
+        album.timer = threading.Timer(delay, self._dispatch_album, args=(album,))
+        album.timer.daemon = True
+        album.timer.start()
+
+    def _dispatch_album(self, album: _Album):
+        prefix = self._log_prefix()
+        with self._lock:
+            if self._album is not album:
+                trace(f"{prefix}: album already superseded, nothing to dispatch")
+                return
+            if album.pending:
+                waited = time.monotonic() - album.touched
+                if waited < self.ALBUM_DOWNLOAD_TIMEOUT_SECONDS:
+                    trace(f"{prefix}: {album.pending} photo(s) still downloading, holding the batch")
+                    self._reset_album_timer(album, self.ALBUM_DEBOUNCE_SECONDS)
+                    return
+                info(f"{prefix}: giving up on {album.pending} photo(s) still downloading after {waited:.0f}s")
+            self._album = None
+        if not album.images:
+            info(f"{self._log_prefix()}: batch has no images, skipping")
+            return
+        query = " ".join(album.captions) if album.captions else "See images"
+        info(f"{self._log_prefix()} dispatching batch: {len(album.images)} image(s), query: {query}")
+        self._start(IncomingMessage(conversation=self._conversation, sender=album.sender, text=query),
+                    images=album.images)
+
+    def _cancel_album(self):
+        with self._lock:
+            album = self._album
+            self._album = None
+        if album is not None:
+            if album.timer is not None:
+                album.timer.cancel()
+            info(f"{self._log_prefix()}: pending batch ({len(album.images)} photo(s), {album.pending} downloading) "
+                 f"superseded by new message")
+
+    # --- one request ----------------------------------------------------------------------
+
+    def _serve(self, request: _Request, msg: IncomingMessage, images: Optional[list]):
+        replied = False
+        self._transport.reply_started(self._conversation)
+        try:
+            prepared = self._prepare(msg, images)
+            if prepared is None:
+                return
+            query, images, suppress_no = prepared
+            if request.cancelled:
+                info(f"{self._log_prefix()}: superseded before the request was sent, dropping it")
+                return
+            replied = True
+            self._reply(request, query, msg.sender, images, suppress_no)
+        except Exception as e:
+            error(f"{self._log_prefix()}: request failed: {e}")
+        finally:
+            with self._lock:
+                if self._request is request:
+                    self._request = None
+            if not replied:
+                # _reply announces its own end; a message that never got that far must still
+                # balance the transport's bookkeeping (the console feed counts turns).
+                self._transport.reply_finished(self._conversation)
+
+    def _prepare(self, msg: IncomingMessage, images: Optional[list]):
+        """The assistant query for a message: (query, images, suppress_no), or None when
+        the user was told why nothing could be asked."""
+        prefix = self._log_prefix()
+        if msg.kind == KIND_REACTION:
+            query = self._reaction_query(msg)
+            info(f"{prefix}: {query}")
+            self._hub.record(self._transport, self._conversation, "user", query)
+            return query, None, True
+
+        if msg.kind == KIND_VOICE:
+            att = msg.attachments[0] if msg.attachments else None
+            transcript = MediaIntake.transcribe_voice(att.data) if att else ""
+            if not transcript:
+                self._transport.send_text(self._conversation, "Sorry, I couldn't transcribe the voice message.")
+                return None
+            user_text = f"[Voice message, transcribed via STT] {transcript}"
+        elif msg.kind == KIND_VIDEO:
+            att = msg.attachments[0] if msg.attachments else None
+            label = att.label if att else "video"
+            context = f"{label.capitalize()} sent via {self._transport.name} by {msg.sender}"
+            description = MediaIntake.describe_video(att.data, att.mime_type, context) if att else ""
+            if not description:
+                info(f"{prefix}: {label} could not be analyzed, telling the user")
+                self._transport.send_text(self._conversation, "Sorry, I couldn't analyze that video.")
+                return None
+            user_text = f"[User sent a {label}] {description}"
+            if msg.text:
+                user_text += f"\nCaption: {msg.text}"
+        else:
+            user_text = msg.text
+
+        query = self._with_reply_context(msg.reply_to_text, user_text)
+        info(f"{prefix}: {user_text}")
+        self._hub.record(self._transport, self._conversation, "user", user_text)
+        return query, images, False
+
+    @classmethod
+    def _with_reply_context(cls, quoted: Optional[str], user_text: str) -> str:
+        if not quoted:
+            return user_text
+        if len(quoted) > cls.REPLY_QUOTE_MAX:
+            quoted = quoted[:cls.REPLY_QUOTE_MAX] + "..."
+        return f'[Replying to: "{quoted}"]\n{user_text}'
+
+    @classmethod
+    def _reaction_query(cls, msg: IncomingMessage) -> str:
+        tail = '(if you do not need to react to this simply reply with "NO" only)'
+        target = msg.reaction_target_text
+        if target:
+            if len(target) > cls.REACTION_QUOTE_MAX:
+                target = target[:cls.REACTION_QUOTE_MAX] + "..."
+            return f'User reacted {msg.reaction} to message: "{target}". {tail}'
+        return f'User reacted {msg.reaction} to a message. {tail}'
+
+    @staticmethod
+    def _is_no_reply(text: str) -> bool:
+        # Strip wrapping quotes AND trailing punctuation — the LLM is known to reply
+        # "No." or "NO!" despite being asked for a bare NO.
+        return text.strip().strip('"\'.!? ').lower() == "no"
+
+    @classmethod
+    def _is_no_prefix(cls, text: str) -> bool:
+        # A punctuated NO ("No.", "NO!") is also a possible prefix: the reply may still
+        # continue ("No. The lights..."), so hold off displaying until more chunks arrive;
+        # if the stream ends here it is suppressed without flashing.
+        return text.strip().lower() in cls._NO_REPLY_PREFIXES or cls._is_no_reply(text)
+
+    # --- the assistant stream -------------------------------------------------------------
+
+    def _pump(self, request: _Request, query: str, sender: str, images: Optional[list], events: queue.Queue):
+        """Producer thread: dispatch to the assistant and forward its events. Always ends
+        with a None sentinel so the consumer finishes."""
+        prefix = self._log_prefix()
+        try:
+            assistant = self._hub.assistant
+            if assistant is None:
+                error(f"{prefix}: no assistant attached, cannot answer.")
+                events.put(Notice("Sorry, the assistant is not available right now."))
+                return
+            req = RequestContext(source=self._transport.source, conversation=self._conversation, user=sender,
+                                 lang=self._transport.lang, text_only=True, images=images or None)
+            try:
+                stream = assistant.stream(req, query)
+            except AssistantBusy as busy:
+                info(f"{prefix}: assistant busy, apologising: {busy}")
+                events.put(Notice(f"Sorry, I'm busy right now ({busy})."))
+                return
+            if not request.attach(stream):
+                info(f"{prefix}: reply cancelled before the assistant answered; request killed.")
+                return
+            for event in stream:
+                events.put(event)
+            if stream.killed:
+                trace(f"{prefix}: assistant stream ended killed (superseded).")
+        except Exception as e:
+            error(f"{prefix}: assistant request failed: {e}")
+            events.put(Notice("Sorry, something went wrong."))
+        finally:
+            events.put(None)
+
+    def _reply(self, request: _Request, query: str, sender: str, images: Optional[list], suppress_no: bool):
+        """Consumer: render the assistant's events into chat messages through the transport."""
+        prefix = self._log_prefix()
+        transport = self._transport
+        conversation = self._conversation
+        events: queue.Queue = queue.Queue()
+        threading.Thread(target=self._pump, args=(request, query, sender, images, events),
+                         name=f"{transport.name}Request", daemon=True).start()
+
+        max_len = transport.max_message_length
+        buffer = ""
+        draft = transport.begin_draft(conversation)
+        all_responses: list[str] = []
+        spinner_mode = True
+        tick = 0
+        round_start = time.time()
+        in_thinking = False
+        thinking_text = ""
+        token_count = 0
+
+        def progress():
+            nonlocal tick
+            if not spinner_mode:
+                return
+            tick += 1
+            now = time.time()
+            # The working line names what the user is actually waiting for: a command the
+            # LLM asked for, or the LLM itself — and counts the time in that phase only.
+            running, since = self._hub.command_activity(transport, conversation)
+            if running:
+                phase, elapsed = PHASE_COMMANDS, now - since
+            else:
+                phase, elapsed = (PHASE_THINKING if in_thinking else PHASE_WAITING), now - max(round_start, since)
+            draft.show_progress(Progress(phase=phase, thinking_text=thinking_text, output_tokens=token_count,
+                                         elapsed=elapsed, tick=tick, commands=running))
+
+        def new_round():
+            nonlocal buffer, draft, spinner_mode, tick, round_start, in_thinking, thinking_text, token_count
+            buffer = ""
+            draft = transport.begin_draft(conversation)
+            spinner_mode = True
+            tick = 0
+            round_start = time.time()
+            # The next round reasons from scratch; carried over, the previous round's
+            # thinking would be shown again in the new bubble's thinking block.
+            in_thinking = False
+            thinking_text = ""
+            token_count = 0
+
+        try:
+            while True:
+                if request.cancelled:
+                    break
+                try:
+                    event = events.get(timeout=self.SPINNER_TICK_SECONDS)
+                except queue.Empty:
+                    progress()
+                    continue
+                if event is None or isinstance(event, Done):
+                    break
+
+                if isinstance(event, RoundEnd):
+                    if suppress_no and self._is_no_reply(buffer):
+                        info(f"{prefix}: AI declined to react (replied {buffer.strip()!r}), suppressing")
+                        draft.discard()
+                    elif buffer.strip():
+                        draft.finalize(buffer)
+                        all_responses.append(buffer)
+                    else:
+                        # Whatever is on screen for this round (usually a leftover spinner)
+                        # must go, or it hangs in the chat.
+                        draft.discard()
+                    new_round()
+                    continue
+
+                if isinstance(event, Thinking):
+                    in_thinking = True
+                    token_count = event.output_tokens
+                    thinking_text += event.text
+                    progress()
+                    continue
+                if isinstance(event, ThinkingDone):
+                    in_thinking = False
+                    continue
+                if not isinstance(event, (Token, Notice)):
+                    trace(f"{prefix}: ignoring {type(event).__name__} event")
+                    continue
+                chunk = event.text
+                if not chunk:
+                    continue
+
+                if spinner_mode:
+                    spinner_mode = False
+                    buffer = ""
+                    transport.set_status_line(conversation, None)
+
+                buffer += chunk
+                if suppress_no and self._is_no_prefix(buffer):
+                    continue
+
+                while max_len and len(buffer) > max_len:
+                    # This bubble is full: close it on the part and continue in a new one.
+                    part = buffer[:max_len]
+                    draft.finalize(part)
+                    all_responses.append(part)
+                    buffer = buffer[len(part):]
+                    draft = transport.begin_draft(conversation)
+
+                display_text = buffer[:RichText.safe_prefix_end(buffer)]
+                if display_text.strip():
+                    draft.update(display_text)
+
+            if request.cancelled:
+                info(f"{prefix}: response cancelled (new message arrived)")
+                draft.discard()
+                return
+
+            if spinner_mode:
+                draft.discard()
+
+            if suppress_no and self._is_no_reply(buffer):
+                info(f"{prefix}: AI declined to react (replied {buffer.strip()!r}), suppressing")
+                draft.discard()
+                buffer = ""
+
+            if buffer.strip():
+                if max_len and len(buffer) > max_len:
+                    for i, part in enumerate(RichText.split(buffer, max_len)):
+                        if i > 0:
+                            draft = transport.begin_draft(conversation)
+                        draft.finalize(part)
+                        all_responses.append(part)
+                else:
+                    draft.finalize(buffer)
+                    all_responses.append(buffer)
+            elif not all_responses:
+                note(f"{prefix}: LLM replied with empty message. Assume the AI did not want to reply with anything.")
+        finally:
+            # Safety net: an empty/suppressed/cancelled response must not leave the
+            # command status line hanging in the chat.
+            transport.set_status_line(conversation, None)
+            transport.reply_finished(conversation)
+
+        self._hub.record(transport, conversation, "assistant", "\n".join(all_responses))

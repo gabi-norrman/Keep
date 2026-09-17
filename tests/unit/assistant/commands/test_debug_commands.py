@@ -1,0 +1,657 @@
+import os
+import sqlite3
+import threading
+import time
+import zipfile
+from datetime import date
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+import assistant.commands.DebugCommands as dc_mod
+from assistant.commands.DebugCommands import DebugCommands
+
+
+def _write_wav(path, mtime=None):
+    with open(path, "wb") as f:
+        f.write(b"RIFF....")
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+
+
+def test_is_command():
+    assert DebugCommands.is_command("//FP")
+    assert DebugCommands.is_command("  //TP  ")
+    assert not DebugCommands.is_command("/FP")  # single slash is a Telegram bot command
+    assert not DebugCommands.is_command("hello")
+    assert not DebugCommands.is_command("")
+
+
+def test_handle_unknown_command():
+    assert "Unknown command" in DebugCommands().handle("//NOPE")
+
+
+def test_recent_audio_returns_newest_first(tmp_path, monkeypatch):
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    _write_wav(audio / "old.wav", mtime=time.time() - 100)
+    _write_wav(audio / "new.wav", mtime=time.time())
+    # subdir + non-wav must be ignored
+    (audio / "identification").mkdir()
+    _write_wav(audio / "identification" / "ignored.wav", mtime=time.time() + 100)
+    (audio / "notes.txt").write_text("x")
+
+    monkeypatch.setattr(dc_mod, "AUDIO_DIR", str(audio))
+    names = [os.path.basename(p) for p in DebugCommands()._recent_audio()]
+    assert names == ["new.wav", "old.wav"]
+
+
+def test_recent_audio_caps_at_count(tmp_path, monkeypatch):
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    for i in range(15):
+        _write_wav(audio / f"clip{i:02d}.wav", mtime=time.time() + i)
+
+    monkeypatch.setattr(dc_mod, "AUDIO_DIR", str(audio))
+    monkeypatch.setattr(dc_mod, "RECENT_AUDIO_COUNT", 10)
+    recent = DebugCommands()._recent_audio()
+    assert len(recent) == 10
+    # newest first -> clip14 down to clip05
+    assert os.path.basename(recent[0]) == "clip14.wav"
+    assert os.path.basename(recent[-1]) == "clip05.wav"
+
+
+def test_recent_audio_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(dc_mod, "AUDIO_DIR", str(tmp_path / "missing"))
+    assert DebugCommands()._recent_audio() == []
+
+
+def test_cmd_fp_and_tp_copy_to_dest(tmp_path, monkeypatch):
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    for i in range(3):
+        _write_wav(audio / f"phrase{i}.wav", mtime=time.time() + i)
+    fp = tmp_path / "false-positive"
+    tp = tmp_path / "en"
+
+    monkeypatch.setattr(dc_mod, "AUDIO_DIR", str(audio))
+    monkeypatch.setattr(dc_mod, "FALSE_POSITIVE_DIR", str(fp))
+    monkeypatch.setattr(dc_mod, "TRUE_POSITIVE_DIR", str(tp))
+
+    assert "Copied" in DebugCommands().handle("//FP")
+    assert sorted(p.name for p in fp.glob("*.wav")) == ["phrase0.wav", "phrase1.wav", "phrase2.wav"]
+
+    assert "Copied" in DebugCommands().handle("//tp")  # case-insensitive
+    assert sorted(p.name for p in tp.glob("*.wav")) == ["phrase0.wav", "phrase1.wav", "phrase2.wav"]
+
+
+def test_cmd_fp_copies_to_the_configured_dir(tmp_path, monkeypatch):
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    _write_wav(audio / "phrase.wav", mtime=time.time())
+    configured = tmp_path / "corpus" / "false-positive"
+    monkeypatch.setattr(dc_mod, "AUDIO_DIR", str(audio))
+    monkeypatch.setattr(dc_mod, "FALSE_POSITIVE_DIR", str(tmp_path / "default"))
+
+    from common.ConfigManager import config
+    with patch.object(config, "get", lambda key, *a, **k: str(configured) if key == "debug.false_positive_dir" else ""):
+        assert "Copied" in DebugCommands().handle("//FP")
+
+    assert [p.name for p in configured.glob("*.wav")] == ["phrase.wav"]
+    assert not (tmp_path / "default").exists()
+
+
+def test_cmd_fp_no_audio(tmp_path, monkeypatch):
+    monkeypatch.setattr(dc_mod, "AUDIO_DIR", str(tmp_path / "missing"))
+    assert "No audio" in DebugCommands().handle("//FP")
+
+
+# --- //help and dispatch ------------------------------------------------------------------
+
+def _cmd_zztest(self, args: str) -> str:
+    """Echo the arguments (test only)."""
+    return f"args=<{args}>"
+
+
+def test_help_lists_every_command_with_its_docstring(monkeypatch):
+    monkeypatch.setattr(DebugCommands, "cmd_ZZTEST", _cmd_zztest, raising=False)
+    text = DebugCommands().handle("//help")
+    assert text.startswith("Debug commands:")
+    for name in ("HELP", "FP", "TP", "WIPE", "ZZTEST"):
+        assert f"//{name}" in text
+    assert "Echo the arguments (test only)." in text
+    assert "//wipe confirm" in text
+
+
+def test_arguments_reach_the_command(monkeypatch):
+    monkeypatch.setattr(DebugCommands, "cmd_ZZTEST", _cmd_zztest, raising=False)
+    assert DebugCommands().handle("//zztest one  two ") == "args=<one  two>"
+    assert DebugCommands().handle("//ZZTEST") == "args=<>"
+
+
+def test_unknown_command_shows_help():
+    text = DebugCommands().handle("//NOPE")
+    assert "Unknown command: //NOPE" in text and "//HELP" in text
+
+
+# --- //wipe -------------------------------------------------------------------------------
+
+@pytest.fixture
+def wipe_env(tmp_path, monkeypatch):
+    """A fake AIServer tree with every kind of user state, and the wipe wired to it."""
+    root = tmp_path / "AIServer"
+    cache = root / "cache"
+    cache.mkdir(parents=True)
+    db = root / "floxy.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE t (v TEXT)")
+        conn.execute("INSERT INTO t VALUES ('kept')")
+    (root / "floxy.db-shm").write_bytes(b"stale sidecar")
+    (root / "floxy.db.old").write_bytes(b"old backup, not a target")
+    (root / "config.yaml").write_text("api_keys:\n  openai: sk-real\n")
+    (root / "vault.bin").write_bytes(b"FLOXYVAULT1\n")
+    (root / "memory.md").write_text("# The Family\n")
+    (cache / "icloud_session").mkdir()
+    (cache / "icloud_session" / "cookies").write_text("c")
+    (cache / "chrome_profile" / "Default").mkdir(parents=True)
+    (cache / "chrome_profile" / "Default" / "Cookies").write_bytes(b"x" * 100)
+    external = tmp_path / "tmp" / "ring_floxy"
+    external.mkdir(parents=True)
+    (external / "token.cache").write_text("ring")
+
+    stops = []
+    monkeypatch.setattr(dc_mod, "DATABASE_PATH", db)
+    monkeypatch.setattr(dc_mod, "DATABASE_SIDECARS", [root / "floxy.db-wal", root / "floxy.db-shm"])
+    monkeypatch.setattr(dc_mod, "CONFIG_PATH", root / "config.yaml")
+    monkeypatch.setattr(dc_mod, "DUMMY_CONFIG_PATH", root / "config.dummy.yaml")
+    monkeypatch.setattr(dc_mod, "BACKUP_DIR", cache / "wipe-backups")
+    monkeypatch.setattr(dc_mod, "WIPE_TARGETS", [
+        (db, "database"),
+        (root / "config.yaml", "config"),
+        (root / "vault.bin", "vault"),
+        (root / "memory.md", "memory"),
+        (root / "missing.txt", "never existed"),
+        (cache / "icloud_session", "iCloud session"),
+    ])
+    monkeypatch.setattr(dc_mod, "WIPE_ONLY_TARGETS", [(cache / "chrome_profile", "browser profile")])
+    monkeypatch.setattr(dc_mod, "external_targets", lambda: [(external / "token.cache", "Ring token")])
+    monkeypatch.setattr(dc_mod, "_stop_server", lambda: stops.append(True))
+    monkeypatch.setattr(dc_mod, "STOP_DELAY_SECONDS", 0.0)
+    return root, stops
+
+
+def _wait_for_stop(stops):
+    """The wipe's tail (browser close, profile delete, stop) runs on a timer thread."""
+    deadline = time.time() + 3
+    while not stops and time.time() < deadline:
+        time.sleep(0.01)
+    assert stops == [True]
+
+
+def test_wipe_without_confirm_only_shows_the_plan(wipe_env):
+    root, stops = wipe_env
+    text = DebugCommands().handle("//wipe")
+    assert "would back up 6 item(s)" in text
+    assert "floxy.db: database" in text and "Ring token" in text and "chrome_profile" in text
+    assert "missing.txt" not in text
+    assert "//wipe confirm" in text
+    assert (root / "floxy.db").exists() and (root / "vault.bin").exists()
+    assert not (root / "cache" / "wipe-backups").exists()
+    assert stops == []
+
+
+def test_wipe_confirm_backs_up_deletes_resets_config_and_stops(wipe_env):
+    root, stops = wipe_env
+    text = DebugCommands().handle("//wipe confirm")
+
+    zips = list((root / "cache" / "wipe-backups").glob("floxy-wipe-*.zip"))
+    assert len(zips) == 1
+    with zipfile.ZipFile(zips[0]) as zf:
+        names = set(zf.namelist())
+        assert {"external/" + str(root / "config.yaml").lstrip("/"),
+                "external/" + str(root / "vault.bin").lstrip("/"),
+                "external/" + str(root / "memory.md").lstrip("/"),
+                "external/" + str(root / "cache" / "icloud_session" / "cookies").lstrip("/")} <= names
+        assert not any("chrome_profile" in n for n in names)
+        assert any(n.endswith("ring_floxy/token.cache") for n in names)
+        db_copy = root / "restored.db"
+        db_copy.write_bytes(zf.read("external/" + str(root / "floxy.db").lstrip("/")))
+    with sqlite3.connect(db_copy) as conn:
+        assert conn.execute("SELECT v FROM t").fetchall() == [("kept",)]
+
+    assert "Wiped 7 item(s)" in text and "writes a skeleton" in text and "Stopping the server" in text
+    assert "Deleted once the browser is closed:" in text and "chrome_profile: browser profile" in text
+    _wait_for_stop(stops)
+    for gone in ("floxy.db", "floxy.db-shm", "vault.bin", "memory.md", "cache/icloud_session", "cache/chrome_profile"):
+        assert not (root / gone).exists(), gone
+    assert not (root.parent / "tmp" / "ring_floxy" / "token.cache").exists()
+    assert (root / "floxy.db.old").exists()
+    assert not (root / "config.yaml").exists()
+    assert not list((root / "cache" / "wipe-backups").glob("*.snapshot"))
+
+
+def test_second_wipe_confirm_while_one_runs_is_refused(wipe_env, monkeypatch):
+    """Two concurrent wipes once wrote into one shared database snapshot, zipping a torn
+    copy; the second must wait for the first's reply instead."""
+    root, stops = wipe_env
+    backing_up, release = threading.Event(), threading.Event()
+    original = DebugCommands._backup
+
+    def slow_backup(self, targets):
+        backing_up.set()
+        assert release.wait(3)
+        return original(self, targets)
+
+    monkeypatch.setattr(DebugCommands, "_backup", slow_backup)
+    first = []
+    t = threading.Thread(target=lambda: first.append(DebugCommands().handle("//wipe confirm")))
+    t.start()
+    assert backing_up.wait(3)
+    second = DebugCommands().handle("//wipe confirm")
+    assert "already running" in second
+    assert (root / "floxy.db").exists()
+    release.set()
+    t.join(5)
+    assert "Wiped 7 item(s)" in first[0]
+    _wait_for_stop(stops)
+    zips = list((root / "cache" / "wipe-backups").glob("floxy-wipe-*.zip"))
+    assert len(zips) == 1
+    assert not list((root / "cache" / "wipe-backups").glob("*.snapshot"))
+
+
+def test_wipe_installs_the_dummy_config_when_there_is_one(wipe_env):
+    root, stops = wipe_env
+    (root / "config.dummy.yaml").write_text("api_keys:\n  anthropic: sk-dev\n")
+    plan = DebugCommands().handle("//wipe")
+    assert "config.dummy.yaml is copied to config.yaml" in plan
+
+    text = DebugCommands().handle("//wipe confirm")
+    assert "config.dummy.yaml is copied to config.yaml" in text and "writes a skeleton" not in text
+    _wait_for_stop(stops)
+    assert (root / "config.yaml").read_text() == "api_keys:\n  anthropic: sk-dev\n"
+    assert (root / "config.dummy.yaml").exists()
+    with zipfile.ZipFile(next((root / "cache" / "wipe-backups").glob("floxy-wipe-*.zip"))) as zf:
+        assert zf.read("external/" + str(root / "config.yaml").lstrip("/")) == b"api_keys:\n  openai: sk-real\n"
+
+
+def test_wipe_carries_on_past_an_item_it_cannot_delete(wipe_env, monkeypatch):
+    root, stops = wipe_env
+    real_rmtree = dc_mod.shutil.rmtree
+
+    def _stubborn(path, *args, **kwargs):
+        if Path(path).name == "icloud_session":
+            raise OSError(66, "Directory not empty")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(dc_mod.shutil, "rmtree", _stubborn)
+    text = DebugCommands().handle("//wipe confirm")
+    assert "Wiped 6 item(s)" in text
+    assert "Could not delete (see the log):" in text and "icloud_session" in text and "Directory not empty" in text
+    assert (root / "cache" / "icloud_session").exists()
+    assert not (root / "floxy.db").exists() and not (root / "config.yaml").exists()
+    _wait_for_stop(stops)
+
+
+def test_wipe_backup_failure_deletes_nothing(wipe_env, monkeypatch):
+    root, stops = wipe_env
+
+    def _boom(self, targets):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(DebugCommands, "_backup", _boom)
+    text = DebugCommands().handle("//wipe confirm")
+    assert "Backup failed, nothing was deleted: disk full" in text
+    assert (root / "floxy.db").exists() and (root / "vault.bin").exists() and (root / "cache" / "chrome_profile").exists()
+    assert (root / "config.yaml").read_text() == "api_keys:\n  openai: sk-real\n"
+    assert stops == []
+
+
+def test_wipe_on_a_fresh_install(wipe_env):
+    root, stops = wipe_env
+    DebugCommands().handle("//wipe confirm")
+    _wait_for_stop(stops)
+    stops.clear()
+    text = DebugCommands().handle("//wipe confirm")
+    assert text == "Nothing to wipe: the install is already fresh."
+    assert DebugCommands().handle("//wipe") == "Nothing to wipe: the install is already fresh."
+
+
+# --- //feed -------------------------------------------------------------------------------
+
+class _FakeRunner:
+    def __init__(self, name, state="catching_up"):
+        self.name = name
+        self.state = state
+        self.paused = False
+
+    def pause(self):
+        if self.paused:
+            return False
+        self.paused = True
+        return True
+
+    def resume(self):
+        if not self.paused:
+            return False
+        self.paused = False
+        return True
+
+    def status(self):
+        return {"state": self.state, "paused": self.paused, "progress": 0.5 if self.state == "catching_up" else None,
+                "remaining": 10 if self.state == "catching_up" else 0, "last_error": None}
+
+
+class _FakeFeeds:
+    def __init__(self, runners):
+        self._runners = {r.name: r for r in runners}
+
+    def names(self):
+        return list(self._runners)
+
+    def runner(self, name):
+        return self._runners.get(name)
+
+    def status(self, name):
+        return self._runners[name].status()
+
+    def find(self, name):
+        return next((r for k, r in self._runners.items() if k.lower() == name.strip().lower()), None)
+
+
+@pytest.fixture
+def feeds(monkeypatch):
+    from assistant.integration.FeedRunner import Feeds
+    fake = _FakeFeeds([_FakeRunner("iMessage"), _FakeRunner("Telegram", state="live"), _FakeRunner("iCloud Photos")])
+    monkeypatch.setattr(Feeds, "get_instance", classmethod(lambda cls: fake))
+    return fake
+
+
+def test_feed_lists_the_feeds(feeds):
+    assert DebugCommands().handle("//feed") == \
+        "Feeds:\n  iMessage: catching up 50%, 10 left\n  Telegram: live\n  iCloud Photos: catching up 50%, 10 left"
+
+
+def test_feed_pause_a_feed_whose_name_has_a_space(feeds):
+    assert DebugCommands().handle("//feed pause iCloud Photos") == "Paused iCloud Photos (paused, catching up 50%, 10 left)"
+    assert feeds.runner("iCloud Photos").paused and not feeds.runner("iMessage").paused
+
+
+def test_feed_pause_and_resume_one_feed_case_insensitively(feeds):
+    assert DebugCommands().handle("//feed pause imessage") == "Paused iMessage (paused, catching up 50%, 10 left)"
+    assert feeds.runner("iMessage").paused and not feeds.runner("Telegram").paused
+    assert DebugCommands().handle("//feed pause iMessage") == "Already paused iMessage (paused, catching up 50%, 10 left)"
+    assert DebugCommands().handle("//feed resume IMESSAGE") == "Resumed iMessage (catching up 50%, 10 left)"
+    assert DebugCommands().handle("//feed resume imessage") == "Not paused iMessage (catching up 50%, 10 left)"
+
+
+def test_feed_pause_all(feeds):
+    text = DebugCommands().handle("//feed pause all")
+    assert text == "Paused iMessage (paused, catching up 50%, 10 left)\nPaused Telegram (paused, live)\n" \
+                   "Paused iCloud Photos (paused, catching up 50%, 10 left)"
+    assert all(r.paused for r in feeds._runners.values())
+    assert DebugCommands().handle("//feed resume ALL").startswith("Resumed iMessage")
+    assert not any(r.paused for r in feeds._runners.values())
+
+
+def test_feed_bad_input(feeds):
+    assert DebugCommands().handle("//feed pause nope") == "No feed named 'nope'. Feeds: iMessage, Telegram, iCloud Photos"
+    assert DebugCommands().handle("//feed stop all") == "Usage: //feed <pause|resume> <all|iMessage|Telegram|iCloud Photos>"
+    assert DebugCommands().handle("//feed pause") == "Usage: //feed <pause|resume> <all|iMessage|Telegram|iCloud Photos>"
+
+
+def test_feed_without_feeds(monkeypatch):
+    from assistant.integration.FeedRunner import Feeds
+    monkeypatch.setattr(Feeds, "get_instance", classmethod(lambda cls: _FakeFeeds([])))
+    assert DebugCommands().handle("//feed pause all") == "No feeds are running."
+
+
+# --- //memory_curate --------------------------------------------------------------------
+
+@pytest.fixture
+def curation(monkeypatch):
+    """Capture the span handed to the curator instead of running an LLM pass; the thread is
+    joined so the assertion sees the call."""
+    calls = []
+    threads = []
+
+    histories = []
+
+    class FakeCurator:
+        @staticmethod
+        def run_span(start, end, history=None):
+            calls.append((start, end))
+            histories.append(history)
+            return {}
+
+    import assistant.agents.LongTermMemoryCurator as curator_mod
+    monkeypatch.setattr(curator_mod, "LongTermMemoryCurator", FakeCurator)
+    real_thread = dc_mod.threading.Thread
+
+    class JoinedThread(real_thread):
+        def start(self):
+            super().start()
+            threads.append(self)
+
+    monkeypatch.setattr(dc_mod.threading, "Thread", JoinedThread)
+
+    def run(query, history=None):
+        reply = DebugCommands(history=history).handle(query)
+        for t in threads:
+            t.join(timeout=5)
+        return reply
+    run.calls = calls
+    run.histories = histories
+    return run
+
+
+def test_memory_curate_span_end_is_inclusive(curation):
+    # the span reaches the curator as inclusive dates; it does the chunking (8 of 4 days here)
+    from datetime import date
+    reply = curation("//memory_curate 20260801 20260830")
+    assert curation.calls == [(date(2026, 8, 1), date(2026, 8, 30))]
+    assert "2026-08-01 .. 2026-08-30 (30 days, 8 chunks of up to 4 days)" in reply
+
+
+def test_memory_curate_single_day(curation):
+    from datetime import date
+    reply = curation("//memory_curate 20260901")
+    assert curation.calls == [(date(2026, 9, 1), date(2026, 9, 1))]
+    assert "2026-09-01" in reply and "chunks" not in reply
+
+
+def test_memory_curate_clamps_the_end_to_today(curation):
+    from datetime import date
+    curation("//memory_curate 20260901 29991231")
+    assert curation.calls == [(date(2026, 9, 1), date.today())]
+
+
+def test_memory_curate_hands_the_history_to_the_curator(curation):
+    # The completion row lands in the assistant's dialog history; without one, the curator
+    # is told so (None) rather than handed something else.
+    history = object()
+    curation("//memory_curate 20260901", history=history)
+    curation("//memory_curate 20260901")
+    assert curation.histories == [history, None]
+
+
+def test_for_assistant_takes_the_history_from_the_prompt_manager():
+    from unittest.mock import patch, Mock
+    assistant = Mock()
+    assert DebugCommands.for_assistant(assistant).history is assistant.prompt_manager.message_history
+    # a stand-in assistant (a hub with nothing attached yet, tests) has no prompt manager
+    assert DebugCommands.for_assistant(object()).history is None
+    assistant.prompt_manager = None
+    assert DebugCommands.for_assistant(assistant).history is None
+
+
+def test_memory_curate_rejects_bad_input(curation):
+    assert curation("//memory_curate").startswith("Usage")
+    assert curation("//memory_curate 2026-10-01").startswith("Usage")
+    assert curation("//memory_curate 20261030 20261001").startswith("The end")
+    assert "future" in curation("//memory_curate 29991231")
+    assert curation.calls == []
+
+
+# --- //first_run -------------------------------------------------------------------------
+
+@pytest.fixture
+def first_run_state(tmp_path, monkeypatch):
+    """The pipeline state at a tmp path. The command reaches the file two ways: `FirstRun.STATE_FILE`
+    (exists/unlink) and `State.load()` / `save()` whose default path was bound when FirstRun was
+    imported — so both are pointed at the tmp file here."""
+    from assistant import FirstRun
+    path = tmp_path / "first_run.json"
+    monkeypatch.setattr(FirstRun, "STATE_FILE", path)
+    load, save = FirstRun.State.load.__func__, FirstRun.State.save
+    monkeypatch.setattr(FirstRun.State, "load", classmethod(lambda cls, p=path: load(cls, p)))
+    monkeypatch.setattr(FirstRun.State, "save", lambda self, p=path: save(self, p))
+    return path
+
+
+def test_first_run_without_state(first_run_state):
+    assert DebugCommands().handle("//first_run") == "No first-run pipeline on this install (established: no first_run.json)."
+    assert DebugCommands().handle("//first_run reset") == "No first-run state to reset."
+
+
+def test_first_run_status(first_run_state, feeds):
+    from assistant import FirstRun
+    state = FirstRun.State(stage=FirstRun.Stage.CURATING, started_at=time.mktime((2026, 9, 14, 9, 0, 0, 0, 0, -1)),
+                           entered_at=time.mktime((2026, 9, 14, 11, 30, 0, 0, 0, -1)),
+                           curation_start="2026-08-13", curation_end="2026-09-14", chunks_done=3, chunks_total=9)
+    state.save()
+    assert DebugCommands().handle("//first_run") == (
+        "First-run pipeline: curating since 2026-09-14 11:30 (started 2026-09-14 09:00)\n"
+        "First curation: 2026-08-13 .. 2026-09-14, chunk 3/9\n"
+        "iMessage: catching up 50%, 10 left\n"
+        "iCloud Photos: catching up 50%, 10 left")
+
+
+def test_first_run_status_without_span_or_feeds(first_run_state, monkeypatch):
+    from assistant import FirstRun
+    from assistant.integration.FeedRunner import Feeds
+    monkeypatch.setattr(Feeds, "get_instance", classmethod(lambda cls: _FakeFeeds([])))
+    FirstRun.State.fresh().save()
+    lines = DebugCommands().handle("//first_run").split("\n")
+    assert lines[0].startswith("First-run pipeline: setup since ")
+    assert lines[1:] == ["iMessage: not started", "iCloud Photos: not started"]
+
+
+def test_first_run_stage_is_forced(first_run_state):
+    from assistant import FirstRun
+    state = FirstRun.State(stage=FirstRun.Stage.CURATING, started_at=1.0, entered_at=2.0,
+                           curation_start="2026-08-13", curation_end="2026-09-14", chunks_done=3, chunks_total=9)
+    state.save()
+    assert DebugCommands().handle("//first_run stage expanding") == \
+        "First-run stage set to expanding (the pipeline picks it up at its next poll)."
+    saved = FirstRun.State.load()
+    assert saved.stage == FirstRun.Stage.EXPANDING and saved.chunks_done == 0 and saved.entered_at > 2.0
+    assert saved.started_at == 1.0 and saved.span == (date(2026, 8, 13), date(2026, 9, 14))
+
+
+def test_first_run_stage_creates_the_state_when_there_is_none(first_run_state):
+    from assistant import FirstRun
+    DebugCommands().handle("//first_run stage indexing")
+    assert FirstRun.State.load().stage == FirstRun.Stage.INDEXING
+
+
+def test_first_run_bad_input(first_run_state):
+    usage = "Usage: //first_run stage <setup, indexing, curating, expanding, done>"
+    assert DebugCommands().handle("//first_run stage bogus") == usage
+    assert DebugCommands().handle("//first_run stage") == usage
+    assert DebugCommands().handle("//first_run stage curating done") == usage
+    assert DebugCommands().handle("//first_run nope") == "Usage: //first_run [stage <name> | reset]"
+    assert not first_run_state.exists()
+
+
+def test_first_run_reset_deletes_the_state(first_run_state):
+    from assistant import FirstRun
+    FirstRun.State.fresh().save()
+    assert DebugCommands().handle("//first_run reset") == \
+        "First-run state deleted: the pipeline stops and the install counts as established."
+    assert not first_run_state.exists()
+
+
+def test_wipe_logs_the_telegram_session_out_before_deleting_it(wipe_env, monkeypatch):
+    """Telethon's log-out deletes the file itself; the listing still names it. A failed
+    log-out is noted and the file deleted anyway."""
+    root, stops = wipe_env
+    session = root / "telegram_feed.session"
+    session.write_bytes(b"sqlite")
+    monkeypatch.setattr(dc_mod, "TELEGRAM_SESSION", session)
+    monkeypatch.setattr(dc_mod, "WIPE_TARGETS", dc_mod.WIPE_TARGETS + [(session, "Telegram feed login")])
+    from assistant.integration.integrations.TelegramFeedIntegration import TelegramFeedIntegration
+
+    def log_out():
+        session.unlink()
+        return "logged out on Telegram"
+
+    with patch.object(TelegramFeedIntegration, "log_out", side_effect=log_out) as logout:
+        text = DebugCommands().handle("//wipe confirm")
+    logout.assert_called_once_with()
+    assert "telegram_feed.session: Telegram feed login — logged out on Telegram" in text
+    assert "Wiped 8 item(s)" in text
+    assert not session.exists()
+    _wait_for_stop(stops)
+
+    session.write_bytes(b"sqlite")
+    stops.clear()
+    with patch.object(TelegramFeedIntegration, "log_out", return_value="not logged out on Telegram (OSError: no network)"):
+        text = DebugCommands().handle("//wipe confirm")
+    assert "telegram_feed.session: Telegram feed login — not logged out on Telegram (OSError: no network)" in text
+    assert not session.exists()
+    _wait_for_stop(stops)
+
+
+def test_wipe_without_a_telegram_session_never_touches_the_integration(wipe_env):
+    from assistant.integration.integrations.TelegramFeedIntegration import TelegramFeedIntegration
+    with patch.object(TelegramFeedIntegration, "log_out") as logout:
+        DebugCommands().handle("//wipe")
+    logout.assert_not_called()
+
+
+def test_first_run_state_is_a_wipe_target():
+    from assistant import FirstRun
+    assert FirstRun.STATE_FILE in [p for p, _ in dc_mod.WIPE_TARGETS]
+
+
+# --- //toolkits and //toolkit --------------------------------------------------------------
+
+def test_toolkits_lists_every_toolkit_with_its_window_state():
+    from unittest.mock import Mock
+    from assistant.commands.Toolkits import TOOLKITS
+    history = Mock()
+    history.loaded_toolkits.return_value = {"email": time.mktime((2026, 9, 14, 9, 5, 0, 0, 0, -1))}
+    text = DebugCommands(history).handle("//toolkits")
+    lines = text.split("\n")
+    assert lines[0] == f"Toolkits ({len(TOOLKITS)}):"
+    assert len(lines) == len(TOOLKITS) + 1
+    email = next(line for line in lines if line.split()[0] == "email")
+    assert "loaded 09:05" in email and "latest_email" in email and "MISSING FILE" not in text
+    web = next(line for line in lines if line.split()[0] == "web")
+    assert "not loaded" in web and "open_url, google" in web
+
+
+def test_toolkits_without_a_history_shows_nothing_loaded():
+    text = DebugCommands().handle("//toolkits")
+    assert "loaded " not in text.replace("not loaded", "")
+
+
+def test_toolkit_renders_one_reference_through_the_prompt_manager(monkeypatch):
+    from unittest.mock import Mock
+    from assistant.agents.AutonomousActionManager import AutonomousActionManager
+    monkeypatch.setattr(AutonomousActionManager, "_instance", None)
+    raw = DebugCommands().handle("//toolkit photos")
+    assert raw.startswith("# Toolkit: photos\n") and "{PHOTO_COUNT}" in raw, "no manager: the placeholders stay"
+
+    aam = Mock()
+    aam.prompt_manager.render_template = lambda text: text.replace("{PHOTO_COUNT}", "~1234")
+    monkeypatch.setattr(AutonomousActionManager, "_instance", aam)
+    assert "~1234 indexed photos" in DebugCommands().handle("//toolkit photos")
+    assert DebugCommands().handle('//toolkit "Email"').startswith("# Toolkit: email\n")
+
+
+def test_toolkit_unknown_or_missing_name_shows_usage():
+    for query in ("//toolkit", "//toolkit nope"):
+        text = DebugCommands().handle(query)
+        assert text.startswith("Usage: //toolkit <name>") and "email" in text

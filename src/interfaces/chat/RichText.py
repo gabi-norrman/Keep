@@ -1,0 +1,151 @@
+"""The one rich-text dialect every chat interface speaks: Telegram's HTML subset.
+
+The assistant produces it (the prompt rules say so), the chat contract carries it verbatim,
+and each transport renders it — Telegram passes it through, the TUI parses it, a platform
+without HTML converts it. This module is the dialect's single definition: which tags exist,
+how to sanitize LLM output down to them, where a streaming prefix can be cut without leaving
+a tag open, how to split long messages, and how to render markdown into it.
+"""
+import re
+from html import escape
+
+ALLOWED_TAGS = {'b', 'i', 'u', 's', 'a', 'code', 'pre', 'strong', 'em', 'del', 'strike',
+                'tg-spoiler', 'blockquote', 'tg-emoji'}
+_TAG_RE = re.compile(r'<(/?)([\w-]+)([^>]*)>')
+
+
+def command_line(text: str, detail: str = "") -> str:
+    """The "• doing X" command echo; *detail* is the completion note shown after it."""
+    line = f" • <i>{escape(text)}</i>"
+    return f"{line} <i>({escape(detail)})</i>" if detail else line
+
+
+def sanitize(text: str) -> str:
+    """Strip HTML tags outside the dialect, keeping only allowed ones."""
+    return _TAG_RE.sub(lambda m: m.group(0) if m.group(2).lower() in ALLOWED_TAGS else '', text)
+
+
+def strip_tags(text: str) -> str:
+    """Remove all HTML tags, returning plain text."""
+    return _TAG_RE.sub('', text)
+
+
+def safe_prefix_end(text: str) -> int:
+    """End of the longest prefix in which every allowed tag is balanced — the most of a
+    streaming buffer that can be shown without an open tag breaking the render."""
+    incomplete = re.search(r'<[^>]*$', text)
+    check_end = incomplete.start() if incomplete else len(text)
+
+    tags = []
+    for m in _TAG_RE.finditer(text[:check_end]):
+        tag = m.group(2).lower()
+        if tag not in ALLOWED_TAGS:
+            continue
+        tags.append((m.start(), tag, bool(m.group(1))))
+
+    if not tags:
+        return check_end
+
+    matched: set[int] = set()
+    close_stack: list[tuple[int, str]] = []
+
+    for i in range(len(tags) - 1, -1, -1):
+        _start, name, is_closing = tags[i]
+        if is_closing:
+            close_stack.append((i, name))
+        else:
+            for j in range(len(close_stack) - 1, -1, -1):
+                if close_stack[j][1] == name:
+                    matched.add(i)
+                    matched.add(close_stack[j][0])
+                    close_stack.pop(j)
+                    break
+
+    for i, (start, name, is_closing) in enumerate(tags):
+        if not is_closing and i not in matched:
+            return start
+
+    return check_end
+
+
+def split(text: str, max_length: int = 4096) -> list[str]:
+    """Split at newlines (then spaces, then hard) so no chunk exceeds max_length."""
+    if len(text) <= max_length:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= max_length:
+            chunks.append(text)
+            break
+        # A break at index 0 would yield an empty chunk and (for a space) never consume any
+        # text, so it counts as no break point at all.
+        split_at = text.rfind('\n', 0, max_length)
+        if split_at < 1:
+            split_at = text.rfind(' ', 0, max_length)
+        if split_at < 1:
+            split_at = max_length
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip('\n')
+    return chunks
+
+
+def markdown_to_html(md: str) -> str:
+    """Render markdown (headings, lists, code, bold, inline code) into the dialect. A pipe
+    table stays a pipe table, its cells' inline markdown converted: the dialect has no table
+    tag, the console pane draws pipe rows as an aligned table (`widgets/ChatTable.py`), and
+    Telegram shows the rows as the model itself writes them."""
+    lines = md.split("\n")
+    result = []
+    in_code_block = False
+
+    for line in lines:
+        if line.startswith("```"):
+            if in_code_block:
+                result.append("</code></pre>")
+                in_code_block = False
+            else:
+                in_code_block = True
+                result.append("<pre><code>")
+            continue
+
+        if in_code_block:
+            result.append(escape(line))
+            continue
+
+        stripped = line.strip()
+
+        if stripped.startswith("|"):
+            result.append(_inline_markdown(stripped))
+            continue
+
+        if stripped in ("---", "***", "___"):
+            result.append("———")
+            continue
+
+        for marker in ("### ", "## ", "# "):
+            if stripped.startswith(marker):
+                result.append(f"<b>{_inline_markdown(stripped[len(marker):])}</b>")
+                break
+        else:
+            if stripped.startswith("- ") or stripped.startswith("* "):
+                result.append(f"• {_inline_markdown(stripped[2:])}")
+                continue
+
+            m = re.match(r'^(\d+)\.\s+(.+)', stripped)
+            if m:
+                result.append(f"{m.group(1)}. {_inline_markdown(m.group(2))}")
+                continue
+
+            result.append(_inline_markdown(line))
+
+    if in_code_block:
+        result.append("</code></pre>")
+
+    return "\n".join(result)
+
+
+def _inline_markdown(text: str) -> str:
+    text = escape(text)
+    text = re.sub(r'`([^`]{1,80})`', r'<code>\1</code>', text)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    return text

@@ -1,0 +1,106 @@
+## LIGHTS
+"Belysning carport och entré (Ute)": on
+"Belysning trappa (Hall)": on
+"Dörrlampa (Ute)": 80
+"Fasadbelysning (Ute)": 100
+"Fasadbelysning (Ute) trasig?!": off
+"Fönsterlampa (Gästrum)": 0
+"Julbelysning (Hall)": 62
+"Knapp spegellampa (Barnrum)": 40%
+"Köksbord lampa (Kök)": 0
+"Köksö lampa (Kök)": 0
+"Lampa (Ute)": 10
+"Lampa (Ute) - 2": 0
+"LED Strip": 0
+"Mysbelysning (Övre hall)": off
+"Desk lamp (Office)": off
+"Spegel (WC)": off
+"Spegel (WC) - 2": 0
+"Tak (Badrum)": 10
+"Tak (Hall övervåning) - andra knappen": 0
+"Tak (TV-Rum)": 35
+"Taklampa (TV-Rum Övervpåning)": 0
+"Takspots (Tvättstuga)": 0
+
+## SENSORS
+"Humidity (Badrum)": 65%
+"Humidity (Garage)": 73%
+"Illuminance (Förråd)": 72 lux
+"Kontor (Illuminance)": 0 lux
+"Kontor (Motion)": off
+"Kontor (Temperature)": 22.0 °C
+"Luminance (Badrum)": 0 lux
+"Luminance (Kök)": 0 lux
+"Motion (Garage)": off
+"Motion (Kök)": on
+"Temperature (Garage)": 16.3 °C
+"Temperature (Kök)": 24.3 °C
+"Temperature (WC)": 23.3 °C
+
+## LATEST AUTOMATION LOGS
+2026-09-15 00:00:06.840	 Error	embedded script: Command 'cat /Library/Application\ Support/Logs/house_log.txt | tail' returned non-zero exit status 1
+CalledProcessError: Command 'cat /Library/Application\ Support/Logs/house_log.txt | tail' returned non-zero exit status 1
+2026-09-15 06:30:04.234		 Turning on Gästrum AC.                    
+
+## LATEST AUTOMATION ERROR LOGS
+2026-09-15 02:10:23.895	Error	send "Dörr (Barnrum)" requestBatteryLevel1 command failed (module might be asleep, or is unreachable)
+2026-09-15 06:55:35.563	Error	send "Dörr (WC)" requestBatteryLevel1 command failed (module might be asleep, or is unreachable)
+2026-09-15 07:10:08.367	Error	send "Julstjärna (Sovrum)" on failed
+
+## VARIABLES
+"AC_Gastrum_current": 17.5
+"AC_Gastrum_on": True
+"AC_Gastrum_target": 18.0
+"AC_Sovrum_current": 21.5
+"AC_Sovrum_on": False
+"AC_Sovrum_target": 20.0
+"Away": false
+"Charlotte_home": true
+"ClValueChangedAt": 2026-06-01 10:20:08.573342
+"CurrentTotalEnergy": 4651.616
+"DyrElJustNu": false
+"ElectricityPriceKr": 0.907
+"ExternalIP": 203.0.113.7
+"FanAtHighSpeed": 1
+"Guests": false
+"Humidity[Garage]": 73
+"Humidity[WC]": 64
+"isDaylight": false
+"LastOutdoorTemperatureUpdateAt": 1789496403.73
+"LastReplay": 1515438420
+"LastTimeMarcusGeoOn": 2026-09-15 18:59:06.862451
+"LastTimeSomeoneGotHome": 2026-09-15 18:59:06.868566
+"Light[Garage]": 0
+"Light[Kok]": 0
+"Marcus_home": true
+"MarcusIPhoneOnline": 1789496561
+"Motion[Garage]": 0
+"Motion[Kok]": 1
+"Mysbelysning": true
+"Night": false
+"OutdoorTemperature": 17.0
+"PoolCl": 
+"PoolTemperature": 24.6
+"Precipitation7Days": 14.499999999999995
+"Raining": false
+"RainTomorrow": 3.5999999999999996
+"RequestWateringFlowers": 
+"SolarGridLoad": 4.651616
+"SolarPower": 0.0
+"skymning_inne": true
+"Temperature[Garage]": 16.3
+"Temperature[Kok]": 24.3
+"TVRoomLightOn": false
+"UVI7Days": 47.919929760313316
+
+## ACTIONS
+"AC Off (Gästrum)": 
+"AC On (Gästrum)": 
+"Bevattning - vattna blommor": Designat för att köras en gång per dag
+"CleanTheKitchen": Vacuum the kitchen using robot vacuum.
+"GoodNight": Turns off all lights and sets the entire home in night mode. Turned on when going to bed.
+"LightTheKitchenUp": Full brightness all lights in the kitchen.
+"Open door - no safety check": Unlock the front door of the house.
+"TurnOffKitchenLights": 
+"TurnOnTheTV": Turns on the TV and sets lights to cozy
+

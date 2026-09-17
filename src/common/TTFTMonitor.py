@@ -1,0 +1,62 @@
+import collections
+from typing import Optional
+
+
+_EMPTY_DEQUE: collections.deque = collections.deque()
+
+
+class TTFTMonitor:
+    """Keeps recent time-to-first-token and prompt-cache-hit history per LLM model for the DashboardTab."""
+
+    _instance: Optional['TTFTMonitor'] = None
+    HISTORY_SIZE = 60
+
+    @classmethod
+    def get_instance(cls) -> 'TTFTMonitor':
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    @classmethod
+    def reset_instance(cls):
+        cls._instance = None
+
+    def __init__(self):
+        self._data: dict[str, collections.deque] = {}
+        self._cache_pct: collections.deque = collections.deque(maxlen=self.HISTORY_SIZE)
+        self.smart_model: str = ""
+        self.fast_model: str = ""
+        self.smart_model_short: str = ""
+        self.fast_model_short: str = ""
+
+    def register_models(self, smart_model: str, fast_model: str):
+        self.smart_model = smart_model
+        self.fast_model = fast_model
+        self.smart_model_short = self._shorten(smart_model)
+        self.fast_model_short = self._shorten(fast_model)
+
+    def record(self, model: str, ttft: float):
+        if model not in self._data:
+            self._data[model] = collections.deque(maxlen=self.HISTORY_SIZE)
+        self._data[model].append(ttft)
+
+    def record_cache_pct(self, pct: int):
+        self._cache_pct.append(pct)
+
+    @property
+    def cache_pct(self) -> collections.deque:
+        return self._cache_pct
+
+    @property
+    def smart_ttft(self) -> collections.deque:
+        return self._data.get(self.smart_model, _EMPTY_DEQUE)
+
+    @property
+    def fast_ttft(self) -> collections.deque:
+        return self._data.get(self.fast_model, _EMPTY_DEQUE)
+
+    @staticmethod
+    def _shorten(model: str) -> str:
+        name = model.lower().replace("claude-", "")
+        parts = [p for p in name.split("-") if not (len(p) == 8 and p.isdigit())]
+        return "-".join(parts)

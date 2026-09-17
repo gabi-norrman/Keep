@@ -1,0 +1,31 @@
+# VoiceToVoice stack — imported only when interfaces.voice.enabled is true, but checked at
+# every startup so voice can be switched on later without a reinstall.
+# Install on top of the base set: pip install -r requirements-voice.txt
+-r requirements.txt
+
+# Server speaker playback + mic capture
+sounddevice==0.4.6
+soundfile==0.12.1
+
+# TTS engines
+elevenlabs==1.2.1
+websocket-client==1.8.0
+ormsgpack==1.12.2
+google-cloud-texttospeech==2.33.0
+supertonic==1.3.1
+
+# Speaker identification
+torch==2.4.1
+torchaudio==2.4.1
+speechbrain==1.1.0
+
+# Sentence-completeness gate (spaCy + the trained model's training script)
+spacy==3.8.7
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+scikit-learn==1.7.2
+
+# Local mic outposts: on-device Whisper (MLX, Apple Silicon only) + Silero VAD
+mlx-whisper==0.4.3
+silero-vad==6.2.1
+# Text language-ID to arbitrate Whisper's flaky per-clip audio language label
+lingua-language-detector==2.2.0

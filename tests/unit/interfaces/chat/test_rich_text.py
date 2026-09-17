@@ -1,0 +1,170 @@
+import threading
+
+import pytest
+
+from interfaces.chat import RichText
+from interfaces.chat.RichText import markdown_to_html, safe_prefix_end, sanitize, split, strip_tags
+
+
+@pytest.mark.unit
+class TestSanitize:
+    def test_keeps_allowed_tags(self):
+        assert sanitize("<b>bold</b>") == "<b>bold</b>"
+        assert sanitize("<pre>code</pre>") == "<pre>code</pre>"
+        assert sanitize('<a href="x">link</a>') == '<a href="x">link</a>'
+
+    def test_strips_disallowed_tags(self):
+        assert sanitize("<div>text</div>") == "text"
+        assert sanitize("<span>hi</span>") == "hi"
+
+    def test_mixed_tags(self):
+        assert sanitize("<div><b>bold</b> in <span>span</span></div>") == "<b>bold</b> in span"
+
+    def test_plain_text_unchanged(self):
+        assert sanitize("no tags here") == "no tags here"
+
+
+@pytest.mark.unit
+class TestStripTags:
+    def test_strips_all_tags(self):
+        assert strip_tags("<b>bold</b> and <i>italic</i>") == "bold and italic"
+
+    def test_strips_nested_tags(self):
+        assert strip_tags("<pre><code>code</code></pre>") == "code"
+
+    def test_strips_tags_with_attributes(self):
+        assert strip_tags('<a href="url">link</a>') == "link"
+
+    def test_plain_text_unchanged(self):
+        assert strip_tags("no tags here") == "no tags here"
+
+    def test_empty_string(self):
+        assert strip_tags("") == ""
+
+
+@pytest.mark.unit
+class TestSafePrefixEnd:
+    def test_plain_text_returns_full_length(self):
+        assert safe_prefix_end("hello world") == 11
+
+    def test_balanced_tags_returns_full_length(self):
+        text = "Hello <b>bold</b> world"
+        assert safe_prefix_end(text) == len(text)
+
+    def test_unclosed_tag_cuts_before_it(self):
+        assert safe_prefix_end("Hello <pre>code block") == 6
+
+    def test_incomplete_tag_at_end(self):
+        assert safe_prefix_end("Hello <b>bold</b> and <pr") == len("Hello <b>bold</b> and ")
+
+    def test_nested_balanced_tags(self):
+        text = "<b>bold <i>italic</i></b>"
+        assert safe_prefix_end(text) == len(text)
+
+    def test_unclosed_after_balanced(self):
+        assert safe_prefix_end("<b>bold</b> then <pre>unclosed") == len("<b>bold</b> then ")
+
+    def test_disallowed_tags_ignored(self):
+        assert safe_prefix_end("Hello <div>content</div> <pre>unclosed") == len("Hello <div>content</div> ")
+
+    def test_empty_string(self):
+        assert safe_prefix_end("") == 0
+
+    def test_multiple_balanced_pairs(self):
+        text = "<b>a</b><i>b</i><code>c</code>"
+        assert safe_prefix_end(text) == len(text)
+
+
+@pytest.mark.unit
+class TestSplit:
+    def test_short(self):
+        assert split("hello", max_length=10) == ["hello"]
+
+    def test_long_splits_on_newline(self):
+        text = "line one\nline two\nline three"
+        chunks = split(text, max_length=20)
+        assert len(chunks) > 1
+        assert "".join(c.replace("\n", "") for c in chunks).replace(" ", "") == text.replace("\n", "").replace(" ", "")
+        assert all(len(c) <= 20 for c in chunks)
+
+    def test_no_newline_splits_on_space_then_hard(self):
+        chunks = split("a" * 25, max_length=10)
+        assert chunks == ["a" * 10, "a" * 10, "a" * 5]
+        assert split("aaaa bbbb cccc", max_length=10) == ["aaaa bbbb", " cccc"]
+
+    @pytest.mark.parametrize("text", [" " + "x" * 25, "\n" + "y" * 15])
+    def test_break_point_at_index_zero_does_not_stall_or_emit_empty_chunks(self, text):
+        # The remainder after a space-split starts with that space; an unbreakable run after it
+        # used to make split_at == 0, appending "" forever. Run on a thread so a regression
+        # fails instead of hanging the suite.
+        result = []
+        worker = threading.Thread(target=lambda: result.append(split(text, max_length=10)), daemon=True)
+        worker.start()
+        worker.join(timeout=3)
+        assert result, "split() did not terminate"
+        chunks = result[0]
+        assert "".join(chunks) == text
+        assert all(0 < len(c) <= 10 for c in chunks)
+
+
+@pytest.mark.unit
+class TestMarkdownToHtml:
+    def test_headings(self):
+        assert markdown_to_html("# Title") == "<b>Title</b>"
+        assert markdown_to_html("## Section") == "<b>Section</b>"
+        assert markdown_to_html("### Sub") == "<b>Sub</b>"
+
+    def test_bold_and_inline_code(self):
+        assert "<b>bold</b>" in markdown_to_html("This is **bold** text")
+        assert "<code>foo()</code>" in markdown_to_html("Use `foo()` here")
+
+    def test_code_block(self):
+        result = markdown_to_html("```\nprint('hello')\n```")
+        assert "<pre><code>" in result and "</code></pre>" in result
+        assert "print(&#x27;hello&#x27;)" in result
+
+    def test_unclosed_code_block(self):
+        assert "</code></pre>" in markdown_to_html("```\ncode")
+
+    def test_lists(self):
+        result = markdown_to_html("- item one\n- item two")
+        assert "• item one" in result and "• item two" in result and "<ul>" not in result
+        assert "• item" in markdown_to_html("* item")
+        result = markdown_to_html("1. first\n2. second")
+        assert "1. first" in result and "2. second" in result
+
+    def test_horizontal_rule(self):
+        result = markdown_to_html("above\n---\nbelow")
+        assert "———" in result and "<hr" not in result
+
+    def test_table_rows_stay_pipe_rows_for_the_console_pane(self):
+        result = markdown_to_html("| Time | **Event** |\n|------|-------|\n| 13:00 | `Start` |")
+        assert result == "| Time | <b>Event</b> |\n|------|-------|\n| 13:00 | <code>Start</code> |"
+
+    def test_html_entities_escaped(self):
+        result = markdown_to_html("a < b & c > d")
+        assert "&lt;" in result and "&amp;" in result and "&gt;" in result
+        assert "&lt;" in markdown_to_html("```\nif a < b:\n```")
+
+    def test_no_unsupported_tags(self):
+        result = markdown_to_html("# H\n## H2\n- item\n\ntext")
+        for tag in ["<h1>", "<h2>", "<h3>", "<ul>", "<li>", "<p>", "<hr"]:
+            assert tag not in result
+
+    def test_plain_text_passthrough(self):
+        assert "Just some text" in markdown_to_html("Just some text")
+
+    def test_bold_in_heading(self):
+        result = markdown_to_html("## The **important** part")
+        assert "<b>" in result and "important" in result
+
+    def test_allowed_tags_is_the_telegram_subset(self):
+        assert {"b", "i", "code", "pre", "blockquote", "a"} <= RichText.ALLOWED_TAGS
+
+
+class TestCommandLine:
+    def test_escapes_and_appends_the_detail_in_its_own_italics(self):
+        assert RichText.command_line("Reading <x> & y") == " • <i>Reading &lt;x&gt; &amp; y</i>"
+        assert RichText.command_line("Reading x", "done after 4s, received 345 chars") == \
+            " • <i>Reading x</i> <i>(done after 4s, received 345 chars)</i>"
+        assert RichText.command_line("Reading x", "") == " • <i>Reading x</i>"

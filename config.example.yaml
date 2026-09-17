@@ -1,0 +1,344 @@
+# Example configuration for the Floxy AI server
+
+# This file doubles as the assistant's documentation of every setting. So the notes
+# on what a setting does, where its value comes from and what depends on what are written for the
+# AI as much as for a human. Keep this file current whenever a setting is added or changed.
+
+# Every integration is off until it is listed here (Web Access and ElevenLabs TTS are on regardless).
+# Use the names list_integrations shows: Arlo, CalDAV, Gmail, iCloud, iCloud Email, iMessage, Indigo,
+# Photos, Reminders, Ring, Self Improvement, Sonos & Spotify, Telegram Feed, Tesla, X, YR Weather.
+# The TTS engines voice speaks through are integrations too — ElevenLabs TTS (on by default), Gemini TTS,
+# Chirp 3 HD, Cartesia Sonic TTS, Fish Audio TTS, Grok TTS, Supertonic TTS: a request speaks through the
+# first enabled and configured one, Swedish preferring Gemini TTS, so a Swedish install enables Gemini TTS
+# (needs google_service_account) and a different English engine means enabling it and disabling
+# ElevenLabs TTS. The assistant's enable_integration / disable_integration edit this list.
+enabled_integrations: []
+
+api_keys:
+  openai: YOUR_OPENAI_API_KEY_HERE
+  anthropic: YOUR_ANTHROPIC_API_KEY_HERE
+  anthropic_admin: YOUR_ANTHROPIC_ADMIN_API_KEY_HERE  # For cost monitoring, create at console.anthropic.com > Settings > Admin Keys. Note that cost comes in with a days delay.
+  gemini: YOUR_GEMINI_API_KEY_HERE  # voice replies run on the ai.fast tier (Gemini by default): no key, no voice answers; also photos/video processing
+  elevenlabs: YOUR_ELEVENLABS_API_KEY_HERE
+  grok: YOUR_GROK_API_KEY_HERE
+  openrouter: YOUR_API_KEY_HERE
+  serper: YOUR_SERPER_API_KEY_HERE  # Get from https://serper.dev
+  google_maps: YOUR_GOOGLE_MAPS_API_KEY_HERE
+  cartesia: YOUR_CARTESIA_API_KEY_HERE
+  fish_audio: YOUR_FISH_AUDIO_API_KEY_HERE  # https://fish.audio -> API keys
+  spotify:
+    client_id: YOUR_SPOTIFY_CLIENT_ID_HERE
+    client_secret: YOUR_SPOTIFY_CLIENT_SECRET_HERE
+
+google_service_account:
+  type: service_account
+  project_id: YOUR_PROJECT_ID
+  private_key_id: YOUR_PRIVATE_KEY_ID
+  private_key: "-----BEGIN PRIVATE KEY-----\nYOUR_PRIVATE_KEY\n-----END PRIVATE KEY-----\n"
+  client_email: YOUR_CLIENT_EMAIL@YOUR_PROJECT_ID.iam.gserviceaccount.com
+  client_id: YOUR_CLIENT_ID
+  auth_uri: https://accounts.google.com/o/oauth2/auth
+  token_uri: https://oauth2.googleapis.com/token
+  auth_provider_x509_cert_url: https://www.googleapis.com/oauth2/v1/certs
+  client_x509_cert_url: https://www.googleapis.com/robot/v1/metadata/x509/YOUR_CLIENT_EMAIL
+
+calendar:
+  username: your_icloud_email@me.com
+  password: YOUR_CALENDAR_PASSWORD_HERE (for iCloud this is an app password)
+  default_calendar: Home  # Name of the iCloud calendar to create events in
+
+email:
+  # smtp_host: smtp.gmail.com   # where the nightly reports are sent from; Gmail by default
+  # smtp_port: 587
+  address: your_gmail_address@gmail.com
+  password: YOUR_GMAIL_APP_PASSWORD  # Generate at https://myaccount.google.com/apppasswords
+
+icloud_email:
+  address: your_address@icloud.com
+  password: YOUR_ICLOUD_APP_SPECIFIC_PASSWORD  # Generate at https://appleid.apple.com > App-Specific Passwords
+
+tesla:
+  tessie_access_token: YOUR_TESSIE_ACCESS_TOKEN
+  vehicles:
+    - name: home_car
+      display_name: Family Model Y
+      vin: YOUR_TESLA_VIN
+      default: true
+
+# iCloud Find My iPhone. apple_id + password are enough to start (photos, device listing);
+# the devices list is what find_phone / locate_user answer to. Fill it from the iCloud tab in
+# the TUI (copy each baUUID) or ask Floxy: icloud_devices() lists them and config_set writes the entries.
+icloud:
+  apple_id: your_apple_id@icloud.com
+  password: YOUR_APPLE_ID_PASSWORD  # Regular password, not app-specific
+  devices:
+    - id: "DEVICE_UUID_FROM_ICLOUD_TAB"
+      display_name: "dad"  # Name used in voice commands
+    - id: "DEVICE_UUID_FROM_ICLOUD_TAB"
+      display_name: "mom"
+
+# Photos library indexing: the "Photos" integration reads the Mac's Photos.app library and describes
+# every photo (and video) into the history; its horizon is feeds.photos.
+# It depends on the icloud section above: photos that only live in iCloud ("Optimise Mac Storage"
+# evicts the originals) are downloaded through the iCloud session, so without icloud.apple_id and
+# icloud.password the feed logs "iCloud not configured", can only nudge macOS with brctl and leaves
+# evicted photos waiting or unindexed. Set up iCloud first, then enable Photos.
+
+# 2FA goes over email. If the user has set up the correct email then this server handles 2FA AUTOMATICALLY. So it's strongly recommended to first enable the email.
+arlo:
+  username: your_arlo_email@example.com
+  password: YOUR_ARLO_PASSWORD
+  ignore_cameras: []
+
+# 2FA goes over iMessage (SMS). If the user has set up iMessage then this server handles 2FA AUTOMATICALLY.
+ring:
+  username: your_ring_email@example.com
+  password: YOUR_RING_PASSWORD
+
+location:
+  home:
+    latitude: 34.67448641
+    longitude: 15.90048623
+    # IANA timezone for everything rendered in local time (weather, calendar, photo dates).
+    # Optional: left out, it is looked up from the coordinates above (a few seconds, once per
+    # start), and without coordinates it is the server's own timezone.
+    # timezone: Europe/Stockholm
+
+indigo:
+  host: YOUR_INDIGO_HOST
+  login: YOUR_INDIGO_LOGIN
+  password: YOUR_INDIGO_PASSWORD
+  # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
+  prompt_filters:
+    - SomeNoisyVariableName
+  # The same, per section (lights / sensors / variables / actions). Optional.
+  # section_filters:
+  #   sensors: [Humidity, Luminance]
+  #   variables: ["Motion[", "Temperature["]
+
+# Home Assistant as the house (plans/HOME_ASSISTANT_PLAN.md); enable with `enabled_integrations: [Home Assistant]`.
+# One websocket to the server carries the state, the commands and the event feed.
+home_assistant:
+  url: http://homeassistant.local:8123   # the base URL of the server, http or https; the websocket path is derived
+  token: YOUR_HOME_ASSISTANT_LONG_LIVED_TOKEN  # Profile → Security → Long-lived access tokens; an admin user's token also gets the registry events and who acted
+  exposed_only: true    # true: only entities exposed to Assist (Settings → Voice assistants → Expose) reach the prompt — HA exposes lights, switches, covers, fans, scenes and climate by default, but not locks, input helpers, persons, scripts or automations, so expose those there; false: every light, switch, lock, sensor, input helper, person, scene, script and automation
+  # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
+  prompt_filters: []
+
+# The "Self Improvement" integration: Floxy analysing and changing its own code — the
+# self_analysis / self_improvement commands and the nightly code-quality runs — through the
+# Claude Code CLI on the server machine. Enable with `enabled_integrations: [Self Improvement]`.
+# The setup is on the server machine itself, by hand:
+#   1. Install Claude Code: `curl -fsSL https://claude.ai/install.sh | bash` (puts `claude` in
+#      ~/.local/bin, which the server also looks in when it is not on the PATH).
+#   2. Log in: open a terminal ON the server machine, run `claude` and complete /login with a
+#      claude.ai subscription (Pro/Max) or an API key. Do not log in over SSH — a login made in
+#      an SSH session is not seen by the server process.
+#   3. Optional: email.address / email.password, where the nightly reports go.
+# The health check runs `claude auth status` (a free local call) every 15 minutes, first ~10 s
+# after start; a missing or logged-out CLI shows as the error in list_integrations. The model
+# the runs use is ai.code_quality.model.
+self_improvement:
+  # merge_strategy: rebase   # what the 04:00 auto-merge passes to `gh pr merge`: rebase (default), squash or merge
+  # auto_merge_authors: [your-github-login]   # whose test-only PRs the 04:00 auto-merge may merge; default: the account `gh` is logged in as. PRs from forks are never merged
+  nightly_runs: false   # true: the scheduled runs fire — bug analysis and test generation at 03:00 (emailed), the auto-merge of test-only PRs at 04:00 — on nights with recent commits; false: only the self_analysis / self_improvement commands use Claude Code. Read at each fire, no restart needed
+
+chat:
+  approval_timeout_seconds: 60  # seconds to wait for an Approve/Deny answer on sensitive commands (e.g. send_imessage) in any chat interface
+  secret_request_timeout_seconds: 3600  # seconds to wait for a value after vault_request / config_request opened a masked prompt; long because the user often has to look the value up or set something up first
+
+# Looking for the user's own Telegram messages ("read my Telegram")?
+# That is the "Telegram Feed" integration, section telegram_feed — not this one.
+# This section is the Telegram bot users chat with Floxy through. It is an interface
+# (interfaces.telegram, on by default) that list_integrations shows as "Telegram": without a
+# bot_token it is listed as not configured. Setup is bot_token via config_request, then
+# restart_integration("Telegram") — no server restart. Its switch is interfaces.telegram.enabled,
+# not enabled_integrations. The bot reads the chat-id lists live: a change to them is in force
+# at the next message, no restart — only bot_token and link_previews need restart_integration.
+telegram_bot:
+  bot_token: YOUR_TELEGRAM_BOT_TOKEN_HERE
+  allowed_chat_ids: []  # empty = anyone may talk to the bot; /start in the bot shows a chat id. Read live, no restart.
+  notify_chat_ids: []  # who gets the proactive pushes (autonomous findings, system notes, photos it sends unasked); empty = every allowed chat. A photo someone asked for goes back to their chat. Read live, no restart.
+  link_previews: false  # true = Telegram renders preview cards for URLs in the bot's replies; needs restart_integration("Telegram")
+
+# The "Telegram Feed" integration: a Telethon client logged into the owner's own Telegram
+# account, feeding their chats into the history. Not the bot users talk to Floxy through (section
+# telegram_bot); only set up when the user asks for their Telegram messages to be read. After these two keys the
+# account itself must be signed in: telegram_login(phone) from the console chat (the code and the 2FA password go
+# through the masked prompt), or the console's Telegram tab.
+telegram_feed:
+  api_id: 0          # both from https://my.telegram.org/apps
+  api_hash: YOUR_TELEGRAM_API_HASH_HERE
+  blacklist: []      # messages from users/groups whose name contains any of these are skipped
+
+# The iMessage integration has no keys of its own (its horizon is feeds.imessage below): it reads
+# Messages.app's database on this Mac, so nothing to ask the user for.
+# Two things must be true before it is enabled, so check them with the user first:
+# - Messages.app on this Mac must be signed in to iMessage with the user's own, personal Apple ID.
+#   The database only holds what that account receives; a Mac without Messages set up gives an
+#   empty feed.
+# - The first read of chat.db can make macOS show a security permission dialog on the Mac's own
+#   screen. It has to be approved there, so the user must
+#   be sitting at the Mac when the integration starts — not over SSH or on a phone.
+#imessage:
+
+# Feeds: integrations that pour into the history (iMessage, the personal Telegram feed). A feed
+# that has never run catches up this many months back; one that was merely stopped resumes where
+# it left off. Moving a horizon further back re-reads from there (the history dedupes).
+feeds:
+  imessage: { backfill_months: 60 }   # five years; chat.db rows are cheap
+  telegram_feed: { backfill_months: 1 }
+  photos: { backfill_months: 1 }   # one LLM call per photo or video, on the ai.photo_indexing tier (Gemini 3.8 Flash by default)
+  # On a fresh install the first-run pipeline raises photos to 36 once the first memory bank is curated
+  # (plans/FTUE_PIPELINE_PLAN.md); a wider value set by hand is left alone.
+
+# Which interfaces the server starts (floxy_ai_server.py). A disabled interface's module
+# is never imported: with voice off, no audio/Whisper/torch/spaCy library is loaded. The
+# startup check (RequirementsChecker) still verifies requirements-voice.txt, so the assistant
+# can enable voice from the chat (config_set) and the next restart just works. Read at startup only.
+interfaces:
+  http:     { enabled: true }               # always on (the others register routes on it); port from argv
+  voice:    { enabled: false }              # VoiceToVoice, off unless set to true; needs mics and speakers on the server, an ElevenLabs API key and api_keys.gemini (the ai.fast tier).
+  telegram: { enabled: true }               # the bot + Notifier; also needs telegram_bot.bot_token
+  console:  { enabled: true, port: 5151 }   # TUI dashboard (tui.py connects to this port)
+
+# Server-internal microphone outposts: one virtual outpost per connected mic,
+# transcribed locally with Whisper (MLX, Apple Silicon only). They push text to
+# /stream exactly like remote Android/iOS outposts and join the same voting.
+# On by default whenever the voice interface runs; set false for a server that only
+# serves phone outposts. Without a mic or MLX they log an error and stay off.
+local_outposts:
+  enabled: true
+  model_repo: "mlx-community/whisper-large-v3-turbo"  # the default
+  exclude_mics: []          # name substrings (case-insensitive) of mics to skip, e.g. ["Bose QC45"] keeps
+                            # earphones out; add one with config_set("local_outposts.exclude_mics[0]", "Bose QC45")
+                            # (the ambient-noise volume monitor skips them too, even when one is the default input)
+  # location: Kitchen       # the room the server's mics are in, reported with every query; unset = unknown location
+  auto_recovery: true       # restart a mic whose audio stream stalls
+  usb_power_cycle: true     # power-cycle the USB port as the last recovery step
+
+vault:                      # secrets the LLM never sees — the console's Vault tab (VAULT_PLAN.md)
+  key: CHANGE_ME            # passphrase that encrypts vault.bin. Lose it and the vault is lost; change it and the
+                            # existing vault.bin can no longer be opened. Unset = vault disabled.
+  default_country_code: 46  # a phone number written with a leading 0 is filed under this country code
+
+reminders:
+  shopping_list_name: Shoppinglista
+
+# Web search (Serper) tuning. Optional — these are the defaults.
+#search:
+#  country_hint: se          # gl parameter: country to bias results towards
+#  interface_language: en    # hl parameter
+#  results_limit: 6          # 1-10 results per query
+
+# Display name of the household owner. Used as the `user` of requests that carry no
+# sender identity of their own (TUI chat, Telegram messages without a sender name).
+owner_name: YOUR_NAME
+
+# Home automation extras, for either backend. Optional.
+# home:
+#   night_variable: Night     # the variable / input_boolean that is true while the house sleeps (default "Night")
+#   # Devices that are always switched together, swapped for the scene that does the same —
+#   # it keeps the response cache to one entry however the LLM spells the request.
+#   command_consolidation:
+#     - devices: ["Table Lamp (Kitchen)", "Spots (Kitchen)"]
+#       on_scene: LightTheKitchenUp
+#       off_scene: TurnOffKitchenLights
+
+# Sonos zone name -> the room name the LLM sees; a blank value hides the zone. Optional.
+# sonos:
+#   room_mapping:
+#     "Kitchen Front": Kitchen
+#     "Kitchen Back": ""
+
+# The location stamped on requests from the Android app, which sends none of its own. Optional.
+# clients:
+#   android_location: Kitchen
+
+# Toolkits put in the LLM's window before every request from a channel, replacing the
+# channel's default (VoiceToVoice: [home, music, tesla]). Optional.
+# preload_toolkits:
+#   VoiceToVoice: [home, music]   # a household without a Tesla
+
+# The AI's name and spoken wake word — drives both the prompt identity ("You are <wake_word>")
+# and the wake word served to outposts via /outpost_settings.
+wake_word: Michelle
+# Extra spellings the STT commonly mishears the wake word as (matched case-insensitively
+# in addition to wake_word) so local outposts still trigger on near-misses. Optional.
+wake_word_aliases: [michel]
+# Words (or short phrases) the Scribe verifier renders a cleanly spoken wake word as
+# ("Mission complete" for "Michelle good night", "We shall volume down" for "Michelle volume
+# down"). They never trigger on their own; they only stop Scribe from vetoing a Whisper
+# wake-word fire it merely misspelt. Optional — defaults to [mission, missions, we shall],
+# which are renderings of "Michelle": set it explicitly (or to []) for any other wake_word.
+wake_word_near_misses: [mission, missions, we shall]
+
+# Ollama server used by every OllamaLLM tier. Optional — defaults to localhost.
+# An explicit base_url passed to OllamaLLM's constructor still wins over this.
+# When base_url points at a remote host, the KV-cache diagnostics (which parse
+# Ollama's debug log) are read over ssh — set up key-based ssh access to that host.
+#ollama:
+#  base_url: http://192.168.1.50:11434
+#  ssh_host: user@192.168.1.50    # Optional ssh target for remote log reads; defaults to the base_url hostname
+#  remote_log_path: /Users/user/Documents/Keep/log/ollama.log  # Optional; defaults to this repo layout
+
+# Where the //FP and //TP debug commands collect the latest conversations' audio as labelled
+# false/true wake-word positives. Optional — defaults to cache/stt_samples/{false-positive,en}.
+#debug:
+#  false_positive_dir: ~/stt-corpus/false-positive
+#  true_positive_dir: ~/stt-corpus/en
+
+# LLM backend selection. Optional — if omitted entirely, defaults to the cloud setup
+# Uncomment / edit to override, e.g. to run everything on a local Ollama:
+#ai:
+#  fast:
+#    llm: OllamaLLM          # Class name from assistant/llm/ (OllamaLLM, ClaudeLLM, GeminiLLM, ChatGPTLLM, GrokLLM, OpenRouterLLM)
+#    # model: gemma4:26b      # Optional: override the LLM's default model
+#  smart:
+#    llm: OllamaLLM
+#    # model: gemma4:26b
+#  video:                   # describes video clips from iMessage / Telegram / email. Needs an LLM with native
+#    llm: GeminiLLM         # video input — Gemini is the only backend that has one; Claude/ChatGPT/Ollama
+#    # model: gemini-3.8-flash   # cannot take video and videos are then left undescribed ("[Video]")
+#    # max_size_mb: 200     # larger clips are left undescribed; clips over 19 MB go through the Gemini Files API
+#  autonomous_action:
+#    llm: OllamaLLM
+#  memory_curator:
+#    llm: OllamaLLM
+#  cache_auditor:
+#    llm: OllamaLLM
+#  photo_indexing:         # indexes Apple Photos stills and videos, one call each (thousands on a backfill).
+#    llm: GeminiLLM         # Needs native video input for the videos, so Gemini is the only full backend
+#    # model: gemini-3.8-flash
+#  code_quality:            # model for the nightly Claude Code CLI runs (CodeQualityMaintainer)
+#    model: claude-fable-5-1
+
+language: en-US         # drives TTS synthesis language for every engine that accepts a hint
+                        # (Gemini uses the full tag, Grok/Supertonic use the primary subtag, e.g. "sv").
+                        # May be a single tag (above) or a list to listen for several languages:
+                        #   language: [en-US, sv-SE]
+                        # The first entry is the primary/default. With >1 language the local Whisper
+                        # outposts auto-detect per utterance, reply + voice follow the spoken language,
+                        # and speech in any other language is ignored. Use full locales (Gemini TTS
+                        # wants e.g. sv-SE, not bare sv).
+
+tts:
+  # Names the LLM addresses people by. A listed name loses the comma before it (", Sam" is
+  # spoken as " Sam": the pause sounds wrong); a pronunciation is how a name is spelled for
+  # the engine, and tts.<engine>.name_pronunciations overrides it for one engine. Optional.
+  # names: [sam, emma]
+  # name_pronunciations: { siobhan: shivawn }
+  # cartesia:
+  #   voice: 829ccd10-f8b3-43cd-b8a0-4aeaa81f3b30   # every engine takes `voice`: elevenlabs, cartesia, grok, gemini, chirp3
+  #   name_pronunciations: { siobhan: "<<ʃ|ɪ|v|ɔ|n>>" }
+  # elevenlabs:
+  #   voice: QtY3JBOUKEB5xzrRfOKc         # daytime voice
+  #   night_voice: geVuXdUpU0lgUukWJCUE   # the whispering voice of night, morning and late evening
+  fish:
+    model: s2.1-pro-free # free through 2026-08-31; also: s2.1-pro, s2-pro, s1
+    reference_id: YOUR_FISH_AUDIO_VOICE_REFERENCE_ID  # voice id from the fish.audio voice library
+  supertonic:
+    voice: M1            # voice style name; see Supertone/supertonic on HuggingFace for the full list
+    first_chunk_steps: 5 # diffusion steps for the opener — fewer = lower first-audio latency
+    total_steps: 10      # 5-12, diffusion steps for subsequent (batched) chunks — higher = better prosody
+    speed: 1.0           # 0.7-2.0

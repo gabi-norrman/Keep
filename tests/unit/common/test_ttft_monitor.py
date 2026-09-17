@@ -1,0 +1,97 @@
+import pytest
+from common.TTFTMonitor import TTFTMonitor
+
+
+@pytest.fixture(autouse=True)
+def reset_singleton():
+    TTFTMonitor.reset_instance()
+    yield
+    TTFTMonitor.reset_instance()
+
+
+class TestTTFTMonitorSingleton:
+    def test_get_instance_returns_same_object(self):
+        a = TTFTMonitor.get_instance()
+        b = TTFTMonitor.get_instance()
+        assert a is b
+
+    def test_reset_instance_creates_new_object(self):
+        a = TTFTMonitor.get_instance()
+        TTFTMonitor.reset_instance()
+        b = TTFTMonitor.get_instance()
+        assert a is not b
+
+
+class TestRecordAndRetrieve:
+    def test_record_stores_values(self):
+        mon = TTFTMonitor()
+        mon.register_models("claude-3-opus-20240229", "claude-3-haiku-20240307")
+        mon.record("claude-3-opus-20240229", 1.5)
+        mon.record("claude-3-opus-20240229", 2.0)
+        assert list(mon.smart_ttft) == [1.5, 2.0]
+
+    def test_fast_ttft_returns_fast_model_data(self):
+        mon = TTFTMonitor()
+        mon.register_models("smart-model", "fast-model")
+        mon.record("fast-model", 0.3)
+        assert list(mon.fast_ttft) == [0.3]
+
+    def test_unregistered_model_returns_empty(self):
+        mon = TTFTMonitor()
+        mon.register_models("smart", "fast")
+        assert len(mon.smart_ttft) == 0
+        assert len(mon.fast_ttft) == 0
+
+    def test_history_capped_at_history_size(self):
+        mon = TTFTMonitor()
+        mon.register_models("m", "f")
+        for i in range(TTFTMonitor.HISTORY_SIZE + 20):
+            mon.record("m", float(i))
+        assert len(mon.smart_ttft) == TTFTMonitor.HISTORY_SIZE
+        assert mon.smart_ttft[0] == 20.0
+
+    def test_multiple_models_independent(self):
+        mon = TTFTMonitor()
+        mon.register_models("smart", "fast")
+        mon.record("smart", 1.0)
+        mon.record("fast", 0.1)
+        mon.record("other", 9.9)
+        assert list(mon.smart_ttft) == [1.0]
+        assert list(mon.fast_ttft) == [0.1]
+
+
+class TestShorten:
+    @pytest.mark.parametrize("model,expected", [
+        ("claude-3-opus-20240229", "3-opus"),
+        ("claude-3-haiku-20240307", "3-haiku"),
+        ("claude-3-5-sonnet-20241022", "3-5-sonnet"),
+        ("gpt-4", "gpt-4"),
+        ("claude-opus", "opus"),
+    ])
+    def test_shorten(self, model, expected):
+        assert TTFTMonitor._shorten(model) == expected
+
+    def test_register_models_sets_short_names(self):
+        mon = TTFTMonitor()
+        mon.register_models("claude-3-opus-20240229", "claude-3-haiku-20240307")
+        assert mon.smart_model_short == "3-opus"
+        assert mon.fast_model_short == "3-haiku"
+
+
+class TestCachePct:
+    def test_record_and_retrieve(self):
+        mon = TTFTMonitor()
+        mon.record_cache_pct(42)
+        mon.record_cache_pct(88)
+        assert list(mon.cache_pct) == [42, 88]
+
+    def test_cache_pct_capped_at_history_size(self):
+        mon = TTFTMonitor()
+        for i in range(TTFTMonitor.HISTORY_SIZE + 10):
+            mon.record_cache_pct(i)
+        assert len(mon.cache_pct) == TTFTMonitor.HISTORY_SIZE
+        assert mon.cache_pct[0] == 10
+
+    def test_cache_pct_empty_initially(self):
+        mon = TTFTMonitor()
+        assert len(mon.cache_pct) == 0

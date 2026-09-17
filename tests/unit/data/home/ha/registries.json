@@ -1,0 +1,39 @@
+{
+  "areas": [
+    {"area_id": "kok", "name": "Kök", "aliases": ["Kitchen"], "floor_id": "ground", "icon": null, "labels": []},
+    {"area_id": "sovrum", "name": "Sovrum", "aliases": [], "floor_id": "upstairs", "icon": null, "labels": []},
+    {"area_id": "hall", "name": "Hall", "aliases": [], "floor_id": "ground", "icon": null, "labels": []}
+  ],
+  "devices": [
+    {"id": "dev_hue", "name": "Hue spots", "name_by_user": null, "area_id": "kok", "via_device_id": "dev_bridge", "config_entry_id": "ce1", "config_subentry_id": null, "labels": [], "identifiers": [["hue", "1"]], "disabled_by": null},
+    {"id": "dev_bridge", "name": "Hue bridge", "name_by_user": null, "area_id": null, "via_device_id": null, "config_entry_id": "ce1", "config_subentry_id": null, "labels": [], "identifiers": [["hue", "bridge"]], "disabled_by": null},
+    {"id": "dev_hall", "name": "Hall panel", "name_by_user": null, "area_id": "hall", "via_device_id": null, "config_entry_id": "ce2", "config_subentry_id": null, "labels": [], "identifiers": [["panel", "1"]], "disabled_by": null},
+    {"id": "dev_door", "parent_device_id": "dev_hall", "config_entry_id": "ce2", "config_subentry_id": null, "area_id": null, "name": "Door contact", "name_by_user": null, "labels": [], "identifiers": [["panel", "1-door"]], "disabled_by": null}
+  ],
+  "entities": [
+    {"entity_id": "light.kitchen_spots", "area_id": null, "device_id": "dev_hue", "name": null, "original_name": "Kitchen spots", "platform": "hue", "disabled_by": null, "hidden_by": null, "entity_category": null, "device_class": null, "aliases": ["Spotlights"], "labels": [], "options": {}},
+    {"entity_id": "switch.kitchen_spots_plug", "area_id": "kok", "device_id": null, "name": "Kitchen spots", "original_name": "Plug", "platform": "tplink", "disabled_by": null, "hidden_by": null, "entity_category": null, "device_class": null, "aliases": [], "labels": [], "options": {}},
+    {"entity_id": "light.bedroom", "area_id": "sovrum", "device_id": null, "name": null, "original_name": "Bedroom lamp", "platform": "hue", "disabled_by": null, "hidden_by": null, "entity_category": null, "device_class": null, "aliases": [], "labels": [], "options": {}},
+    {"entity_id": "light.hall", "area_id": "hall", "device_id": null, "name": null, "original_name": "Hall light", "platform": "hue", "disabled_by": null, "hidden_by": null, "entity_category": null, "device_class": null, "aliases": [], "labels": [], "options": {}},
+    {"entity_id": "fan.bedroom", "area_id": "sovrum", "device_id": null, "name": null, "original_name": "Bedroom fan", "platform": "mqtt", "disabled_by": null, "hidden_by": null, "entity_category": null, "device_class": null, "aliases": [], "labels": [], "options": {}},
+    {"entity_id": "cover.blinds", "area_id": "sovrum", "device_id": null, "name": null, "original_name": "Blinds", "platform": "mqtt", "disabled_by": null, "hidden_by": null, "entity_category": null, "device_class": "blind", "aliases": [], "labels": [], "options": {}},
+    {"entity_id": "lock.front", "area_id": "hall", "device_id": null, "name": null, "original_name": "Front door lock", "platform": "mqtt", "disabled_by": null, "hidden_by": null, "entity_category": null, "device_class": null, "aliases": [], "labels": [], "options": {}},
+    {"entity_id": "sensor.kitchen_temperature", "area_id": null, "device_id": "dev_hue", "name": null, "original_name": "Temperature", "platform": "hue", "disabled_by": null, "hidden_by": null, "entity_category": null, "device_class": null, "aliases": [], "labels": [], "options": {"sensor": {"display_precision": 1}}},
+    {"entity_id": "sensor.bedroom_temperature", "area_id": "sovrum", "device_id": null, "name": null, "original_name": "Temperature", "platform": "mqtt", "disabled_by": null, "hidden_by": null, "entity_category": null, "device_class": null, "aliases": [], "labels": [], "options": {}},
+    {"entity_id": "sensor.hue_signal", "area_id": null, "device_id": "dev_hue", "name": null, "original_name": "Hue signal", "platform": "hue", "disabled_by": null, "hidden_by": null, "entity_category": "diagnostic", "device_class": null, "aliases": [], "labels": [], "options": {}},
+    {"entity_id": "binary_sensor.front_door", "area_id": null, "device_id": "dev_door", "name": null, "original_name": "Front door", "platform": "mqtt", "disabled_by": null, "hidden_by": null, "entity_category": null, "device_class": null, "aliases": [], "labels": [], "options": {}},
+    {"entity_id": "binary_sensor.hidden_motion", "area_id": "hall", "device_id": null, "name": null, "original_name": "Hidden motion", "platform": "mqtt", "disabled_by": null, "hidden_by": "user", "entity_category": null, "device_class": null, "aliases": [], "labels": [], "options": {}},
+    {"entity_id": "input_boolean.night", "area_id": null, "device_id": null, "name": null, "original_name": "Night", "platform": "input_boolean", "disabled_by": null, "hidden_by": null, "entity_category": null, "device_class": null, "aliases": [], "labels": [], "options": {}}
+  ],
+  "exposed": {
+    "sensor.power": {"conversation": true},
+    "lock.front": {"conversation": true},
+    "input_boolean.night": {"conversation": true},
+    "input_number.pool_target": {"conversation": true},
+    "person.marcus": {"conversation": true},
+    "light.bedroom": {"conversation": false, "cloud.alexa": true},
+    "script.goodnight": {"conversation": true},
+    "automation.sunset_lights": {"conversation": true}
+  },
+  "expose_new": true
+}

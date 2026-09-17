@@ -1,0 +1,161 @@
+from typing import Optional, Tuple
+
+from interfaces.console.framework.TUIScreen import TUIScreen, Color
+from interfaces.console.tabs.AuthTab import (AuthTab, BACKSPACE_KEYS, COLOR_YELLOW, ENTER_KEYS, STANDARD_ENTRY_HINT,
+                                             code_display)
+from common.logging import trace
+
+INPUT_PHONE = "phone"
+INPUT_CODE = "code"
+INPUT_PASSWORD = "password"
+
+CODE_LENGTH = 5
+PHONE_MAX = 16
+PHONE_MIN = 8
+
+
+class TelegramTab(AuthTab):
+    """The Telegram feed's login: phone number, the code Telegram sends, and the account's
+    2FA password when it has one."""
+
+    TITLE = "Telegram Feed"
+    HELP = " Ctrl-R reconnect  Ctrl-P authenticate "
+    STATUS_LABELS = {
+        **AuthTab.STATUS_LABELS,
+        "needs_auth": ("Not authenticated", COLOR_YELLOW),
+        "connecting": ("Connecting", COLOR_YELLOW),
+    }
+
+    def __init__(self):
+        super().__init__()
+        self._phone_number = ""
+
+    def _connect(self):
+        from assistant.integration.integrations.TelegramFeedIntegration import TelegramFeedIntegration
+        return TelegramFeedIntegration.get_instance()
+
+    def _draw_entry(self, screen: TUIScreen, y: int) -> int:
+        if self._input_mode == INPUT_PHONE:
+            return self._draw_prompt(screen, y, "Enter phone number (with country code): ", self._input_text or "_",
+                                     "e.g. +48123456789  |  Enter to submit, Esc to cancel")
+        if self._input_mode == INPUT_CODE:
+            return self._draw_prompt(screen, y, "Enter verification code: ", code_display(self._input_text, CODE_LENGTH),
+                                     STANDARD_ENTRY_HINT)
+        if self._input_mode == INPUT_PASSWORD:
+            return self._draw_prompt(screen, y, "Enter 2FA password: ", "*" * len(self._input_text) or "_",
+                                     STANDARD_ENTRY_HINT)
+        return super()._draw_entry(screen, y)
+
+    def _entry_hint(self) -> Optional[Tuple[str, Color]]:
+        if self.status == "needs_auth":
+            return "Press Ctrl+P to start authentication", COLOR_YELLOW
+        return None
+
+    def _handle_key(self, key: str) -> bool:
+        if key == '\x10':  # Ctrl+P
+            self._input_mode = INPUT_PHONE
+            self._input_text = "+"
+            self._status_message = ""
+            return True
+        return False
+
+    def _handle_entry_key(self, key: str) -> bool:
+        mode, text = self._input_mode, self._input_text
+        if key == 'escape':
+            self._cancel_login()
+        elif key in ENTER_KEYS:
+            trace(f"TelegramTab: Enter pressed in {mode} mode, buffer='{text}' (len={len(text)})")
+            if mode == INPUT_PHONE and len(text) >= PHONE_MIN:
+                self._submit_phone()
+            elif mode == INPUT_CODE and len(text) >= CODE_LENGTH:
+                self._submit_code()
+            elif mode == INPUT_PASSWORD and text:
+                self._submit_password()
+            else:
+                trace("TelegramTab: Enter ignored — input too short")
+        elif key in BACKSPACE_KEYS:
+            if text and (mode != INPUT_PHONE or len(text) > 1):   # the phone keeps its '+'
+                self._input_text = text[:-1]
+        elif mode == INPUT_PHONE:
+            if key.isdigit() and len(text) < PHONE_MAX:
+                self._input_text += key
+        elif mode == INPUT_CODE:
+            if key.isdigit() and len(text) < CODE_LENGTH:
+                self._input_text += key
+                if len(self._input_text) == CODE_LENGTH:
+                    self._submit_code()
+        elif mode == INPUT_PASSWORD:
+            if len(key) == 1 and ord(key) >= 32:
+                self._input_text += key
+        return True
+
+    def _cancel_login(self):
+        """Esc: the entry ends and the integration drops its login client, so an unfinished
+        login leaves nothing behind."""
+        self._cancel_entry()
+        api = self._get_api()
+        if api:
+            trace("TelegramTab: login cancelled")
+            self._run(api.abort_login)
+
+    def _submit_phone(self):
+        phone = self._input_text
+        self._phone_number = phone
+        trace(f"TelegramTab: sending code request to {phone}")
+
+        def send(api):
+            sent = api.send_code_request(phone)
+            trace(f"TelegramTab: code sent successfully to {phone}")
+            self._status_message = f"Code sent {api.code_destination(sent)} — waiting for it."
+            self._input_mode = INPUT_CODE
+            self._input_text = ""
+
+        self._act("Sending verification code...", send)
+
+    def _submit_code(self):
+        code, phone = self._input_text, self._phone_number
+
+        def sign_in(api):
+            try:
+                api.sign_in(phone, code)
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "password" in err_msg or "2fa" in err_msg or "two-step" in err_msg:
+                    self._status_message = "2FA password required"
+                    self._input_mode = INPUT_PASSWORD
+                    self._input_text = ""
+                    return
+                raise
+            self._signed_in(api)
+
+        self._act("Signing in...", sign_in)
+
+    def _submit_password(self):
+        password = self._input_text
+
+        def sign_in(api):
+            api.sign_in_2fa(password)
+            self._signed_in(api)
+
+        self._act("Verifying 2FA password...", sign_in)
+
+    def _signed_in(self, api):
+        """The sign-in wrote the session file; the restart builds the instance that opens it."""
+        self._status_message = "Authentication successful!"
+        api.restart_feed()
+        self._check_auth_status()
+
+    def _refresh(self):
+        self._status_message = "Reconnecting..."
+
+        def reconnect():
+            api = self._get_api()
+            if api:
+                try:
+                    api.restart_feed()
+                    self._status_message = "Reconnect initiated"
+                except Exception as e:
+                    self._status_message = f"Error: {e}"
+            self._check_auth_status()
+
+        self._run(reconnect)

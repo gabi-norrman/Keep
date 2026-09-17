@@ -1,0 +1,505 @@
+import re
+
+
+class CommandParser:
+    """Recognises and parses `command(params)` invocations in the LLM's streamed reply text."""
+    COMMAND_PARAMETERS_START = "("
+    COMMAND_PARAMETERS_END = ")"
+
+    # Commands whose argument is opaque source text (e.g. JavaScript) that must
+    # not be normalized — clean_parameters would strip quotes/brackets/backticks
+    # and mangle name: prefixes that are valid syntax in the payload.
+    RAW_PARAM_COMMANDS = {"browse_eval"}
+
+    # Commands whose arguments are setting keys, where "[N]" is a list index
+    # (icloud.devices[0].id) and must not be normalized to parens like the
+    # home automation names every other command carries.
+    KEEP_BRACKETS_COMMANDS = {"config_set", "config_help", "config_request"}
+
+    def __init__(self, possible_commands: list[str]):
+        self.possible_commands = possible_commands
+
+    @staticmethod
+    def _strip_code_tags(content: str) -> str:
+        """Strip <code> and </code> tags that the LLM may wrap commands in."""
+        return content.replace("<code>", "").replace("</code>", "")
+
+    def is_possibly_command(self, content: str) -> bool:
+        content = content.strip()
+        if len(content) <= 0:
+            return True
+        content_lower = content.lower()
+        stripped_lower = self._strip_code_tags(content_lower)
+        for c in self.possible_commands:
+            c += self.COMMAND_PARAMETERS_START
+            if c.startswith(content_lower) or content_lower.startswith(c):
+                return True
+            if stripped_lower != content_lower:
+                if c.startswith(stripped_lower) or stripped_lower.startswith(c):
+                    return True
+        return False
+
+    def unterminated_command(self, content: str) -> str | None:
+        """The name of the command `content` opens but never closes — a whole known name
+        followed by '(' — or None. A bare name or a name prefix is a mention (the prompt
+        tells the LLM to leave the parentheses out when it only talks about a command),
+        never a call, so it does not count."""
+        stripped_lower = self._strip_code_tags(content).strip().lower()
+        matches = [c for c in self.possible_commands
+                   if stripped_lower.startswith(c + self.COMMAND_PARAMETERS_START)]
+        return max(matches, key=len) if matches else None
+
+    @staticmethod
+    def _is_list_marker_paren(content: str, pos: int, streaming: bool = False) -> bool:
+        """Check if ')' at pos is part of a numbered list marker like '1)', '2)'.
+        Returns True when digit(s) before ')' are preceded by a list-introducing
+        context: newline, colon/semicolon, or sentence-ending punctuation.
+        For inline markers (not after newline), also requires content after the ')'
+        to distinguish '1) item text' from 'param: 75)' at end of command.
+        When streaming=True and there's no content after ')' yet (ambiguous),
+        assumes it's a list marker to avoid premature command closing.
+        A colon preceded by a single identifier right after '(' or ',' is treated
+        as parameter assignment (e.g. 'name: value') rather than list context."""
+        if pos == 0:
+            return False
+        digit_start = pos - 1
+        while digit_start >= 0 and content[digit_start].isdigit():
+            digit_start -= 1
+        if digit_start == pos - 1:
+            return False
+        check_pos = digit_start
+        while check_pos >= 0 and content[check_pos] in (' ', '\t'):
+            check_pos -= 1
+        if check_pos < 0:
+            return True
+        ch = content[check_pos]
+        if ch in ('\n', '\r'):
+            return True
+        if ch in (':', ';', '.', '?', '!'):
+            if ch == ':':
+                p = check_pos - 1
+                while p >= 0 and content[p] in (' ', '\t'):
+                    p -= 1
+                id_end = p
+                while p >= 0 and (content[p].isalnum() or content[p] == '_'):
+                    p -= 1
+                if id_end > p:
+                    identifier = content[p + 1:id_end + 1]
+                    # When identifier before ':' is purely numeric (e.g. "12" in
+                    # "end_time: 12:00"), look further back for a named parameter
+                    # context — "param: digits:digits)" is a time value, not list context.
+                    if identifier.isdigit():
+                        if CommandParser._is_bare_datetime_value(content, id_end):
+                            return False
+                        q = p
+                        while q >= 0 and content[q] in (' ', '\t'):
+                            q -= 1
+                        if q >= 0 and content[q] in (':', '='):
+                            q -= 1
+                            while q >= 0 and content[q] in (' ', '\t'):
+                                q -= 1
+                            name_end = q
+                            while q >= 0 and (content[q].isalnum() or content[q] == '_'):
+                                q -= 1
+                            if name_end > q:
+                                while q >= 0 and content[q] in (' ', '\t'):
+                                    q -= 1
+                                if q < 0 or content[q] in ('(', ','):
+                                    return False
+                    while p >= 0 and content[p] in (' ', '\t'):
+                        p -= 1
+                    if p < 0 or content[p] in ('(', ','):
+                        return False
+            stripped = content[pos + 1:].lstrip()
+            if streaming and len(stripped) == 0:
+                return True
+            return len(stripped) > 0 and stripped[0] != ')'
+        return False
+
+    @staticmethod
+    def _is_bare_datetime_value(content: str, end: int) -> bool:
+        """True when the parameter segment ending at `end` (the last char before the
+        time's ':') holds no letters — a positional date/time value like
+        '2026-09-07 23:59' rather than prose with a time in it ('Meeting at 12:00').
+        The segment runs back to the enclosing '(' or the previous ','."""
+        q = end
+        while q >= 0 and content[q] not in ('(', ','):
+            if content[q].isalpha():
+                return False
+            q -= 1
+        return q >= 0
+
+    @staticmethod
+    def _is_list_continuation(content: str, pos: int) -> bool:
+        """Check if ')' at pos continues an already-identified numbered list.
+        Returns True when digits precede ')' and non-empty content follows,
+        indicating '2) next item' rather than a command terminator."""
+        if pos == 0:
+            return False
+        digit_start = pos - 1
+        while digit_start >= 0 and content[digit_start].isdigit():
+            digit_start -= 1
+        if digit_start == pos - 1:
+            return False
+        stripped = content[pos + 1:].lstrip()
+        return len(stripped) > 0 and stripped[0] != ')'
+
+    def _command_uses_raw_params(self, content: str) -> bool:
+        """True when content begins with a RAW_PARAM_COMMANDS command (e.g. browse_eval).
+        Single-quoted strings in those commands' JS args must be paren-skipped too."""
+        paren_idx = content.find(self.COMMAND_PARAMETERS_START)
+        if paren_idx <= 0:
+            return False
+        name = self._strip_code_tags(content[:paren_idx]).strip().lower()
+        return name in self.RAW_PARAM_COMMANDS
+
+    # JS keywords that allow a regex literal to follow them (rather than division).
+    _REGEX_PRECEDING_KEYWORDS = {
+        "return", "typeof", "in", "of", "new", "delete", "throw", "void",
+        "else", "do", "instanceof", "yield", "await", "case",
+    }
+
+    @classmethod
+    def _is_regex_start(cls, content: str, pos: int) -> bool:
+        """Heuristic: is the '/' at pos the start of a JS regex literal (vs division)?
+        Regex follows expression-start contexts: openers, operators, commas, or certain
+        keywords (return, typeof, ...). Division follows identifiers, numbers, or ')', ']'."""
+        p = pos - 1
+        while p >= 0 and content[p] in ' \t\n\r':
+            p -= 1
+        if p < 0:
+            return True
+        prev = content[p]
+        if prev.isalnum() or prev == '_' or prev == ')' or prev == ']':
+            end = p
+            while p >= 0 and (content[p].isalnum() or content[p] == '_'):
+                p -= 1
+            ident = content[p + 1:end + 1]
+            return ident in cls._REGEX_PRECEDING_KEYWORDS
+        return True
+
+    @staticmethod
+    def _skip_regex_literal(content: str, pos: int) -> int:
+        """Given pos pointing at the opening '/' of a regex literal, return the index
+        right after the closing '/' (and any trailing flag chars). Handles escaped
+        chars and character classes [...]. If unterminated, returns len(content)."""
+        n = len(content)
+        i = pos + 1
+        in_class = False
+        while i < n:
+            ch = content[i]
+            if ch == '\\' and i + 1 < n:
+                i += 2
+                continue
+            if ch == '[' and not in_class:
+                in_class = True
+            elif ch == ']' and in_class:
+                in_class = False
+            elif ch == '/' and not in_class:
+                i += 1
+                while i < n and content[i].isalpha():
+                    i += 1
+                return i
+            elif ch == '\n':
+                return i
+            i += 1
+        return n
+
+    def _find_matching_paren(self, content: str, streaming: bool = False) -> int:
+        """Find index of the closing ')' that matches the first '('.
+        Parentheses inside double-quoted strings are ignored. For commands whose
+        argument is opaque source text (RAW_PARAM_COMMANDS, e.g. browse_eval),
+        single-quoted strings AND JS regex literals are also paren-skipped — JS args
+        routinely contain unmatched quotes/parens inside `'...'` strings or `/.../` regexes."""
+        start = content.find(self.COMMAND_PARAMETERS_START)
+        if start < 0:
+            return -1
+        track_single = self._command_uses_raw_params(content)
+        depth = 0
+        in_double_quote = False
+        in_single_quote = False
+        list_markers_at_depth1 = 0
+        n = len(content)
+        i = start
+        while i < n:
+            ch = content[i]
+            if track_single and not in_double_quote and not in_single_quote and ch == '/' and self._is_regex_start(content, i):
+                i = self._skip_regex_literal(content, i)
+                continue
+            if ch == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+            elif ch == "'" and track_single and not in_double_quote:
+                in_single_quote = not in_single_quote
+            elif not in_double_quote and not in_single_quote:
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    if depth == 1:
+                        if self._is_list_marker_paren(content, i, streaming):
+                            list_markers_at_depth1 += 1
+                            i += 1
+                            continue
+                        if list_markers_at_depth1 > 0 and self._is_list_continuation(content, i):
+                            list_markers_at_depth1 += 1
+                            i += 1
+                            continue
+                    depth -= 1
+                    if depth == 0:
+                        return i
+            i += 1
+        return -1
+
+    def extract_command_and_params(self, content: str, streaming: bool = False) -> tuple[tuple[str, list[str]] | None, str | None]:
+        """
+        Extract command name and parameters from content.
+        Returns ((command_name, params_list), remainder) or (None, None) if not a complete command.
+        params_list is a list of cleaned argument strings (one entry per comma-separated parameter).
+        For RAW_PARAM_COMMANDS the list always contains a single element with the verbatim payload.
+        """
+        # Strip <code> tags so commands wrapped in them are parsed correctly
+        content = self._strip_code_tags(content)
+
+        index = self._find_matching_paren(content, streaming)
+        if index <= 0:
+            return None, None
+
+        command_with_params = content[:index + 1]
+        remainder = content[index + 1:]
+
+        command_name = command_with_params.split('(', 1)[0].lower().strip()
+        raw_params = self.extract_parameters(command_with_params)
+        is_raw = command_name in self.RAW_PARAM_COMMANDS
+        keep_brackets = command_name in self.KEEP_BRACKETS_COMMANDS
+        params = self.split_parameters(raw_params, raw_param_command=is_raw, keep_brackets=keep_brackets)
+
+        return (command_name, params), remainder
+
+    def extract_parameters(self, command: str) -> str:
+        """Extract raw parameters from command string."""
+        start = command.find(self.COMMAND_PARAMETERS_START)
+        end = command.rfind(self.COMMAND_PARAMETERS_END)
+        if 0 <= start < end:
+            return command[start + 1:end]
+        return ""
+
+    # Characters recognized as quote delimiters when they appear at the start of
+    # a parameter (immediately after '(' or ',', possibly preceded by whitespace).
+    # Mid-token occurrences are treated as literal characters to avoid breaking
+    # natural-language parameters like remember(I'm tired).
+    _QUOTE_CHARS = ('"', "'", "`")
+
+    @classmethod
+    def split_parameters(cls, raw: str, raw_param_command: bool = False,
+                         keep_brackets: bool = False) -> list[str]:
+        """Split raw parameter text into a list of cleaned argument strings.
+
+        Quote-aware: when a parameter starts with ", ', or `, the matching closing
+        quote delimits the argument (commas, parentheses, etc. inside are part of
+        the value). Inside a quoted argument, escape sequences \\", \\', \\`, and
+        \\\\ are resolved to their literal characters; other backslash escapes
+        pass through as-is.
+
+        Unquoted arguments fall through to clean_parameter() so that legacy LLM
+        output (param_name: value, type=value, etc.) keeps working.
+
+        For RAW_PARAM_COMMANDS the entire payload is returned as a single-element
+        list with no cleaning applied. With keep_brackets (KEEP_BRACKETS_COMMANDS)
+        square brackets stay as written instead of becoming parentheses.
+        """
+        if raw_param_command:
+            return [raw]
+
+        if raw.strip() == "":
+            return []
+
+        tokens: list[str] = []
+        n = len(raw)
+        i = 0
+        while i < n:
+            # Skip leading whitespace at the start of each parameter slot
+            while i < n and raw[i] in ' \t':
+                i += 1
+            if i >= n:
+                tokens.append("")
+                break
+
+            ch = raw[i]
+            if ch in cls._QUOTE_CHARS:
+                quote = ch
+                i += 1
+                buf: list[str] = []
+                while i < n:
+                    c = raw[i]
+                    if c == '\\' and i + 1 < n and raw[i + 1] in ('"', "'", '`', '\\'):
+                        buf.append(raw[i + 1])
+                        i += 2
+                        continue
+                    if c == quote:
+                        i += 1
+                        break
+                    buf.append(c)
+                    i += 1
+                # Skip whitespace right after the closing quote.
+                while i < n and raw[i] in ' \t':
+                    i += 1
+                # Tolerate stray non-whitespace text between the closing quote
+                # and the next comma — append it to the value so nothing is
+                # silently lost (e.g. "abc"def parses as "abcdef").
+                while i < n and raw[i] != ',':
+                    buf.append(raw[i])
+                    i += 1
+                # Normalize square brackets to parens so room-name suffixes like
+                # "Ceiling Spots [Garage]" match the parser's canonical form
+                # whether or not the LLM wrapped the value in quotes.
+                value = ''.join(buf)
+                if not keep_brackets:
+                    value = value.replace("[", "(").replace("]", ")")
+                tokens.append(value)
+            else:
+                buf = []
+                while i < n and raw[i] != ',':
+                    buf.append(raw[i])
+                    i += 1
+                tokens.append(cls.clean_parameter(''.join(buf), keep_brackets=keep_brackets))
+
+            if i < n and raw[i] == ',':
+                i += 1
+                # If the comma was the final char, an empty trailing token is implied.
+                if i >= n:
+                    tokens.append("")
+        return tokens
+
+    @classmethod
+    def clean_parameter(cls, token: str, keep_brackets: bool = False) -> str:
+        """Clean a single unquoted parameter token.
+
+        Strips a leading 'name:' / 'name=' / 'str=' / 'int=' prefix (the LLM
+        sometimes emits parameter names), strips matching outer quotes around
+        the resulting value (so `name: "value"` becomes `value`), replaces
+        square brackets with parens (unless keep_brackets), and trims whitespace. URL schemes
+        (https:, http:, ftp:) and music ID prefixes (F-1, P-0) are protected
+        from the prefix stripper.
+        """
+        token = token.strip()
+        # Strip leading param-name prefix: "param: value" -> "value", "param=value" -> "value"
+        token = re.sub(
+            r'^(?![FP]-\d)(?!https?:|ftp:)[a-z_][a-z0-9_]*\s*[:=]\s*',
+            '',
+            token,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        # Strip type annotations like str="value" or int=123
+        token = re.sub(r'\b(str|int)[=:]', '', token, flags=re.IGNORECASE)
+        token = token.strip()
+        # If what remains is wrapped in matching outer quotes, peel them off
+        # and resolve common escape sequences inside.
+        if len(token) >= 2 and token[0] in cls._QUOTE_CHARS and token[-1] == token[0]:
+            inner = token[1:-1]
+            inner = (inner.replace('\\\\', '\x00')
+                          .replace('\\"', '"')
+                          .replace("\\'", "'")
+                          .replace('\\`', '`')
+                          .replace('\x00', '\\'))
+            token = inner
+        if not keep_brackets:
+            token = token.replace("[", "(").replace("]", ")")
+        return token.strip()
+
+    @classmethod
+    def clean_parameters(cls, params: str) -> str:
+        """Back-compat shim: tokenize quote-aware, clean each token, re-join with ', '.
+
+        Most callers should use split_parameters() directly to preserve parameter
+        boundaries (especially for multi-arg commands with embedded commas in
+        quoted values). This shim exists for tests and any external callers that
+        still want the legacy single-string view.
+        """
+        return ", ".join(cls.split_parameters(params))
+
+    def find_complete_command(self, content: str, streaming: bool = False) -> bool:
+        """
+        Check if content contains a complete command with balanced parentheses.
+        Parentheses inside double-quoted strings are ignored. For RAW_PARAM_COMMANDS
+        (e.g. browse_eval), parens inside single-quoted strings AND JS regex literals
+        are also ignored.
+        """
+        content = self._strip_code_tags(content)
+        track_single = self._command_uses_raw_params(content)
+        open_count = 0
+        close_count = 0
+        in_double_quote = False
+        in_single_quote = False
+        list_markers_at_depth1 = 0
+        n = len(content)
+        i = 0
+        while i < n:
+            ch = content[i]
+            if track_single and not in_double_quote and not in_single_quote and ch == '/' and self._is_regex_start(content, i):
+                i = self._skip_regex_literal(content, i)
+                continue
+            if ch == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+            elif ch == "'" and track_single and not in_double_quote:
+                in_single_quote = not in_single_quote
+            elif not in_double_quote and not in_single_quote:
+                if ch == '(':
+                    open_count += 1
+                elif ch == ')':
+                    if open_count - close_count == 1:
+                        if self._is_list_marker_paren(content, i, streaming):
+                            list_markers_at_depth1 += 1
+                            i += 1
+                            continue
+                        if list_markers_at_depth1 > 0 and self._is_list_continuation(content, i):
+                            list_markers_at_depth1 += 1
+                            i += 1
+                            continue
+                    close_count += 1
+            i += 1
+        return open_count > 0 and close_count >= open_count
+
+    def find_command_start(self, content: str) -> int:
+        """Scan content for the earliest `command_name(` pattern. Returns the position, or -1."""
+        content_lower = content.lower()
+        earliest = -1
+        for cmd in self.possible_commands:
+            pos = content_lower.find(cmd + self.COMMAND_PARAMETERS_START)
+            if pos >= 0 and (earliest == -1 or pos < earliest):
+                earliest = pos
+        return earliest
+
+    def find_partial_command_tail(self, content: str) -> int:
+        """Find position where the tail of content is a prefix of a known command name.
+        Returns the start position of the partial match, or -1 if none found.
+        Used during streaming to avoid flushing a partial command name embedded at the buffer's end.
+        Only matches at word boundaries (preceded by whitespace or start of string) to avoid
+        false positives like 'text' matching the 't' in 'turn_on'."""
+        content_lower = content.lower()
+        best_pos = -1
+        for cmd in self.possible_commands:
+            for length in range(min(len(cmd), len(content_lower)), 0, -1):
+                if content_lower.endswith(cmd[:length]):
+                    pos = len(content_lower) - length
+                    if pos > 0 and content_lower[pos - 1] not in (' ', '\t', '\n', '\r'):
+                        break
+                    if pos > 0 and (best_pos == -1 or pos < best_pos):
+                        best_pos = pos
+                    break
+        return best_pos
+
+    def extract_all_commands(self, content: str) -> list[tuple[str, list[str]]]:
+        """Extract every command from a complete string, returning list of (command_name, params)."""
+        commands = []
+        remaining = self._strip_code_tags(content.replace("`", ""))
+        while remaining:
+            pos = self.find_command_start(remaining)
+            if pos < 0:
+                break
+            result, extra = self.extract_command_and_params(remaining[pos:])
+            if result is not None:
+                commands.append(result)
+                remaining = extra or ""
+            else:
+                remaining = remaining[pos + 1:]
+        return commands

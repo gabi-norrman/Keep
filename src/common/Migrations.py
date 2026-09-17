@@ -1,0 +1,36 @@
+"""One-off moves of what an install keeps on disk, run by the launcher before anything reads
+it. Each entry can go once every install has started on the release that added it."""
+from common import ConfigStore
+from common.Paths import AISERVER_DIR
+from common.logging import info, trace, error
+
+# 2026-09-17: "Telegram Monitor" became "Telegram Feed" and the bot's section `telegram` became
+# `telegram_bot`, so the two Telegram connections can no longer be taken for each other.
+CONFIG_KEY_RENAMES = {
+    "telegram": "telegram_bot",
+    "telegram_monitor": "telegram_feed",
+    "feeds.telegram_monitor": "feeds.telegram_feed",
+}
+INTEGRATION_RENAMES = {"Telegram Monitor": "Telegram Feed"}
+# The Telethon session: without the move the feed would ask for a new login (code + 2FA).
+FILE_RENAMES = {
+    "telegram_monitor.session": "telegram_feed.session",
+    "telegram_monitor.session-journal": "telegram_feed.session-journal",
+}
+
+
+def run():
+    try:
+        for change in ConfigStore.rename_keys(CONFIG_KEY_RENAMES, INTEGRATION_RENAMES):
+            info(f"Migration: config.yaml {change}")
+    except Exception as e:
+        error(f"Migration: config.yaml keys not renamed ({type(e).__name__}: {e}) — rename them by hand: {CONFIG_KEY_RENAMES}")
+    for old_name, new_name in FILE_RENAMES.items():
+        old, new = AISERVER_DIR / old_name, AISERVER_DIR / new_name
+        if not old.exists():
+            trace(f"Migration: no {old_name} to move")
+        elif new.exists():
+            info(f"Migration: both {old_name} and {new_name} exist — {old_name} left in place")
+        else:
+            old.rename(new)
+            info(f"Migration: {old_name} moved to {new_name}")
