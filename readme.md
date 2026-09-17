@@ -15,24 +15,45 @@ todo: riktiga bilder
 
 ## Features
 
-- 🧠 **Remembers**
-  - Every night Keep goes into REM sleep, replays the day and curates its long-term memory.<br>*"Remember that Sam hates cilantro."*
-- 🔎 **Searches your whole life**
-  - Every conversation, message, mail, photo and video you ever had is searchable.<br>*"What year did we renovate the kitchen?"*
-- 📸 **Knows your photo library**
-  - Every photo and video is described and indexed: what is in it, who, where, even what is said.<br>*"Find the video where Lily rides her bike on the beach."*
-- ⏰ **Acts on its own**
-  - Keep checks in every hour, schedules its own wake-ups and pings you when the moment comes.<br>*"Let me know when my wife is ten minutes out."*
-- 🗣️ **Listens**
-  - Fast voice-to-voice for the everyday stuff, and it recognizes who is speaking, so "my" means you.<br>*"Where's my phone?"*
-- 🏠 **Runs the house**
-  - Lights, music, cameras, rain radar and the car, all in one conversation.<br>*"Let me know when there's a package by the door."*
-- ✉️ **Handles the boring parts**
-  - Email with attachments, calendar, the shared shopping list, iMessages, even web forms and checkouts.<br>*"Reply to the plumber that Thursday works."*
-- 🔐 **Never sees your secrets**
-  - Passwords and card numbers are typed into a masked prompt and stay encrypted on your Mac; the AI only gets a placeholder.<br>*"Save my new card."*
-- 🛠️ **Fixes itself**
-  - Keep reads its own logs and source, finds the cause and opens a pull request for you to review.<br>*"Why was that so slow?"*
+<table>
+  <tr><th align="left">Keep…</th><th></th></tr>
+  <tr>
+    <td valign="top">🧠&nbsp;<b>Remembers</b></td>
+    <td>Sleeps on it every night and wakes up knowing you better.<blockquote><i>"Where should we eat tonight, find something everyone likes."</i></blockquote></td>
+  </tr>
+  <tr>
+    <td valign="top">🔎&nbsp;<b>Searches&nbsp;your&nbsp;whole&nbsp;life</b></td>
+    <td>Every chat, mail, photo and video, years back.<blockquote><i>"What year did we renovate the kitchen?"</i></blockquote></td>
+  </tr>
+  <tr>
+    <td valign="top">📸&nbsp;<b>Knows&nbsp;your&nbsp;photo&nbsp;library</b></td>
+    <td>Every photo and video indexed: who, what, where, even what was said.<blockquote><i>"Find the picture of Lily looking at a lamp that looks like the moon."</i></blockquote></td>
+  </tr>
+  <tr>
+    <td valign="top">⏰&nbsp;<b>Acts&nbsp;on&nbsp;its&nbsp;own</b></td>
+    <td>Wakes itself up, keeps watch, pings you when it matters.<blockquote><i>"Let me know when my wife is ten minutes out."</i></blockquote></td>
+  </tr>
+  <tr>
+    <td valign="top">🗣️&nbsp;<b>Listens</b></td>
+    <td>Fast voice-to-voice, and it knows who is talking.<blockquote><i>"Where's my phone?"</i></blockquote></td>
+  </tr>
+  <tr>
+    <td valign="top">🏠&nbsp;<b>Runs&nbsp;the&nbsp;house</b></td>
+    <td>Lights, music, cameras, rain radar, the car.<blockquote><i>"Let me know when there's a package by the door."</i></blockquote></td>
+  </tr>
+  <tr>
+    <td valign="top">✉️&nbsp;<b>Handles&nbsp;the&nbsp;boring&nbsp;parts</b></td>
+    <td>Email, calendar, shopping list, iMessage, even web checkouts.<blockquote><i>"Clear out the spam in my inbox."</i></blockquote></td>
+  </tr>
+  <tr>
+    <td valign="top">🔐&nbsp;<b>Never&nbsp;sees&nbsp;your&nbsp;secrets</b></td>
+    <td>Passwords and cards stay encrypted on your Mac. The AI gets a placeholder.<blockquote><i>"Use my card to pay for that."</i></blockquote></td>
+  </tr>
+  <tr>
+    <td valign="top">🛠️&nbsp;<b>Fixes&nbsp;itself</b></td>
+    <td>Reads its own logs and code, then sends you the pull request.<blockquote><i>"Could you build an integration for my car?"</i></blockquote></td>
+  </tr>
+</table>
 
 ## Requirements
 
