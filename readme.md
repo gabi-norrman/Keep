@@ -1,12 +1,10 @@
-# Keep — AI assistance done right
+# Keep — personal AI done right
 
-Keep is a self-hosted AI assistant that runs on a Mac in your home and actually knows your life: your mail, your
-photos, your calendar, your house, your car, and everything you have ever told it. 
+Keep is a self-hosted AI assistant that runs on a Mac in your home and actually truly your life. 
 
-It is built for people who live in the <b>Apple / iCloud ecosystem</b>, and it runs on <b>Apple Silicon Macs</b> only.
+It is built for people who live in the <b>Apple / iCloud ecosystem</b>, and it runs on <b>Apple Silicon Macs</b> only. Uses Fable from Anthropic for intelligence. 
 
-Refined over two years, its robust and actually WORKS. 
-
+Refined over two years; its robust and actually WORKS. 
 
 <p align="center">
   <img src="docs/images/example_2.png" width="32%" align="top" alt="Keep identifies a chair from a photo and finds the order and price in the mail">
@@ -59,7 +57,7 @@ nightmare. Here is where Keep stands today.
 
 - **Your data lives on your Mac.** The database, photo index, logs and voice profiles never leave it, and
   there is no Keep cloud.
-- **The thinking happens in Anthropics servers.** Make sure you have data retention off. 
+- **The thinking happens on the Anthropics servers.** Make sure you have data retention off. 
 - **Secrets stay out of it.** The Keep Vault keeps passwords, card numbers and the like encrypted on your Mac, and the AI
   only ever sees placeholders. It is a system for hiding secrets from the cloud, not for anonymizing everything you say.
 - **The long game is 100% local.** Keep already runs on local models and once the SOTA local models are good enough we will move to local only.
