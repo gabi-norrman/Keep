@@ -2,9 +2,9 @@
 
 Keep is a self-hosted AI assistant that runs on a Mac in your home and truly knows your life.
 
-It is built for people who live in the <b>Apple / iCloud ecosystem</b>, and it runs on <b>Apple Silicon Macs</b> only and is powered by Fable from Anthropic 
+It is built for people who live in the <b>Apple / iCloud ecosystem</b>, and it runs on <b>Apple Silicon Macs</b> only and is powered by <b>Fable from Anthropic</b> 
 
-Refined over two years of daily use in a real home: it's robust, and it <b>actually works</b>.
+Refined over two years of daily use in a real home: it's robust, and it <b><i>actually works</i></b>.
 
 <p align="center">
   <img src="docs/images/example_2.png" width="32%" align="top" alt="Keep identifies a chair from a photo and finds the order and price in the mail">
