@@ -9,8 +9,8 @@ Designed to run on Python 3.12.
 Make sure `python` points to 3.12, then from the `Floxy/` root folder:
 
 ```bash
-python -m venv venv
-source venv/bin/activate
+python3.12 -m venv .venv
+source .venv/bin/activate
 ```
 
 ### System Dependencies (macOS)
