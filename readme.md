@@ -5,30 +5,36 @@ photos, your calendar, your house, your car, and everything you have ever told i
 
 It is built for people who live in the <b>Apple / iCloud ecosystem</b>, and it runs on <b>Apple Silicon Macs</b> only.
 
+Refined over two years, its robust and actually WORKS. 
+
+
 <p align="center">
   <img src="docs/images/example_2.png" width="32%" align="top" alt="Keep identifies a chair from a photo and finds the order and price in the mail">
   <img src="docs/images/example_3.png" width="32%" align="top" alt="Keep finds photos of a room in the photo library">
   <img src="docs/images/example_1.png" width="32%" align="top" alt="Keep completes an online order and summarizes the delivery">
 </p>
+todo: riktiga bilder
 
 ## Features
 
-- 🧠 **Keep remembers.** 
-  - Every night Keep goes into REM sleep, reviews the day and curates its long-term memory
-- 🔎 **Keep can look anything up — in your own life.**
-  - Conversations, messages, mail, photos and videos are all searchable
-- 📸 **Keep knows your photo library.** 
-  - The whole library is described and indexed: what, who, where, what is said in a video.
-- ⏰ **Keep acts on its own.** 
-  - *"Tell me when it's about to rain."* *"Let me know when Sam is ten minutes out."*
-- 🗣️ **Keep listens.**
-  - Aggressively optimized fast voice-to-voice for the everyday stuff (*"turn off the kitchen lights"*), and it recognizes who is speaking, so *"where my phone"* pings the correct phone.
-- 🏠 **It runs the house.** Lights, scenes and sensors through Home Assistant or Indigo, music, timers, a
-  to-the-minute rain radar, Arlo and Ring cameras (*"who's at the door?"*), and your Tesla (*"defrost at 7:30"*).
-- ✉️ **It handles the boring parts.** Reads, searches and answers email (PDF attachments included), keeps the
-  calendar and the shared shopping list, sends iMessages, finds a lost iPhone, browses the web and fills in the forms.
-- 🔐 **It never sees your secrets.** Card numbers and passwords go into a masked prompt and are stored encrypted on
-  your Mac. The AI only ever gets a placeholder, yet it can still use the value where it is needed.
+- 🧠 **Keep remembers**
+  - Every night Keep goes into REM sleep, replays the day and curates its long-term memory<br>*"Remember that Sam hates cilantro."*
+- 🔎 **Can look anything up — in your own life**
+  - Every conversation, message, mail, photo and video you ever had is searchable.<br>*"What year did we renovate the kitchen?"*
+- 📸 **Knows your photo library**
+  - Every photo and video is described and indexed: what is in it, who, where, even what is said.<br>*"Find the video where Lily rides her bike on the beach."*
+- ⏰ **Acts on its own**
+  - Keep checks in every hour, schedules its own wake-ups and pings you when the moment comes.<br>*"Let me know when my wife is ten minutes out."*
+- 🗣️ **Listens**
+  - Fast voice-to-voice for the everyday stuff, and it recognizes who is speaking, so "my" means you.<br>*"Where's my phone?"*
+- 🏠 **Runs the house**
+  - Lights, music, cameras, rain radar and the car, all in one conversation.<br>*"Let me know when there's a package by the door"*
+- ✉️ **Handles the boring parts**
+  - Email with attachments, calendar, the shared shopping list, iMessages, even web forms and checkouts.<br>*"Reply to the plumber that Thursday works."*
+- 🔐 **Never sees your secrets**
+  - Passwords and card numbers are typed into a masked prompt and stay encrypted on your Mac; the AI only gets a placeholder.<br>*"Save my new card."*
+- 🛠️ **Fixes itself**
+  - Keep reads its own logs and source, finds the cause and opens a pull request for you to review.<br>*"Why was that so slow?"*
 
 ## Requirements
 
@@ -51,9 +57,9 @@ curl ..... TBD
 Let's be honest: an assistant that reads your mail, sees your photos and listens in your kitchen is a bit of a privacy
 nightmare. Here is where Keep stands today.
 
-- **Your data lives on your Mac.** The database, memory, photo index, logs and voice profiles never leave it, and
+- **Your data lives on your Mac.** The database, photo index, logs and voice profiles never leave it, and
   there is no Keep cloud.
-- **The thinking happens in Anthropics servers.** 
+- **The thinking happens in Anthropics servers.** Make sure you have data retention off. 
 - **Secrets stay out of it.** The Keep Vault keeps passwords, card numbers and the like encrypted on your Mac, and the AI
   only ever sees placeholders. It is a system for hiding secrets from the cloud, not for anonymizing everything you say.
 - **The long game is 100% local.** Keep already runs on local models and once the SOTA local models are good enough we will move to local only.
