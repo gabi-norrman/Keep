@@ -171,6 +171,24 @@ class TestConsentScriptKeepsTheDocument:
         assert out['ids'] == ['root', 'head', 'body', 'shell', 'order']
         assert out['result'] == {'clicked': 0, 'removed': 0, 'kept': 2}
 
+    def test_script_source_does_not_dilute_a_content_wrapper(self):
+        # No <main>: the share of the page's text is all that protects the wrapper, and
+        # the JSON blob beside it must not count as page text.
+        wrapper = {'tag': 'div', 'id': 'shell', 'cls': 'overlay', 'text': 'Order KEP-47 arrives Thursday',
+                   'style': {'position': 'fixed', 'zIndex': '5000'}, 'rect': FULLSCREEN}
+        blob = {'tag': 'script', 'id': 'init_data', 'text': '{"orderDetail": "%s"}' % ('x' * 4000)}
+        out = run_consent_script(page('', wrapper, blob))
+        assert 'shell' in out['ids']
+        assert out['result']['removed'] == 0
+
+    def test_script_source_does_not_protect_a_consent_wall(self):
+        wall = {'tag': 'div', 'id': 'wall', 'cls': 'overlay', 'text': 'We use cookies',
+                'style': {'position': 'fixed', 'zIndex': '9999'}, 'rect': FULLSCREEN, 'children': [
+                    {'tag': 'script', 'id': 'vendors', 'text': '{"vendors": "%s"}' % ('x' * 4000)}]}
+        content = {'tag': 'div', 'id': 'content', 'text': 'The lamp ships on Thursday. ' * 10}
+        out = run_consent_script(page('', content, wall))
+        assert out['ids'] == ['root', 'head', 'body', 'content']
+
 
 @pytest.mark.unit
 class TestConsentScriptGuards:
@@ -278,6 +296,30 @@ class TestEmbeddedJsonSummary:
         summary = WebAccess._summarise_embedded_json(blocks)
         assert summary.splitlines() == ['[Data from embedded JSON]',
                                         'items.name: Desk lamp', 'items.status: Shipped', 'store: Downtown']
+
+    def test_records_sharing_a_value_keep_all_their_fields(self):
+        items = [{'name': 'Desk lamp', 'status': 'Shipped'}, {'name': 'Chair', 'status': 'Pending'},
+                 {'name': 'Desk', 'status': 'Shipped'}]
+        summary = WebAccess._summarise_embedded_json([json.dumps({'items': items})])
+        assert summary.splitlines()[1:] == ['items.name: Desk lamp', 'items.status: Shipped',
+                                            'items.name: Chair', 'items.status: Pending',
+                                            'items.name: Desk', 'items.status: Shipped']
+
+    def test_nested_records_stay_with_their_parent_and_repeat_blocks_collapse(self):
+        items = [{'name': 'Desk', 'options': [{'name': 'Gift wrap'}, {'name': 'Gift wrap'}]},
+                 {'name': 'Chair', 'options': [{'name': 'Gift wrap'}]}]
+        block = json.dumps({'items': items})
+        summary = WebAccess._summarise_embedded_json([block, block])
+        assert summary.splitlines()[1:] == ['items.name: Desk', 'options.name: Gift wrap',
+                                            'items.name: Chair', 'options.name: Gift wrap']
+
+    def test_repeated_records_do_not_use_up_the_cap(self):
+        items = [{'name': 'Desk lamp', 'note': 'n' * 150}] * 100 + [{'name': 'Chair'}]
+        summary = WebAccess._summarise_embedded_json([json.dumps({'items': items})])
+        assert summary.splitlines()[-1] == 'items.name: Chair'
+
+    def test_top_level_scalars_have_no_empty_key(self):
+        assert WebAccess._summarise_embedded_json(['[7, "Downtown"]']).splitlines()[1:] == ['7', 'Downtown']
 
     def test_json_without_readable_leaves_adds_no_header(self):
         payload = json.dumps({'image': 'https://shop.example/lamp.png', 'gift': False, 'meta': None})

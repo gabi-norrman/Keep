@@ -1021,7 +1021,18 @@ class WebAccess(Integration):
     // Nothing below may ever delete the document or the page's content: feature
     // classes land on <html> itself (Apple: "supports-backdrop-filter"), and layout
     // wrappers are routinely classed "has-banner" / "overlay-host".
-    const bodyTextLen = () => ((document.body && document.body.textContent) || '').length;
+    // Readable text only: textContent also counts <script>/<style> source, and a JSON
+    // blob on a client-rendered page would swamp the ratio in either direction.
+    const textLen = (el) => {
+        if (!el) return 0;
+        let len = (el.textContent || '').length;
+        try {
+            el.querySelectorAll('script, style, noscript').forEach(code => {
+                len -= (code.textContent || '').length;
+            });
+        } catch (e) {}
+        return Math.max(len, 0);
+    };
     const isProtected = (el) => {
         if (!el || el === document.documentElement || el === document.body || el === document.head) return true;
         const tag = (el.tagName || '').toLowerCase();
@@ -1030,8 +1041,8 @@ class WebAccess(Integration):
             if (document.body && el.contains(document.body)) return true;
             if (el.querySelector('main, [role="main"], article')) return true;
         } catch (e) {}
-        const total = bodyTextLen();
-        return total > 0 && (el.textContent || '').length / total > 0.5;
+        const total = textLen(document.body);
+        return total > 0 && textLen(el) / total > 0.5;
     };
     const safeRemove = (el) => {
         if (isProtected(el)) { kept++; return false; }
@@ -1383,19 +1394,37 @@ class WebAccess(Integration):
     @staticmethod
     def _summarise_embedded_json(blocks: list) -> str:
         """Flatten the readable leaves (short strings, numbers) of JSON script blocks
-        into 'key.path: value' lines, capped at _EMBEDDED_JSON_MAX_CHARS."""
-        lines, seen, size = [], set(), 0
+        into 'key.path: value' lines, capped at _EMBEDDED_JSON_MAX_CHARS.
 
-        def walk(node, path):
+        Array items are deduplicated as whole records: a repeated record is dropped, but
+        a record keeps every field of its own even when another record has the same value
+        (three order items, two of them 'Shipped')."""
+        lines, seen_records, size = [], set(), 0
+
+        def walk(node, path, out):
             nonlocal size
             if size >= WebAccess._EMBEDDED_JSON_MAX_CHARS:
                 return
             if isinstance(node, dict):
                 for key, value in node.items():
-                    walk(value, path + [str(key)])
+                    walk(value, path + [str(key)], out)
             elif isinstance(node, list):
-                for item in node:
-                    walk(item, path)
+                # path carries the parent records' indices (ints, never displayed). A list
+                # inside a record only collapses its own siblings, so the record stays
+                # whole and compares equal to its twin in another block.
+                nested = any(isinstance(part, int) for part in path)
+                seen = set() if nested else seen_records
+                for index, item in enumerate(node):
+                    record = []
+                    walk(item, path + [index], record)
+                    if not record:
+                        continue
+                    key = (tuple(path), tuple(record))
+                    if key in seen:
+                        size -= sum(len(line) + 1 for line in record)
+                        continue
+                    seen.add(key)
+                    out.extend(record)
             elif isinstance(node, bool) or node is None:
                 return
             else:
@@ -1404,15 +1433,15 @@ class WebAccess(Integration):
                         not value or len(value) > WebAccess._EMBEDDED_JSON_MAX_VALUE
                         or value.startswith(('http://', 'https://', '/', '<', '{'))):
                     return
-                line = f"{'.'.join(path[-2:])}: {value}"
-                if line not in seen:
-                    seen.add(line)
-                    lines.append(line)
+                names = [part for part in path if isinstance(part, str)]
+                line = f"{'.'.join(names[-2:])}: {value}" if names else value
+                if line not in out:
+                    out.append(line)
                     size += len(line) + 1
 
         for block in blocks:
             try:
-                walk(json.loads(block), [])
+                walk(json.loads(block), [], lines)
             except (ValueError, TypeError) as e:
                 trace(f"embedded JSON parse failed: {e}")
         if not lines:
