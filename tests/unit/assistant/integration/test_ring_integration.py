@@ -1,6 +1,6 @@
 import json
 import threading
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -112,6 +112,69 @@ class TestRingIntegrationTokenPersistence:
         config = {**VALID_CONFIG, "token_path": str(token_file)}
         cam = RingIntegration(config=config)
         assert cam._load_cached_token() is None
+
+
+class TestRingIntegrationConnect:
+    """A cached token the Ring API rejects must end in a normal re-login, not a lock-out."""
+
+    @staticmethod
+    def _cam(tmp_path, token=None):
+        token_file = tmp_path / "token.cache"
+        if token:
+            token_file.write_text(json.dumps(token))
+        return RingIntegration(config={**VALID_CONFIG, "token_path": str(token_file)}), token_file
+
+    @staticmethod
+    def _ring(*create_session_results):
+        ring = Mock()
+        ring.async_create_session = AsyncMock(side_effect=list(create_session_results))
+        ring.async_update_data = AsyncMock()
+        return ring
+
+    def test_hardware_id_stays_the_one_the_first_tokens_were_issued_under(self):
+        from ring_doorbell import Auth
+        with patch("uuid.getnode", return_value=0x0242AC110002):
+            legacy = Auth("Floxy/1.0").hardware_id
+            assert RingIntegration._hardware_id() == legacy
+            assert RingIntegration(config=VALID_CONFIG)._new_auth(None).hardware_id == legacy
+
+    def test_rejected_cached_token_is_dropped_and_login_follows(self, tmp_path):
+        from ring_doorbell import AuthenticationError
+        cam, token_file = self._cam(tmp_path, {"access_token": "stale"})
+        stale_auth, fresh_auth = Mock(async_close=AsyncMock()), Mock(async_fetch_token=AsyncMock())
+        ring = self._ring(AuthenticationError("invalid_grant"), None)
+        with patch.object(cam, "_new_auth", side_effect=[stale_auth, fresh_auth]) as new_auth, \
+                patch("ring_doorbell.Ring", return_value=ring), \
+                patch.object(cam._tfa_handler, "start"):
+            cam._ensure_connected()
+        assert [c.args[0] for c in new_auth.call_args_list] == [{"access_token": "stale"}, None]
+        assert not token_file.exists()
+        stale_auth.async_close.assert_awaited_once()
+        fresh_auth.async_fetch_token.assert_awaited_once_with("test@example.com", "secret")
+        assert cam._ring is ring
+        assert cam.get_auth_status()["status"] == "authenticated"
+
+    def test_network_failure_keeps_the_cached_token(self, tmp_path):
+        from ring_doorbell import RingError
+        cam, token_file = self._cam(tmp_path, {"access_token": "good"})
+        with patch.object(cam, "_new_auth", return_value=Mock()) as new_auth, \
+                patch("ring_doorbell.Ring", return_value=self._ring(RingError("connection reset"))), \
+                patch.object(cam._tfa_handler, "start") as tfa_start:
+            with pytest.raises(RingAuthenticationError):
+                cam._ensure_connected()
+        assert token_file.exists()
+        assert new_auth.call_count == 1
+        tfa_start.assert_not_called()
+        assert cam._ring is None
+
+    def test_valid_cached_token_connects_without_login(self, tmp_path):
+        cam, token_file = self._cam(tmp_path, {"access_token": "good"})
+        auth = Mock(async_fetch_token=AsyncMock())
+        with patch.object(cam, "_new_auth", return_value=auth), \
+                patch("ring_doorbell.Ring", return_value=self._ring(None)):
+            cam._ensure_connected()
+        auth.async_fetch_token.assert_not_awaited()
+        assert token_file.exists()
 
 
 class TestRingIntegrationFetchSnapshot:

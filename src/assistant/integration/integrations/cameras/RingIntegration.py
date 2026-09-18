@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from assistant.SystemNote import system_note
@@ -42,6 +43,7 @@ class _RingTfaHandler(TfaCodeHandler):
 
 
 USER_AGENT = "Keep/1.0"
+HARDWARE_ID_AGENT = "Floxy/1.0"
 
 
 class RingIntegration(Integration):
@@ -160,38 +162,76 @@ class RingIntegration(Integration):
                 return
             self._get_loop().run_until_complete(self._async_connect())
 
+    @staticmethod
+    def _hardware_id() -> str:
+        """The device identity Ring ties a token to. ring_doorbell derives it from the
+        user agent, so it is pinned to the agent the first tokens were issued under —
+        renaming USER_AGENT must not turn the server into a new, unauthorised device."""
+        from ring_doorbell.const import NAMESPACE_UUID
+        return str(uuid.uuid5(uuid.UUID(NAMESPACE_UUID), str(uuid.getnode()) + HARDWARE_ID_AGENT))
+
+    def _new_auth(self, token: Optional[dict]):
+        from ring_doorbell import Auth
+        return Auth(USER_AGENT, token, self._token_updated, self._hardware_id())
+
+    async def _async_open_session(self):
+        from ring_doorbell import Ring
+
+        ring = Ring(self._auth)
+        await ring.async_create_session()
+        await ring.async_update_data()
+        self._ring = ring
+
+    async def _async_login(self):
+        info(f"Ring: Connecting as {self._config['username']}...")
+        self._auth = self._new_auth(None)
+        self._tfa_handler.start()
+        try:
+            await self._auth.async_fetch_token(
+                self._config["username"],
+                self._config["password"],
+            )
+        except Exception:
+            otp = self._tfa_handler.get()
+            if not otp:
+                self.state = IntegrationState.NEEDS_2FA
+                raise RingAuthenticationError("No 2FA code provided within timeout")
+            await self._auth.async_fetch_token(
+                self._config["username"],
+                self._config["password"],
+                otp,
+            )
+
+    async def _async_discard_rejected_token(self, reason: Exception):
+        info(f"Ring: Cached token rejected ({reason}) — dropping {self._token_path} and logging in again")
+        try:
+            await self._auth.async_close()
+        except Exception as e:
+            trace(f"Ring: Closing the rejected session failed: {e}")
+        self._token_path.unlink(missing_ok=True)
+
     async def _async_connect(self):
-        from ring_doorbell import Auth, Ring
+        from ring_doorbell import AuthenticationError
 
         cached_token = self._load_cached_token()
 
         try:
             if cached_token:
                 info("Ring: Connecting with cached token...")
-                self._auth = Auth(USER_AGENT, cached_token, self._token_updated)
-            else:
-                info(f"Ring: Connecting as {self._config['username']}...")
-                self._auth = Auth(USER_AGENT, None, self._token_updated)
-                self._tfa_handler.start()
+                self._auth = self._new_auth(cached_token)
                 try:
-                    await self._auth.async_fetch_token(
-                        self._config["username"],
-                        self._config["password"],
-                    )
-                except Exception:
-                    otp = self._tfa_handler.get()
-                    if not otp:
-                        self.state = IntegrationState.NEEDS_2FA
-                        raise RingAuthenticationError("No 2FA code provided within timeout")
-                    await self._auth.async_fetch_token(
-                        self._config["username"],
-                        self._config["password"],
-                        otp,
-                    )
+                    await self._async_open_session()
+                except AuthenticationError as e:
+                    # Only a rejected token: a timeout or network error keeps the cache.
+                    await self._async_discard_rejected_token(e)
+                    cached_token = None
+            else:
+                trace("Ring: No cached token")
 
-            self._ring = Ring(self._auth)
-            await self._ring.async_create_session()
-            await self._ring.async_update_data()
+            if not cached_token:
+                await self._async_login()
+                await self._async_open_session()
+
             self._auth_error = None
             info("Ring: Connection successful.")
         except Exception as e:
