@@ -91,6 +91,12 @@ class ClaudeLLM(AbstractLLM):
         """Claude supports native thinking via extended thinking API."""
         return True
 
+    def handles_thinking_internally(self) -> bool:
+        """Adaptive thinking runs whether or not the `thinking` parameter is sent (Fable 5.1
+        cannot even turn it off), and asking for a <thinking> tag on top gets the request
+        refused as reasoning extraction."""
+        return True
+
     def prefers_prepended_user_query(self) -> bool:
         """Prepending the user query to the top of the system prompt puts per-request
         content at byte 0 of the cached prefix, defeating Anthropic prompt caching

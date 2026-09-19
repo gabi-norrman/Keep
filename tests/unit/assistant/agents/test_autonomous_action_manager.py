@@ -10,10 +10,13 @@ from assistant.agents.AutonomousActionManager import (
     AutonomousActionManager,
     AUTONOMOUS_ACTION_PROMPT,
     PERIODIC_CHECK_INTERVAL_MINUTES,
+    THINKING_TAG_INSTRUCTION,
 )
 
+# What a model without thinking of its own receives (a bare Mock LLM counts as one).
 FORMATTED_AUTONOMOUS_ACTION_PROMPT = AUTONOMOUS_ACTION_PROMPT.format(
-    interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES
+    interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES,
+    thinking_tag_instruction=THINKING_TAG_INSTRUCTION,
 )
 
 
@@ -1075,10 +1078,12 @@ class TestAutonomousActionPromptInvariant:
     verbatim to Telegram. The PromptManager test already pins this invariant
     for the user-facing path; this mirrors it for the autonomous path so a
     well-meaning edit to AUTONOMOUS_ACTION_PROMPT can't silently re-open the
-    leak."""
+    leak. The paragraph lives in THINKING_TAG_INSTRUCTION and reaches a model that
+    does not think on its own (FORMATTED_AUTONOMOUS_ACTION_PROMPT); a model that
+    handles thinking internally never emits the tag, so the rule is moot there."""
 
     def test_prompt_requires_all_reasoning_inside_thinking_tag(self):
-        low = AUTONOMOUS_ACTION_PROMPT.lower()
+        low = FORMATTED_AUTONOMOUS_ACTION_PROMPT.lower()
         # Must demand that ANY reasoning lives inside the tag — otherwise
         # untagged preambles slip past _remove_thinking() and reach Telegram.
         assert "all reasoning" in low, (
@@ -1090,7 +1095,7 @@ class TestAutonomousActionPromptInvariant:
         # The fix also adds an explicit post-tag constraint: once </thinking>
         # is closed, only commands / final Telegram message / "NO" are
         # allowed. Pin the three allowed outputs by name.
-        text = AUTONOMOUS_ACTION_PROMPT
+        text = FORMATTED_AUTONOMOUS_ACTION_PROMPT
         low = text.lower()
         assert "</thinking>" in text, "prompt must reference the closing tag"
         assert "commands" in low, "post-tag rule must permit commands"
@@ -1143,3 +1148,29 @@ class TestSaveAutonomousResultToHistory:
         saved = call_args[0][2]
         assert "<result>" not in saved
         assert "Action taken" in saved
+
+
+class TestThinkingTagInstruction:
+    """The <thinking>-tag paragraph is for a model without thinking of its own; a model that
+    handles thinking internally (Claude) gets the prompt without it — asking would have the
+    check refused as reasoning extraction."""
+
+    def test_included_for_a_model_without_internal_thinking(self):
+        llm = Mock()
+        llm.handles_thinking_internally.return_value = False
+        prompt = AutonomousActionManager._action_prompt(llm)
+        assert prompt == FORMATTED_AUTONOMOUS_ACTION_PROMPT
+        assert "<thinking>" in prompt
+
+    def test_dropped_for_a_model_that_thinks_on_its_own(self):
+        llm = Mock()
+        llm.handles_thinking_internally.return_value = True
+        prompt = AutonomousActionManager._action_prompt(llm)
+        assert "<thinking>" not in prompt and "thinking" not in prompt.lower().split("## response format")[1]
+        assert "## Response Format\n\nIf you should execute commands:" in prompt
+        assert str(PERIODIC_CHECK_INTERVAL_MINUTES) in prompt or f"{PERIODIC_CHECK_INTERVAL_MINUTES:.0f}" in prompt
+
+    def test_a_bare_mock_counts_as_not_internal(self):
+        """Mock().handles_thinking_internally() is a truthy Mock, not True: the paragraph stays."""
+        assert "<thinking>" in AutonomousActionManager._action_prompt(Mock())
+

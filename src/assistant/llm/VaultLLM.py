@@ -96,6 +96,9 @@ class VaultLLM(AbstractLLM):
     def supports_native_thinking(self) -> bool:
         return self.llm.supports_native_thinking()
 
+    def handles_thinking_internally(self) -> bool:
+        return self.llm.handles_thinking_internally()
+
     def supports_video(self) -> bool:
         return self.llm.supports_video()
 

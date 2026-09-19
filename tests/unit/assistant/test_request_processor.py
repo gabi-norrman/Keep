@@ -1300,50 +1300,35 @@ class TestPrepareContext:
         prompt_manager.get_messages.assert_not_called()
         mock_mf.format_message.assert_not_called()
 
-    def test_short_input_still_sends_thinking_instruction(self, full_handler):
-        # Regression for d45d4718: short inputs used to skip the <thinking>-tag
-        # instruction entirely, so when the LLM *did* produce reasoning anyway
-        # (it sometimes does even on short prompts) the preamble flowed
-        # straight into TTS and got spoken aloud. The fix makes the instruction
-        # unconditional but reworded as optional ("skip the tag for simple
-        # queries"). The observable contract is now: get_messages is always
-        # called with extended_thinking=True, regardless of input length.
+    def test_thinking_tag_instruction_for_a_model_without_internal_thinking(self, full_handler):
+        """Regression for d45d4718: the <thinking>-tag instruction is unconditional (reworded as
+        optional), whatever the input length — for a model that does not think on its own."""
+        full_handler.dialog_manager.ai.handles_thinking_internally.return_value = False
+        for text in ("hi", "tell me about the weather today please"):
+            prompt_manager = Mock()
+            prompt_manager.get_messages.return_value = []
+            with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf:
+                mock_mf.format_message.return_value = f"User: {text}"
+                full_handler.request_context.user_input = text
+                full_handler._prepare_llm_context(prompt_manager)
+            prompt_manager.get_messages.assert_called_once_with(extended_thinking=True)
+            assert full_handler.dialog_manager.thinking is False
+
+    def test_no_thinking_tag_instruction_for_a_model_that_thinks_on_its_own(self, full_handler):
+        """Claude handles thinking internally: the <thinking>-tag instruction would get the
+        request refused as reasoning extraction, so it is never sent. Native thinking stays
+        off too — these models think adaptively without the parameter."""
+        full_handler.dialog_manager.ai.handles_thinking_internally.return_value = True
         prompt_manager = Mock()
         prompt_manager.get_messages.return_value = []
-        full_handler.dialog_manager.ai.supports_native_thinking.return_value = False
-
-        with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf:
-            mock_mf.format_message.return_value = "User: hi"
-            full_handler.request_context.user_input = "hi"
-            full_handler._prepare_llm_context(prompt_manager)
-
-        prompt_manager.get_messages.assert_called_once_with(extended_thinking=True)
-
-    def test_long_input_extended_thinking(self, full_handler):
-        prompt_manager = Mock()
-        prompt_manager.get_messages.return_value = []
-        full_handler.dialog_manager.ai.supports_native_thinking.return_value = False
 
         with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf:
             mock_mf.format_message.return_value = "User: tell me about the weather today please"
             full_handler.request_context.user_input = "tell me about the weather today please"
             full_handler._prepare_llm_context(prompt_manager)
 
-        prompt_manager.get_messages.assert_called_once_with(extended_thinking=True)
-
-    def test_native_thinking_when_supported(self, full_handler):
-        prompt_manager = Mock()
-        prompt_manager.get_messages.return_value = []
-        full_handler.dialog_manager.ai.supports_native_thinking.return_value = True
-
-        with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf:
-            mock_mf.format_message.return_value = "User: tell me about the weather today please"
-            full_handler.request_context.user_input = "tell me about the weather today please"
-            full_handler._prepare_llm_context(prompt_manager)
-
-        # Native thinking is currently disabled, so prompt hack is used instead
+        prompt_manager.get_messages.assert_called_once_with(extended_thinking=False)
         assert full_handler.dialog_manager.thinking is False
-        prompt_manager.get_messages.assert_called_once_with(extended_thinking=True)
 
     def test_formats_message_with_context(self, full_handler):
         prompt_manager = Mock()

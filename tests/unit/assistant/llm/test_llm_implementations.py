@@ -77,6 +77,9 @@ class TestAbstractLLMRetry:
         llm = ConcreteTestLLM()
         assert llm.supports_native_thinking() is False
 
+    def test_handles_thinking_internally_default_false(self):
+        assert ConcreteTestLLM().handles_thinking_internally() is False
+
     def test_prefers_prepended_user_query_default_true(self):
         llm = ConcreteTestLLM()
         assert llm.prefers_prepended_user_query() is True
@@ -360,6 +363,14 @@ class TestClaudeLLM:
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
         assert ClaudeLLM().supports_native_thinking() is True
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_handles_thinking_internally(self, mock_config):
+        """Claude thinks adaptively on its own; a <thinking>-tag instruction gets the request
+        refused as reasoning extraction, so nothing may send it one."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        assert ClaudeLLM().handles_thinking_internally() is True
 
     @patch('assistant.llm.ClaudeLLM.config')
     def test_prefers_prepended_user_query_true_for_non_fable(self, mock_config):
@@ -1011,6 +1022,13 @@ class TestGeminiLLM:
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.GeminiLLM import GeminiLLM
         assert GeminiLLM().supports_native_thinking() is True
+
+    @patch('assistant.llm.GeminiLLM.config')
+    def test_does_not_handle_thinking_internally(self, mock_config):
+        """Gemini keeps the <thinking>-tag instruction (the voice tier's reasoning path)."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.GeminiLLM import GeminiLLM
+        assert GeminiLLM().handles_thinking_internally() is False
 
     @patch('assistant.llm.GeminiLLM.config')
     def test_convert_messages_maps_roles(self, mock_config):

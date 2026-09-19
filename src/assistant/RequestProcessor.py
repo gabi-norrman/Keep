@@ -492,13 +492,18 @@ class RequestProcessor:
         if is_prompt_injection(user_input):
             return None
 
-        extended_thinking = len(user_input.split()) > 5
-        if extended_thinking:
-            trace("Will use extended thinking")
-
-        use_native_thinking = extended_thinking and self.dialog_manager.ai.supports_native_thinking() and False  # We do not want to use native thinking here for now. The <thinking> hack works great and is faster
-        #use_prompt_hack = extended_thinking and not use_native_thinking
-        use_prompt_hack = True  # Thinking is now phrased as optional to the LLM, so we always enable the thinking instruction
+        # The <thinking>-tag instruction (PromptManager.get_messages) is how a model without
+        # thinking of its own reasons before it answers, with the tag stripped before TTS. A
+        # model that handles thinking internally must never see it: Claude refuses the whole
+        # request as reasoning extraction (AbstractLLM.handles_thinking_internally).
+        ai = self.dialog_manager.ai
+        use_prompt_hack = not ai.handles_thinking_internally()
+        if use_prompt_hack:
+            trace(f"{ai.name()} gets the <thinking> tag instruction")
+        else:
+            trace(f"{ai.name()} thinks on its own — no <thinking> tag instruction")
+        # Native thinking stays off: these models think adaptively without the parameter.
+        use_native_thinking = False
 
         self._inject_orphaned_command_outcomes(prompt_manager)
         self._preload_toolkits(prompt_manager)

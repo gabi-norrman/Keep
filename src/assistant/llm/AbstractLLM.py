@@ -94,6 +94,14 @@ class AbstractLLM(ABC):
         """Returns True if this LLM supports native thinking mode. Override in subclasses."""
         return False
 
+    def handles_thinking_internally(self) -> bool:
+        """True when the model reasons on its own, server-side, whether or not we ask: no
+        prompt may then instruct it to write its reasoning into a <thinking> tag. Anthropic's
+        classifier reads that instruction as reasoning extraction and refuses the whole
+        request (stop_reason=refusal, category reasoning_extraction) — on Fable 5.1 and
+        Opus 5 alike, so the fallback cannot help. Override in subclasses."""
+        return False
+
     def pre_heat_cache(self, messages: list[dict]):
         """Pre-heat the LLM's cache with the given messages. Default: no-op.
         Override in subclasses that benefit from cache warming (e.g., local LLMs)."""

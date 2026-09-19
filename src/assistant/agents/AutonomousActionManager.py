@@ -30,6 +30,14 @@ USER_INTERACTION_STALE_COUNTER_SECONDS = 10 * 60
 PERIODIC_CHECK_INTERVAL_SECONDS = 55 * 60  # 55 minutes — stays under the 1h cache TTL
 PERIODIC_CHECK_INTERVAL_MINUTES = PERIODIC_CHECK_INTERVAL_SECONDS / 60
 
+# The response-format paragraph for a model without thinking of its own. A model that handles
+# thinking internally (AbstractLLM.handles_thinking_internally) must not see it: Claude refuses
+# the request as reasoning extraction.
+THINKING_TAG_INSTRUCTION = (
+    'Start your reply with a <thinking> tag and put your entire thinking and analysis in this tag. '
+    'ALL reasoning must stay inside the <thinking> tag — once you close </thinking> you may only emit '
+    'commands or the final Telegram message (or "NO").\n\n')
+
 AUTONOMOUS_ACTION_PROMPT = """
 # AUTONOMOUS ACTION CHECK
 
@@ -68,9 +76,7 @@ No need to inform the user about Telegram or iMessage messages s/he has received
 
 ## Response Format
 
-Start your reply with a <thinking> tag and put your entire thinking and analysis in this tag. ALL reasoning must stay inside the <thinking> tag — once you close </thinking> you may only emit commands or the final Telegram message (or "NO").
-
-Then, if you should execute commands: output any commands you need to execute (using proper command syntax). Feel free to do chains of commands (send one command, get reply back then send another command and so on). Feel free to use commands if needed - just running commands does not create noise for the user.
+{thinking_tag_instruction}If you should execute commands: output any commands you need to execute (using proper command syntax). Feel free to do chains of commands (send one command, get reply back then send another command and so on). Feel free to use commands if needed - just running commands does not create noise for the user.
 
 Lastly, if you want a Telegram message to be sent to user: output the message (after any commands). Make sure to use the formatting rules from the "Text Chat" section. If no message should be sent then output "NO" (after any commands).
 
@@ -127,6 +133,17 @@ class AutonomousActionManager:
             self.llm_vision = llm
             info("AutonomousActionManager: initialized vision LLM for image-bearing check")
         return self.llm_vision
+
+    @staticmethod
+    def _action_prompt(llm) -> str:
+        """The autonomous instruction for *llm*: with the <thinking>-tag paragraph unless the
+        model thinks on its own, in which case asking would get the check refused."""
+        internal = llm.handles_thinking_internally() is True
+        if internal:
+            trace(f"Autonomous prompt without the <thinking> tag paragraph: {llm.name()} thinks on its own")
+        return AUTONOMOUS_ACTION_PROMPT.format(
+            interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES,
+            thinking_tag_instruction="" if internal else THINKING_TAG_INSTRUCTION)
 
     def _llm_for(self, messages):
         """Pick the vision tier when the outgoing messages carry image blocks
@@ -247,10 +264,7 @@ class AutonomousActionManager:
             # test runs must stay free of wall-clock state.
             if is_real_run:
                 MessageHistory.append_user_turn(messages, self.prompt_manager.current_time_note())
-            MessageHistory.append_user_turn(
-                messages,
-                AUTONOMOUS_ACTION_PROMPT.format(interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES),
-            )
+            MessageHistory.append_user_turn(messages, self._action_prompt(self._llm_for(messages)))
 
             if is_real_run:
                 self.prompt_manager.save_prompt_to_file(messages)

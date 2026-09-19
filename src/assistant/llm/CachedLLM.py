@@ -132,6 +132,9 @@ class CachedLLM(AbstractLLM):
     def supports_native_thinking(self) -> bool:
         return self.llm.supports_native_thinking()
 
+    def handles_thinking_internally(self) -> bool:
+        return self.llm.handles_thinking_internally()
+
     def pre_heat_cache(self, messages: list[dict]):
         self.llm.pre_heat_cache(messages)
 

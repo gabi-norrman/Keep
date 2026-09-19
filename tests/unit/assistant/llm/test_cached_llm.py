@@ -679,6 +679,11 @@ class TestCachedLLMCoreMethods:
         mock_llm.supports_native_thinking.return_value = False
         assert cached_llm.supports_native_thinking() is False
 
+    def test_handles_thinking_internally_delegates(self, cached_llm, mock_llm):
+        for value in (True, False):
+            mock_llm.handles_thinking_internally.return_value = value
+            assert cached_llm.handles_thinking_internally() is value
+
     def test_streaming_bypasses_cache_for_list_content(self, cached_llm, mock_llm, mock_database):
         """Image queries bypass cache entirely — the request handler leaves cache_query None
         for image turns, so no DB lookup happens regardless of the list content."""

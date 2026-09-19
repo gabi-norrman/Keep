@@ -243,6 +243,7 @@ class TestDelegation:
         ("prefers_prepended_user_query", ()),
         ("set_prompt_cache", (False,)),
         ("supports_native_thinking", ()),
+        ("handles_thinking_internally", ()),
         ("supports_video", ()),
         ("max_video_bytes", ()),
     ])
