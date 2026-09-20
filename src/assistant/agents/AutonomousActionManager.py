@@ -159,6 +159,12 @@ class AutonomousActionManager:
         DialogManager does for user turns; without one, or when the fallback refuses
         too, the check yields an empty result and the next interval tries again."""
         llm = self._llm_for(messages)
+        # The action prompt was built for the model of the first round; a follow-up round
+        # that carries images goes to the vision tier, which may think on its own.
+        if llm.handles_thinking_internally() is True:
+            stripped = MessageHistory.remove_from_user_turns(messages, THINKING_TAG_INSTRUCTION)
+            if stripped:
+                info(f"{llm.name()} thinks on its own — <thinking> tag paragraph removed from the autonomous prompt")
         try:
             return llm.think_with_messages(messages)
         except LLMRefusalError:

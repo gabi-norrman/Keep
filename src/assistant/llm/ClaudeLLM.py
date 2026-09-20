@@ -21,6 +21,9 @@ class ClaudeLLM(AbstractLLM):
     FAST_MODE_BETA = "fast-mode-2026-02-01"
     REFUSAL_FALLBACK_MODEL = "claude-opus-5"
     REFUSAL_FALLBACK_CACHE_TTL = "5m"
+    # The families that think adaptively when the `thinking` parameter is omitted. Opus 4.x,
+    # Sonnet 4.x and Haiku 4.5 do not: without the parameter they do not think at all.
+    ALWAYS_THINKING_MODEL_PREFIXES = ("claude-fable", "claude-mythos", "claude-opus-5", "claude-sonnet-5")
 
     # CACHE_BREAKPOINT_MARKER is inherited from AbstractLLM.
     # Anthropic allows 4 cache_control breakpoints per request; _build_api_params
@@ -92,10 +95,12 @@ class ClaudeLLM(AbstractLLM):
         return True
 
     def handles_thinking_internally(self) -> bool:
-        """Adaptive thinking runs whether or not the `thinking` parameter is sent (Fable 5.1
-        cannot even turn it off), and asking for a <thinking> tag on top gets the request
-        refused as reasoning extraction."""
-        return True
+        """On the 5-generation families adaptive thinking runs whether or not the `thinking`
+        parameter is sent (Fable 5.1 cannot even turn it off), and asking for a <thinking> tag
+        on top gets the request refused as reasoning extraction. An older model (the
+        constructor default included) only thinks when asked, so it keeps the tag instruction
+        — without it it would not reason at all."""
+        return self.model.startswith(self.ALWAYS_THINKING_MODEL_PREFIXES)
 
     def prefers_prepended_user_query(self) -> bool:
         """Prepending the user query to the top of the system prompt puts per-request

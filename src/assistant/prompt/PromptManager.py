@@ -16,7 +16,7 @@ from .sections.PrecipitationSectionGenerator import PrecipitationSectionGenerato
 from .sections.HomeSectionGenerator import HomeSectionGenerator
 from .sections.CalendarDataSectionGenerator import CalendarDataSectionGenerator
 from .sections.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
-from .MessageHistory import MessageHistory
+from .MessageHistory import MessageHistory, THINKING_TAG_INSTRUCTION
 from .sections.TeslaSectionGenerator import TeslaSectionGenerator
 from .sections.iCloudSectionGenerator import iCloudSectionGenerator
 from common.FloxyDatabase import FloxyDatabase
@@ -652,8 +652,7 @@ class PromptManager:
             # providers reject same-role adjacency.
             if extended_thinking:
                 trace("Using extended thinking mode.")
-                thinking_instruction = "If the query is complex enough to warrant it, start your reply by explaining your thinking inside a <thinking> tag. Skip the tag for simple queries. If you do think, ALL reasoning must stay inside the <thinking> tag. NO other tags are allowed."
-                MessageHistory.append_user_turn(messages, thinking_instruction)
+                MessageHistory.append_user_turn(messages, THINKING_TAG_INSTRUCTION)
 
             return messages
 

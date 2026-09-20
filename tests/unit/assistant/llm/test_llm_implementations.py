@@ -364,13 +364,26 @@ class TestClaudeLLM:
         from assistant.llm.ClaudeLLM import ClaudeLLM
         assert ClaudeLLM().supports_native_thinking() is True
 
+    @pytest.mark.parametrize("model, internal", [
+        ("claude-fable-5-1", True), ("claude-mythos-5-1", True), ("claude-opus-5", True), ("claude-sonnet-5", True),
+        ("claude-opus-4-8", False), ("claude-sonnet-4-5", False), ("claude-haiku-4-5", False),
+    ])
     @patch('assistant.llm.ClaudeLLM.config')
-    def test_handles_thinking_internally(self, mock_config):
-        """Claude thinks adaptively on its own; a <thinking>-tag instruction gets the request
-        refused as reasoning extraction, so nothing may send it one."""
+    def test_handles_thinking_internally(self, mock_config, model, internal):
+        """The 5-generation families think adaptively on their own; a <thinking>-tag instruction
+        gets the request refused as reasoning extraction, so nothing may send them one. An
+        older model only thinks when asked and must keep the instruction."""
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
-        assert ClaudeLLM().handles_thinking_internally() is True
+        assert ClaudeLLM(model).handles_thinking_internally() is internal
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_the_default_model_keeps_the_thinking_instruction(self, mock_config):
+        """A bare `llm: ClaudeLLM` override inherits the constructor default, which does not
+        think on its own."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        assert ClaudeLLM().handles_thinking_internally() is False
 
     @patch('assistant.llm.ClaudeLLM.config')
     def test_prefers_prepended_user_query_true_for_non_fable(self, mock_config):

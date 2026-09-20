@@ -1142,3 +1142,41 @@ class TestToolkitEvictionStubs:
     def test_the_prompt_tab_shows_the_stub(self):
         section, _ = self._section_after_eviction()
         assert self.STUB in section.render_for_display()
+
+
+class TestStripThinkingInstruction:
+    """strip_thinking_instruction undoes get_messages(extended_thinking=True) on a built
+    message list, wherever append_user_turn put the instruction inside the turn."""
+
+    @pytest.mark.parametrize("before, after", [
+        (["(Current time: 14:50)", "INSTRUCTION", "User [Marcus]: hello"], ["(Current time: 14:50)", "User [Marcus]: hello"]),
+        (["INSTRUCTION", "User [Marcus]: hello"], ["User [Marcus]: hello"]),
+        (["(Current time: 14:50)", "INSTRUCTION"], ["(Current time: 14:50)"]),
+    ])
+    def test_leaves_what_a_build_without_the_instruction_gives(self, before, after):
+        from assistant.prompt.MessageHistory import MessageHistory, THINKING_TAG_INSTRUCTION
+
+        def build(parts):
+            messages = [{"role": "assistant", "content": "earlier reply"}]
+            for part in parts:
+                MessageHistory.append_user_turn(messages, THINKING_TAG_INSTRUCTION if part == "INSTRUCTION" else part)
+            return messages
+
+        messages = build(before)
+        assert MessageHistory.strip_thinking_instruction(messages) == 1
+        assert messages == build(after)
+
+    def test_a_turn_holding_only_the_instruction_is_dropped(self):
+        from assistant.prompt.MessageHistory import MessageHistory, THINKING_TAG_INSTRUCTION
+        messages = [{"role": "assistant", "content": "earlier reply"}, {"role": "user", "content": THINKING_TAG_INSTRUCTION}]
+        assert MessageHistory.strip_thinking_instruction(messages) == 1
+        assert messages == [{"role": "assistant", "content": "earlier reply"}]
+
+    def test_nothing_to_strip(self):
+        from assistant.prompt.MessageHistory import MessageHistory, THINKING_TAG_INSTRUCTION
+        blocks = [{"type": "text", "text": THINKING_TAG_INSTRUCTION}]
+        messages = [{"role": "assistant", "content": THINKING_TAG_INSTRUCTION}, {"role": "user", "content": blocks},
+                    {"role": "user", "content": "User [Marcus]: hello"}]
+        expected = [m.copy() for m in messages]
+        assert MessageHistory.strip_thinking_instruction(messages) == 0
+        assert messages == expected

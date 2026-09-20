@@ -15,6 +15,7 @@ from assistant.ChannelProfile import profile_for
 from assistant.llm import create_llm, parse_llm_config, content_blocks_contain_images
 from assistant.llm.AbstractLLM import LLMRefusalError
 from assistant.llm.CachedLLM import CachedLLM
+from assistant.prompt.MessageHistory import MessageHistory
 from common.Language import language_code
 from common.logging import info, trace, error, fine
 from common.TTFTMonitor import TTFTMonitor
@@ -140,9 +141,19 @@ class DialogManager:
         """Switch to the vision tier when the pending reply_to_llm carries image blocks.
         select_ai only sees ctx.images (set on the user's own turn); command replies —
         e.g. camera snapshots — arrive in reply_to_llm later, after select_ai already ran."""
-        if content_blocks_contain_images(self.reply_to_llm):
-            self.ai = self.ai_vision
-            info(f"Command reply carries images — using vision tier ({self.ai.name()})")
+        if not content_blocks_contain_images(self.reply_to_llm):
+            return
+        self.ai = self.ai_vision
+        info(f"Command reply carries images — using vision tier ({self.ai.name()})")
+        # The <thinking>-tag instruction was decided for the tier the request started on and
+        # rides along in self.messages. A vision model that thinks on its own (Claude) refuses
+        # the whole round over it, and so would its refusal fallback.
+        if self.ai.handles_thinking_internally():
+            stripped = MessageHistory.strip_thinking_instruction(self.messages)
+            if stripped:
+                info(f"{self.ai.name()} thinks on its own — <thinking> tag instruction removed from {stripped} turn(s)")
+            else:
+                trace(f"{self.ai.name()} thinks on its own — the messages carry no <thinking> tag instruction")
 
     def _voice_for_lang(self, lang: str | None) -> "VoiceSynthesizer | None":
         if self.voice_factory is None:

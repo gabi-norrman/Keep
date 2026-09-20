@@ -7,6 +7,13 @@ from common.logging import info, trace
 from common.FloxyDatabase import FloxyDatabase
 from ..tools.MessageFormatter import MessageFormatter
 
+# How a model without thinking of its own reasons before it answers (the tag is stripped before
+# TTS). PromptManager.get_messages merges it into the trailing user turn; a model that handles
+# thinking internally (AbstractLLM.handles_thinking_internally) must never receive it.
+THINKING_TAG_INSTRUCTION = ("If the query is complex enough to warrant it, start your reply by explaining your "
+                            "thinking inside a <thinking> tag. Skip the tag for simple queries. If you do think, "
+                            "ALL reasoning must stay inside the <thinking> tag. NO other tags are allowed.")
+
 
 class MessageHistory:
     """Owns the conversation history (user/assistant turns + system/context events).
@@ -531,6 +538,36 @@ class MessageHistory:
             messages[-1] = {"role": "user", "content": messages[-1]["content"] + "\n\n" + content}
         else:
             messages.append({"role": "user", "content": content})
+
+    @staticmethod
+    def remove_from_user_turns(messages: list[dict], *texts: str) -> int:
+        """Remove each of *texts*, in order, from every user turn with string content; returns
+        how many turns changed. The dicts are replaced, not mutated (the list may share them
+        with another holder), and a turn left empty is dropped."""
+        changed = 0
+        for i in range(len(messages) - 1, -1, -1):
+            content = messages[i].get("content")
+            if messages[i].get("role") != "user" or not isinstance(content, str):
+                continue
+            stripped = content
+            for text in texts:
+                stripped = stripped.replace(text, "")
+            if stripped == content:
+                continue
+            if stripped:
+                messages[i] = {**messages[i], "content": stripped}
+            else:
+                del messages[i]
+            changed += 1
+        return changed
+
+    @staticmethod
+    def strip_thinking_instruction(messages: list[dict]) -> int:
+        """Undo get_messages(extended_thinking=True) on an already built message list, with the
+        separator append_user_turn put around the instruction: what is left is byte for byte
+        what extended_thinking=False would have produced."""
+        return MessageHistory.remove_from_user_turns(
+            messages, "\n\n" + THINKING_TAG_INSTRUCTION, THINKING_TAG_INSTRUCTION + "\n\n", THINKING_TAG_INSTRUCTION)
 
     def add_context_message(self, role: str, content: str, timestamp: float,
                             source: str, location: str | None = None):

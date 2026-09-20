@@ -50,9 +50,10 @@ class FakeCommandProcessor:
 
 
 class FakeAI:
-    def __init__(self, chunks, cached_flag=False):
+    def __init__(self, chunks, cached_flag=False, thinks_internally=False):
         self._chunks = chunks
         self.cached_flag = cached_flag
+        self.thinks_internally = thinks_internally
         self.last_response_was_cached = False
         self.initialized = False
         self.observed_messages = None
@@ -75,6 +76,9 @@ class FakeAI:
 
     def refusal_fallback(self):
         return None
+
+    def handles_thinking_internally(self):
+        return self.thinks_internally
 
 
 class TimeStub:
@@ -830,6 +834,37 @@ def test_use_vision_for_image_reply_switches_on_image_blocks(monkeypatch):
     ]
     dm.use_vision_for_image_reply()
     assert dm.ai is dm.ai_vision
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("vision_thinks_internally", [True, False])
+def test_use_vision_for_image_reply_strips_the_thinking_instruction(monkeypatch, vision_thinks_internally):
+    """A voice request starts on a tier that gets the <thinking>-tag instruction; when camera
+    images move the follow-up round to a vision model that thinks on its own, the instruction
+    must leave the carried messages or the round is refused. What is left is exactly what
+    get_messages(extended_thinking=False) would have built."""
+    from assistant.prompt.MessageHistory import MessageHistory, THINKING_TAG_INSTRUCTION
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    dm.ai = dm.ai_fast = FakeAI(["fast"])
+    dm.ai_vision = FakeAI(["vision"], thinks_internally=vision_thinks_internally)
+
+    def build(with_instruction):
+        messages = [{"role": "system", "content": "prompt"}]
+        MessageHistory.append_user_turn(messages, "(Current time: 14:50)")
+        if with_instruction:
+            MessageHistory.append_user_turn(messages, THINKING_TAG_INSTRUCTION)
+        MessageHistory.append_user_turn(messages, "User [Marcus]: who is at the door?")
+        messages.append({"role": "assistant", "content": "camera_snapshot(front door)"})
+        return messages
+
+    dm.messages = build(with_instruction=True)
+    carried_turn = dm.messages[1]
+    dm.reply_to_llm = [{"type": "image", "source": {"type": "base64", "data": "abc"}}]
+    dm.use_vision_for_image_reply()
+
+    assert dm.ai is dm.ai_vision
+    assert dm.messages == build(with_instruction=not vision_thinks_internally)
+    assert THINKING_TAG_INSTRUCTION in carried_turn["content"]  # the shared dict is replaced, not mutated
 
 
 @pytest.mark.unit

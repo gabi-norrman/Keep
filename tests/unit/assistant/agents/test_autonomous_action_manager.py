@@ -1189,3 +1189,34 @@ class TestThinkingTagInstruction:
 
         assert sent[-1] == {"role": "user", "content": AutonomousActionManager._action_prompt(llm)}
         assert any("<thinking>" in m["content"] for m in sent) is not internal
+
+    def test_image_follow_up_on_a_self_thinking_vision_tier_loses_the_paragraph(self):
+        """The prompt is built for the first round's model. When a later round carries camera
+        images, _think hands it to the vision tier: if that one thinks on its own, the
+        paragraph must be gone from what it receives — and nothing else."""
+        mgr, llm = make_manager()
+        llm.handles_thinking_internally.return_value = False
+        vision = Mock()
+        vision.handles_thinking_internally.return_value = True
+        vision.think_with_messages.side_effect = lambda messages: [m.copy() for m in messages]
+        mgr.llm_vision = vision
+        messages = [{"role": "system", "content": "test prompt"},
+                    {"role": "user", "content": "(Current time: 14:50)\n\n" + AutonomousActionManager._action_prompt(llm)},
+                    {"role": "assistant", "content": "camera_snapshot(front door)"},
+                    {"role": "user", "content": [{"type": "image", "source": {"type": "base64", "data": "abc"}}]}]
+
+        sent = mgr._think(messages)
+
+        vision.handles_thinking_internally.return_value = True
+        assert sent[1]["content"] == "(Current time: 14:50)\n\n" + AutonomousActionManager._action_prompt(vision)
+        assert sent[3] == messages[3]
+
+    def test_text_round_on_a_tag_model_keeps_the_paragraph(self):
+        mgr, llm = make_manager()
+        llm.handles_thinking_internally.return_value = False
+        llm.think_with_messages.side_effect = lambda messages: [m.copy() for m in messages]
+        prompt = AutonomousActionManager._action_prompt(llm)
+
+        sent = mgr._think([{"role": "system", "content": "test prompt"}, {"role": "user", "content": prompt}])
+
+        assert sent[1]["content"] == prompt and "<thinking>" in prompt
