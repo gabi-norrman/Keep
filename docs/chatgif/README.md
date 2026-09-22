@@ -26,9 +26,12 @@ brew install ffmpeg                              # if missing
 ```bash
 source .venv/bin/activate
 python docs/chatgif/render.py docs/chatgif/scenarios/chair.yaml                 # → docs/chatgif/out/chair.gif
-python docs/chatgif/render.py docs/chatgif/scenarios/chair.yaml --width 800 --mp4 --out docs/images/chair.gif
+python docs/chatgif/render.py docs/chatgif/scenarios/chair.yaml --mp4 --out docs/images/chair.gif
 python docs/chatgif/render.py docs/chatgif/scenarios/chair.yaml --preview       # live player in the browser, no GIF
 ```
+
+The scenario's `width` / `height` set the frame; the chair scenario is phone-proportioned (540×960) so it
+reads well on GitHub mobile. `--width` rescales the output without changing the layout.
 
 `--preview` is the fast way to iterate on a script: the page loops in real time and reloading picks up
 the YAML on the next `render.py --preview`.

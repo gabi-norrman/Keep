@@ -18,9 +18,10 @@ participants:
     avatar: ../assets/avatar_michelle.png
     color: "#309eba"
 
-width: 900
-height: 1000
+width: 540
+height: 960
 status: bot          # header subtitle while the assistant is idle
+image_height: 460    # px height of the photo frame
 lead: 0.8            # seconds before the first message starts
 tail: 6              # seconds to hold the finished chat before the GIF loops
 
@@ -28,7 +29,7 @@ messages:
   - from: user
     time: "17:59"
     image: ../assets/chair.jpg
-    text: Vad kostade den här stolen som vi fick hem idag ?
+    text: Vad kostade den här stolen som vi fick hem idag?
 
   - from: assistant
     time: "18:01"
