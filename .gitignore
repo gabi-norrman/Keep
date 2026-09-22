@@ -47,3 +47,6 @@ __pycache__/
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 CLAUDE.local.md
+
+# rendered chat animations (docs/chatgif/render.py)
+docs/chatgif/out/

@@ -1,0 +1,44 @@
+# A scripted chat for docs/chatgif/render.py. Paths are relative to this file.
+#
+# Message keys:  from (user|assistant), text, time, image, and the optional timing overrides
+#   cps            typing (user) or streaming (assistant) speed in characters per second
+#   thinking       assistant only: seconds of "typing…" in the header before the reply streams
+#   pause_before   seconds of stillness before this message starts
+#   after          seconds of stillness after it (the last message uses `tail` instead)
+#   image_height   px height of the photo frame for this message
+# Text supports **bold**, *italic*, ~~strike~~ and `code`.
+
+participants:
+  user:
+    name: Maciek Drejak
+    avatar: ../assets/avatar_maciek.png
+    color: "#955cdb"
+  assistant:
+    name: Michelle
+    avatar: ../assets/avatar_michelle.png
+    color: "#309eba"
+
+width: 900
+height: 1000
+status: bot          # header subtitle while the assistant is idle
+lead: 0.8            # seconds before the first message starts
+tail: 6              # seconds to hold the finished chat before the GIF loops
+
+messages:
+  - from: user
+    time: "17:59"
+    image: ../assets/chair.jpg
+    text: Vad kostade den här stolen som vi fick hem idag ?
+
+  - from: assistant
+    time: "18:01"
+    thinking: 2.2
+    text: |-
+      Found it — it's the **WOOOD Fåtölj Populär** in Taupe from Ellos, ordered Aug 23 (order 100-26840111).
+
+      • List price: ~~11,999 kr~~
+      • You paid: **9,599 kr** (card, home delivery)
+
+      Ellos actually sent a "you missed your pickup, 199 kr fee looming" nag at 14:00 today — clearly their system hadn't caught up with the chair already sitting in your hallway. Safe to ignore.
+
+      Looks good against those tiles, by the way. Christina's taupe agenda marches on. 🪑
