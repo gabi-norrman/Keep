@@ -68,8 +68,12 @@ Everything else — iCloud, email, smart home, cameras, car — is optional, and
 Open Terminal and paste:
 
 ```bash
-curl ..... TBD
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/maciekd/Keep/master/install.sh)"
 ```
+
+The installer checks the Mac, finds or installs Python 3.12 (Homebrew if you have it, otherwise a self-contained
+[uv](https://docs.astral.sh/uv/) interpreter under `~/.local`), clones Keep into `~/Keep`, installs the Python packages,
+asks for your Anthropic API key and starts the server with its console. Re-run the same command to upgrade.
 
 ## Privacy
 
