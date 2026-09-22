@@ -2,9 +2,14 @@
 cd "$(dirname "$0")"
 
 RLOG=log/restart.log
-rlog() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$RLOG"; }
+rlog() {
+  local line="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+  echo "$line" >> "$RLOG"
+  # Dimmed on the terminal: it's bookkeeping, the server log that follows is what matters
+  [ -t 1 ] && printf '\033[2;90m%s\033[0m\n' "$line" || echo "$line"
+}
 
-rlog "start.sh invoked (caller-supplied old pid: ${1:-none})"
+rlog "Start script invoked (caller-supplied old pid: ${1:-none})"
 
 # Old server pids from three sources: the pid handed to us by the restarting
 # server itself, the owners of the server's listen ports, and an argv match
@@ -15,7 +20,7 @@ old_pids="${1:-} $(lsof -t -iTCP:8888 -iTCP:43523 -sTCP:LISTEN 2>/dev/null) $(pg
 old_pids=$(printf '%s\n' $old_pids | grep -E '^[0-9]+$' | sort -un)
 
 if [ -n "$old_pids" ]; then
-    rlog "stopping old server pid(s): $(echo $old_pids)"
+    rlog "Stopping old server pid(s): $(echo $old_pids)"
     kill $old_pids 2>/dev/null
     # Wait until they're actually gone (up to 10s)
     alive=""
@@ -49,7 +54,7 @@ if [ -n "$busy" ]; then
     exit 1
 fi
 
-rlog "ports free — launching new server via Terminal"
+rlog "Ports free — launching new server via Terminal (so mic access works)..."
 # Remember where the log ends before the launch: the server can fail within
 # milliseconds of starting (dependency check, bad config), and a `tail -n 0`
 # attached after the sleep below would begin past those lines and show nothing.
@@ -58,8 +63,22 @@ open -a Terminal "`pwd`/cli_start.sh"
 sleep 0.5
 osascript -e 'tell application "Terminal" to close (every window whose id is not (id of front window))' 2>/dev/null
 
-# Only tail interactively — when spawned detached (auto-restart), a tail here
-# would leak as an orphan process on every restart.
+# Only interactively — when spawned detached (auto-restart), a tail here would
+# leak as an orphan process on every restart. Show the startup log until the
+# server's TUI port is listening (at least 5s, at most 60s), then hand the
+# terminal to the TUI; tui.py reconnects by itself if the server isn't up yet.
 if [ -t 1 ]; then
-    tail -c +$((log_offset + 1)) -f log/verbose-floxy.out
+    tail -c +$((log_offset + 1)) -f log/verbose-floxy.out &
+    tail_pid=$!
+    # A backgrounded job ignores SIGINT, so Ctrl-C would kill the script and
+    # leave the tail running in the terminal — take it down on any exit.
+    trap 'kill $tail_pid 2>/dev/null' EXIT
+    trap 'rlog "interrupted — leaving the server running"; exit 130' INT TERM
+    for i in $(seq 1 120); do
+        [ "$i" -gt 10 ] && lsof -iTCP:5151 -sTCP:LISTEN >/dev/null 2>&1 && break
+        sleep 0.5
+    done
+    kill $tail_pid 2>/dev/null
+    rlog "handing the terminal to tui.py after ${i}x0.5s of tail"
+    exec .venv/bin/python3 tui.py localhost
 fi

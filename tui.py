@@ -21,6 +21,7 @@ EXIT_ALT_SCREEN = f"{CSI}?1049l"
 SHOW_CURSOR = f"{CSI}?25h"
 RESET = f"{CSI}0m"
 PORT = 5151
+BYE = "\nDisconnected from the server — the server keeps running, only the TUI closed. Rerun tui.py to reconnect. Run stop.sh to stop server."
 
 # Only sleep if running in Terminus terminal
 if os.environ.get("TERM_PROGRAM") == "Terminus":
@@ -68,7 +69,7 @@ def signal_handler(sig, frame):
     global running
     running = False
     cleanup_terminal()
-    print("\nExiting...")
+    print(BYE)
     sys.exit(0)
 
 
@@ -203,7 +204,7 @@ try:
         except KeyboardInterrupt:
             running = False
             cleanup_terminal()
-            print("\nExiting...")
+            print(BYE)
             break
 
         if running:
@@ -216,5 +217,5 @@ try:
             break
 except KeyboardInterrupt:
     cleanup_terminal()
-    print("\nExiting...")
+    print(BYE)
     sys.exit(0)
