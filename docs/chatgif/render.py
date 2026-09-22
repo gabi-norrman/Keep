@@ -95,7 +95,7 @@ def concat_file(frames: list[tuple[Path, float]], path: Path) -> Path:
 def encode_gif(concat: Path, out: Path, width: int, fps: int):
     scale = f"scale={width}:-1:flags=lanczos"
     filters = (f"[0:v]{scale},split[a][b];[a]palettegen=stats_mode=diff[p];"
-               f"[b][p]paletteuse=dither=sierra2_4a:diff_mode=rectangle")
+               f"[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle")
     run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(concat),
          "-r", str(fps), "-lavfi", filters, "-loop", "0", str(out)])
 

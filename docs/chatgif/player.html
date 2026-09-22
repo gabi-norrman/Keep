@@ -51,7 +51,9 @@
   #attach .sub { font-size: 13px; color: var(--muted); margin-top: 3px; }
   #bar { display: flex; align-items: center; gap: 14px; height: 62px; padding: 0 18px; }
   #bar svg { width: 26px; height: 26px; fill: none; stroke: var(--muted); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
-  #input { flex: 1; font-size: 18px; color: var(--text); white-space: nowrap; overflow: hidden; }
+  /* a real input keeps the caret in view: rtl on the box clips overflow on the left, the span itself stays ltr */
+  #input { flex: 1; font-size: 18px; color: var(--text); white-space: nowrap; overflow: hidden; direction: rtl; text-align: left; }
+  #input span.t { direction: ltr; unicode-bidi: isolate; display: inline-block; }
   #input.empty { color: var(--muted); }
   #caret { display: inline-block; width: 2px; height: 22px; background: var(--text); vertical-align: -4px; margin-left: 1px; }
   #send { display: none; }
@@ -167,10 +169,20 @@ function message(e, t) {
     ${photo}<div class="text">${renderRuns(rs, n)}</div></div></div>`;
 }
 
+// The chat glides to the bottom instead of jumping: an exponential follower with time constant
+// SCROLL_TAU. It carries state between frames, so seek() expects t to move forward within a
+// loop (render.py and the live player both do); a jump back restarts it pinned to the bottom.
+const SCROLL_TAU = 0.14;
+const scroll = { t: Infinity, pos: 0 };
 window.seek = function (t) {
   const chat = el('chat');
   chat.innerHTML = T.filter(e => t >= e.showAt).map(e => message(e, t)).join('');
-  chat.scrollTop = chat.scrollHeight;
+  const target = Math.max(0, chat.scrollHeight - chat.clientHeight);
+  if (t < scroll.t) scroll.pos = target;
+  else scroll.pos += (target - scroll.pos) * (1 - Math.exp(-(t - scroll.t) / SCROLL_TAU));
+  if (Math.abs(target - scroll.pos) < 0.5) scroll.pos = target;
+  scroll.t = t;
+  chat.scrollTop = Math.round(scroll.pos);
 
   const typing = T.find(e => e.thinkStart !== undefined && t >= e.thinkStart && t < e.showAt);
   const status = el('h-status');
@@ -179,11 +191,11 @@ window.seek = function (t) {
 
   const composing = T.find(e => e.typeStart !== undefined && t >= e.typeStart && t < e.sendAt);
   const input = el('input'), bar = el('bar'), attach = el('attach');
-  const caret = Math.floor(t * 2) % 2 === 0 ? '<span id="caret"></span>' : '';
+  const caret = `<span id="caret" style="visibility:${Math.floor(t * 2) % 2 === 0 ? 'visible' : 'hidden'}"></span>`;
   if (composing) {
     const m = composing.m;
     const n = Math.min(m.text.length, Math.floor((t - composing.typeStart) * (m.cps || D.type_cps)));
-    input.innerHTML = esc(m.text.slice(0, n)) + caret;
+    input.innerHTML = `<span class="t">${esc(m.text.slice(0, n))}${caret}</span>`;
     input.className = '';
     bar.className = n > 0 || m.image ? 'ready' : '';
     attach.className = m.image ? 'on' : '';
