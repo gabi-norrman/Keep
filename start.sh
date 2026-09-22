@@ -61,7 +61,7 @@ rlog "Ports free — launching new server via Terminal (so mic access works)..."
 # On the very first start the log does not exist yet and tail would give up on it;
 # the server opens it in append mode, so creating it empty here is harmless.
 mkdir -p log && touch log/verbose-floxy.out
-log_offset=$(stat -f %z log/verbose-floxy.out 2>/dev/null || echo 0)
+log_offset=$(/usr/bin/stat -f %z log/verbose-floxy.out 2>/dev/null || echo 0)  # BSD stat even with GNU coreutils on PATH
 rm -f log/cli_start.tty
 open -a Terminal "$PWD/cli_start.sh"
 # cli_start.sh reports its tty once the server has left that window's session. Close

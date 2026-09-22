@@ -105,7 +105,7 @@ open_log() {
     mkdir -p "$KEEP_DIR/log"
     LOG="$KEEP_DIR/log/install.log"
   else
-    LOG=$(mktemp -t keep-install)
+    LOG=$(/usr/bin/mktemp -t keep-install)
   fi
   log ""
   log "Keep installer started $(date '+%Y-%m-%d %H:%M:%S') by $(id -un)"
@@ -268,8 +268,10 @@ check_mac() {
     *) warn "Ghostty terminal is recommended for the best experience - download here: https://ghostty.org/" ;;
   esac
 
+  # System binaries by absolute path: with Homebrew's GNU coreutils first on PATH, df -g,
+  # mktemp -t <prefix> and stat -f are not the BSD commands this script was written for.
   local free
-  free=$(df -g "$HOME" | tail -n 1 | awk '{ print $4 }')
+  free=$(/bin/df -Pk "$HOME" | tail -n 1 | awk '{ print int($4 / 1048576) }')
   [ "${free:-0}" -ge "$MIN_FREE_GB" ] 2>/dev/null || fail "Only ${free:-?} GB free on the disk holding $HOME; Keep needs about $MIN_FREE_GB GB." \
     "The speech and speaker-identification models are the bulk of it."
   ok "Disk: ${free} GB free"
@@ -406,7 +408,7 @@ ensure_repo() {
     # A full clone, not a shallow one: the assistant's self-improvement agent works with
     # branches and history in this very checkout.
     local final="$KEEP_DIR/log/install.log" parked
-    parked=$(mktemp -t keep-install)
+    parked=$(/usr/bin/mktemp -t keep-install)
     mv "$LOG" "$parked"
     rmdir "$KEEP_DIR/log" 2>/dev/null || true
     LOG="$parked"
