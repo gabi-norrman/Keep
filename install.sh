@@ -157,20 +157,33 @@ fmt_elapsed() {
 
 start_spinner() {
   if [ -z "$IS_TTY" ]; then printf '  … %s\n' "$1"; return; fi
-  local label=$1 start=$SECONDS
+  local full_label=$1 start=$SECONDS
   printf '\033[?25l'
   (
     frames='⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏'
     i=0
     status=""
+    cols=80
     while :; do
       # shellcheck disable=SC2086
       set -- $frames
       shift $((i % 10))
+      label=$full_label
       if [ -n "$SPINNER_STATUS" ] && [ $((i % 5)) -eq 0 ]; then
         status=" $(eval "$SPINNER_STATUS" 2>/dev/null || true)"
       fi
-      printf '\r  %s%s%s %s%s %s(%s)%s\033[K' "$C_CYAN" "$1" "$C_RESET" "$label" "$status" "$C_DIM" "$(fmt_elapsed $((SECONDS - start)))" "$C_RESET"
+      if [ $((i % 10)) -eq 0 ]; then cols=$(tput cols 2>/dev/null || echo 80); fi
+      elapsed=$(fmt_elapsed $((SECONDS - start)))
+      # The line is redrawn in place with \r, which only works while it fits on one row:
+      # once the terminal wraps it, every tick leaves the previous row behind. Clip to the
+      # width, status text (the long wheel names) first, the label after it.
+      room=$((cols - 1 - 2 - 2 - ${#label} - 1 - ${#elapsed} - 2))
+      if [ "$room" -lt "${#status}" ]; then
+        if [ "$room" -gt 3 ]; then status="${status:0:$((room - 1))}…"; else status=""; fi
+        room=$((cols - 1 - 2 - 2 - 1 - ${#elapsed} - 2))
+        if [ "$room" -lt "${#label}" ] && [ "$room" -gt 3 ]; then label="${label:0:$((room - 1))}…"; fi
+      fi
+      printf '\r  %s%s%s %s%s %s(%s)%s\033[K' "$C_CYAN" "$1" "$C_RESET" "$label" "$status" "$C_DIM" "$elapsed" "$C_RESET"
       sleep 0.1
       i=$((i + 1))
     done
@@ -436,7 +449,7 @@ install_requirements() {
   local offset
   offset=$(($(wc -c <"$LOG") + 1))
   SPINNER_STATUS="pip_status $offset $PIP_EXPECTED_PACKAGES"
-  run "pip install -r requirements-voice.txt" "$py" -m pip install -r "$KEEP_DIR/requirements-voice.txt"
+  run "pip install" "$py" -m pip install -r "$KEEP_DIR/requirements-voice.txt"
   SPINNER_STATUS=""
 }
 
