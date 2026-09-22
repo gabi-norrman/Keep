@@ -64,11 +64,15 @@ todo: riktiga bilder
 Everything else — iCloud, email, smart home, cameras, car — is optional, and Keep walks you through setting it up.
 
 ## Try it out!
-
-Open Terminal and paste:
-
+Since this is a closed beta you need to:
+1. Accept collaborator invite on GitHub
+2. Make sure you're logged in with GitHub:
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/maciekd/Keep/master/install.sh)"
+gh auth login
+```
+3. Install Keep:
+```bash
+gh api -H "Accept: application/vnd.github.raw" repos/maciekd/Keep/contents/install.sh | bash
 ```
 
 The installer checks the Mac, finds or installs Python 3.12 (Homebrew if you have it, otherwise a self-contained
