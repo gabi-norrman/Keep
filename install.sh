@@ -441,24 +441,37 @@ install_requirements() {
 }
 
 # pip_status <log offset> <expected package count>: progress read off pip's own output.
-# Pip prints one "Collecting" line per package, top-level and transitive alike, as it
-# resolves and downloads; that phase is the bulk of the time on a fresh Mac. The total is
-# only known at the end, so the bar is scaled by the count measured from a full install
-# (the number shown is the real one). The unpack phase that follows prints nothing per
-# package, so it shows as a word.
+# Pip works in passes: it resolves first, printing "Collecting <pkg>" per package while it
+# fetches metadata, then downloads every wheel ("Downloading <file> (<size>)", unindented),
+# builds the few source-only packages and finally unpacks. The bar spans the first two
+# passes, which is where the time goes on a fresh Mac, scaled by the package count of a
+# full install since pip only reveals the total at the end; the text says what it is doing.
 pip_status() {
-  local out done filled bar
+  local out n_collect n_down n_total total text filled bar
   out=$(tail -c +"$1" "$LOG" 2>/dev/null || true)
   case "$out" in
     *"Installing collected packages"*)
-      done=$(printf '%s\n' "$out" | grep '^Installing collected packages' | tr ',' '\n' | grep -c . || true)
-      printf 'unpacking %d packages' "$done"; return ;;
+      n_total=$(printf '%s\n' "$out" | grep '^Installing collected packages' | tr ',' '\n' | grep -c . || true)
+      printf 'unpacking %d packages' "$n_total"; return ;;
+    *"Building wheels for collected packages"*)
+      printf 'building source packages'; return ;;
   esac
-  done=$(printf '%s\n' "$out" | grep -c '^Collecting ' || true)
-  [ "$done" -le "$2" ] || done=$2
-  filled=$((done * 24 / ($2 > 0 ? $2 : 1)))
+  n_collect=$(printf '%s\n' "$out" | grep -c '^Collecting ' || true)
+  n_down=$(printf '%s\n' "$out" | grep -cE '^(Downloading|Using cached) ' || true)
+  if [ "$n_down" -gt 0 ]; then
+    text=$(printf '%s\n' "$out" | grep -E '^(Downloading|Using cached) ' | tail -n 1 | awk '{
+      sub(/^(Downloading|Using cached) /, ""); split($1, a, "-")
+      size = ""; if (match($0, /\([^()]*\)$/)) size = " " substr($0, RSTART, RLENGTH)
+      print "downloading " a[1] " " a[2] size }')
+  else
+    text="resolving $n_collect packages"
+  fi
+  total=$(($2 * 2))
+  n_total=$((n_collect + n_down))
+  [ "$n_total" -le "$total" ] || n_total=$total
+  filled=$((n_total * 24 / total))
   bar=$(printf '%*s' "$filled" '' | sed 's/ /█/g')$(printf '%*s' $((24 - filled)) '')
-  printf '[%s] %d/%d' "$bar" "$done" "$2"
+  printf '[%s] %s' "$bar" "$text"
 }
 
 # ------------------------------------------------------------ 7. API key ----
