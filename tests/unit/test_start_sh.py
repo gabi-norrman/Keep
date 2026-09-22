@@ -105,7 +105,7 @@ class TestStartSh:
         assert wait_dead(victim), f"old server pid {victim} still alive"
         assert harness.launched
         assert f'caller-supplied old pid: {victim}' in harness.restart_log
-        assert 'stopping old server pid(s)' in harness.restart_log
+        assert 'Stopping old server pid(s)' in harness.restart_log
 
     def test_force_kills_term_immune_survivor(self, harness):
         # A wedged server hangs in graceful shutdown and survives SIGTERM —
