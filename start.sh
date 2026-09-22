@@ -58,6 +58,9 @@ rlog "Ports free — launching new server via Terminal (so mic access works)..."
 # Remember where the log ends before the launch: the server can fail within
 # milliseconds of starting (dependency check, bad config), and a `tail -n 0`
 # attached after the sleep below would begin past those lines and show nothing.
+# On the very first start the log does not exist yet and tail would give up on it;
+# the server opens it in append mode, so creating it empty here is harmless.
+mkdir -p log && touch log/verbose-floxy.out
 log_offset=$(stat -f %z log/verbose-floxy.out 2>/dev/null || echo 0)
 open -a Terminal "`pwd`/cli_start.sh"
 sleep 0.5
