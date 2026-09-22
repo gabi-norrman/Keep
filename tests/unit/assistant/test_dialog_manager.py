@@ -174,6 +174,23 @@ def test_stream_llm_response_processes_chunks_and_updates_state(monkeypatch):
 
 
 @pytest.mark.unit
+def test_stream_llm_response_merges_query_without_mutating_shared_trailing_turn(monkeypatch):
+    """The messages list is a shallow copy of PromptManager's, so a trailing user turn may be
+    a dict PromptManager still holds (the test-suite fixtures on a self-thinking tier, where no
+    time note or instruction adds a fresh turn). Merging the query must replace that dict, not
+    grow it in place — otherwise every later request carries this query too."""
+    dm, _ = make_dialog_manager(monkeypatch, ["ok"])
+    shared_turn = {"role": "user", "content": "toolkit reference"}
+    dm.messages = [{"role": "system", "content": "system prompt"}, shared_turn]
+
+    list(dm.stream_llm_response())
+
+    assert shared_turn == {"role": "user", "content": "toolkit reference"}
+    assert dm.messages[1]["content"] == "toolkit reference\n\nTurn on the kitchen lights"
+    assert dm.ai.observed_messages[1]["content"].startswith("toolkit reference\n\nTurn on the kitchen lights")
+
+
+@pytest.mark.unit
 def test_stream_llm_response_propagates_cache_query_to_cached_llm(monkeypatch):
     """The clean utterance set on the DialogManager must reach the CachedLLM so it keys the
     cache on the user query rather than the volatile last-message content sent to the LLM."""

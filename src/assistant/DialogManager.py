@@ -289,7 +289,11 @@ class DialogManager:
     def stream_llm_response(self) -> Generator[str, None, None]:
         if (self.messages and self.messages[-1]["role"] == self.reply_from_role
                 and isinstance(self.reply_to_llm, str) and isinstance(self.messages[-1]["content"], str)):
-            self.messages[-1]["content"] += "\n\n" + self.reply_to_llm
+            # Replace, never mutate: the list is a shallow copy, so the trailing dict may be
+            # shared with another holder (the test-suite fixtures in PromptManager) and an
+            # in-place += would leak this query into every later request.
+            last = self.messages[-1]
+            self.messages[-1] = {**last, "content": last["content"] + "\n\n" + self.reply_to_llm}
         else:
             self.messages.append({"role": self.reply_from_role, "content": self.reply_to_llm})
 
