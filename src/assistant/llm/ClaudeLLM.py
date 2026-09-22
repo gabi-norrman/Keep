@@ -96,7 +96,7 @@ class ClaudeLLM(AbstractLLM):
 
     def handles_thinking_internally(self) -> bool:
         """On the 5-generation families adaptive thinking runs whether or not the `thinking`
-        parameter is sent (Fable 5.1 and Opus 5.5 cannot even turn it off), and asking for a <thinking> tag
+        parameter is sent (Fable 5.1 cannot even turn it off), and asking for a <thinking> tag
         on top gets the request refused as reasoning extraction. An older model (the
         constructor default included) only thinks when asked, so it keeps the tag instruction
         — without it it would not reason at all."""
