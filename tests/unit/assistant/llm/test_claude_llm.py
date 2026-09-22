@@ -36,6 +36,8 @@ class TestProvider:
         assert llm.display_model() == "Fable"
         llm.model = "claude-opus-5"
         assert llm.display_model() == "Opus"
+        llm.model = "claude-opus-5-5"
+        assert llm.display_model() == "Opus"
 
 
 @patch("assistant.llm.ClaudeLLM.config")
@@ -62,7 +64,7 @@ class TestRefusalFallback:
 
 
     @pytest.mark.parametrize("model", [
-        "claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5", "claude-sonnet-5",
+        "claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5",
         "claude-opus-4-8", "claude-sonnet-4-5", "claude-haiku-4-5",
     ])
     def test_a_fallback_thinks_the_way_its_primary_does(self, mock_config, model):

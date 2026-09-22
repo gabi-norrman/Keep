@@ -69,6 +69,15 @@ class TestParseLLMConfig:
         finally:
             p.stop()
 
+    def test_smart_tier_default_is_opus_5_5(self):
+        # The smart tier is the chat loop (Telegram, TUI). Opus 5.5 thinks adaptively on
+        # its own, so drifting to an older model would change the thinking-tag handling.
+        p, _ = self._patch_config(KeyError("ai.smart"))
+        try:
+            assert parse_llm_config('smart') == ('ClaudeLLM', 'claude-opus-5-5')
+        finally:
+            p.stop()
+
     def test_cache_auditor_default_is_gemini(self):
         # The cache auditor is intentionally off-Claude (cheap second opinion);
         # accidentally flipping it onto ClaudeLLM would burn through the audit budget.

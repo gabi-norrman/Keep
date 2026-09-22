@@ -365,7 +365,8 @@ class TestClaudeLLM:
         assert ClaudeLLM().supports_native_thinking() is True
 
     @pytest.mark.parametrize("model, internal", [
-        ("claude-fable-5-1", True), ("claude-mythos-5-1", True), ("claude-opus-5", True), ("claude-sonnet-5", True),
+        ("claude-fable-5-1", True), ("claude-mythos-5-1", True), ("claude-opus-5-5", True), ("claude-opus-5", True),
+        ("claude-sonnet-5", True),
         ("claude-opus-4-8", False), ("claude-sonnet-4-5", False), ("claude-haiku-4-5", False),
     ])
     @patch('assistant.llm.ClaudeLLM.config')
