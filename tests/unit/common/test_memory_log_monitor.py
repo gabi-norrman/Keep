@@ -10,7 +10,14 @@ def _make_monitor():
     tab = Mock()
     tab.memory_log_sizes = []
     tab.memory_log_error = ""
+    tab.memory_word_count = 0
     return MemoryLogMonitor(tab, fetch_interval=0), tab
+
+
+@pytest.fixture(autouse=True)
+def _no_real_memory_bank(tmp_path):
+    with patch.object(MemoryLogMonitor, "MEMORY_FILE", tmp_path / "bank" / "memory.md"):
+        yield
 
 
 def _snapshot_body(new_size_chars: int, extra_bytes: int = 0) -> str:
@@ -120,3 +127,22 @@ class TestMemoryLogMonitorScan:
 
         assert tab.memory_log_sizes == []
         assert tab.memory_log_error == ""
+
+    def test_counts_words_of_live_memory_bank(self, tmp_path):
+        bank = tmp_path / "memory.md"
+        bank.write_text("# Long-term memory bank\n\n---\n- Marcus likes  tea\n- Charlotte plays piano\n")
+
+        monitor, tab = _make_monitor()
+        with patch.object(MemoryLogMonitor, "LOG_DIR", tmp_path), \
+             patch.object(MemoryLogMonitor, "MEMORY_FILE", bank):
+            monitor._scan()
+
+        assert tab.memory_word_count == 9  # markdown markers are not words
+
+    def test_missing_memory_bank_counts_zero_words(self, tmp_path):
+        monitor, tab = _make_monitor()
+        tab.memory_word_count = 42
+        with patch.object(MemoryLogMonitor, "LOG_DIR", tmp_path):
+            monitor._scan()
+
+        assert tab.memory_word_count == 0

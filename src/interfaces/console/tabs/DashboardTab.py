@@ -100,6 +100,7 @@ class DashboardTab(TabView):
         self.cost_last_updated: float = 0.0
 
         self.memory_log_sizes: list = []
+        self.memory_word_count: int = 0
         self.memory_log_error: str = ""
 
         self.cpu_temp: float = 0.0
@@ -402,7 +403,7 @@ class DashboardTab(TabView):
 
     def _draw_long_term_memory_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int):
         sizes = [kb for _, kb in self.memory_log_sizes]
-        latest_str = f"{sizes[-1]:.0f} KB" if sizes else ""
+        latest_str = f"{sizes[-1]:.0f} KB · {self.memory_word_count:,} words" if sizes else ""
         peak = max(sizes) if sizes else 0.0
         max_kb = self._nice_ceil(peak) if peak > self.LTM_MIN_MAX_KB else self.LTM_MIN_MAX_KB
 

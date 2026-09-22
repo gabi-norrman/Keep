@@ -8,9 +8,11 @@ from common.logging import trace
 
 
 class MemoryLogMonitor:
-    """Scans log/memory snapshots on a background thread to chart memory size per day in the DashboardTab."""
+    """Scans log/memory snapshots on a background thread to chart memory size per day in the
+    DashboardTab, and counts the words of the live memory bank for the chart's label."""
 
     LOG_DIR = Path("log/memory")
+    MEMORY_FILE = Path("memory.md")
     FILENAME_RE = re.compile(r"^(\d{8})_\d{6}_[0-9a-f]+_memory\.md$")
     NEW_SIZE_RE = re.compile(r"^- New size: (\d+) chars\s*$", re.MULTILINE)
     HEADER_READ_BYTES = 2048
@@ -44,6 +46,7 @@ class MemoryLogMonitor:
             self._stop_event.wait(self._fetch_interval)
 
     def _scan(self):
+        self._dashboard_tab.memory_word_count = self._count_words()
         if not self.LOG_DIR.exists():
             self._dashboard_tab.memory_log_sizes = []
             self._dashboard_tab.memory_log_error = f"Directory not found: {self.LOG_DIR}"
@@ -87,3 +90,14 @@ class MemoryLogMonitor:
         sizes = sorted(per_day.items(), key=lambda kv: kv[0])
         self._dashboard_tab.memory_log_sizes = sizes
         self._dashboard_tab.memory_log_error = ""
+
+    def _count_words(self) -> int:
+        """Words of the live bank; markdown markers (`#`, `-`, `---`) are not words."""
+        try:
+            text = self.MEMORY_FILE.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            trace(f"MemoryLogMonitor: cannot read {self.MEMORY_FILE}: {e}")
+            return 0
+        words = sum(1 for token in text.split() if any(c.isalnum() for c in token))
+        trace(f"MemoryLogMonitor: {self.MEMORY_FILE} holds {words} words")
+        return words
