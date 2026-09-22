@@ -66,7 +66,7 @@ Everything else — iCloud, email, smart home, cameras, car — is optional, and
 ## Try it out!
 Since this is a closed beta you need to:
 1. Accept collaborator invite on GitHub
-2. Make sure you're logged in with GitHub:
+2. Make sure you're logged in with GitHub (<code>brew install gh</code> if you do not have gh) :
 ```bash
 gh auth login
 ```
