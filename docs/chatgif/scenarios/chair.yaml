@@ -3,12 +3,16 @@
 # Message keys:  from (user|assistant), text, time, image, and the optional timing overrides
 #   cps            typing (user) or streaming (assistant) speed in characters per second
 #   thinking       assistant only: seconds of "typing…" in the header before the reply streams
+#   commands       assistant only: the "• doing X" command echoes posted before the reply, one per
+#                  command_pace seconds (the texts are what Commands.describe() produces)
 #   pause_before   seconds of stillness before this message starts
 #   after          seconds of stillness after it (the last message uses `tail` instead)
 #   image_height   px height of the photo frame for this message
 # A bare `- transition` item between messages ends a conversation: the chat holds for `transition`
 # seconds, clears, and the next one starts on a blank chat (`- transition: 5` overrides the hold).
 # Text supports **bold**, *italic*, ~~strike~~ and `code`.
+# snap_scroll (default true) jumps the chat to the bottom when it grows; false glides instead, which
+# looks softer but makes the GIF several times larger whenever a photo is on screen.
 
 participants:
   user:
@@ -27,8 +31,10 @@ image_height: 460    # px height of the photo frame
 lead: 0.8            # seconds before the first message starts
 tail: 6              # seconds to hold the finished chat before the GIF loops
 transition: 3        # seconds to hold a finished chat before the next one begins
+command_pace: 1      # seconds each command echo stays the newest line before the next one
 type_cps: 30         # user typing speed
-stream_cps: 150      # assistant streaming speed
+stream_cps: 250      # assistant streaming speed
+snap_scroll: true    # jump, don't glide, when the chat scrolls (keeps the GIF small)
 
 messages:
   - from: user
@@ -38,12 +44,15 @@ messages:
 
   - from: assistant
     time: "18:00"
-    thinking: 2.2
+    thinking: 0.8
+    commands:
+      - Searching for Molton Brown rosemary shower gel oil-in-gel 300 ml
+      - Reading moltonbrown.eu/en/bath-body/reviving-rosemary-bath-shower-oil-in-gel
+      - Reading moltonbrown.se/produkter/reviving-rosemary
     text: |-
       Found it — it's called Reviving Rosemary Bath & Shower Oil-in-Gel 300 ml (same rosemary scent as those hotel bottles, 4.7★ from 71 reviews).
 
       • moltonbrown.eu: €34 (~380 kr), free EU shipping until Sep 23
-      • moltonbrown.se lists it at 340 kr but the product page is dead right now — probably out of stock
       
       Want me to order one (or two — ships free) from the EU store with the Revolut card, home delivery?
 
@@ -53,7 +62,11 @@ messages:
 
   - from: assistant
     time: "18:00"
-    thinking: 2.2
+    thinking: 0.8
+    commands:
+      - Browsing moltonbrown.eu/en/bath-body/reviving-rosemary-bath-shower-oil-in-gel
+      - Filling Quantity with '2' · Clicking on Add to bag · Clicking on Checkout
+      - Filling Card number with '•••• 7646' and pressing Enter
     text: |-
       Order placed ✅
   
@@ -69,7 +82,10 @@ messages:
 
   - from: assistant
     time: "18:04"
-    thinking: 1.2
+    thinking: 0.8
+    commands:
+      - Searching photos for child looking at moon shaped lamp
+      - Showing photo IMG_3121 (Thailand, Jan 2024)
     image: ../assets/moon_lamp.jpg
     text: |-
       Best guess: the Thailand one (Jan 2024) — Olivia studying a glowing orb, which sounds an awful lot like a moon lamp. 🌒 
@@ -82,7 +98,11 @@ messages:
 
   - from: assistant
     time: "18:01"
-    thinking: 1.2
+    thinking: 0.8
+    commands:
+      - Searching photos for LG OLED TV box
+      - Reading history from 2019-01-12 to 2019-01-14
+      - Searching email for LG C8 65 OLED
     text: |-
       Best evidence points to Sunday, January 13, 2019. 📺
       
@@ -98,7 +118,11 @@ messages:
 
   - from: assistant
     time: "18:06"
-    thinking: 1.2
+    thinking: 0.8
+    commands:
+      - Browsing goteborg.se/kretslopp-och-vatten/bestall-extra-hamtning
+      - Filling Avfallstyp with 'Restavfall' · Clicking on Beställ
+      - Clicking on Bekräfta beställning
     text: |-
       ✅ Done - extra pickup for restavfall ordered with Kretslopp och vatten.
       

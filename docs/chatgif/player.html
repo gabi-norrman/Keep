@@ -30,7 +30,10 @@
   #chat { flex: 1; overflow: hidden; padding: 12px 16px 8px; }
   .msg { display: flex; gap: 20px; margin-top: 22px; }
   .msg:first-child { margin-top: 6px; }
-  .avatar { flex: none; width: 72px; height: 72px; border-radius: 50%; margin-top: -2px; }
+  .msg.cont { margin-top: 12px; }                 /* a follow-up from the same sender: no avatar, tighter */
+  .msg.cont .avatar { visibility: hidden; }
+  .msg.cont .head { display: none; }
+  .avatar { flex: none; width: 36px; height: 36px; border-radius: 50%; margin-top: -2px; }
   .body { flex: 1; min-width: 0; }
   .head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
   .who { font-size: 19px; font-weight: 600; }
@@ -41,6 +44,8 @@
   .photo img { position: relative; display: block; margin: 0 auto; height: 100%; }
   .text { font-size: 18px; line-height: 1.32; white-space: pre-wrap; word-wrap: break-word; }
   .text code { font-family: "SF Mono", Menlo, monospace; font-size: 16px; background: #0f161e; padding: 1px 5px; border-radius: 4px; }
+  .cmd .text { font-style: italic; }
+  .cmd .text a { color: var(--accent); text-decoration: none; }
 
   /* compose bar */
   #compose { flex: none; background: var(--bar); border-top: 1px solid var(--line); }
@@ -85,7 +90,7 @@ const S = /*SCENARIO*/ null;
 
 const D = Object.assign({
   width: 900, height: 1000, lead: 0.8, tail: 5, after: 0.8, transition: 3,
-  type_cps: 22, stream_cps: 70, thinking: 1.6, send_pause: 0.5, image_height: 640, status: 'bot',
+  type_cps: 22, stream_cps: 70, thinking: 1.6, command_pace: 1, send_pause: 0.5, image_height: 640, status: 'bot', snap_scroll: true,
 }, S);
 document.documentElement.style.setProperty('--w', D.width + 'px');
 document.documentElement.style.setProperty('--h', D.height + 'px');
@@ -113,7 +118,10 @@ for (const m of D.messages) {
     cursor = e.sendAt + (m.after ?? D.after);
   } else {
     e.thinkStart = cursor + (m.pause_before || 0);
-    e.showAt = e.thinkStart + (m.thinking ?? D.thinking);
+    // the "• doing X" command echoes the assistant posts while it works, one every command_pace s
+    const pace = m.command_pace ?? D.command_pace;
+    e.cmds = (m.commands || []).map((text, i) => ({ text, at: e.thinkStart + i * pace }));
+    e.showAt = e.thinkStart + e.cmds.length * pace + (m.thinking ?? D.thinking);
     e.streamEnd = e.showAt + len / (m.cps || D.stream_cps);
     cursor = e.streamEnd + (m.after ?? D.after);
   }
@@ -161,13 +169,15 @@ function snapToWord(plain, n) {           // reveal whole words: the LLM stream 
 }
 
 // --- rendering ------------------------------------------------------------------------------
+const URL_RE = /(?:https?:\/\/)?(?:[\w-]+\.)+[a-z]{2,}(?:\/[^\s)]*)?/gi;
+const linkify = s => esc(s).replace(URL_RE, u => `<a>${u}</a>`);
 const CHECKS = '<svg viewBox="0 0 24 24" fill="none" stroke="#2ea6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12.5l4.5 4.5L15 8.5M9.5 17l1.5 1.5L21 8.5"/></svg>';
 const P = D.participants;
 const el = id => document.getElementById(id);
 el('h-avatar').src = P.assistant.avatar;
 el('h-name').textContent = P.assistant.name;
 
-function message(e, t) {
+function message(e, t, cont) {
   const m = e.m, p = P[m.from];
   const rs = runs(m.text || '');
   const plain = rs.map(r => r.s).join('');
@@ -176,21 +186,32 @@ function message(e, t) {
   const photo = m.image ? `<div class="photo" style="height:${m.image_height || D.image_height}px">
       <div class="blur" style="background-image:url('${m.image}')"></div><img src="${m.image}"></div>` : '';
   const meta = (m.from === 'user' ? CHECKS : '') + `<span>${m.time || ''}</span>`;
-  return `<div class="msg"><img class="avatar" src="${p.avatar}">
+  return `<div class="msg${cont ? ' cont' : ''}"><img class="avatar" src="${p.avatar}">
     <div class="body"><div class="head"><span class="who" style="color:${p.color}">${esc(p.name)}</span><span class="meta">${meta}</span></div>
     ${photo}<div class="text">${renderRuns(rs, n)}</div></div></div>`;
 }
+function commandLine(text, cont) {    // a command echo: the assistant's name, no time, "doing X" in italics
+  const p = P.assistant;
+  return `<div class="msg cmd${cont ? ' cont' : ''}"><img class="avatar" src="${p.avatar}">
+    <div class="body"><div class="head"><span class="who" style="color:${p.color}">${esc(p.name)}</span></div>
+    <div class="text">${linkify(text)}</div></div></div>`;
+}
 
-// The chat glides to the bottom instead of jumping: an exponential follower with time constant
-// SCROLL_TAU. It carries state between frames, so seek() expects t to move forward within a
-// loop (render.py and the live player both do); a jump back restarts it pinned to the bottom.
+// With snap_scroll the chat jumps straight to the bottom. Otherwise it glides there: an exponential
+// follower with time constant SCROLL_TAU that carries state between frames, so seek() expects t to
+// move forward within a loop (render.py and the live player both do); a jump back restarts it pinned
+// to the bottom. The glide is expensive in a GIF: every frame it moves, a photo in view is re-encoded.
 const SCROLL_TAU = 0.14;
 const scroll = { t: Infinity, pos: 0 };
 window.seek = function (t) {
   const chat = el('chat'), ch = clears.filter(at => t >= at).length;
-  chat.innerHTML = T.filter(e => e.chapter === ch && t >= e.showAt).map(e => message(e, t)).join('');
+  const items = T.filter(e => e.chapter === ch).flatMap(e => [
+    ...(e.cmds || []).filter(c => t >= c.at).map(c => ({ from: 'assistant', html: cont => commandLine(c.text, cont) })),
+    ...(t >= e.showAt ? [{ from: e.m.from, html: cont => message(e, t, cont) }] : []),
+  ]);
+  chat.innerHTML = items.map((it, i) => it.html(i > 0 && items[i - 1].from === it.from)).join('');
   const target = Math.max(0, chat.scrollHeight - chat.clientHeight);
-  if (t < scroll.t || ch !== scroll.ch) scroll.pos = target;   // a loop restart or a new chapter: no glide
+  if (D.snap_scroll || t < scroll.t || ch !== scroll.ch) scroll.pos = target;   // a loop restart or a new chapter: no glide
   else scroll.pos += (target - scroll.pos) * (1 - Math.exp(-(t - scroll.t) / SCROLL_TAU));
   if (Math.abs(target - scroll.pos) < 0.5) scroll.pos = target;
   scroll.t = t; scroll.ch = ch;
