@@ -84,17 +84,28 @@
 const S = /*SCENARIO*/ null;
 
 const D = Object.assign({
-  width: 900, height: 1000, lead: 0.8, tail: 5, after: 0.8,
+  width: 900, height: 1000, lead: 0.8, tail: 5, after: 0.8, transition: 3,
   type_cps: 22, stream_cps: 70, thinking: 1.6, send_pause: 0.5, image_height: 640, status: 'bot',
 }, S);
 document.documentElement.style.setProperty('--w', D.width + 'px');
 document.documentElement.style.setProperty('--h', D.height + 'px');
 
 // --- timeline: every message gets absolute times, so a frame is a pure function of t ---------
-let cursor = D.lead;
-const T = D.messages.map(m => {
+// A `transition` marker between messages ends a chapter: the finished chat holds for `transition`
+// seconds, clears, and the next chapter starts after `lead` on a blank chat like the first one.
+// A trailing marker replaces `tail`: the loop restarts right after the hold.
+const isMarker = m => m === 'transition' || (m && m.transition !== undefined);
+const T = [], clears = [];
+let cursor = D.lead, lastAfter = 0, chapter = 0;
+for (const m of D.messages) {
+  if (isMarker(m)) {
+    const at = cursor - lastAfter + (typeof m.transition === 'number' ? m.transition : D.transition);
+    clears.push(at);
+    cursor = at + D.lead; lastAfter = 0; chapter++;
+    continue;
+  }
   const len = Math.max(1, (m.text || '').length);
-  const e = { m };
+  const e = { m, chapter };
   if (m.from === 'user') {
     e.typeStart = cursor + (m.pause_before || 0);
     e.sendAt = e.typeStart + len / (m.cps || D.type_cps) + D.send_pause;
@@ -106,9 +117,10 @@ const T = D.messages.map(m => {
     e.streamEnd = e.showAt + len / (m.cps || D.stream_cps);
     cursor = e.streamEnd + (m.after ?? D.after);
   }
-  return e;
-});
-const DURATION = cursor - (D.messages.length ? (D.messages.at(-1).after ?? D.after) : 0) + D.tail;
+  lastAfter = m.after ?? D.after;
+  T.push(e);
+}
+const DURATION = isMarker(D.messages.at(-1)) ? clears.at(-1) : cursor - lastAfter + D.tail;
 window.duration = () => DURATION;
 
 // --- inline markdown (**bold**, *italic*, ~~strike~~, `code`) into runs, sliced by plain chars ---
@@ -175,13 +187,13 @@ function message(e, t) {
 const SCROLL_TAU = 0.14;
 const scroll = { t: Infinity, pos: 0 };
 window.seek = function (t) {
-  const chat = el('chat');
-  chat.innerHTML = T.filter(e => t >= e.showAt).map(e => message(e, t)).join('');
+  const chat = el('chat'), ch = clears.filter(at => t >= at).length;
+  chat.innerHTML = T.filter(e => e.chapter === ch && t >= e.showAt).map(e => message(e, t)).join('');
   const target = Math.max(0, chat.scrollHeight - chat.clientHeight);
-  if (t < scroll.t) scroll.pos = target;
+  if (t < scroll.t || ch !== scroll.ch) scroll.pos = target;   // a loop restart or a new chapter: no glide
   else scroll.pos += (target - scroll.pos) * (1 - Math.exp(-(t - scroll.t) / SCROLL_TAU));
   if (Math.abs(target - scroll.pos) < 0.5) scroll.pos = target;
-  scroll.t = t;
+  scroll.t = t; scroll.ch = ch;
   chat.scrollTop = Math.round(scroll.pos);
 
   const typing = T.find(e => e.thinkStart !== undefined && t >= e.thinkStart && t < e.showAt);

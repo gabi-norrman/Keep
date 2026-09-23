@@ -36,7 +36,7 @@ def load_scenario(path: Path) -> dict:
     for who in scenario["participants"].values():
         who["avatar"] = url(who["avatar"])
     for m in scenario["messages"]:
-        if m.get("image"):
+        if isinstance(m, dict) and m.get("image"):   # a bare `transition` marker is a string
             m["image"] = url(m["image"])
     return scenario
 

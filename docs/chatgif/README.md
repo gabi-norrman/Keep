@@ -41,8 +41,9 @@ the YAML on the next `render.py --preview`.
 Copy `scenarios/chair.yaml`. Every message is `from: user` or `from: assistant` with `text`, `time`
 and optionally `image` (a path relative to the scenario file). A user message is typed into the compose
 bar and sent; an assistant message shows `typing…` in the header, then streams in word by word.
-Timing knobs (`cps`, `thinking`, `pause_before`, `after`, and the global `lead` / `tail`) are documented
-at the top of that file. Text supports `**bold**`, `*italic*`, `~~strike~~` and `` `code` ``.
+Timing knobs (`cps`, `thinking`, `pause_before`, `after`, and the global `lead` / `tail` / `transition`) are
+documented at the top of that file. A bare `- transition` item between messages ends one conversation and
+starts the next on a blank chat. Text supports `**bold**`, `*italic*`, `~~strike~~` and `` `code` ``.
 
 Drop new avatars or photos into `assets/`. Keep the content fictional or your own: the GIF ends up on
 the public landing page.
