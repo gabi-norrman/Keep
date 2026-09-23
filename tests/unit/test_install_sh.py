@@ -327,7 +327,7 @@ class TestEnsureGithubAuth:
 
     def test_logged_in_user_gets_the_helper_written_and_never_a_prompt(self, harness):
         result = harness.run(self.stub(harness, True) + 'ensure_github_auth',
-                             repo_url='https://github.com/maciekd/Keep.git')
+                             repo_url='https://github.com/marcus/floxy.git')
         assert result.returncode == 0, result.stdout
         assert self.calls(harness) == ['auth status --hostname github.com',
                                        'auth setup-git --hostname github.com',
@@ -336,19 +336,19 @@ class TestEnsureGithubAuth:
 
     def test_not_logged_in_without_a_terminal_fails_with_the_command_to_run(self, harness):
         result = harness.run(self.stub(harness, False) + 'ensure_github_auth',
-                             repo_url='https://github.com/maciekd/Keep.git')
+                             repo_url='https://github.com/marcus/floxy.git')
         assert result.returncode == 1
         assert 'gh auth login' in result.stdout
         assert 'setup-git' not in ''.join(self.calls(harness))
 
     def test_missing_gh_fails_with_the_install_hint(self, harness):
         result = harness.run('gh() { false; }; unset -f gh; PATH=/nonexistent; ensure_github_auth',
-                             repo_url='https://github.com/maciekd/Keep.git')
+                             repo_url='https://github.com/marcus/floxy.git')
         assert result.returncode == 1
         assert 'brew install gh' in result.stdout
 
     def test_other_hosts_are_left_alone(self, harness):
         result = harness.run(self.stub(harness, True) + 'ensure_github_auth',
-                             repo_url='git@github.com:maciekd/Keep.git')
+                             repo_url='git@github.com:marcus/floxy.git')
         assert result.returncode == 0, result.stdout
         assert not (harness.dir / 'gh_calls').exists()
