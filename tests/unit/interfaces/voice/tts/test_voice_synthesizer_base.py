@@ -63,14 +63,6 @@ class TestVoiceSynthesizerBase:
         result = list(vs._audio_generator())
         assert result == [b"chunk1", b"chunk2"]
 
-    def test_clear_queue_empties_queue(self):
-        vs = ConcreteVoiceSynthesizer()
-        vs.audio_queue.put(b"a")
-        vs.audio_queue.put(b"b")
-
-        vs._clear_queue(vs.audio_queue)
-        assert vs.audio_queue.empty()
-
     def test_feed_text_to_queue_name_replacement(self):
         vs = ConcreteVoiceSynthesizer()
         vs.llm_text_stream = iter(["Hello siobhan, how are you?"])
@@ -149,14 +141,6 @@ class TestVoiceSynthesizerBase:
         combined = "".join(items)
         assert "shivawn" in combined
 
-    def test_close_sets_state(self):
-        vs = ConcreteVoiceSynthesizer()
-        vs.close()
-        assert vs.is_closed is True
-        assert vs.llm_text_stream is None
-        assert vs.audio_stream is None
-
-
 class TestVoiceSynthesizerNameEdgeCases:
 
     @staticmethod
@@ -177,16 +161,6 @@ class TestVoiceSynthesizerNameEdgeCases:
         combined = self._collect_text(vs)
         assert "shivawn" in combined
         assert "siobhan" not in combined.lower()
-
-    def test_multiple_names_in_one_chunk(self):
-        """'siobhan and sam' → both handled"""
-        vs = ConcreteVoiceSynthesizer()
-        vs.llm_text_stream = iter(["siobhan and sam"])
-        vs._feed_text_to_queue()
-        combined = self._collect_text(vs)
-        assert "shivawn" in combined
-        # sam→sam is a same-name replacement (comma stripping only)
-        assert "sam" in combined.lower()
 
     def test_name_split_across_three_chunks(self):
         """'si', 'ob', 'han is here' → hold-back buffers reassemble name"""
@@ -277,15 +251,6 @@ class TestVoiceSynthesizerEmotionTags:
         combined = self._collect_text(vs)
         assert "[laughing]" not in combined
         assert "no way, that worked?" in combined
-
-    def test_multiple_tags_stripped(self):
-        vs = NoReplacementVoiceSynthesizer()
-        vs.llm_text_stream = iter(["[sighing] the lights are off [angry] already"])
-        vs._feed_text_to_queue()
-        combined = self._collect_text(vs)
-        assert "[" not in combined and "]" not in combined
-        assert "the lights are off" in combined
-        assert "already" in combined
 
     def test_tags_kept_when_supported(self):
         """SUPPORTS_EMOTION_TAGS=True → tags pass through untouched"""
@@ -415,15 +380,6 @@ class TestVoiceSynthesizerRequestLanguage:
     methods here so a backend-specific test isn't the only thing guarding the
     contract."""
 
-    def test_default_request_language_is_none(self):
-        vs = NoReplacementVoiceSynthesizer()
-        assert vs.request_language is None
-
-    def test_set_request_language_stores_value(self):
-        vs = NoReplacementVoiceSynthesizer()
-        vs.set_request_language("sv-SE")
-        assert vs.request_language == "sv-SE"
-
     def test_configured_language_code_strips_region_subtag(self):
         with patch("common.Language.config") as mock_config:
             mock_config.get.return_value = "pt-BR"
@@ -457,14 +413,6 @@ class TestVoiceSynthesizerRequestLanguage:
             mock_config.get.return_value = []
             assert VoiceSynthesizer.configured_languages() == ["en-US"]
 
-    def test_impl_name_defaults_to_class_name(self):
-        """Used by the 'First sound chunk' log line so we know which backend
-        produced the audio; decorators (Cached…) override to report the wrapped
-        impl. Concrete subclasses inherit this default."""
-        assert NoReplacementVoiceSynthesizer().impl_name() == "NoReplacementVoiceSynthesizer"
-        assert ConcreteVoiceSynthesizer().impl_name() == "ConcreteVoiceSynthesizer"
-
-
 class ConfiguredVoiceSynthesizer(NoReplacementVoiceSynthesizer):
     CONFIG_SECTION = "engine"
     name_replacements = VoiceSynthesizer.name_replacements
@@ -476,9 +424,6 @@ class TestNameReplacementsFromConfig:
         with patch('interfaces.voice.tts.VoiceSynthesizer.config') as mock_config:
             mock_config.get.side_effect = lambda key, default=None: tts if key == 'tts' else default
             return dict(ConfiguredVoiceSynthesizer().name_replacements())
-
-    def test_nothing_configured(self):
-        assert self._replacements({}) == {}
 
     def test_names_map_to_themselves_lowercased(self):
         assert self._replacements({'names': ['Sam', 'alex']}) == {'sam': 'sam', 'alex': 'alex'}

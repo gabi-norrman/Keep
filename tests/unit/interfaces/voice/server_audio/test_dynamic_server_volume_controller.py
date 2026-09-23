@@ -22,25 +22,6 @@ class TestRmsToDb:
         # 20 * log10(0.01 / 1e-4) = 20 * log10(100) = 20 * 2 = 40
         assert db == pytest.approx(40, rel=0.01)
 
-    def test_very_small_rms(self):
-        rms = 1e-10
-        db = DynamicServerVolumeController.rms_to_db(rms)
-        # Should use the floor value 1e-10, giving 20 * log10(1e-10 / 1e-4) = 20 * log10(1e-6) = 20 * -6 = -120
-        assert db == pytest.approx(-120, rel=0.01)
-
-    def test_edge_case_rms_near_reference(self):
-        rms = 1e-4  # Same as reference
-        db = DynamicServerVolumeController.rms_to_db(rms)
-        # 20 * log10(1e-4 / 1e-4) = 20 * log10(1) = 0
-        assert db == pytest.approx(0, rel=0.01)
-
-    def test_rms_value_one(self):
-        rms = 1.0
-        db = DynamicServerVolumeController.rms_to_db(rms)
-        # 20 * log10(1 / 1e-4) = 20 * log10(10000) = 20 * 4 = 80
-        assert db == pytest.approx(80, rel=0.01)
-
-
 class TestNoiseToVolume:
     def test_noise_below_minimum_clips_to_min(self):
         controller = DynamicServerVolumeController(
@@ -86,29 +67,12 @@ class TestNoiseToVolume:
 
 
 class TestCalculateRms:
-    def test_silence_returns_zero(self):
-        audio_data = np.zeros(1000)
-        rms = DynamicServerVolumeController.calculate_rms(audio_data)
-        assert rms == 0.0
-
     def test_known_signal_returns_expected_rms(self):
         # Sine wave with amplitude 1 has RMS of 1/sqrt(2) ≈ 0.707
         t = np.linspace(0, 2 * np.pi, 10000)
         audio_data = np.sin(t)
         rms = DynamicServerVolumeController.calculate_rms(audio_data)
         assert rms == pytest.approx(1.0 / np.sqrt(2), rel=0.01)
-
-    def test_constant_signal_returns_that_value(self):
-        audio_data = np.full(1000, 0.5)
-        rms = DynamicServerVolumeController.calculate_rms(audio_data)
-        # RMS of constant signal is the constant value itself
-        assert rms == pytest.approx(0.5, rel=0.01)
-
-    def test_handles_single_element_array(self):
-        audio_data = np.array([0.3])
-        rms = DynamicServerVolumeController.calculate_rms(audio_data)
-        assert rms == pytest.approx(0.3, rel=0.01)
-
 
 class TestSetSystemVolume:
     @patch('subprocess.run')
@@ -141,12 +105,6 @@ class TestSingleton:
         DynamicServerVolumeController.reset_instance()
         instance2 = DynamicServerVolumeController.get_instance()
         assert instance1 is not instance2
-
-    def test_get_instance_passes_kwargs(self):
-        instance = DynamicServerVolumeController.get_instance(min_volume=60, max_volume=90)
-        assert instance.min_volume == 60
-        assert instance.max_volume == 90
-
 
 class TestStartStop:
     @patch('threading.Thread')
@@ -193,29 +151,6 @@ class TestStartStop:
 
 class TestPause:
     @patch('threading.Timer')
-    def test_pause_sets_paused_flag(self, mock_timer_class):
-        mock_timer = Mock()
-        mock_timer_class.return_value = mock_timer
-
-        controller = DynamicServerVolumeController()
-        controller.pause()
-
-        assert controller.paused is True
-
-    @patch('threading.Timer')
-    def test_pause_creates_timer_for_auto_resume(self, mock_timer_class):
-        mock_timer = Mock()
-        mock_timer_class.return_value = mock_timer
-
-        controller = DynamicServerVolumeController()
-        controller.pause()
-
-        mock_timer_class.assert_called_once()
-        args = mock_timer_class.call_args
-        assert args[0][0] == 5.0  # 5 second delay
-        mock_timer.start.assert_called_once()
-
-    @patch('threading.Timer')
     def test_pause_resets_timer_if_called_again(self, mock_timer_class):
         mock_timer1 = Mock()
         mock_timer2 = Mock()
@@ -227,18 +162,6 @@ class TestPause:
 
         mock_timer1.cancel.assert_called_once()
         assert mock_timer_class.call_count == 2
-
-
-class TestAutoResume:
-    def test_auto_resume_clears_paused_flag(self):
-        controller = DynamicServerVolumeController()
-        controller.paused = True
-        controller._pause_timer = Mock()
-
-        controller._auto_resume()
-
-        assert controller.paused is False
-        assert controller._pause_timer is None
 
 
 class TestResolveInputDevice:

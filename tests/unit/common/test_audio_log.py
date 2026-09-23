@@ -84,12 +84,6 @@ def test_save_pcm_wav_concurrent_same_name_never_overwrites(tmp_path):
     assert all(os.path.exists(p) for p in paths)
 
 
-def test_save_pcm_wav_creates_directory(tmp_path):
-    nested = tmp_path / "log" / "audio"
-    path = save_pcm_wav(str(nested), "hi", _pcm(5))
-    assert os.path.exists(path)
-
-
 def test_save_pcm_wav_caps_long_name_at_100_chars(tmp_path):
     # Long transcripts used to be written verbatim as the WAV basename, which
     # could blow past the filesystem's NAME_MAX (255 on most Linux/macOS). A

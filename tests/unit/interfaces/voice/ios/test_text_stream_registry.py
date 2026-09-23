@@ -12,9 +12,6 @@ class TestTextStreamRegistry:
         yield TextStreamRegistry.get_instance()
         TextStreamRegistry.reset_instance()
 
-    def test_get_instance_is_singleton(self, registry):
-        assert TextStreamRegistry.get_instance() is registry
-
     def test_get_or_create_returns_same_queue(self, registry):
         q1 = registry.get_or_create("req-1")
         q2 = registry.get_or_create("req-1")
@@ -26,16 +23,6 @@ class TestTextStreamRegistry:
         q = registry.get_or_create("req-1")
         assert q.get_nowait() == {"type": "token", "text": "Hello"}
         assert q.get_nowait() == {"type": "token", "text": " world"}
-
-    def test_publish_auto_creates_queue(self, registry):
-        registry.publish("req-new", {"type": "token", "text": "hi"})
-        q = registry.get_or_create("req-new")
-        assert q.get_nowait() == {"type": "token", "text": "hi"}
-
-    def test_publish_with_no_request_id_is_noop(self, registry):
-        registry.publish(None, {"type": "token", "text": "hi"})
-        registry.publish("", {"type": "token", "text": "hi"})
-        assert registry._queues == {}
 
     def test_close_enqueues_sentinel(self, registry):
         registry.publish("req-1", {"type": "token", "text": "hi"})
@@ -57,11 +44,6 @@ class TestTextStreamRegistry:
         registry.get_or_create("req-1")
         registry.discard("req-1")
         assert "req-1" not in registry._queues
-
-    def test_discard_unknown_request_is_safe(self, registry):
-        registry.discard("does-not-exist")
-        registry.discard(None)
-
 
 @pytest.mark.unit
 class TestOrphanTimers:

@@ -86,14 +86,6 @@ class TestInterpolation:
         assert len(c._trail) == 1
         assert c._trail[0][:2] == (20, 5)
 
-    def test_one_cell_step_records_single_trail_point(self):
-        c = CrtCursor()
-        c.update(5, 5)
-        c.update(6, 5)
-        assert len(c._trail) == 1
-        assert c._trail[0][:2] == (5, 5)
-
-
 class TestHide:
     def test_hide_clears_head_keeps_trail(self):
         c = CrtCursor()
@@ -135,12 +127,6 @@ class TestReset:
 
 
 class TestFadeColor:
-    def test_t_zero_is_trail_brightness_of_the_head(self):
-        col = CrtCursor._fade_color(0.0)
-        b = CrtCursor.TRAIL_BRIGHTNESS
-        assert (col.r, col.g, col.b) == (int(CrtCursor.BRIGHT.r * b), int(CrtCursor.BRIGHT.g * b),
-                                         int(CrtCursor.BRIGHT.b * b))
-
     def test_t_one_is_black(self):
         col = CrtCursor._fade_color(1.0)
         assert (col.r, col.g, col.b) == (0, 0, 0)

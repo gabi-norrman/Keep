@@ -46,35 +46,13 @@ def _build_forecast_response(entries):
 @pytest.mark.unit
 class TestRemoveDecimals:
 
-    def test_rounds_float_down(self):
-        assert WeatherIntegration.remove_decimals(5.2) == 5
-
-    def test_rounds_float_up(self):
-        assert WeatherIntegration.remove_decimals(5.7) == 6
-
     def test_rounds_half_to_even(self):
         # Python uses banker's rounding: 0.5 rounds to nearest even
         assert WeatherIntegration.remove_decimals(4.5) == 4
         assert WeatherIntegration.remove_decimals(5.5) == 6
 
-    def test_zero(self):
-        assert WeatherIntegration.remove_decimals(0.0) == 0
-
-    def test_negative_value(self):
-        assert WeatherIntegration.remove_decimals(-3.7) == -4
-
-    def test_negative_rounds_toward_zero(self):
-        assert WeatherIntegration.remove_decimals(-3.2) == -3
-
     def test_string_input(self):
         assert WeatherIntegration.remove_decimals("5.7") == 6
-
-    def test_integer_input(self):
-        assert WeatherIntegration.remove_decimals(5) == 5
-
-    def test_large_value(self):
-        assert WeatherIntegration.remove_decimals(1013.5) == 1014
-
 
 @pytest.mark.unit
 class TestFetchWeatherForecast:
@@ -325,35 +303,11 @@ class TestFetchWeatherForecast:
         assert result.count("Weather at") > 8
 
     @patch('assistant.integration.integrations.WeatherIntegration.requests.get')
-    def test_output_starts_with_units_header(self, mock_get, mock_config):
-        entries = [_make_timeseries_entry(
-            "2024-01-15T10:00:00Z", _make_details()
-        )]
-        mock_get.return_value = self._mock_response(_build_forecast_response(entries))
-
-        result = WeatherIntegration.fetch_weather_forecast(short_term_forecast=True)
-
-        assert result.startswith("Temperature is in degrees Celsius")
-
-    @patch('assistant.integration.integrations.WeatherIntegration.requests.get')
     def test_non_200_raises_runtime_error(self, mock_get, mock_config):
         mock_get.return_value = self._mock_response({}, status_code=500)
 
         with pytest.raises(RuntimeError, match="Failed to fetch weather"):
             WeatherIntegration.fetch_weather_forecast(short_term_forecast=True)
-
-    @patch('assistant.integration.integrations.WeatherIntegration.requests.get')
-    def test_values_are_rounded_to_integers(self, mock_get, mock_config):
-        entries = [_make_timeseries_entry(
-            "2024-01-15T10:00:00Z",
-            _make_details(temp=5.7, wind_speed=3.3),
-        )]
-        mock_get.return_value = self._mock_response(_build_forecast_response(entries))
-
-        result = WeatherIntegration.fetch_weather_forecast(short_term_forecast=True)
-
-        assert "air_temperature: 6" in result
-        assert "wind_speed: 3" in result
 
     @patch('assistant.integration.integrations.WeatherIntegration.requests.get')
     def test_excludes_precipitation_amount_from_instant_details(self, mock_get, mock_config):

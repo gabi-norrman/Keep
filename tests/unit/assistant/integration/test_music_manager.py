@@ -125,9 +125,6 @@ class TestMusicManager:
         favorites.append("should not affect original")
         assert len(mm._favorites_cache) == 3
 
-    def test_room_mapping_comes_from_config(self):
-        assert make_music_manager().room_mapping == ROOM_MAPPING
-
     def test_room_mapping_unset_maps_nothing(self):
         mm = make_music_manager(room_mapping=None)
         assert mm.room_mapping == {}

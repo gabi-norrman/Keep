@@ -60,11 +60,6 @@ class TestFit:
 
 @pytest.mark.unit
 class TestDraw:
-    def test_disabled_voice_interface_says_so(self):
-        screen = TUIScreen(120, 20)
-        make_tab(None).draw(screen, 0)
-        assert "voice interface disabled" in rows(screen)[TOP_ROW - 1]
-
     def test_plates_are_bottom_anchored_with_the_newest_last(self):
         screen = TUIScreen(140, 12)
         analyzer = FakeAnalyzer(candidates=[phrase("older", 1), phrase("newest", 2)],

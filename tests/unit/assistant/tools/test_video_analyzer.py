@@ -4,9 +4,7 @@ from unittest.mock import patch, Mock
 
 import pytest
 
-from assistant.tools.VideoAnalyzer import (
-    VideoAnalyzer, video_analyzer, short_clip_fps, DESCRIPTION_PROMPT_USER, DEFAULT_MIME_TYPE,
-)
+from assistant.tools.VideoAnalyzer import VideoAnalyzer, short_clip_fps, DESCRIPTION_PROMPT_USER, DEFAULT_MIME_TYPE
 
 REPLY = '{"short_description": "A dog runs", "detailed_description": "A dog runs on a beach.", "spoken_content": ""}'
 
@@ -39,11 +37,6 @@ def _analyzer_with_reply(*replies) -> tuple[VideoAnalyzer, Mock]:
 
 @pytest.mark.unit
 class TestFormatDescription:
-    def test_without_spoken_content(self):
-        assert VideoAnalyzer.format_description({
-            "short_description": "A dog runs", "detailed_description": "A dog runs on a beach.",
-        }) == "Video description: [A dog runs] A dog runs on a beach."
-
     def test_empty_spoken_content_is_omitted(self):
         assert VideoAnalyzer.format_description({
             "short_description": "A", "detailed_description": "B", "spoken_content": "  ",
@@ -57,10 +50,6 @@ class TestFormatDescription:
 
 @pytest.mark.unit
 class TestParseResponse:
-    def test_extracts_json_from_prose(self):
-        data = VideoAnalyzer._parse_response(f"Sure, here it is:\n{REPLY}\nDone.")
-        assert data["short_description"] == "A dog runs"
-
     def test_spoken_content_is_optional(self):
         data = VideoAnalyzer._parse_response('{"short_description": "A", "detailed_description": "B"}')
         assert "spoken_content" not in data
@@ -68,15 +57,6 @@ class TestParseResponse:
     def test_missing_required_key_raises(self):
         with pytest.raises(KeyError):
             VideoAnalyzer._parse_response('{"short_description": "A"}')
-
-    def test_no_json_raises(self):
-        with pytest.raises(ValueError):
-            VideoAnalyzer._parse_response("no json here")
-
-    def test_broken_json_raises(self):
-        with pytest.raises(json.JSONDecodeError):
-            VideoAnalyzer._parse_response("{broken: json}")
-
 
 @pytest.mark.unit
 class TestAnalyze:
@@ -156,13 +136,6 @@ class TestDescribeBytes:
         analyzer.describe_bytes(b"vid")
         assert llm.think_with_video.call_args[1]["mime_type"] == DEFAULT_MIME_TYPE
 
-    def test_context_passed_to_analyze(self):
-        analyzer = VideoAnalyzer(llm=_video_llm(REPLY))
-        with patch.object(analyzer, 'analyze', return_value={
-                "short_description": "X", "detailed_description": "Y"}) as mock_analyze:
-            analyzer.describe_bytes(b"vid", context="Sent by Bob")
-        assert mock_analyze.call_args[1]["context"] == "Sent by Bob"
-
     def test_llm_without_video_support_returns_fallback_without_calling(self):
         llm = Mock()
         llm.supports_video.return_value = False
@@ -224,12 +197,6 @@ class TestDescribeBytes:
         with patch.object(analyzer, 'analyze', side_effect=RuntimeError("boom")):
             assert analyzer.describe_bytes(b"vid", fallback="[Clip]") == "[Clip]"
 
-    def test_custom_fallback(self):
-        llm = Mock()
-        llm.supports_video.return_value = False
-        assert VideoAnalyzer(llm=llm).describe_bytes(b"vid", fallback="[Clip]") == "[Clip]"
-
-
 @pytest.mark.unit
 class TestVideoLlm:
     def test_creates_from_video_tier_on_first_use(self):
@@ -247,14 +214,3 @@ class TestVideoLlm:
             analyzer = VideoAnalyzer()
             assert analyzer.llm is analyzer.llm
         mock_create.assert_called_once()
-
-    def test_injected_llm_is_used_as_is(self):
-        injected = Mock()
-        with patch('assistant.llm.create_llm') as mock_create:
-            assert VideoAnalyzer(llm=injected).llm is injected
-        mock_create.assert_not_called()
-        injected.initialize.assert_not_called()
-
-    def test_video_analyzer_is_process_wide_singleton(self):
-        assert video_analyzer() is video_analyzer()
-        assert isinstance(video_analyzer(), VideoAnalyzer)

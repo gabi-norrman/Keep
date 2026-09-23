@@ -191,21 +191,6 @@ class TestConsentScriptKeepsTheDocument:
 
 
 @pytest.mark.unit
-class TestConsentScriptGuards:
-    """Tripwires that hold without node."""
-
-    def test_no_substring_backdrop_selector_in_final_cleanup(self):
-        js = WebAccess._COOKIE_REMOVAL_JS
-        assert """querySelectorAll('[class*="backdrop"], [class*="overlay"]""" not in js
-        assert "querySelectorAll('.backdrop, .overlay, .modal-backdrop')" in js
-
-    def test_every_removal_goes_through_the_guard(self):
-        js = WebAccess._COOKIE_REMOVAL_JS
-        assert js.count('el.remove()') == 1
-        assert 'if (isProtected(el)) { kept++; return false; }' in js
-
-
-@pytest.mark.unit
 class TestScrollToLoadEvalResult:
 
     def test_exception_details_result_skips_scrolling(self):

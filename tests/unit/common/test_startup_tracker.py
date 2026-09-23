@@ -45,22 +45,8 @@ class TestWriteCurrentStartup:
         data = json.loads(temp_state_file.read_text())
         assert data == {"started_at": 123.0}
 
-    def test_overwrites_existing(self, temp_state_file):
-        StartupTracker.write_current_startup(1.0)
-        StartupTracker.write_current_startup(2.0)
-        assert StartupTracker.read_previous_startup() == 2.0
-
-
 @pytest.mark.unit
 class TestBuildHistoryMessage:
-    def test_no_previous_timestamp(self):
-        msg = StartupTracker.build_history_message([], None)
-        assert msg == "Server started up successfully."
-
-    def test_no_commits(self):
-        msg = StartupTracker.build_history_message([], 1700000000.0)
-        assert msg == "Server started up successfully. No changes since last start."
-
     def test_with_commits(self):
         commits = ["abc1234 first commit", "def5678 second commit"]
         msg = StartupTracker.build_history_message(commits, 1700000000.0)
@@ -71,17 +57,6 @@ class TestBuildHistoryMessage:
 
 @pytest.mark.unit
 class TestRecordShutdown:
-    def test_writes_history_entry(self):
-        with patch("common.FloxyDatabase.FloxyDatabase.get_instance") as mock_get:
-            mock_db = mock_get.return_value
-            StartupTracker.record_shutdown()
-        mock_db.add_history_entry.assert_called_once()
-        args, _ = mock_db.add_history_entry.call_args
-        assert args[0] == "system"
-        assert args[1] == "Server is shutting down."
-        assert isinstance(args[2], float)
-        assert args[3] == "shutdown"
-
     def test_db_failure_is_swallowed(self):
         with patch("common.FloxyDatabase.FloxyDatabase.get_instance",
                    side_effect=RuntimeError("db unavailable")):

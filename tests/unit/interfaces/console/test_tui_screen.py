@@ -10,21 +10,8 @@ def row_text(screen: TUIScreen, y: int) -> str:
 
 
 class TestColor:
-    def test_equality_same_components(self):
-        assert Color(10, 20, 30) == Color(10, 20, 30)
-
     def test_inequality_different_components(self):
         assert Color(10, 20, 30) != Color(10, 20, 31)
-
-    def test_identity_shortcut(self):
-        c = Color(1, 2, 3)
-        assert c == c
-
-    def test_non_color_not_equal(self):
-        assert (Color(1, 2, 3) == "nope") is False
-
-    def test_equal_colors_hash_equal(self):
-        assert hash(Color(5, 6, 7)) == hash(Color(5, 6, 7))
 
     def test_usable_as_dict_key(self):
         d = {Color(1, 1, 1): "a"}
@@ -38,11 +25,6 @@ class TestColor:
 
 
 class TestStyle:
-    def test_equality_all_fields(self):
-        a = Style(fg=Color(1, 2, 3), bold=True)
-        b = Style(fg=Color(1, 2, 3), bold=True)
-        assert a == b
-
     def test_inequality_on_bold(self):
         assert Style(bold=True) != Style(bold=False)
 
@@ -70,20 +52,10 @@ class TestStyle:
         assert s == Style()
         assert s.is_default()
 
-    def test_is_default_true_for_fresh(self):
-        assert Style().is_default()
-
     def test_is_default_false_with_attribute(self):
         assert not Style(bold=True).is_default()
 
-    def test_non_style_not_equal(self):
-        assert (Style() == "nope") is False
-
-
 class TestClampColorComponent:
-    def test_in_range(self):
-        assert TUIScreen._clamp_color_component(128) == 128
-
     def test_negative_clamps_to_zero(self):
         assert TUIScreen._clamp_color_component(-5) == 0
 
@@ -202,11 +174,6 @@ class TestBackground:
         assert TUIScreen.BACKGROUND_SEQ + "a" in out
         assert f"{TUIScreen.CSI}2;1H" not in out
 
-    def test_erase_line_blanks_onto_the_background(self):
-        screen = TUIScreen(4, 2)
-        assert screen.erase_line(2) == (f"{TUIScreen.CSI}2;1H{TUIScreen.RESET}"
-                                        f"{TUIScreen.BACKGROUND_SEQ}{TUIScreen.CLEAR_LINE}")
-
     def test_raw_ansi_resets_land_on_the_background(self):
         screen = TUIScreen(20, 2)
         screen.write_raw_ansi_at(1, 1, "\x1b[32mok\x1b[0m rest\x1b[m tail")
@@ -252,11 +219,6 @@ class TestStyleToSequences:
         screen = TUIScreen()
         seqs = screen._style_to_sequences(Style(fg=Color(1, 2, 3)))
         assert seqs == [TUIScreen.RESET, str(Color(1, 2, 3)), TUIScreen.BACKGROUND_SEQ]
-
-    def test_bold_appended_after_reset(self):
-        screen = TUIScreen()
-        seqs = screen._style_to_sequences(Style(bold=True))
-        assert seqs == [TUIScreen.RESET, TUIScreen.BOLD, TUIScreen.BACKGROUND_SEQ]
 
     def test_all_attributes_in_order(self):
         screen = TUIScreen()

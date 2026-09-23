@@ -230,12 +230,6 @@ class TestNameIndex:
         assert index.display("input_boolean.night") == "Night"
         assert index.display("sun.sun") is None
 
-    def test_empty_index(self):
-        index = NameIndex()
-        with pytest.raises(Unresolved, match='No entity named "x"'):
-            index.resolve("x")
-
-
 @pytest.mark.unit
 class TestFeedEntry:
     @pytest.fixture

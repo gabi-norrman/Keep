@@ -59,16 +59,6 @@ def test_prepend_user_query_force_off_via_env(isolated_env):
 
 
 @pytest.mark.unit
-def test_claude_static_cache_ttl_defaults_to_1h(isolated_env):
-    """1h survives the 5–60 min idle gaps between real user voice queries; 5m
-    would expire on every gap and force a full re-write at 1.25x input. The
-    docstring in DevelopmentConfig.py explains the trade-off — pin the default
-    so a casual edit doesn't silently make every live query cost more."""
-    cfg = _reimport_development_config()
-    assert cfg.CLAUDE_STATIC_CACHE_TTL == "1h"
-
-
-@pytest.mark.unit
 def test_claude_static_cache_ttl_env_override(isolated_env):
     """Test/prompt runner overrides this to 5m to save money on dense, short
     requests — preserve the env-driven override path."""

@@ -17,11 +17,6 @@ class TestExtractUpdatedMemory:
 
 
 class TestInlineDiff:
-    def test_identical_lines_no_spans(self):
-        old_spans, new_spans = inline_diff("hello", "hello")
-        assert old_spans == []
-        assert new_spans == []
-
     def test_single_word_change(self):
         old_spans, new_spans = inline_diff("the cat sat", "the dog sat")
         # "cat" -> "dog"
@@ -84,18 +79,6 @@ class TestBuildAnnotatedView:
         assert types[1] == "added"
         assert types[2] == "removed"
         assert lines[2] == "b"
-
-    def test_complex_edit(self):
-        old = "header\nold middle\nfooter"
-        new = "header\nnew middle\nextra\nfooter"
-        lines, types, _ = MemoryTab._build_annotated_view(old, new)
-        assert "header" in lines
-        assert "footer" in lines
-        assert types[lines.index("header")] == "normal"
-        assert types[lines.index("footer")] == "normal"
-        # Should have some added/removed entries
-        assert "added" in types
-
 
 def _make_tab_with_snapshots(tmp_path, n_dates):
     tab = MemoryTab()

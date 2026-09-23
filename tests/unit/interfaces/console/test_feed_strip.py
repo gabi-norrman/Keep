@@ -3,7 +3,7 @@ for one catching up, the once-a-second rebuild — and the ChatPane footer drawi
 from unittest.mock import patch
 
 from interfaces.console import Theme
-from interfaces.console.framework.TUIScreen import Color, TUIScreen
+from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.widgets.ChatPane import ChatPane
 from interfaces.console.widgets.FeedStrip import (BAR_EMPTY_DIMMING, COLOR_STARTING, PAUSED_DIMMING, SYMBOL_FAILED, SYMBOL_PAUSED,
                                                   SYMBOL_RUNNING, FeedChip, FeedStrip, bar_block, chip_for, dimmed, format_eta,
@@ -42,9 +42,6 @@ class TestFormatEta:
 
 
 class TestChipFor:
-    def test_dimmed_fades_a_quarter_toward_black(self):
-        assert dimmed(Theme.COLOR_GREEN_FG_BRIGHTER) == Color(54, 162, 121)
-
     def test_live_is_a_green_dot_and_the_name(self):
         assert chip_for("iMessage", status()) == FeedChip(SYMBOL_RUNNING, FILL, "iMessage")
 

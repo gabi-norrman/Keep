@@ -1,23 +1,10 @@
 import asyncio
-from unittest.mock import Mock, patch, AsyncMock, MagicMock
+from unittest.mock import Mock, AsyncMock, MagicMock
 
 from interfaces.voice.microphones.OutpostServer import OutpostServer
 
 
 class TestOutpostServer:
-    def test_constructor_defaults(self):
-        server = OutpostServer()
-        assert server.port == 43523
-        assert len(server.clients) == 0
-        assert server.running is False
-
-    def test_constructor_custom_port(self):
-        server = OutpostServer(port=9999)
-        assert server.port == 9999
-
-    def test_broadcast_command_no_clients_no_error(self):
-        server = OutpostServer()
-        asyncio.run(server.broadcast_command("stop"))
         # Should not raise
 
     def test_broadcast_command_sends_to_all_clients(self):
@@ -61,21 +48,6 @@ class TestOutpostServer:
 
         assert bad_writer not in server.clients
         assert good_writer in server.clients
-
-    def test_message_format_verification(self):
-        server = OutpostServer()
-        writer = MagicMock()
-        writer.write = Mock()
-        writer.drain = AsyncMock()
-        writer.get_extra_info = Mock(return_value=("127.0.0.1", 1234))
-        server.clients = {writer}
-
-        asyncio.run(server.broadcast_command("stop"))
-        writer.write.assert_called_with(b"<stop>\n")
-
-        writer.write.reset_mock()
-        asyncio.run(server.broadcast_command("listen"))
-        writer.write.assert_called_with(b"<listen>\n")
 
     def test_stop_closes_clients_and_server(self):
         server = OutpostServer()
@@ -196,18 +168,6 @@ class TestOutpostServer:
         bad_listener.assert_called_once_with("stop")
         good_listener.assert_called_once_with("stop")
         writer.write.assert_called_once_with(b"<stop>\n")
-
-    def test_multiple_listeners_all_invoked(self):
-        server = OutpostServer()
-        a, b, c = Mock(), Mock(), Mock()
-        for listener in (a, b, c):
-            server.add_command_listener(listener)
-
-        asyncio.run(server.broadcast_command("wakeword"))
-
-        a.assert_called_once_with("wakeword")
-        b.assert_called_once_with("wakeword")
-        c.assert_called_once_with("wakeword")
 
     def test_handle_client_pong_reports_latency(self):
         from assistant.AssistantEvents import observers

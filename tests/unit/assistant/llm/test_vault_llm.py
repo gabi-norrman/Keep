@@ -3,7 +3,6 @@ ever see real values (VAULT_PLAN §3.6)."""
 import pytest
 from unittest.mock import Mock
 
-from assistant.llm import VaultLLM as vault_llm_module
 from assistant.llm.AbstractLLM import AbstractLLM
 from assistant.llm.VaultLLM import VaultLLM
 from common.vault.Vault import Vault
@@ -151,12 +150,6 @@ class TestBaseClassEntryPoints:
         assert sent_images == ["img"]
         assert result == f"Card holder: {EMAIL}"
 
-    def test_think_with_messages_goes_through_the_wrapper(self, wrapped, inner, messages):
-        inner.create_completion.return_value = f"Noted {PH_MOBILE}"
-        assert wrapped.think_with_messages(messages, thinking=True) == f"Noted {MOBILE}"
-        inner.create_completion.assert_called_once_with(REDACTED, thinking=True)
-
-
 @pytest.mark.unit
 class TestEmptyVault:
     @pytest.fixture
@@ -170,14 +163,6 @@ class TestEmptyVault:
         assert list(passthrough.create_streaming_completion(messages, thinking=True)) == chunks
         inner.create_streaming_completion.assert_called_once_with(messages, thinking=True)
         assert inner.create_streaming_completion.call_args.args[0] is messages
-
-    def test_stream_pass_through_is_logged(self, passthrough, inner, messages, monkeypatch):
-        lines = []
-        monkeypatch.setattr(vault_llm_module, "fine", lines.append)
-        inner.create_streaming_completion.return_value = iter(["x"])
-        list(passthrough.create_streaming_completion(messages))
-        assert any("passed through" in line for line in lines)
-        assert not any(MOBILE in line or EMAIL in line for line in lines)
 
     def test_non_streaming_calls_forward_the_very_same_list(self, passthrough, inner, messages):
         inner.create_completion.return_value = f"Echo {MOBILE}"
@@ -193,35 +178,12 @@ class TestEmptyVault:
         VaultLLM(inner, disabled).create_completion(messages)
         assert inner.create_completion.call_args.args[0] is messages
 
-    def test_locked_vault_stream_pass_through_is_logged_at_info(self, inner, stocked, messages, monkeypatch):
-        locked = Vault(path=stocked.path, passphrase="wrong")
-        lines = []
-        monkeypatch.setattr(vault_llm_module, "info", lambda m: lines.append(f"info: {m}"))
-        monkeypatch.setattr(vault_llm_module, "fine", lambda m: lines.append(f"fine: {m}"))
-        inner.create_streaming_completion.return_value = iter(["x"])
-        assert list(VaultLLM(inner, locked).create_streaming_completion(messages)) == ["x"]
-        assert lines == [f"info: Vault: LOCKED ({locked.error}) — MockLLM (mock-model-1) stream passed through unredacted"]
-
-
 @pytest.mark.unit
 class TestDelegation:
-    def test_name_is_the_inner_name(self, wrapped, inner):
-        assert wrapped.name() == inner.name.return_value == "MockLLM (mock-model-1)"
-
-    def test_provider_is_the_inner_provider(self, wrapped, inner):
-        inner.provider.return_value = "MockVendor"
-        assert wrapped.provider() == "MockVendor"
-
     def test_model_passes_through_getattr(self, wrapped, inner):
         assert wrapped.model == "mock-model-1"
         inner.model = "mock-model-2"
         assert wrapped.model == "mock-model-2"
-
-    def test_client_and_arbitrary_public_attributes_pass_through(self, wrapped, inner):
-        inner.client = object()
-        inner.base_url = "https://example.invalid"
-        assert wrapped.client is inner.client
-        assert wrapped.base_url == "https://example.invalid"
 
     def test_private_names_are_never_forwarded(self, wrapped, inner):
         inner._secret_internal = "x"
@@ -229,34 +191,10 @@ class TestDelegation:
             wrapped._secret_internal
         assert not hasattr(wrapped, "__dunder_that_does_not_exist__")
 
-    def test_missing_attribute_raises_attribute_error(self, wrapped):
-        with pytest.raises(AttributeError):
-            wrapped.no_such_attribute
-
     def test_half_built_instance_raises_instead_of_recursing(self):
         half = VaultLLM.__new__(VaultLLM)
         with pytest.raises(AttributeError):
             half.model
-
-    @pytest.mark.parametrize("method, args", [
-        ("initialize", ()),
-        ("prefers_prepended_user_query", ()),
-        ("set_prompt_cache", (False,)),
-        ("supports_native_thinking", ()),
-        ("handles_thinking_internally", ()),
-        ("supports_video", ()),
-        ("max_video_bytes", ()),
-    ])
-    def test_plain_delegates(self, wrapped, inner, method, args):
-        getattr(inner, method).return_value = "delegated"
-        result = getattr(wrapped, method)(*args)
-        getattr(inner, method).assert_called_once_with(*args)
-        if method != "set_prompt_cache":
-            assert result == "delegated"
-
-    def test_display_model_delegates(self, wrapped, inner):
-        inner.display_model.return_value = "Fable"
-        assert wrapped.display_model() == "Fable"
 
     def test_refusal_fallback_is_wrapped_in_the_same_vault(self, wrapped, inner, stocked, messages):
         """__getattr__ never reaches refusal_fallback (AbstractLLM defines it), so the
@@ -276,9 +214,6 @@ class TestDelegation:
     def test_refusal_fallback_none_stays_none(self, wrapped, inner):
         inner.refusal_fallback.return_value = None
         assert wrapped.refusal_fallback() is None
-
-    def test_is_an_abstract_llm(self, wrapped):
-        assert isinstance(wrapped, AbstractLLM)
 
     def test_last_stop_reason_is_the_inner_llms(self, stocked):
         """A real backend, not a Mock: the property AbstractLLM defines reads

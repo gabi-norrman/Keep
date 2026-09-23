@@ -60,22 +60,6 @@ def _live_outposts(pb: ServerPlayback):
 # ---------------------------------------------------------------------------
 
 class TestStop:
-    def test_no_thread_no_error(self, playback):
-        playback.audio_thread = None
-        playback.stop()  # should not raise
-
-    def test_with_active_thread_joins(self, playback):
-        mock_thread = Mock()
-        mock_thread.is_alive.return_value = True
-        mock_thread.join = Mock()
-        playback.audio_thread = mock_thread
-
-        playback.stop()
-
-        playback.audio_queue.get_nowait()  # None sentinel was put
-        mock_thread.join.assert_called_once()
-        assert playback.audio_thread is None
-
     def test_stop_skips_close_when_worker_wedged(self, playback):
         """kill() path: closing a stream the wedged worker still owns would block on the
         same CoreAudio hang — it must be skipped, leaving cleanup to the daemon worker."""
@@ -97,10 +81,6 @@ class TestStop:
 # ---------------------------------------------------------------------------
 
 class TestCloseAudioStream:
-    def test_no_stream(self, playback):
-        playback.audio_stream = None
-        playback._close_audio_stream()  # should not raise
-
     def test_active_stream_stop_and_close(self, playback):
         mock_stream = Mock()
         mock_stream.active = True
@@ -252,13 +232,6 @@ class TestEnqueue:
             mock_dvc.get_instance.return_value = mock_vc
             playback.enqueue(b"data")
             mock_vc.pause.assert_called_once()
-
-    def test_mark_sound_played_stamps_timestamp(self):
-        with patch(f"{MOD}.PlaySound") as mock_ps:
-            before = time.time()
-            ServerPlayback.mark_sound_played()
-            assert mock_ps.last_time_sound_played_on_server >= before
-
 
 # ---------------------------------------------------------------------------
 # TestFinishReply

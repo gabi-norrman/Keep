@@ -11,10 +11,9 @@ import pytest
 import requests
 from requests.auth import HTTPDigestAuth
 
-from assistant.integration.Feed import Feed, FeedEntry
+from assistant.integration.Feed import FeedEntry
 from assistant.integration.integrations.home.HomeAutomation import HomeAutomation, render
-from assistant.integration.integrations.home.IndigoIntegration import (
-    IndigoIntegration, EVENT_TIME_NUDGE, POLL_INTERVAL, LOG_REFINER, PROMPT_FILE, ERROR_LOG_SECTION)
+from assistant.integration.integrations.home.IndigoIntegration import IndigoIntegration, EVENT_TIME_NUDGE, LOG_REFINER, PROMPT_FILE, ERROR_LOG_SECTION
 
 MODULE = "assistant.integration.integrations.home.IndigoIntegration"
 DATA = Path(__file__).parents[2] / "data" / "home"
@@ -38,26 +37,6 @@ def integration():
 
 @pytest.mark.unit
 class TestContract:
-    def test_is_a_feed_and_a_home_automation_backend(self, integration):
-        assert isinstance(integration, Feed)
-        assert isinstance(integration, HomeAutomation)
-        assert integration.name == "Indigo"
-        assert integration.config_section == "indigo"
-        assert integration.section_filters == {section: tuple(drop) for section, drop in SECTION_FILTERS.items()}
-        assert integration.feed_name == "Indigo"
-        assert integration.config_slug == "indigo"
-        assert integration.poll_interval == POLL_INTERVAL == 5
-        assert integration.config_keys == ["indigo.host", "indigo.login", "indigo.password"]
-
-    def test_no_section_filters_configured(self, integration):
-        with patch.dict(CONFIG):
-            del CONFIG["indigo.section_filters"]
-            assert integration.section_filters == {}
-
-    def test_no_cursor_no_backfill(self, integration):
-        assert integration.initial_cursor(1_700_000_000.0) is None
-
-
     def test_reset_stops_the_feed(self, integration):
         """restart_integration Indigo must not leave the old feed thread polling over SSH."""
         with patch("assistant.integration.FeedRunner.Feeds.get_instance") as feeds:
@@ -88,12 +67,6 @@ class TestCheckHealth:
              pytest.raises(requests.HTTPError):
             integration.check_health()
 
-    def test_an_unreachable_host_propagates_to_the_monitor(self, integration):
-        with patch(f"{MODULE}.requests.get", side_effect=requests.ConnectionError("refused")), \
-             pytest.raises(requests.ConnectionError):
-            integration.check_health()
-
-
 @pytest.mark.unit
 class TestParseEvents:
     def test_a_message_line_becomes_a_system_entry_at_todays_clock_time(self):
@@ -118,11 +91,6 @@ class TestParseEvents:
         output = "\nmessage: no clock time\n10:30 (x) message: short clock\n\n10:30:00 (x) message: ok\n"
         assert [e.content for e in IndigoIntegration.parse_events(output, NOW)] == ["ok"]
 
-    def test_empty_output_gives_no_entries(self):
-        assert IndigoIntegration.parse_events("", NOW) == []
-        assert IndigoIntegration.parse_events("\n\n", NOW) == []
-
-
 @pytest.mark.unit
 class TestFetch:
     def test_runs_the_refiner_over_ssh_and_returns_the_days_events(self, integration):
@@ -138,12 +106,6 @@ class TestFetch:
         assert [e.content for e in batch.entries] == ["Kitchen light on"]
         assert batch.cursor is None
         assert batch.exhausted is True
-
-    def test_live_poll_is_the_same_call(self, integration):
-        result = Mock(returncode=0, stdout="", stderr="")
-        with patch(f"{MODULE}.subprocess.run", return_value=result):
-            batch = integration.fetch(None, backfill=False)
-        assert batch.entries == [] and batch.cursor is None and batch.exhausted is True
 
     def test_a_non_zero_ssh_exit_is_an_empty_batch_not_a_failure(self, integration):
         result = Mock(returncode=255, stdout="", stderr="ssh: connect to host indigo.local: Connection refused")

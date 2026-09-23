@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import patch
 
-from assistant.AssistantEvents import AssistantObserver, ObserverHub, observers
+from assistant.AssistantEvents import AssistantObserver, ObserverHub
 
 
 class Recorder(AssistantObserver):
@@ -98,31 +98,3 @@ class TestObserverHub:
         hub.clear()
         hub.on_tokens("x")
         assert log == []
-
-    def test_module_hub_is_a_singleton(self):
-        assert observers() is observers()
-        assert isinstance(observers(), ObserverHub)
-
-
-class TestStreamEventTypes:
-    def test_every_event_is_a_frozen_assistant_event(self):
-        from dataclasses import FrozenInstanceError
-        from assistant.AssistantEvents import (AssistantEvent, UserIdentified, Token, Thinking,
-                                               ThinkingDone, CommandRan, AudioChunk, Notice,
-                                               RoundEnd, Done)
-        events = [UserIdentified("Marcus"), Token("hi"), Thinking("hmm", 3), ThinkingDone(1.5),
-                  CommandRan("turn_on", "kitchen"), AudioChunk(b"\x00\x01"), Notice("no"),
-                  RoundEnd("raw"), Done("full")]
-        for ev in events:
-            assert isinstance(ev, AssistantEvent)
-            with pytest.raises(FrozenInstanceError):
-                setattr(ev, "text", "x")
-
-    def test_round_end_defaults_to_empty_raw_text(self):
-        from assistant.AssistantEvents import RoundEnd
-        assert RoundEnd().raw_text == ""
-
-    def test_events_compare_by_value(self):
-        from assistant.AssistantEvents import Token, Thinking
-        assert Token("a") == Token("a")
-        assert Thinking("a").output_tokens == 0

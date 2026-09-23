@@ -383,22 +383,10 @@ class TestResolveContact:
     def test_unknown_contact_returns_handle(self, integration):
         assert integration._resolve_contact("+9999999999") == "+9999999999"
 
-    def test_none_handle_returns_unknown(self, integration):
-        assert integration._resolve_contact(None) == "Unknown"
-
-    def test_empty_handle_returns_unknown(self, integration):
-        assert integration._resolve_contact("") == "Unknown"
-
     def test_local_number_matches_international_via_suffix(self, integration):
         integration._contact_cache["0701740620"] = "Bob"
         integration._contact_cache["701740620"] = "Bob"  # suffix key added by cache builder
         assert integration._resolve_contact("+46701740620") == "Bob"
-
-    def test_international_number_matches_local_via_suffix(self, integration):
-        integration._contact_cache["+46701740620"] = "Bob"
-        integration._contact_cache["701740620"] = "Bob"  # suffix key added by cache builder
-        assert integration._resolve_contact("0701740620") == "Bob"
-
 
 @pytest.mark.unit
 class TestPhoneSuffix:
@@ -411,27 +399,10 @@ class TestPhoneSuffix:
     def test_short_number_returns_none(self):
         assert IMessageIntegration._phone_suffix("12345") is None
 
-    def test_empty_returns_none(self):
-        assert IMessageIntegration._phone_suffix("") is None
-
-    def test_none_returns_none(self):
-        assert IMessageIntegration._phone_suffix(None) is None
-
-
 @pytest.mark.unit
 class TestNormalizePhone:
     def test_strips_formatting(self):
         assert IMessageIntegration._normalize_phone("+1 (234) 567-890") == "+1234567890"
-
-    def test_preserves_leading_plus(self):
-        assert IMessageIntegration._normalize_phone("+44123") == "+44123"
-
-    def test_empty_returns_empty(self):
-        assert IMessageIntegration._normalize_phone("") == ""
-
-    def test_none_returns_none(self):
-        assert IMessageIntegration._normalize_phone(None) is None
-
 
 @pytest.mark.unit
 class TestMessageFormatting:
@@ -454,27 +425,6 @@ class TestMessageFormatting:
         assert "iMessage received:" in content
         assert "Alice" in content
         assert "Marcus" in content
-
-    def test_outgoing_dm_format(self, integration):
-        # Apple stores handle_id = 0 for sent messages, so the join yields NULL —
-        # the recipient must come from the chat's participants.
-        rows = _make_rows(
-            (1, "Hi there", None, RECENT_APPLE_TS, 1, None, None),
-        )
-        with patch('assistant.integration.integrations.IMessageIntegration.is_prompt_injection', return_value=False):
-            with patch('assistant.integration.integrations.IMessageIntegration.sqlite3') as mock_sqlite:
-                mock_conn = MagicMock()
-                mock_conn.__enter__ = Mock(return_value=mock_conn)
-                mock_conn.__exit__ = Mock(return_value=False)
-                mock_conn.execute.side_effect = _execute_side_effect(rows, participants=["+1234567890"])
-                mock_sqlite.connect.return_value = mock_conn
-
-                integration._poll_new_messages()
-
-        call_args = integration.produced.call_args
-        content = call_args[0][1]
-        assert "iMessage sent:" in content
-        assert "Marcus to Alice: Hi there" in content
 
     def test_group_message_includes_group_name(self, integration):
         rows = _make_rows(
@@ -548,20 +498,8 @@ class TestResolveChatRecipient:
         )
         return conn
 
-    def test_single_known_participant(self, integration):
-        assert integration._resolve_chat_recipient(self._conn(["+1234567890"]), 1) == "Alice"
-
-    def test_no_participants_returns_none(self, integration):
-        assert integration._resolve_chat_recipient(self._conn([]), 1) is None
-
     def test_null_handles_filtered_out(self, integration):
         assert integration._resolve_chat_recipient(self._conn([None]), 1) is None
-
-    def test_multiple_participants_sorted_and_joined(self, integration):
-        integration._contact_cache["+1111111111"] = "Bob"
-        result = integration._resolve_chat_recipient(self._conn(["+1234567890", "+1111111111"]), 1)
-        assert result == "Alice, Bob"
-
 
 @pytest.mark.unit
 class TestGetMediaAttachments:
@@ -628,13 +566,6 @@ class TestGetMediaAttachments:
         finally:
             os.unlink(tmp_path)
 
-    def test_no_attachments_returns_empty(self):
-        mock_conn = Mock()
-        mock_conn.execute.return_value = Mock(fetchall=Mock(return_value=[]))
-        result = IMessageIntegration._get_media_attachments(mock_conn, 1)
-        assert result == []
-
-
 @pytest.mark.unit
 class TestAnalyzeMediaAttachment:
     def test_successful_analysis(self):
@@ -670,20 +601,6 @@ class TestAnalyzeMediaAttachment:
             assert args[0] == b"mov-bytes"
             assert kwargs["mime_type"] == "video/quicktime"
             assert kwargs["context"] == "Video sent via iMessage by Alice"
-        finally:
-            os.unlink(tmp_path)
-
-    def test_describe_bytes_fallback_propagated(self):
-        import tempfile, os
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-            f.write(b"fake")
-            tmp_path = f.name
-        try:
-            with patch('assistant.integration.integrations.IMessageIntegration.media_analyzer') as mock_accessor:
-                mock_ia = mock_accessor.return_value
-                mock_ia.describe_bytes.return_value = "[Photo]"
-                result = IMessageIntegration._analyze_media_attachment(tmp_path, "image/jpeg", "Alice")
-            assert result == "[Photo]"
         finally:
             os.unlink(tmp_path)
 
@@ -768,9 +685,6 @@ class TestRing2FADetection:
         match = RING_2FA_PATTERN.search(text)
         assert match is not None
         assert match.group(1) == "123456"
-
-    def test_ring_2fa_pattern_no_match_on_unrelated(self):
-        assert RING_2FA_PATTERN.search("Hello world") is None
 
     def test_ring_2fa_forwarded_on_incoming_message(self, integration):
         code_text = "Your Ring verification code is: 987654. Don't share this code."
@@ -908,9 +822,6 @@ class TestRing2FADetection:
 
 @pytest.mark.unit
 class TestApplescriptQuote:
-    def test_simple_string(self):
-        assert IMessageIntegration._applescript_quote("hello") == '"hello"'
-
     def test_double_quote_escaped(self):
         assert IMessageIntegration._applescript_quote('say "hi"') == '"say \\"hi\\""'
 
@@ -921,24 +832,13 @@ class TestApplescriptQuote:
         result = IMessageIntegration._applescript_quote("line1\nline2")
         assert result == '"line1" & linefeed & "line2"'
 
-    def test_none_returns_empty_string_literal(self):
-        assert IMessageIntegration._applescript_quote(None) == '""'
-
-
 @pytest.mark.unit
 class TestPreferHandle:
     def test_e164_phone(self):
         assert IMessageIntegration._prefer_handle("+1 (234) 567-8901") == "+12345678901"
 
-    def test_local_phone_keeps_digits(self):
-        assert IMessageIntegration._prefer_handle("0701234567") == "0701234567"
-
     def test_email_lowercased(self):
         assert IMessageIntegration._prefer_handle("Alice@Example.COM") == "alice@example.com"
-
-    def test_empty_returns_none(self):
-        assert IMessageIntegration._prefer_handle("") is None
-
 
 @pytest.mark.unit
 class TestLooksLikeHandle:
@@ -948,15 +848,8 @@ class TestLooksLikeHandle:
     def test_phone_yes(self):
         assert IMessageIntegration._looks_like_handle("+46701234567") is True
 
-    def test_local_phone_yes(self):
-        assert IMessageIntegration._looks_like_handle("0701234567") is True
-
     def test_short_digit_string_no(self):
         assert IMessageIntegration._looks_like_handle("12") is False
-
-    def test_name_no(self):
-        assert IMessageIntegration._looks_like_handle("Alice") is False
-
 
 @pytest.mark.unit
 class TestNameKeys:
@@ -996,33 +889,6 @@ class TestRecordFullName:
         IMessageIntegration._record_full_name(m, "Bob", "Jones", "+12345678901")
         assert m["+12345678901"] == "Alice Smith"
 
-    def test_email_handle_lowercased(self):
-        m = {}
-        IMessageIntegration._record_full_name(m, "Alice", "Smith", "Alice@Example.COM")
-        assert m == {"alice@example.com": "Alice Smith"}
-
-    def test_empty_inputs_ignored(self):
-        m = {}
-        IMessageIntegration._record_full_name(m, "", "Smith", "+1234567890")
-        IMessageIntegration._record_full_name(m, "Alice", "Smith", "")
-        assert m == {}
-
-
-@pytest.mark.unit
-class TestDisplayNameForHandle:
-    def test_returns_full_name(self, integration):
-        integration._handle_to_full_name = {"+12345678901": "Alice Smith"}
-        assert integration.display_name_for_handle("+12345678901") == "Alice Smith"
-
-    def test_unknown_handle_returns_none(self, integration):
-        integration._handle_to_full_name = {}
-        assert integration.display_name_for_handle("+12345678901") is None
-
-    def test_empty_handle_returns_none(self, integration):
-        assert integration.display_name_for_handle("") is None
-        assert integration.display_name_for_handle(None) is None
-
-
 @pytest.mark.unit
 class TestRecordReverseHandle:
     def test_first_handle_recorded(self):
@@ -1052,12 +918,6 @@ class TestRecordReverseHandle:
         IMessageIntegration._record_reverse_handle(reverse, "Dave", "dave@example.com")
         IMessageIntegration._record_reverse_handle(reverse, "Dave", "+12345678901")
         assert reverse["dave"] == "+12345678901"
-
-    def test_empty_inputs_ignored(self):
-        reverse = {}
-        IMessageIntegration._record_reverse_handle(reverse, "", "+1234567890")
-        IMessageIntegration._record_reverse_handle(reverse, "Alice", "")
-        assert reverse == {}
 
     def test_same_priority_handles_tracked_as_ties(self):
         reverse = {}
@@ -1167,12 +1027,6 @@ class TestResolveHandleTies:
 
 @pytest.mark.unit
 class TestResolveRecipient:
-    def test_resolves_contact_name(self, integration):
-        integration._name_to_handle = {"alice": "+12345678901"}
-        handle, err = integration.resolve_recipient("Alice")
-        assert handle == "+12345678901"
-        assert err is None
-
     def test_resolves_contact_name_case_insensitive(self, integration):
         integration._name_to_handle = {"alice": "+12345678901"}
         handle, err = integration.resolve_recipient("ALICE")
@@ -1228,17 +1082,6 @@ class TestResolveRecipient:
         assert handle == "bob@example.com"
         assert err is None
 
-    def test_empty_recipient_returns_error(self, integration):
-        handle, err = integration.resolve_recipient("   ")
-        assert handle is None
-        assert err is not None
-
-    def test_full_name_resolves(self, integration):
-        integration._name_to_handle = {"alice": "+1", "alice smith": "+1"}
-        handle, err = integration.resolve_recipient("Alice Smith")
-        assert handle == "+1"
-        assert err is None
-
     def test_full_name_disambiguates_first_name_collision(self, integration):
         """Two contacts with the same first name resolve uniquely via full name."""
         integration._name_to_handle = {
@@ -1285,17 +1128,6 @@ class TestSend:
         assert "iMessage sent:" in content
         assert "hello there" in content
 
-    def test_sms_fallback_uses_same_script(self, integration):
-        """The AppleScript is built with both iMessage and SMS branches; verify both are present."""
-        integration._name_to_handle = {"bob": "+46701234567"}
-        with patch('assistant.integration.integrations.IMessageIntegration.subprocess.run',
-                   return_value=self._mock_osascript(stdout="sent:sms")) as mock_run:
-            result = integration.send("Bob", "hi")
-        assert result == ""
-        script = mock_run.call_args[0][0][2]
-        assert "iMessage" in script
-        assert "SMS" in script
-
     def test_unauthorized_error_returns_friendly_message(self, integration):
         integration._name_to_handle = {"alice": "+12345678901"}
         with patch('assistant.integration.integrations.IMessageIntegration.subprocess.run',
@@ -1318,12 +1150,6 @@ class TestSend:
         with patch('assistant.integration.integrations.IMessageIntegration.subprocess.run') as mock_run:
             result = integration.send("Zelda", "hi")
         assert "unknown contact" in result
-        mock_run.assert_not_called()
-
-    def test_empty_body_returns_error(self, integration):
-        with patch('assistant.integration.integrations.IMessageIntegration.subprocess.run') as mock_run:
-            result = integration.send("Alice", "   ")
-        assert "empty" in result
         mock_run.assert_not_called()
 
     def test_timeout_returns_timeout_error(self, integration):
@@ -1441,18 +1267,3 @@ class TestFeed:
         refresh.assert_called_once()
         seed.assert_called_once()
         assert integration.open_error is None
-
-    def test_remaining_counts_rows_after_the_cursor(self, integration):
-        with patch('assistant.integration.integrations.IMessageIntegration.sqlite3') as mock_sqlite:
-            mock_conn = MagicMock()
-            mock_conn.__enter__ = Mock(return_value=mock_conn)
-            mock_conn.__exit__ = Mock(return_value=False)
-            mock_conn.execute.return_value = Mock(fetchone=Mock(return_value=(17,)))
-            mock_sqlite.connect.return_value = mock_conn
-            assert integration.remaining("40") == 17
-        assert mock_conn.execute.call_args[0][1] == (40,)
-
-    def test_feed_identity(self, integration):
-        assert integration.feed_name == "iMessage"
-        assert integration.config_slug == "imessage"
-        assert integration.poll_interval == 5

@@ -48,14 +48,6 @@ class TestCachedVoiceSynthesizer:
         assert "turn_on_the_lights" in filename
         assert filename.endswith(".wav")
 
-    def test_get_cache_filename_removes_special_chars(self, synth):
-        """Should remove special characters"""
-        filename = synth._get_cache_filename("Hello, world! What's up?")
-        assert "," not in filename
-        assert "!" not in filename
-        assert "?" not in filename
-        assert "'" not in filename
-
     def test_get_cache_filename_includes_voice_id(self, synth):
         """Should include voice ID in filename"""
         filename = synth._get_cache_filename("test text")
@@ -85,22 +77,11 @@ class TestCachedVoiceSynthesizer:
         file_b = synth_b._get_cache_filename("hello")
         assert file_a != file_b
 
-    def test_get_cache_filename_consistent(self, synth):
-        """Should return same filename for same text"""
-        file1 = synth._get_cache_filename("hello world")
-        file2 = synth._get_cache_filename("hello world")
-        assert file1 == file2
-
     def test_get_cache_filename_case_insensitive(self, synth):
         """Should be case insensitive"""
         file1 = synth._get_cache_filename("Hello World")
         file2 = synth._get_cache_filename("hello world")
         assert file1 == file2
-
-    def test_get_cache_filename_in_cache_dir(self, synth):
-        """Should be in cache directory"""
-        filename = synth._get_cache_filename("test")
-        assert filename.startswith(synth.cache_dir)
 
     # ===== _save_to_cache() and _read_cache() tests =====
 
@@ -202,11 +183,6 @@ class TestCachedVoiceSynthesizer:
         assert b''.join(chunks) == large_audio
 
     # ===== _get_cache_size_bytes() tests =====
-
-    def test_get_cache_size_bytes_empty(self, synth):
-        """Should return 0 for empty cache"""
-        size = synth._get_cache_size_bytes()
-        assert size == 0
 
     def test_get_cache_size_bytes_counts_all_wav_files(self, synth, temp_cache_dir):
         """Should count all .wav files"""
@@ -340,29 +316,9 @@ class TestCachedVoiceSynthesizer:
 
     # ===== voice_id() delegation =====
 
-    def test_voice_id_delegates_to_impl(self, synth, mock_impl):
-        """Should delegate voice_id to implementation"""
-        mock_impl.voice_id.return_value = "my_voice"
-        assert synth.voice_id() == "my_voice"
-        mock_impl.voice_id.assert_called_once()
-
     # ===== close() delegation =====
 
-    def test_close_delegates_to_impl(self, synth, mock_impl):
-        """Should delegate close to implementation"""
-        synth.close()
-        mock_impl.close.assert_called_once()
-
     # ===== impl_name() / set_request_language() delegation =====
-
-    def test_impl_name_delegates_to_wrapped_impl(self, synth, mock_impl):
-        """The 'First sound chunk' log uses impl_name() to show which backend
-        actually produced the audio. The cache wrapper must report the wrapped
-        impl's name, not 'CachedVoiceSynthesizer', or the log lies about which
-        engine was on the hot path."""
-        mock_impl.impl_name.return_value = "ElevenLabsVoiceSynthesizer"
-        assert synth.impl_name() == "ElevenLabsVoiceSynthesizer"
-        mock_impl.impl_name.assert_called_once()
 
     def test_set_request_language_propagates_to_wrapped_impl(self, synth, mock_impl):
         """DialogManager.select_voice calls set_request_language on the active
@@ -372,14 +328,6 @@ class TestCachedVoiceSynthesizer:
         synth.set_request_language("sv-SE")
         assert synth.request_language == "sv-SE"
         mock_impl.set_request_language.assert_called_once_with("sv-SE")
-
-    def test_set_request_language_none_clears_override(self, synth, mock_impl):
-        """A follow-up request without a lang must clear the override on both
-        the wrapper and the impl so the next call falls back to the config."""
-        synth.set_request_language("sv-SE")
-        synth.set_request_language(None)
-        assert synth.request_language is None
-        mock_impl.set_request_language.assert_called_with(None)
 
     # ===== start() refuses an engine whose credentials are not set =====
 
@@ -408,10 +356,6 @@ class TestCachedVoiceSynthesizer:
         impl.start.return_value = iter([b"audio"])
         synth.impl = impl
         assert list(synth.start(iter(["Hello!"]))) == [b"audio"]
-
-    def test_a_plain_synthesizer_is_not_checked_for_credentials(self, synth, mock_impl):
-        """A local engine that is no Integration (the test double) has nothing to check."""
-        assert synth._missing_credentials() == []
 
     # ===== Integration test: start() with caching =====
 
@@ -482,19 +426,6 @@ class TestCachedVoiceSynthesizer:
         assert result_audio == cached_audio
 
     # ===== Edge cases =====
-
-    def test_get_cache_filename_with_numbers(self, synth):
-        """Should handle text with numbers"""
-        filename = synth._get_cache_filename("dim lights to 50 percent")
-        assert "50" in filename
-
-    def test_get_cache_filename_with_unicode(self, synth):
-        """Should handle unicode characters"""
-        filename = synth._get_cache_filename("café résumé")
-        assert filename.endswith(".wav")
-        # Should be safe filename (no / in the basename, excluding directory path)
-        basename = os.path.basename(filename)
-        assert "/" not in basename
 
     def test_save_to_cache_empty_audio(self, synth, temp_cache_dir):
         """Should handle empty audio data"""

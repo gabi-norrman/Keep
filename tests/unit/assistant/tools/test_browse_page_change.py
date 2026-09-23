@@ -82,14 +82,6 @@ class TestWaitForPageChange:
         assert status == 'changed'
         assert last['sig'] == 'S2'
 
-    def test_url_change_is_part_of_the_signature(self):
-        # The signature starts with location.href, so a navigation to a page with the
-        # same text still reads as a change.
-        wa = make_wa()
-        with probes(probe(sig='https://a#10:1'), probe(sig='https://b#10:1')):
-            status, _ = run(wa._async_wait_for_page_change({'sig': 'https://a#10:1'}))
-        assert status == 'changed'
-
     def test_navigation_in_progress(self):
         wa = make_wa()
         with probes(probe(state='loading', sig='S1')):

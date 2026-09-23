@@ -29,9 +29,6 @@ def section(vault, prompt_manager=None) -> VaultSectionGenerator:
 
 @pytest.mark.unit
 class TestRender:
-    def test_section_name_is_vault(self, vault):
-        assert section(vault).section_name == "Vault"
-
     def test_lists_placeholder_description_and_kind_sorted_by_id(self, stocked):
         assert section(stocked)._fetch_content() == (
             "The placeholders that exist, each with its description and kind:\n"
@@ -112,14 +109,6 @@ class TestMonitoring:
         vault.add("phone", "Marcus's mobile", PHONE)
         gen._refresh_if_changed()
         assert prompt_manager.on_section_updated.call_count == 2
-
-    @patch("assistant.prompt.sections.VaultSectionGenerator.VaultSectionGenerator._wait", side_effect=StopIteration)
-    def test_monitoring_loop_checks_then_sleeps_one_second(self, mock_sleep, vault):
-        gen = section(vault)
-        with patch.object(gen, "_update_content") as update, pytest.raises(StopIteration):
-            gen._start_monitoring()
-        update.assert_called_once()
-        mock_sleep.assert_called_once_with(1)
 
     @patch("assistant.prompt.sections.VaultSectionGenerator.VaultSectionGenerator._wait", side_effect=StopIteration)
     def test_monitoring_loop_survives_a_failing_check(self, mock_sleep, vault):

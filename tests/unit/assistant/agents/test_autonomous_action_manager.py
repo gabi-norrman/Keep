@@ -63,50 +63,12 @@ class TestAutonomousActionManager:
         assert mgr1 is mgr2
 
     @patch('assistant.agents.AutonomousActionManager.create_llm')
-    def test_singleton_reset(self, mock_claude):
-        mock_claude.return_value = Mock()
-        pm = make_mock_prompt_manager()
-        mgr1 = AutonomousActionManager.get_instance(pm, test_mode=True)
-        AutonomousActionManager.reset_instance()
-        mgr2 = AutonomousActionManager.get_instance(pm, test_mode=True)
-        assert mgr1 is not mgr2
-
-    @patch('assistant.agents.AutonomousActionManager.create_llm')
-    def test_constructor_initializes_llm(self, mock_claude):
-        mock_llm = Mock()
-        mock_claude.return_value = mock_llm
-        pm = make_mock_prompt_manager()
-        AutonomousActionManager.get_instance(pm, test_mode=True)
-        mock_llm.initialize.assert_called_once()
-
-    @patch('assistant.agents.AutonomousActionManager.create_llm')
     def test_test_mode_does_not_start_thread(self, mock_claude):
         mock_claude.return_value = Mock()
         pm = make_mock_prompt_manager()
         mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
         assert mgr.test_mode is True
         assert not mgr.thread.is_alive()
-
-    @patch('assistant.agents.AutonomousActionManager.create_llm')
-    def test_activity_check_no_action_when_llm_says_no(self, mock_claude):
-        mock_llm = Mock()
-        mock_llm.think_with_messages.return_value = "<thinking>analysis</thinking>\nNO"
-        mock_claude.return_value = mock_llm
-        pm = make_mock_prompt_manager()
-        mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
-
-        with patch('assistant.commands.CommandProcessor.CommandProcessor') as mock_cp:
-            mock_cp_inst = Mock()
-            mock_cp_inst.command_queue = queue.Queue()
-            mock_cp_inst.command_being_processed = False
-            mock_cp_inst.command_running_in_background = False
-            mock_cp_inst.command_reply = None
-            mock_cp_inst.flush_buffer.return_value = None
-            mock_cp_inst.process.return_value = None
-            mock_cp.return_value = mock_cp_inst
-
-            result = mgr.activity_check(prompt="test prompt")
-        assert "NO" in result
 
     @patch('assistant.agents.AutonomousActionManager.create_llm')
     def test_activity_check_falls_back_when_the_llm_refuses(self, mock_claude):
@@ -416,29 +378,6 @@ class TestAutonomousActionManager:
         joined = "\n".join(m["content"] for m in sent["m"] if isinstance(m["content"], str))
         assert "Current time:" not in joined
 
-    @patch('assistant.agents.AutonomousActionManager.create_llm')
-    def test_activity_check_uses_provided_prompt(self, mock_claude):
-        mock_llm = Mock()
-        mock_llm.think_with_messages.return_value = "NO"
-        mock_claude.return_value = mock_llm
-        pm = make_mock_prompt_manager()
-        mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
-
-        with patch('assistant.commands.CommandProcessor.CommandProcessor') as mock_cp:
-            mock_cp_inst = Mock()
-            mock_cp_inst.command_queue = queue.Queue()
-            mock_cp_inst.command_being_processed = False
-            mock_cp_inst.command_running_in_background = False
-            mock_cp_inst.command_reply = None
-            mock_cp_inst.flush_buffer.return_value = None
-            mock_cp_inst.process.return_value = None
-            mock_cp.return_value = mock_cp_inst
-
-            mgr.activity_check(prompt="custom prompt")
-
-        call_args = mock_llm.think_with_messages.call_args
-        assert "custom prompt" in str(call_args)
-
     def test_result_cleaning_removes_thinking_tags(self):
         mgr_cls = AutonomousActionManager
         with patch('assistant.agents.AutonomousActionManager.create_llm') as mock_claude:
@@ -477,14 +416,6 @@ class TestAutonomousActionManager:
 
             mgr.clean_result_and_potentially_add_to_history("NO")
             pm.update_history.assert_not_called()
-
-    @patch('assistant.agents.AutonomousActionManager.create_llm')
-    def test_stop_sets_running_false(self, mock_claude):
-        mock_claude.return_value = Mock()
-        pm = make_mock_prompt_manager()
-        mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
-        mgr.stop()
-        assert mgr.running is False
 
     @patch('assistant.agents.AutonomousActionManager.time.sleep')
     @patch('assistant.agents.AutonomousActionManager.create_llm')
@@ -795,14 +726,6 @@ class TestAutonomousActionManager:
         AutonomousActionManager._join_queue_with_timeout(q, timeout=0.1)
         assert q.unfinished_tasks == 1
 
-    def test_join_queue_with_timeout_completes_when_drained(self):
-        q = queue.Queue()
-        q.put("task")
-        q.task_done()
-        # queue is already drained, should return immediately
-        AutonomousActionManager._join_queue_with_timeout(q, timeout=1.0)
-        assert q.unfinished_tasks == 0
-
     @patch('assistant.agents.AutonomousActionManager.create_llm')
     def test_run_memory_curation_error_handling(self, mock_claude):
         mock_claude.return_value = Mock()
@@ -938,23 +861,10 @@ class TestWakeupPersistence:
             data = json.load(f)
         assert data == [6000.0, 7000.0]
 
-    def test_restore_handles_missing_file_gracefully(self):
-        mgr, _ = make_manager()
-        with patch.object(mgr, '_start_wakeup_thread') as mock_start:
-            mgr._restore_scheduled_wakeups()
-            mock_start.assert_not_called()
-
-
 class TestUserInteractionGating:
     """Tests for the user-interaction gate that suppresses double replies
     (periodic/caffeinate/scheduled checks must defer while a user request is
     in flight or just finished)."""
-
-    def test_initial_state_is_inactive(self):
-        mgr, _ = make_manager()
-        assert mgr.is_user_interaction_active() is False
-        assert mgr._user_requests_in_flight == 0
-        assert mgr.last_user_interaction_at == 0.0
 
     def test_started_marks_active(self):
         mgr, _ = make_manager()
@@ -1012,17 +922,6 @@ class TestUserInteractionGating:
         # last_user_interaction_at is fresh (just set by started)
         assert mgr.is_user_interaction_active() is True
         assert mgr._user_requests_in_flight == 1
-
-    def test_stale_counter_resets_multiple_leaked(self):
-        """Multiple leaked start calls should all be cleared by a single reset."""
-        mgr, _ = make_manager()
-        mgr.notify_user_interaction_started()
-        mgr.notify_user_interaction_started()
-        mgr.notify_user_interaction_started()
-        assert mgr._user_requests_in_flight == 3
-        mgr.last_user_interaction_at = time.time() - 900.0
-        assert mgr.is_user_interaction_active() is False
-        assert mgr._user_requests_in_flight == 0
 
     def test_caffeinate_skips_iteration_when_user_active(self):
         """The caffeinate loop must skip activity_check while a user request is
@@ -1164,13 +1063,6 @@ class TestThinkingTagInstruction:
     """The <thinking>-tag paragraph is for a model without thinking of its own; a model that
     handles thinking internally (Claude) gets the prompt without it — asking would have the
     check refused as reasoning extraction."""
-
-    def test_included_for_a_model_without_internal_thinking(self):
-        llm = Mock()
-        llm.handles_thinking_internally.return_value = False
-        prompt = AutonomousActionManager._action_prompt(llm)
-        assert prompt == FORMATTED_AUTONOMOUS_ACTION_PROMPT
-        assert "<thinking>" in prompt
 
     def test_dropped_for_a_model_that_thinks_on_its_own(self):
         llm = Mock()

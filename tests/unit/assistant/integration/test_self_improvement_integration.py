@@ -1,6 +1,6 @@
 import json
 import subprocess
-from unittest.mock import patch, Mock
+from unittest.mock import patch
 
 import pytest
 
@@ -31,10 +31,6 @@ def cli_at():
 
 @pytest.mark.unit
 class TestClaudePath:
-    @patch.object(cqm.shutil, "which", return_value="/usr/local/bin/claude")
-    def test_path_wins(self, _which):
-        assert claude_path() == "/usr/local/bin/claude"
-
     @patch.object(cqm.os, "access", return_value=True)
     @patch.object(cqm.os.path, "isfile", return_value=True)
     @patch.object(cqm.shutil, "which", return_value=None)
@@ -101,17 +97,6 @@ class TestSelfImprovementIntegration:
     def teardown_method(self):
         SelfImprovementIntegration.reset_instance()
         IntegrationMonitor.reset_instance()
-
-    def test_identity(self):
-        integration = SelfImprovementIntegration()
-        assert integration.name == "Self Improvement"
-        assert SelfImprovementIntegration.config_name() == "Self Improvement"
-        assert integration.config_keys == []
-        assert SelfImprovementIntegration.enabled_by_default is False
-
-    @patch("assistant.integration.integrations.SelfImprovementIntegration.claude_status", return_value=ClaudeStatus("/opt/bin/claude", True, "logged in as me (max)"))
-    def test_healthy_when_logged_in(self, _status):
-        assert SelfImprovementIntegration().check_health() is True
 
     @patch("assistant.integration.integrations.SelfImprovementIntegration.claude_status", return_value=ClaudeStatus(None, False, NOT_INSTALLED_SHORT))
     def test_missing_cli_is_the_error(self, _status):

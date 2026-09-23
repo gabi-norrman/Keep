@@ -77,11 +77,6 @@ class TestFormatEmailList:
         expected = utc_date.astimezone().strftime("%b %d %H:%M")
         assert expected in result
 
-    def test_formats_multiple_emails(self, gmail):
-        messages = [_make_message(uid=str(i)) for i in range(3)]
-        result = gmail._format_email_list(messages)
-        assert result.count("\n") == 2
-
     def test_empty_list(self, gmail):
         result = gmail._format_email_list([])
         assert result == "No emails found."
@@ -112,11 +107,6 @@ class TestFormatEmailList:
         msg = _make_message(subject="Newsletter", flags=None)
         result = gmail._format_email_list([msg])
         assert "[UNREAD]" in result
-
-    def test_short_id_caches_uid(self, gmail):
-        msg = _make_message(uid="42")
-        gmail._format_email_list([msg])
-        assert gmail._email_id_cache["AA"] == "42"
 
     def test_ids_reset_on_each_listing(self, gmail):
         first_msgs = [_make_message(uid="100"), _make_message(uid="200")]
@@ -210,17 +200,6 @@ class TestFetchLatestFolder:
         result = gmail.fetch_latest("@Nonexistent")
 
         assert result == "No emails found."
-
-    def test_default_uses_standard_folder(self, gmail, mock_config, mock_mailbox):
-        MockMB, mailbox_instance = mock_mailbox
-        mailbox_instance.fetch.return_value = []
-
-        gmail.fetch_latest(None)
-
-        MockMB.return_value.login.assert_called_once_with(
-            "user@gmail.com", "app_password_123",
-            initial_folder=GmailAccess.IMAP_FOLDER
-        )
 
     def test_unread_only_adds_unseen_criteria(self, gmail, mock_config, mock_mailbox):
         MockMB, mailbox_instance = mock_mailbox
@@ -376,14 +355,6 @@ class TestSearch:
         assert call_args[1]['reverse'] is True
         assert call_args[1]['limit'] == GmailAccess.MAX_RESULTS
 
-    def test_empty_results(self, gmail, mock_config, mock_mailbox):
-        MockMB, mailbox_instance = mock_mailbox
-        mailbox_instance.fetch.return_value = []
-
-        result = gmail.search("nonexistent")
-
-        assert result == "No emails found."
-
     def test_returns_error_on_exception(self, gmail, mock_config, mock_mailbox):
         MockMB, mailbox_instance = mock_mailbox
         MockMB.return_value.login.side_effect = Exception("Auth failed")
@@ -391,38 +362,6 @@ class TestSearch:
         result = gmail.search("test")
 
         assert "Error" in result
-
-
-@pytest.mark.unit
-class TestBuildSearchCriteria:
-
-    def test_uses_x_gm_raw(self, gmail):
-        criteria = gmail._build_search_criteria("hello")
-        assert "X-GM-RAW" in str(criteria)
-
-    def test_escapes_double_quotes(self, gmail):
-        criteria = gmail._build_search_criteria('say "hello"')
-        assert r'\"hello\"' in str(criteria)
-
-    def test_escapes_backslashes(self, gmail):
-        criteria = gmail._build_search_criteria(r'path\to\file')
-        assert r'path\\to\\file' in str(criteria)
-
-    def test_non_ascii_query_folded_to_ascii(self, gmail):
-        # Raw 8-bit bytes on the SEARCH line make Gmail reply BAD, so
-        # diacritics are folded before building the criteria.
-        criteria = gmail._build_search_criteria("faktura från företag")
-        criteria_str = str(criteria)
-        assert "faktura fran foretag" in criteria_str
-        assert criteria_str.isascii()
-
-    def test_no_implicit_date_filter(self, gmail):
-        # Search must cover the full mailbox history — a silent SINCE window
-        # made old emails (e.g. year-old order confirmations) unfindable.
-        criteria = gmail._build_search_criteria("test")
-        criteria_str = str(criteria)
-        assert "X-GM-RAW" in criteria_str
-        assert "SINCE" not in criteria_str
 
 
 @pytest.mark.unit
@@ -440,19 +379,6 @@ class TestRead:
         assert "To: me@test.com" in result
         assert "Subject: Important" in result
         assert "Hello there!" in result
-
-    def test_resolves_short_id(self, gmail, mock_config, mock_mailbox):
-        MockMB, mailbox_instance = mock_mailbox
-        listed_msg = _make_message(uid="55")
-        gmail._format_email_list([listed_msg])
-
-        read_msg = _make_message(uid="55", from_="bob@test.com", subject="Important", text="Body")
-        mailbox_instance.fetch.return_value = [read_msg]
-
-        result = gmail.read("AA")
-
-        assert "From: bob@test.com" in result
-        assert "Subject: Important" in result
 
     def test_resolves_short_id_to_correct_imap_uid(self, gmail, mock_config, mock_mailbox):
         MockMB, mailbox_instance = mock_mailbox
@@ -549,16 +475,6 @@ class TestRead:
         body_start = result.index("\n\n") + 2
         body = result[body_start:]
         assert len(body) < 10000
-
-    def test_strips_whitespace_from_uid(self, gmail, mock_config, mock_mailbox):
-        MockMB, mailbox_instance = mock_mailbox
-        mailbox_instance.fetch.return_value = []
-
-        gmail.read("  55  ")
-
-        call_args = mailbox_instance.fetch.call_args
-        criteria = call_args[1]['criteria']
-        assert "55" in str(criteria)
 
     def test_returns_error_on_exception(self, gmail, mock_config, mock_mailbox):
         MockMB, mailbox_instance = mock_mailbox

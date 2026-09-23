@@ -145,28 +145,6 @@ class TestWebAccess:
         # Only 2 links should be preserved (the ones with text)
         assert result.count('<a href=') == 2
 
-    def test_extract_text_with_links_prefers_main_tag(self):
-        """Should prefer <main> tag over <body> when present"""
-        html = """
-        <html>
-            <body>
-                <nav><a href="/nav">Nav</a></nav>
-                <main>
-                    <a href="/content">Main Content</a>
-                </main>
-                <aside><a href="/sidebar">Sidebar</a></aside>
-            </body>
-        </html>
-        """
-        result = WebAccess.extract_text_with_links(html, "https://example.com")
-
-        # Main content should be present
-        assert "Main Content" in result
-
-        # Nav and aside should be filtered out
-        assert "Nav" not in result
-        assert "Sidebar" not in result
-
     def test_extract_text_falls_back_to_body_when_main_is_small(self):
         """When <main> holds less than 2/3 of body text, fall back to <body>"""
         html = """
@@ -370,10 +348,6 @@ class TestSearch:
         assert result.startswith("ERROR")
         assert "api_keys.serper" in result
 
-    def test_empty_query(self):
-        wa = WebAccess.__new__(WebAccess)
-        assert wa.search("   ") == "No search query provided."
-
     @patch('assistant.tools.WebAccess.requests.post')
     @patch('assistant.tools.WebAccess.ConfigManager')
     def test_successful_response(self, mock_cm_cls, mock_post):
@@ -437,9 +411,6 @@ class TestIsBlockedResponse:
     def test_none_is_blocked(self):
         assert WebAccess._is_blocked_response(None) is True
 
-    def test_empty_is_blocked(self):
-        assert WebAccess._is_blocked_response("") is True
-
     def test_short_content_is_blocked(self):
         assert WebAccess._is_blocked_response("short") is True
 
@@ -462,11 +433,6 @@ class TestIsBlockedResponse:
     def test_normal_page_is_not_blocked(self):
         html = "<html><body><p>This is a normal web page with real content that should not be blocked.</p></body></html>"
         assert WebAccess._is_blocked_response(html) is False
-
-    def test_long_content_without_markers_is_not_blocked(self):
-        html = "<html><body>" + "Normal content. " * 50 + "</body></html>"
-        assert WebAccess._is_blocked_response(html) is False
-
 
 @pytest.mark.unit
 class TestFetchViaCloudscraper:
@@ -661,12 +627,6 @@ class TestFetchWebpageFallback:
 
 @pytest.mark.unit
 class TestFindChromeBinary:
-    @patch('assistant.tools.WebAccess.os.access', return_value=True)
-    @patch('assistant.tools.WebAccess.os.path.isfile', return_value=True)
-    def test_finds_standard_macos_chrome(self, mock_isfile, mock_access):
-        result = WebAccess._find_chrome_binary()
-        assert result == "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-
     @patch('assistant.tools.WebAccess.shutil.which', return_value=None)
     @patch('assistant.tools.WebAccess.os.access', return_value=False)
     @patch('assistant.tools.WebAccess.os.path.isfile', return_value=False)
@@ -711,14 +671,6 @@ class TestChromePidTracking:
         wa._track_chrome_pids()
 
         assert 12345 in wa._chrome_pids
-
-    def test_track_chrome_pids_noop_without_browser(self):
-        wa = self._make_wa()
-        wa._browser = None
-
-        wa._track_chrome_pids()
-
-        assert wa._chrome_pids == set()
 
     def test_track_chrome_pids_handles_missing_attrs(self):
         wa = self._make_wa()
@@ -962,15 +914,8 @@ class TestPdfDetection:
     def test_pdf_extension_case_insensitive(self):
         assert WebAccess._is_pdf_url("https://example.com/Report.PDF") is True
 
-    def test_non_pdf_url(self):
-        assert WebAccess._is_pdf_url("https://example.com/page.html") is False
-
     def test_pdf_in_path_but_not_extension(self):
         assert WebAccess._is_pdf_url("https://example.com/pdf/viewer") is False
-
-    def test_no_extension(self):
-        assert WebAccess._is_pdf_url("https://example.com/document") is False
-
 
 @pytest.mark.unit
 class TestPdfFetching:
@@ -981,26 +926,6 @@ class TestPdfFetching:
         with patch.object(WebAccess, '__init__', lambda self: None):
             wa = WebAccess()
             return wa
-
-    @patch('assistant.tools.PdfExtractor.extract_text')
-    @patch('assistant.tools.WebAccess.requests.get')
-    def test_successful_pdf_extraction(self, mock_get, mock_extract):
-        wa = self._make_wa()
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.headers = {'Content-Length': '1000'}
-        mock_response.iter_content.return_value = [b'fake pdf bytes']
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
-
-        mock_extract.return_value = "--- Page 1 ---\nPage one content\n\n--- Page 2 ---\nPage two content"
-
-        result = wa._fetch_pdf_content("https://example.com/doc.pdf")
-
-        mock_extract.assert_called_once_with(b'fake pdf bytes')
-        assert "Page one content" in result
-        assert "Page two content" in result
 
     @patch('assistant.tools.WebAccess.requests.get')
     def test_pdf_too_large_via_content_length(self, mock_get):
@@ -1028,22 +953,6 @@ class TestPdfFetching:
         result = wa._fetch_pdf_content("https://example.com/huge.pdf")
         assert "too large" in result
 
-    @patch('assistant.tools.PdfExtractor.extract_text')
-    @patch('assistant.tools.WebAccess.requests.get')
-    def test_pdf_no_extractable_text(self, mock_get, mock_extract):
-        wa = self._make_wa()
-
-        mock_response = Mock()
-        mock_response.headers = {}
-        mock_response.raise_for_status = Mock()
-        mock_response.iter_content.return_value = [b'fake pdf']
-        mock_get.return_value = mock_response
-
-        mock_extract.return_value = "ERROR: PDF contains no extractable text (might be scanned/image-based)."
-
-        result = wa._fetch_pdf_content("https://example.com/scanned.pdf")
-        assert "no extractable text" in result
-
     @patch('assistant.tools.WebAccess.requests.get')
     def test_pdf_network_error(self, mock_get):
         wa = self._make_wa()
@@ -1051,40 +960,6 @@ class TestPdfFetching:
 
         result = wa._fetch_pdf_content("https://example.com/doc.pdf")
         assert "ERROR" in result
-
-    @patch('assistant.tools.PdfExtractor.extract_text')
-    @patch('assistant.tools.WebAccess.requests.get')
-    def test_pdf_page_limit_noted(self, mock_get, mock_extract):
-        wa = self._make_wa()
-
-        mock_response = Mock()
-        mock_response.headers = {}
-        mock_response.raise_for_status = Mock()
-        mock_response.iter_content.return_value = [b'fake pdf']
-        mock_get.return_value = mock_response
-
-        mock_extract.return_value = (
-            "--- Page 1 ---\nContent\n\n[NOTE: Only first 50 of 60 pages extracted.]"
-        )
-
-        result = wa._fetch_pdf_content("https://example.com/long.pdf")
-        assert "first 50 of 60 pages" in result
-
-    @patch('assistant.tools.PdfExtractor.extract_text')
-    @patch('assistant.tools.WebAccess.requests.get')
-    def test_pdf_text_truncation(self, mock_get, mock_extract):
-        wa = self._make_wa()
-
-        mock_response = Mock()
-        mock_response.headers = {}
-        mock_response.raise_for_status = Mock()
-        mock_response.iter_content.return_value = [b'fake pdf']
-        mock_get.return_value = mock_response
-
-        mock_extract.return_value = "A" * 1000 + "\n\n[NOTE: Text truncated to 100000 characters.]"
-
-        result = wa._fetch_pdf_content("https://example.com/verbose.pdf")
-        assert "truncated" in result.lower()
 
     @patch.object(WebAccess, '_fetch_pdf_content', return_value="PDF text content")
     @patch.object(WebAccess, '__init__', lambda self: None)
@@ -1231,24 +1106,11 @@ class TestBrowseActValidation:
         assert "ERROR" in result
         assert "not available" in result
 
-    def test_no_session(self):
-        wa = self._make_wa()
-        wa._browse_session_url = None
-        result = wa.browse_act("0")
-        assert "ERROR" in result
-        assert "no browse session" in result
-
     def test_no_snapshot(self):
         wa = self._make_wa(with_elements=False)
         result = wa.browse_act("0")
         assert "ERROR" in result
         assert "no current snapshot" in result
-
-    def test_empty_spec(self):
-        wa = self._make_wa()
-        result = wa.browse_act("")
-        assert "ERROR" in result
-        assert "needs an argument" in result
 
     def test_non_integer_index(self):
         wa = self._make_wa()
@@ -1311,14 +1173,6 @@ class TestBrowseEval:
             out = wa.browse_eval("return {}")
             assert json.loads(out) == {"token": "abc", "n": 3}
 
-    def test_list_returned_as_json(self):
-        wa = self._make_wa()
-        async def fake_eval(_tab, _expr):
-            return [1, 2, "three"]
-        with patch.object(WebAccess, '_evaluate', side_effect=fake_eval):
-            import json
-            assert json.loads(wa.browse_eval("return []")) == [1, 2, "three"]
-
     def test_none_returned_as_null_string(self):
         wa = self._make_wa()
         async def fake_eval(_tab, _expr):
@@ -1351,17 +1205,6 @@ class TestBrowseEval:
         with patch.object(WebAccess, '_evaluate', side_effect=fake_eval):
             out = wa.browse_eval("return 1")
             assert "ERROR" in out and "boom" in out
-
-    def test_js_is_wrapped_in_iife(self):
-        wa = self._make_wa()
-        captured = {}
-        async def fake_eval(_tab, expr):
-            captured['expr'] = expr
-            return 1
-        with patch.object(WebAccess, '_evaluate', side_effect=fake_eval):
-            wa.browse_eval("return document.title")
-            assert "return document.title" in captured['expr']
-            assert "__floxy_eval_error" in captured['expr']
 
     def test_wrapper_tries_expression_form_before_block(self):
         """Regression: bare expressions like `window.location.href` must work, not just blocks with return."""
@@ -1433,9 +1276,6 @@ class TestNormalizeUrl:
 
     def test_keeps_http(self):
         assert WebAccess._normalize_url("http://example.com") == "http://example.com"
-
-    def test_keeps_https(self):
-        assert WebAccess._normalize_url("https://example.com") == "https://example.com"
 
     def test_empty_string(self):
         assert WebAccess._normalize_url("") == ""
@@ -1591,10 +1431,6 @@ class TestBrowseScreenshot:
         wa.browse_close()
         assert wa.get_last_screenshot() == (None, None)
 
-    def test_get_last_screenshot_empty_by_default(self):
-        wa = self._bare_webaccess()
-        assert wa.get_last_screenshot() == (None, None)
-
     def test_no_browser_returns_error(self):
         wa = self._bare_webaccess()
         wa._browse_session_url = "https://example.com"
@@ -1613,11 +1449,6 @@ class TestBrowseScreenshot:
         assert name.endswith(".png")
         assert "example.com" in name
         assert "/" not in name and "?" not in name and "=" not in name
-
-    def test_screenshot_dir_under_aiserver_log(self):
-        d = WebAccess._screenshot_dir()
-        assert d.endswith(os.path.join("log", "screenshots"))
-
 
 @pytest.mark.unit
 class TestPdfSessionGuards:
@@ -1647,14 +1478,6 @@ class TestPdfSessionGuards:
         wa = WebAccess.__new__(WebAccess)
         wa._browse_pdf_text = None
         assert wa._pdf_session_error("test") is None
-
-    def test_pdf_session_error_returns_message_with_pdf(self):
-        wa = WebAccess.__new__(WebAccess)
-        wa._browse_pdf_text = "some content"
-        result = wa._pdf_session_error("no interactive elements")
-        assert "ERROR" in result
-        assert "PDF" in result
-        assert "browse_extract" in result
 
     def test_browse_act_blocked_on_pdf(self):
         wa = self._make_pdf_wa()

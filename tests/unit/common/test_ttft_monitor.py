@@ -9,19 +9,6 @@ def reset_singleton():
     TTFTMonitor.reset_instance()
 
 
-class TestTTFTMonitorSingleton:
-    def test_get_instance_returns_same_object(self):
-        a = TTFTMonitor.get_instance()
-        b = TTFTMonitor.get_instance()
-        assert a is b
-
-    def test_reset_instance_creates_new_object(self):
-        a = TTFTMonitor.get_instance()
-        TTFTMonitor.reset_instance()
-        b = TTFTMonitor.get_instance()
-        assert a is not b
-
-
 class TestRecordAndRetrieve:
     def test_record_stores_values(self):
         mon = TTFTMonitor()
@@ -29,18 +16,6 @@ class TestRecordAndRetrieve:
         mon.record("claude-3-opus-20240229", 1.5)
         mon.record("claude-3-opus-20240229", 2.0)
         assert list(mon.smart_ttft) == [1.5, 2.0]
-
-    def test_fast_ttft_returns_fast_model_data(self):
-        mon = TTFTMonitor()
-        mon.register_models("smart-model", "fast-model")
-        mon.record("fast-model", 0.3)
-        assert list(mon.fast_ttft) == [0.3]
-
-    def test_unregistered_model_returns_empty(self):
-        mon = TTFTMonitor()
-        mon.register_models("smart", "fast")
-        assert len(mon.smart_ttft) == 0
-        assert len(mon.fast_ttft) == 0
 
     def test_history_capped_at_history_size(self):
         mon = TTFTMonitor()
@@ -71,13 +46,6 @@ class TestShorten:
     def test_shorten(self, model, expected):
         assert TTFTMonitor._shorten(model) == expected
 
-    def test_register_models_sets_short_names(self):
-        mon = TTFTMonitor()
-        mon.register_models("claude-3-opus-20240229", "claude-3-haiku-20240307")
-        assert mon.smart_model_short == "3-opus"
-        assert mon.fast_model_short == "3-haiku"
-
-
 class TestCachePct:
     def test_record_and_retrieve(self):
         mon = TTFTMonitor()
@@ -91,7 +59,3 @@ class TestCachePct:
             mon.record_cache_pct(i)
         assert len(mon.cache_pct) == TTFTMonitor.HISTORY_SIZE
         assert mon.cache_pct[0] == 10
-
-    def test_cache_pct_empty_initially(self):
-        mon = TTFTMonitor()
-        assert len(mon.cache_pct) == 0

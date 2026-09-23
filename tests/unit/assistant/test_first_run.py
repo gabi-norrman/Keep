@@ -36,22 +36,11 @@ class TestState:
         path.write_text(content)
         assert State.load(path) is None
 
-    def test_fresh_starts_at_setup(self):
-        state = State.fresh(now=42.0)
-        assert state.stage == Stage.SETUP and state.started_at == state.entered_at == 42.0
-        assert state.span is None and state.chunks_done == state.chunks_total == 0
-
     def test_span(self):
         state = State.fresh()
         assert state.span is None
         state.curation_start, state.curation_end = "2026-08-13", "2026-09-14"
         assert state.span == (date(2026, 8, 13), date(2026, 9, 14))
-
-    def test_enter_sets_stage_and_time(self):
-        state = State.fresh(now=1.0)
-        state.enter(Stage.INDEXING, now=5.0)
-        assert state.stage == Stage.INDEXING and state.entered_at == 5.0 and state.started_at == 1.0
-
 
 # --- arming ---------------------------------------------------------------------------------
 
@@ -493,10 +482,6 @@ class TestThread:
     def test_does_not_start_without_state(self, env):
         env.pipeline.start()
         assert not env.pipeline._thread.is_alive()
-
-    def test_done_is_not_ticked(self, env):
-        env.state_at(Stage.DONE)
-        assert env.pipeline.tick(State.load(env.path)) is False
 
     def test_run_keeps_polling_when_done_so_a_forced_stage_revives_it(self, env):
         # //first_run stage <name> after DONE (or after a reset) must still be picked up

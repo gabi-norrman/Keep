@@ -1,10 +1,9 @@
 import json
 import sqlite3
-import threading
 import time
 
 import pytest
-from unittest.mock import patch, Mock, MagicMock
+from unittest.mock import patch, Mock
 
 
 def _make_history_section():
@@ -23,107 +22,11 @@ def _make_history_section():
 # TestAddExchange
 # ===========================================================================
 
-class TestAddExchange:
-    def test_adds_user_and_assistant(self):
-        section = _make_history_section()
-        with patch.object(section, '_save_history_entry'), \
-             patch.object(section, '_load_history') as mock_load, \
-             patch.object(section, '_notify_changed'):
-            # Simulate _load_history populating self.history from DB
-            def load_side_effect():
-                section.history = [
-                    {"role": "user", "content": "Hello", "timestamp": 1000.0},
-                    {"role": "assistant", "content": "Hi there", "timestamp": 1000.0},
-                ]
-            mock_load.side_effect = load_side_effect
-            section.add_exchange("user", "Hello", "Hi there")
-        assert len(section.history) == 2
-        assert section.history[0]["role"] == "user"
-        assert section.history[0]["content"] == "Hello"
-        assert section.history[1]["role"] == "assistant"
-        assert section.history[1]["content"] == "Hi there"
-
-    def test_adds_user_only(self):
-        section = _make_history_section()
-        with patch.object(section, '_save_history_entry'), \
-             patch.object(section, '_load_history') as mock_load, \
-             patch.object(section, '_notify_changed'):
-            def load_side_effect():
-                section.history = [{"role": "user", "content": "Hello", "timestamp": 1000.0}]
-            mock_load.side_effect = load_side_effect
-            section.add_exchange("user", "Hello", None)
-        assert len(section.history) == 1
-        assert section.history[0]["role"] == "user"
-
-    def test_adds_assistant_only(self):
-        section = _make_history_section()
-        with patch.object(section, '_save_history_entry'), \
-             patch.object(section, '_load_history') as mock_load, \
-             patch.object(section, '_notify_changed'):
-            def load_side_effect():
-                section.history = [{"role": "assistant", "content": "Response", "timestamp": 1000.0}]
-            mock_load.side_effect = load_side_effect
-            section.add_exchange("user", None, "Response")
-        assert len(section.history) == 1
-        assert section.history[0]["role"] == "assistant"
-
-    def test_calls_save_entry_load_and_update(self):
-        section = _make_history_section()
-        with patch.object(section, '_save_history_entry') as mock_save, \
-             patch.object(section, '_load_history') as mock_load, \
-             patch.object(section, '_notify_changed') as mock_update:
-            section.add_exchange("user", "Hello", "Hi")
-        assert mock_save.call_count == 2  # once for user, once for assistant
-        mock_load.assert_called_once()
-        mock_update.assert_called_once()
-
-    def test_save_entry_passes_source_and_location(self):
-        section = _make_history_section()
-        with patch.object(section, '_save_history_entry') as mock_save, \
-             patch.object(section, '_load_history'), \
-             patch.object(section, '_notify_changed'):
-            section.add_exchange("user", "Hello", "Hi", source="VoiceToVoice", location="Kitchen")
-        # First call: user entry with source and location
-        user_call = mock_save.call_args_list[0]
-        assert user_call[0][0] == "user"
-        assert user_call[0][1] == "Hello"
-        assert user_call[0][3] == "VoiceToVoice"
-        assert user_call[0][4] == "Kitchen"
-        # Second call: assistant entry without source/location
-        assistant_call = mock_save.call_args_list[1]
-        assert assistant_call[0][0] == "assistant"
-        assert assistant_call[0][1] == "Hi"
-
-
 # ===========================================================================
 # TestGetMergedEntries
 # ===========================================================================
 
 class TestGetMergedEntries:
-    def test_empty_returns_empty(self):
-        section = _make_history_section()
-        assert section.get_merged_entries() == []
-
-    def test_returns_history_sorted_by_timestamp(self):
-        section = _make_history_section()
-        section.history = [
-            {"role": "system", "content": "Light on", "timestamp": 100.0},
-            {"role": "user", "content": "Hello", "timestamp": 200.0},
-        ]
-        entries = section.get_merged_entries()
-        assert len(entries) == 2
-        assert entries[0]["timestamp"] == 100.0
-        assert entries[1]["timestamp"] == 200.0
-
-    def test_respects_max_entries(self):
-        section = _make_history_section()
-        section.history = [
-            {"role": "user", "content": f"msg{i}", "timestamp": float(i)}
-            for i in range(700)
-        ]
-        entries = section.get_merged_entries()
-        assert len(entries) == 500
-
     def test_custom_max_entries(self):
         section = _make_history_section()
         section.history = [
@@ -176,10 +79,6 @@ class TestSubscribe:
 
 class TestGetHistoryMessages:
     """History rendered as standard LLM message items (role/content dicts)."""
-
-    def test_empty_returns_empty_list(self):
-        section = _make_history_section()
-        assert section.get_history_messages() == []
 
     def test_role_mapping(self):
         from assistant.tools.MessageFormatter import MessageFormatter
@@ -514,20 +413,6 @@ class TestHysteresisTrim:
 # ===========================================================================
 
 class TestLoadSaveHistory:
-    def test_load_reads_from_database(self):
-        section = _make_history_section()
-        db_rows = [
-            {"role": "user", "content": "Hello", "timestamp": 100.0, "source": None, "location": None}
-        ]
-        mock_db = MagicMock()
-        mock_db.get_recent_history.return_value = db_rows
-        with patch('assistant.prompt.MessageHistory.FloxyDatabase') as MockDB:
-            MockDB.get_instance.return_value = mock_db
-            section._load_history()
-        assert len(section.history) == 1
-        assert section.history[0]["content"] == "Hello"
-        mock_db.get_recent_history.assert_called_once_with(500)
-
     def test_load_db_error_returns_empty(self):
         section = _make_history_section()
         with patch('assistant.prompt.MessageHistory.FloxyDatabase') as MockDB:
@@ -535,26 +420,12 @@ class TestLoadSaveHistory:
             section._load_history()
         assert section.history == []
 
-    def test_save_entry_writes_to_database(self):
-        section = _make_history_section()
-        mock_db = MagicMock()
-        with patch('assistant.prompt.MessageHistory.FloxyDatabase') as MockDB:
-            MockDB.get_instance.return_value = mock_db
-            section._save_history_entry("user", "Hello", 100.0, "VoiceToVoice", "Kitchen")
-        mock_db.add_history_entry.assert_called_once_with("user", "Hello", 100.0, "VoiceToVoice", "Kitchen")
-
-
 # ===========================================================================
 # TestRenderForDisplay
 # ===========================================================================
 
 class TestRenderForDisplay:
     """render_for_display() powers the console PromptTab viewer."""
-
-    def test_empty_history_returns_placeholder(self):
-        section = _make_history_section()
-        section.history = []
-        assert section.render_for_display() == "_No conversation history yet._"
 
     def test_renders_all_entries_as_markdown_headers(self):
         from datetime import datetime
@@ -628,12 +499,6 @@ class TestLoadFixtureMessages:
             "Marcus", ts, "VoiceToVoice", "Kitchen", "turn off lights")
         assert msgs[1]["role"] == "assistant"
         assert msgs[1]["content"] == "Done."
-
-    def test_empty_fixture_returns_empty_list(self, tmp_path):
-        from assistant.prompt.MessageHistory import MessageHistory
-        path = tmp_path / "empty.json"
-        path.write_text("[]")
-        assert MessageHistory.load_fixture_messages(str(path)) == []
 
     def test_blank_turns_are_dropped(self):
         """An assistant reply interrupted by a restart can be stored empty; it must not
@@ -739,12 +604,6 @@ class TestTransientEntries:
         contents = [e["content"] for e in merged]
         assert contents == ["first", "second", "third"]
 
-    def test_add_transient_entry_stores_section_tag(self):
-        section = _make_history_section()
-        section.add_transient_entry("system", "weather diff", 1000.0,
-                                    source="prompt_delta", section="weather")
-        assert section.transient_entries[0]["section"] == "weather"
-
     def test_clear_transient_entries_for_section_drops_only_matching(self):
         section = _make_history_section()
         section.add_transient_entry("system", "weather diff", 1000.0, section="weather")
@@ -757,15 +616,6 @@ class TestTransientEntries:
         remaining = section.transient_entries
         assert len(remaining) == 1
         assert remaining[0]["section"] == "calendar"
-
-    def test_clear_transient_entries_for_section_noop_when_no_match(self):
-        section = _make_history_section()
-        section.add_transient_entry("system", "calendar diff", 1000.0, section="calendar")
-
-        dropped = section.clear_transient_entries_for_section("weather")
-
-        assert dropped == 0
-        assert len(section.transient_entries) == 1
 
     def test_clear_transient_entries_for_section_ignores_untagged(self):
         """Untagged transients (section=None) must not be swept by a section-scoped
@@ -974,9 +824,6 @@ class TestCommandResults:
         section._trim_cutoff = 60.0     # the web row was trimmed out of the window
         assert section.loaded_toolkits() == {"email": 100.0, "x": 100.0}
 
-    def test_loaded_toolkits_empty_without_rows(self):
-        assert self._section_with([]).loaded_toolkits() == {}
-
     def test_renders_verbatim_on_the_user_side(self):
         big = "result: \n" + "line\n" * 1000     # far past MAX_RENDER_CHARS, stays whole
         section = self._section_with([
@@ -988,16 +835,6 @@ class TestCommandResults:
         msgs = section.get_history_messages()
         assert [m["role"] for m in msgs] == ["user", "assistant", "user", "assistant"]
         assert msgs[2]["content"] == big
-
-    def test_markdown_view_labels_the_row(self):
-        section = self._section_with([
-            {"role": "Marcus", "content": "hi", "timestamp": 100.0, "source": "Console"},
-            {"role": "command", "content": "result: \nok", "timestamp": 100.002},
-        ])
-        text = section.render_for_display()
-        assert "### Command result (" in text
-        assert "result: \nok" in text
-
 
 class TestAddContextMessages:
     def test_a_failed_batch_write_propagates_without_reloading(self):

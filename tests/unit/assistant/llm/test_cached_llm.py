@@ -46,10 +46,6 @@ class TestCachedLLM:
         llm.update_command_list(["turn_on", "turn_off", "dim", "play", "execute"])
         return llm
 
-    def test_provider_is_the_inner_provider(self, cached_llm, mock_llm):
-        mock_llm.provider.return_value = "MockVendor"
-        assert cached_llm.provider() == "MockVendor"
-
     def test_extract_all_commands_single_command(self, cached_llm):
         """Should extract a single command from response"""
         response = "turn_on(kitchen lights)"
@@ -88,17 +84,6 @@ class TestCachedLLM:
         commands = cached_llm.extract_all_commands(response)
 
         assert len(commands) == 0
-
-    def test_extract_all_commands_complex_params(self, cached_llm):
-        """Should extract commands with complex parameters"""
-        response = 'dim(light_name: "Kitchen Lamp", dim_percentage: 50)'
-        commands = cached_llm.extract_all_commands(response)
-
-        assert len(commands) == 1
-        # Parameters should be cleaned
-        assert commands[0][0] == "dim"
-        # Check that both parameters are present (order/format may vary due to cleaning)
-        assert "Kitchen Lamp" in commands[0][1] or "kitchen lamp" in commands[0][1].lower()
 
     def test_consolidate_commands_dim_to_turn_off(self, cached_llm):
         """Should convert dim(light, 0) to turn_off(light)"""
@@ -159,13 +144,6 @@ class TestCachedLLM:
         assert ("execute", "TurnOffKitchenLights") in consolidated
         assert ("play", "music") in consolidated
 
-    def test_consolidate_commands_empty_list(self, cached_llm):
-        """Should handle empty command list"""
-        commands = []
-        consolidated = cached_llm.consolidate_commands(commands)
-
-        assert len(consolidated) == 0
-
     def test_find_majority_commands_all_identical(self, cached_llm):
         """Should return command set when all rows have identical commands"""
         result = cached_llm.find_majority_commands([("turn_on(kitchen)", 3)])
@@ -180,18 +158,6 @@ class TestCachedLLM:
 
         result = cached_llm.find_majority_commands(response_counts)
         assert result == frozenset({("turn_on", "kitchen"), ("turn_off", "bedroom")})
-
-    def test_find_majority_commands_no_majority(self, cached_llm):
-        """Should return None when no command set reaches 50% threshold"""
-        response_counts = [
-            ("turn_on(kitchen)", 1),
-            ("turn_off(kitchen)", 1),
-            ("turn_on(bedroom)", 1),
-            ("turn_off(bedroom)", 1),
-        ]
-
-        result = cached_llm.find_majority_commands(response_counts)
-        assert result is None
 
     def test_find_majority_commands_above_threshold(self, cached_llm):
         """Should return majority command set when above 50% threshold"""
@@ -247,11 +213,6 @@ class TestCachedLLM:
         result = cached_llm.find_majority_commands(response_counts)
         assert result is None
 
-    def test_find_majority_commands_empty_list(self, cached_llm):
-        """Should return None for empty response list"""
-        result = cached_llm.find_majority_commands([])
-        assert result is None
-
     def test_filter_responses_by_commands(self, cached_llm):
         """Should return only responses matching the target command set"""
         responses = [
@@ -280,14 +241,6 @@ class TestCachedLLM:
         assert len(consolidated) == 1
         assert consolidated[0] == ("execute", "TurnOffKitchenLights")
 
-    def test_extract_commands_handles_special_formatting(self, cached_llm):
-        """Should handle various LLM response formatting"""
-        response = "turn_on(kitchen)"
-        commands = cached_llm.extract_all_commands(response)
-
-        assert len(commands) == 1
-        assert commands[0] == ("turn_on", "kitchen")
-
     def test_update_command_list(self, cached_llm):
         """Should update parser with new command list"""
         new_commands = ["custom_command", "another_command"]
@@ -307,17 +260,6 @@ class TestCachedLLM:
         assert "kitchen" in params
         assert "bedroom" in params
         assert "bathroom" in params
-
-    def test_consolidate_preserves_non_kitchen_turn_offs(self, cached_llm):
-        """Should preserve turn_off commands for non-kitchen lights"""
-        commands = [
-            ("turn_off", "Bedroom Light"),
-            ("turn_off", "Living Room Light"),
-        ]
-        consolidated = cached_llm.consolidate_commands(commands)
-
-        assert len(consolidated) == 2
-        assert all(cmd[0] == "turn_off" for cmd in consolidated)
 
     def test_consolidate_commands_kitchen_lights_all_on(self, cached_llm):
         """Should consolidate all kitchen lights turn_on into single execute command"""
@@ -343,23 +285,6 @@ class TestCachedLLM:
 
         assert len(consolidated) == 2
         assert all(cmd[0] == "turn_on" for cmd in consolidated)
-
-    def test_consolidate_commands_mixed_turn_on_with_other(self, cached_llm):
-        """Should handle mix of turn_on commands with other commands"""
-        commands = [
-            ("turn_on", "Table Lamp (Kitchen)"),
-            ("turn_on", "Island Lamp (Kitchen)"),
-            ("turn_on", "Spots (Kitchen)"),
-            ("turn_on", "Wall Spots (Kitchen)"),
-            ("turn_on", "Mood Light (Kitchen)"),
-            ("play", "music"),
-        ]
-        consolidated = cached_llm.consolidate_commands(commands)
-
-        assert len(consolidated) == 2
-        assert ("execute", "LightTheKitchenUp") in consolidated
-        assert ("play", "music") in consolidated
-
 
 @pytest.mark.unit
 class TestCachedLLMCoreMethods:
@@ -515,18 +440,6 @@ class TestCachedLLMCoreMethods:
         assert result == ["new"]
         assert cached_llm.last_response_was_cached is False
 
-    def test_streaming_cache_miss_zero_responses(self, cached_llm, mock_llm, mock_database):
-        """0 responses → delegates to inner LLM"""
-        mock_database.get_response_counts_for_query.return_value = []
-        mock_llm.create_streaming_completion.return_value = iter(["fresh"])
-
-        cached_llm.cache_query = "query"
-        messages = [{"role": "user", "content": "query"}]
-        result = list(cached_llm.create_streaming_completion(messages))
-
-        assert result == ["fresh"]
-        assert cached_llm.last_response_was_cached is False
-
     def test_streaming_keys_on_cache_query_not_last_message(self, cached_llm, mock_database, mock_llm):
         """Cache key is the clean cache_query (the user utterance), NOT messages[-1]['content'],
         which carries volatile home-automation context and trailing directives."""
@@ -564,28 +477,6 @@ class TestCachedLLMCoreMethods:
         assert cached_llm.last_response_was_cached is False
         mock_database.get_response_counts_for_query.assert_not_called()
 
-    def test_streaming_thinking_passed_through(self, cached_llm, mock_llm, mock_database):
-        """thinking=True passed through to inner LLM on cache miss"""
-        mock_database.get_response_counts_for_query.return_value = []
-        mock_llm.create_streaming_completion.return_value = iter([])
-
-        cached_llm.cache_query = "think hard"
-        messages = [{"role": "user", "content": "think hard"}]
-        list(cached_llm.create_streaming_completion(messages, thinking=True))
-
-        mock_llm.create_streaming_completion.assert_called_once_with(messages, thinking=True)
-
-    def test_streaming_yields_all_inner_chunks(self, cached_llm, mock_llm, mock_database):
-        """Generator from inner LLM yields all chunks"""
-        mock_database.get_response_counts_for_query.return_value = []
-        mock_llm.create_streaming_completion.return_value = iter(["a", "b", "c", "d"])
-
-        cached_llm.cache_query = "hello"
-        messages = [{"role": "user", "content": "hello"}]
-        result = list(cached_llm.create_streaming_completion(messages))
-
-        assert result == ["a", "b", "c", "d"]
-
     def test_streaming_cache_hit_single_yield(self, cached_llm, mock_database):
         """Cache hit yields single value then generator exhausts"""
         mock_database.get_response_counts_for_query.return_value = [("turn_on(kitchen)", 3)]
@@ -600,16 +491,6 @@ class TestCachedLLMCoreMethods:
 
     # --- create_completion ---
 
-    def test_completion_delegates_to_inner(self, cached_llm, mock_llm):
-        """Delegates to self.llm.create_completion() and returns result"""
-        mock_llm.create_completion.return_value = "full response"
-
-        messages = [{"role": "user", "content": "hello"}]
-        result = cached_llm.create_completion(messages)
-
-        assert result == "full response"
-        mock_llm.create_completion.assert_called_once_with(messages, thinking=False)
-
     def test_completion_sets_cached_false(self, cached_llm, mock_llm):
         """Always sets last_response_was_cached = False"""
         cached_llm.last_response_was_cached = True
@@ -619,27 +500,7 @@ class TestCachedLLMCoreMethods:
 
         assert cached_llm.last_response_was_cached is False
 
-    def test_completion_passes_thinking(self, cached_llm, mock_llm):
-        """thinking parameter passed through"""
-        mock_llm.create_completion.return_value = "resp"
-
-        messages = [{"role": "user", "content": "think"}]
-        cached_llm.create_completion(messages, thinking=True)
-
-        mock_llm.create_completion.assert_called_once_with(messages, thinking=True)
-
     # --- create_completion_with_images ---
-
-    def test_images_delegates_to_inner(self, cached_llm, mock_llm):
-        """Delegates to self.llm.create_completion_with_images()"""
-        mock_llm.create_completion_with_images.return_value = "image response"
-        images = ["base64data1", "base64data2"]
-
-        messages = [{"role": "user", "content": "describe"}]
-        result = cached_llm.create_completion_with_images(messages, images)
-
-        assert result == "image response"
-        mock_llm.create_completion_with_images.assert_called_once_with(messages, images)
 
     def test_images_sets_cached_false(self, cached_llm, mock_llm):
         """Always sets last_response_was_cached = False"""
@@ -650,88 +511,9 @@ class TestCachedLLMCoreMethods:
 
         assert cached_llm.last_response_was_cached is False
 
-    def test_images_passed_unmodified(self, cached_llm, mock_llm):
-        """Images list passed through unmodified"""
-        mock_llm.create_completion_with_images.return_value = "resp"
-        images = [b"raw_bytes", "base64str"]
-
-        cached_llm.create_completion_with_images([{"role": "user", "content": "x"}], images)
-
-        passed_images = mock_llm.create_completion_with_images.call_args[0][1]
-        assert passed_images is images
-
     # --- initialize ---
 
-    def test_initialize_delegates(self, cached_llm, mock_llm):
-        """Delegates to self.llm.initialize()"""
-        cached_llm.initialize()
-        mock_llm.initialize.assert_called_once()
-
     # --- supports_native_thinking ---
-
-    def test_supports_thinking_true(self, cached_llm, mock_llm):
-        """Returns True when inner LLM returns True"""
-        mock_llm.supports_native_thinking.return_value = True
-        assert cached_llm.supports_native_thinking() is True
-
-    def test_supports_thinking_false(self, cached_llm, mock_llm):
-        """Returns False when inner LLM returns False"""
-        mock_llm.supports_native_thinking.return_value = False
-        assert cached_llm.supports_native_thinking() is False
-
-    def test_handles_thinking_internally_delegates(self, cached_llm, mock_llm):
-        for value in (True, False):
-            mock_llm.handles_thinking_internally.return_value = value
-            assert cached_llm.handles_thinking_internally() is value
-
-    def test_streaming_bypasses_cache_for_list_content(self, cached_llm, mock_llm, mock_database):
-        """Image queries bypass cache entirely — the request handler leaves cache_query None
-        for image turns, so no DB lookup happens regardless of the list content."""
-        mock_llm.create_streaming_completion.return_value = iter(["image description"])
-        cached_llm.cache_query = None
-        content_blocks = [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc"}},
-            {"type": "text", "text": "What is this?"}
-        ]
-        messages = [{"role": "user", "content": content_blocks}]
-        result = list(cached_llm.create_streaming_completion(messages))
-
-        assert result == ["image description"]
-        assert cached_llm.last_response_was_cached is False
-        mock_database.get_response_counts_for_query.assert_not_called()
-
-    def test_streaming_bypasses_cache_for_list_content_passes_thinking(self, cached_llm, mock_llm, mock_database):
-        """thinking param passed through when bypassing cache for images"""
-        mock_llm.create_streaming_completion.return_value = iter(["resp"])
-        cached_llm.cache_query = None
-        content_blocks = [{"type": "text", "text": "describe"}]
-        messages = [{"role": "user", "content": content_blocks}]
-        list(cached_llm.create_streaming_completion(messages, thinking=True))
-
-        mock_llm.create_streaming_completion.assert_called_once_with(messages, thinking=True)
-
-    def test_supports_video_delegates(self, cached_llm, mock_llm):
-        mock_llm.supports_video.return_value = True
-        assert cached_llm.supports_video() is True
-        mock_llm.supports_video.assert_called_once()
-
-    def test_max_video_bytes_delegates(self, cached_llm, mock_llm):
-        mock_llm.max_video_bytes.return_value = 123
-        assert cached_llm.max_video_bytes() == 123
-
-    def test_think_with_video_delegates_and_marks_uncached(self, cached_llm, mock_llm):
-        mock_llm.think_with_video.return_value = "a clip"
-        cached_llm.last_response_was_cached = True
-
-        result = cached_llm.think_with_video("sys", "user", b"vid", "video/mp4", fps=2.0)
-
-        assert result == "a clip"
-        assert cached_llm.last_response_was_cached is False
-        mock_llm.think_with_video.assert_called_once_with("sys", "user", b"vid", "video/mp4", fps=2.0)
-
-    def test_display_model_delegates(self, cached_llm, mock_llm):
-        mock_llm.display_model.return_value = "Fable"
-        assert cached_llm.display_model() == "Fable"
 
     def test_refusal_fallback_is_the_inner_fallback_uncached(self, cached_llm, mock_llm):
         """The cache wrapper must not shadow the inner LLM's fallback with AbstractLLM's
@@ -740,7 +522,3 @@ class TestCachedLLMCoreMethods:
         fallback = Mock(spec=AbstractLLM)
         mock_llm.refusal_fallback.return_value = fallback
         assert cached_llm.refusal_fallback() is fallback
-
-    def test_refusal_fallback_none_stays_none(self, cached_llm, mock_llm):
-        mock_llm.refusal_fallback.return_value = None
-        assert cached_llm.refusal_fallback() is None

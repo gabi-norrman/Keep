@@ -2,9 +2,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from assistant.tools.MediaAnalyzer import (
-    MediaAnalyzer, media_analyzer, media_kind, is_image_mime, is_video_mime,
-)
+from assistant.tools.MediaAnalyzer import MediaAnalyzer, media_kind
 
 
 @pytest.mark.unit
@@ -46,11 +44,6 @@ class TestMediaKind:
     def test_from_magic_bytes(self, raw, expected):
         assert media_kind(raw_bytes=raw) == expected
 
-    def test_mime_helpers(self):
-        assert is_image_mime("image/jpeg") and not is_image_mime("video/mp4")
-        assert is_video_mime("video/quicktime") and not is_video_mime(None)
-
-
 @pytest.mark.unit
 class TestDescribeBytes:
     def _analyzer(self):
@@ -58,11 +51,6 @@ class TestDescribeBytes:
         image.describe_bytes.return_value = "Image description: [x] y"
         video.describe_bytes.return_value = "Video description: [x] y"
         return MediaAnalyzer(image=image, video=video), image, video
-
-    def test_video_size_limit_comes_from_the_video_analyzer(self):
-        analyzer, _, video = self._analyzer()
-        video.max_size.return_value = 42
-        assert analyzer.video_size_limit() == 42
 
     def test_image_routed_to_image_analyzer_with_photo_fallback(self):
         analyzer, image, video = self._analyzer()
@@ -99,7 +87,3 @@ class TestDescribeBytes:
         assert analyzer.describe_bytes(b"???", fallback="[File]") == "[File]"
         image.describe_bytes.assert_not_called()
         video.describe_bytes.assert_not_called()
-
-    def test_process_wide_singleton(self):
-        assert media_analyzer() is media_analyzer()
-        assert isinstance(media_analyzer(), MediaAnalyzer)

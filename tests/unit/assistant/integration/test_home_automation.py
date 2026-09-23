@@ -56,16 +56,6 @@ def _register(monitor, integration):
 
 @pytest.mark.unit
 class TestContract:
-    def test_the_contract_is_abstract(self):
-        with pytest.raises(TypeError):
-            HomeAutomation()
-
-    def test_a_backend_defaults(self):
-        home = FakeHome()
-        assert home.state_poll_interval == 30
-        assert home.section_filters == {}
-        assert home.error_logs() == "Fake Home has no error log."
-
     def test_display_round_trip(self):
         assert HomeAutomation.to_display('"Tak (Kök)": on') == '"Tak [Kök]": on'
         assert HomeAutomation.from_display("Tak [Kök]") == "Tak (Kök)"

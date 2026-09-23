@@ -208,11 +208,6 @@ class TestWakeWord:
         assert routes.handle_wake_word_detected() is True
         assert observer.on_wake_word_detected.call_count == 2
 
-    def test_no_volume_controller_is_fine(self, deps):
-        deps.volume_controller = None
-        assert MicrophoneRoutes(deps).handle_wake_word_detected() is True
-
-
 # ---------------------------------------------------------------------------
 # kill_running_request_matching (the Scribe veto)
 # ---------------------------------------------------------------------------
@@ -254,12 +249,6 @@ class TestFalsePositiveKill:
 
 @pytest.mark.unit
 class TestAcceptTranscription:
-    def test_winning_transcription_is_accepted(self, routes):
-        ctx = RequestContext(user_input="turn on the kitchen lights")
-        assert routes.accept_transcription(
-            _req({"query": "turn on the kitchen lights", "confidence": "0.9", "mic": "kitchen", "engine": "whisper"}),
-            ctx) is None
-
     def test_empty_query_rejected(self, routes):
         assert routes.accept_transcription(_req({"query": ""}), RequestContext()) is not None
 

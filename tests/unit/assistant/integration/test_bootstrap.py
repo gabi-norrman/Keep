@@ -52,15 +52,6 @@ class TestDiscoverIntegrations:
 
 @pytest.mark.unit
 class TestStartFeeds:
-    def test_feed_classes_are_the_feed_integrations(self):
-        from assistant.integration.integrations.IMessageIntegration import IMessageIntegration
-        from assistant.integration.integrations.TelegramFeedIntegration import TelegramFeedIntegration
-        from assistant.integration.integrations.photos.PhotosIntegration import PhotosIntegration
-        from assistant.integration.integrations.home.IndigoIntegration import IndigoIntegration
-        from assistant.integration.integrations.home.HomeAssistantIntegration import HomeAssistantIntegration
-        assert set(bootstrap.feed_classes()) == {IMessageIntegration, TelegramFeedIntegration,
-                                                 PhotosIntegration, IndigoIntegration, HomeAssistantIntegration}
-
     def test_feeds_are_restartable_and_start_on_the_runner(self, monitor):
         from assistant.integration.FeedRunner import Feeds
         from assistant.integration.integrations.IMessageIntegration import IMessageIntegration

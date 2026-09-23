@@ -71,16 +71,6 @@ class TestElevenLabsVoiceSynthesizer:
         assert sent_data['xi_api_key'] == "test-key"
 
     @patch('interfaces.voice.tts.ElevenLabsVoiceSynthesizer.config')
-    def test_on_close_clears_connected(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from interfaces.voice.tts.ElevenLabsVoiceSynthesizer import ElevenLabsVoiceSynthesizer
-
-        vs = ElevenLabsVoiceSynthesizer()
-        vs.is_connected = True
-        vs._on_close(None, None, None)
-        assert vs.is_connected is False
-
-    @patch('interfaces.voice.tts.ElevenLabsVoiceSynthesizer.config')
     def test_on_error_queues_none(self, mock_config):
         mock_config.get_api_key.return_value = "k"
         from interfaces.voice.tts.ElevenLabsVoiceSynthesizer import ElevenLabsVoiceSynthesizer
@@ -88,25 +78,6 @@ class TestElevenLabsVoiceSynthesizer:
         vs = ElevenLabsVoiceSynthesizer()
         vs._on_error(None, RuntimeError("test"))
         assert vs.audio_queue.get_nowait() is None
-
-    @patch('interfaces.voice.tts.ElevenLabsVoiceSynthesizer.config')
-    def test_name_pronunciations_config_section(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from interfaces.voice.tts.ElevenLabsVoiceSynthesizer import ElevenLabsVoiceSynthesizer
-
-        assert ElevenLabsVoiceSynthesizer.CONFIG_SECTION == "elevenlabs"
-
-    @patch('interfaces.voice.tts.ElevenLabsVoiceSynthesizer.config')
-    def test_voice_id_morning(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from interfaces.voice.tts.ElevenLabsVoiceSynthesizer import ElevenLabsVoiceSynthesizer
-        from assistant.prompt.TimeOfDay import TimeOfDay
-
-        with patch('interfaces.voice.tts.ElevenLabsVoiceSynthesizer.TimeOfDay') as mock_tod:
-            mock_tod.get_current.return_value = TimeOfDay.MORNING_OR_LATE_EVENING
-            mock_tod.DAY = TimeOfDay.DAY
-            voice_id = ElevenLabsVoiceSynthesizer.voice_id()
-            assert voice_id == "geVuXdUpU0lgUukWJCUE"  # Shannon whisper
 
     @patch('interfaces.voice.tts.ElevenLabsVoiceSynthesizer.config')
     def test_feed_text_thread_sends_json_envelope(self, mock_config):

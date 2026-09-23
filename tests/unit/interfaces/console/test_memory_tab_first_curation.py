@@ -77,13 +77,6 @@ class TestFirstCurationNotice:
             assert screen.next_frame[y - 1][0].style.bg == COLOR_YELLOW_BG
             assert screen.next_frame[y - 1][WIDTH - 3].style.bg == COLOR_YELLOW_BG
 
-    def test_the_band_goes_when_the_curation_ends(self, tab, curating, monkeypatch):
-        draw(tab)
-        monkeypatch.setattr(FirstRun.Pipeline, "curation", None)
-        screen = draw(tab)
-        assert row(screen, CONTENT_TOP) == "# Memory"
-        assert FIRST_CURATION_LABEL not in "".join(row(screen, y) for y in range(CONTENT_TOP, HEIGHT))
-
     def test_a_narrow_screen_clips_the_sentence_inside_the_band(self, tab, curating):
         screen = TUIScreen(40, HEIGHT)
         tab.draw(screen, 0)

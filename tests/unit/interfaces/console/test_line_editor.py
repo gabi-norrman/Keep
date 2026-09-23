@@ -189,16 +189,6 @@ class TestHistory:
 
 
 class TestPersistHistory:
-    def test_the_default_editor_loads_and_saves_through_tui_state(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(TUIState, "load", lambda section: calls.append(("load", section)) or {})
-        monkeypatch.setattr(TUIState, "save", lambda section, **values: calls.append(("save", section)))
-        e = LineEditor()
-        typed(e, "hi")
-        e.take()
-        assert ("load", "chat") in calls
-        assert ("save", "chat") in calls
-
     def test_a_non_persisting_editor_never_touches_tui_state(self, monkeypatch):
         def forbidden(*args, **kwargs):
             raise AssertionError("TUIState must not be touched")

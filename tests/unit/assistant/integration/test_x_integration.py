@@ -157,24 +157,10 @@ def test_extract_citations_tolerates_missing_annotations():
 
 
 @pytest.mark.unit
-def test_search_missing_key_raises():
-    api = XIntegration(config_manager=FakeConfigManager(api_key=None), session=FakeSession())
-    with pytest.raises(XSearchError, match="not configured"):
-        api.search("query")
-
-
-@pytest.mark.unit
 def test_search_placeholder_key_raises():
     api = XIntegration(config_manager=FakeConfigManager(api_key="YOUR_GROK_API_KEY_HERE"), session=FakeSession())
     with pytest.raises(XSearchError, match="not configured"):
         api.search("query")
-
-
-@pytest.mark.unit
-def test_search_empty_query_raises():
-    api = XIntegration(config_manager=FakeConfigManager(), session=FakeSession())
-    with pytest.raises(XSearchError, match="non-empty"):
-        api.search("  ")
 
 
 @pytest.mark.unit

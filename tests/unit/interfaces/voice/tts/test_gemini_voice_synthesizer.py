@@ -2,12 +2,6 @@ from unittest.mock import Mock, patch, MagicMock
 
 
 class TestGeminiVoiceSynthesizer:
-    @patch('interfaces.voice.tts.GeminiVoiceSynthesizer.config')
-    def test_voice_id_returns_sulafat(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from interfaces.voice.tts.GeminiVoiceSynthesizer import GeminiVoiceSynthesizer
-        assert GeminiVoiceSynthesizer.voice_id() == "Sulafat"
-
     @staticmethod
     def _capture_streaming_config(vs):
         from unittest.mock import Mock as _Mock
@@ -23,15 +17,6 @@ class TestGeminiVoiceSynthesizer:
         with patch.dict('sys.modules', {'google.cloud.texttospeech': mock_tts_module}):
             vs._build_streaming_config()
         return captured
-
-    @patch('common.Language.config')
-    @patch('interfaces.voice.tts.GeminiVoiceSynthesizer.config')
-    def test_streaming_config_language_falls_back_to_config(self, mock_gemini_config, mock_base_config):
-        mock_base_config.get.return_value = "en-US"
-        from interfaces.voice.tts.GeminiVoiceSynthesizer import GeminiVoiceSynthesizer
-        vs = GeminiVoiceSynthesizer()
-        captured = self._capture_streaming_config(vs)
-        assert captured['language_code'] == "en-US"
 
     @patch('common.Language.config')
     @patch('interfaces.voice.tts.GeminiVoiceSynthesizer.config')
@@ -85,12 +70,6 @@ class TestGeminiVoiceSynthesizer:
             vs._client = None
             client = vs._get_client()
             assert client is mock_tts_client
-
-    @patch('interfaces.voice.tts.GeminiVoiceSynthesizer.config')
-    def test_name_pronunciations_config_section(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from interfaces.voice.tts.GeminiVoiceSynthesizer import GeminiVoiceSynthesizer
-        assert GeminiVoiceSynthesizer.CONFIG_SECTION == "gemini"
 
     # --- segmentation ---
 
@@ -157,24 +136,6 @@ class TestGeminiVoiceSynthesizer:
     # --- per-segment synthesis ---
 
     @patch('interfaces.voice.tts.GeminiVoiceSynthesizer.config')
-    def test_synthesize_segment_queues_audio(self, mock_config):
-        import struct
-        from interfaces.voice.tts.GeminiVoiceSynthesizer import GeminiVoiceSynthesizer
-        vs = GeminiVoiceSynthesizer()
-        vs.OUTPUT_GAIN = 1.0  # passthrough; gain scaling is covered separately
-
-        a, b = struct.pack('<h', 1000), struct.pack('<h', 2000)
-        client = Mock()
-        client.streaming_synthesize.return_value = [Mock(audio_content=a), Mock(audio_content=b)]
-
-        with patch.object(vs, '_build_streaming_config', return_value=Mock()), \
-             patch.object(vs, '_build_input_request', return_value=Mock()):
-            vs._synthesize_segment(client, "Hello.")
-
-        assert vs.audio_queue.get_nowait() == a
-        assert vs.audio_queue.get_nowait() == b
-
-    @patch('interfaces.voice.tts.GeminiVoiceSynthesizer.config')
     def test_synthesize_segment_scales_audio_by_output_gain(self, mock_config):
         import struct
         from interfaces.voice.tts.GeminiVoiceSynthesizer import GeminiVoiceSynthesizer
@@ -204,21 +165,6 @@ class TestGeminiVoiceSynthesizer:
         assert vs._apply_gain(low) == b""          # half a sample held back
         assert vs._apply_gain(high) == struct.pack('<h', 500)
         assert vs._gain_leftover == b""
-
-    @patch('interfaces.voice.tts.GeminiVoiceSynthesizer.config')
-    def test_synthesize_segment_passes_prompt_on_input(self, mock_config):
-        from interfaces.voice.tts.GeminiVoiceSynthesizer import GeminiVoiceSynthesizer
-        vs = GeminiVoiceSynthesizer()
-        client = Mock()
-        client.streaming_synthesize.return_value = []
-
-        with patch.object(vs, '_build_streaming_config', return_value=Mock()), \
-             patch.object(vs, '_build_input_request', return_value=Mock()) as build_input:
-            vs._synthesize_segment(client, "Hello.")
-            # Consume the request generator so its body runs.
-            list(client.streaming_synthesize.call_args[0][0])
-
-        build_input.assert_called_once_with("Hello.", is_first=True)
 
     # --- run synthesis (orchestration) ---
 

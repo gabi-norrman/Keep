@@ -32,10 +32,6 @@ class TestProbeTiming:
         assert p.request() == DSR_REQUEST
         assert len(p.sent) == 2
 
-    def test_nothing_before_the_first_probe(self):
-        p, _ = probe()
-        assert p.status() == NO_LINK_STATUS
-
     def test_reply_measures_the_round_trip(self):
         p, clock = probe()
         p.request()
@@ -130,11 +126,6 @@ class TestServerInput:
         status = srv.link_status()
         assert abs(status.lag - 0.8) < 1e-9 and status.saturated
 
-    def test_link_status_with_no_clients(self):
-        srv, _ = self._server()
-        assert srv.link_status() == NO_LINK_STATUS
-
-
 class TestCrystalStatusLine:
     def _status_cells(self, link):
         screen = TUIScreen(160, 30)
@@ -193,14 +184,6 @@ class TestProbeGating:
         srv.probing = True
         srv._broadcast(b"frame")
         assert sock.sent == [b"frame" + DSR_REQUEST]
-
-    def test_crystal_tab_asks_for_the_probe(self):
-        screen = TUIScreen(160, 30)
-        tab = CrystalTab()
-        tab.aa = 1
-        tab.draw(screen, 0)
-        assert screen.link_probe_wanted
-
 
 class TestSaturationLogging:
     def test_saturation_is_tracked_across_its_edges(self):

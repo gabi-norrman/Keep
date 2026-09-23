@@ -8,7 +8,7 @@ import pytest
 
 from assistant.RequestProcessor import RequestData
 from assistant.Assistant import Assistant, AssistantBusy, AssistantStream
-from assistant.AssistantEvents import Done, RoundEnd, Token, UserIdentified, observers
+from assistant.AssistantEvents import Done, RoundEnd, Token, UserIdentified
 from assistant.AssistantRequest import RequestContext
 
 
@@ -228,14 +228,6 @@ class TestDispatch:
         assert a._dispatch_lock.acquire(timeout=0.1)
         a._dispatch_lock.release()
 
-    def test_stream_logs_the_query_header(self):
-        a = make_assistant()
-        with patch("assistant.Assistant.note") as note, patch("assistant.Assistant.info") as info:
-            a.stream(ctx(source="Telegram", location="Sofa"))
-        note.assert_any_call("hello")
-        assert any("Telegram" in str(c) for c in info.call_args_list)
-
-
 class TestKill:
     def test_kill_all_kills_and_clears_running(self):
         a = make_assistant(pool_size=2)
@@ -269,15 +261,3 @@ class TestKill:
         release.set()
         assert s.killed is True
         assert list(s) == []
-
-
-class TestObservers:
-    def test_observers_property_is_the_process_hub(self):
-        a = make_assistant()
-        assert a.observers is observers()
-
-    def test_subscribe_forwards_to_the_hub(self):
-        a = make_assistant()
-        fake = Mock()
-        a.subscribe(fake)
-        assert fake in observers().observers

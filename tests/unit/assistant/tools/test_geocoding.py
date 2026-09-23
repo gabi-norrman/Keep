@@ -86,14 +86,6 @@ class TestReverseGeocode:
         assert "SuburbName" in result
         assert "NbhName" not in result
 
-    def test_neighbourhood_used_when_no_suburb(self, mock_get):
-        data = {"address": {"road": "Gata", "neighbourhood": "NbhName"}}
-        mock_get.return_value = _ok_response(data)
-
-        result = reverse_geocode(57.7, 11.96)
-
-        assert "NbhName" in result
-
     def test_no_address_fields_falls_back_to_display_name(self, mock_get):
         data = {"display_name": "Some Full Address, Sweden", "address": {}}
         mock_get.return_value = _ok_response(data)

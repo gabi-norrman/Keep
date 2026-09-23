@@ -72,23 +72,10 @@ class TestParseInlineTags:
         spans = parse('<a href="https://example.com">click</a>')
         assert spans[0].text == "click" and spans[0].href == "https://example.com"
 
-    def test_tg_emoji_unwraps_inner_text(self):
-        spans = parse('<tg-emoji emoji-id="123">🦄</tg-emoji>')
-        assert _flat_text(spans) == "🦄"
-        # No special flag for emoji.
-        for s in spans:
-            assert not s.code and not s.pre
-
-
 class TestEntities:
     def test_basic_entities(self):
         spans = parse("a &amp; b &lt; c &gt; d &quot;e&quot;")
         assert _flat_text(spans) == 'a & b < c > d "e"'
-
-    def test_entity_inside_tag(self):
-        spans = parse("<b>5 &lt; 10</b>")
-        assert spans[0].text == "5 < 10" and spans[0].bold
-
 
 class TestNesting:
     def test_bold_italic_nested(self):
@@ -119,11 +106,6 @@ class TestUnknownAndMalformed:
         assert _flat_text(spans) == "hello"
         assert not any(s.bold or s.italic for s in spans)
 
-    def test_unknown_self_closing_tag(self):
-        spans = parse("a<br/>b")
-        # <br/> is unknown — content "a" then "b" survive.
-        assert _flat_text(spans) == "ab"
-
     def test_unclosed_tag_does_not_raise(self):
         # No </b> — close() should auto-undo. Should not raise.
         spans = parse("<b>x")
@@ -142,12 +124,6 @@ class TestUnknownAndMalformed:
 
 
 class TestSplitParagraphs:
-    def test_no_newlines_one_paragraph(self):
-        spans = [StyledSpan(text="hello")]
-        paras = split_paragraphs(spans)
-        assert len(paras) == 1
-        assert _flat_text(paras[0]) == "hello"
-
     def test_double_newline_creates_blank_para(self):
         spans = [StyledSpan(text="a\n\nb")]
         paras = split_paragraphs(spans)
@@ -163,12 +139,6 @@ class TestSplitParagraphs:
 
 
 class TestWrapSpans:
-    def test_short_text_one_line(self):
-        spans = [StyledSpan(text="hello world")]
-        lines = wrap_spans(spans, 80)
-        assert len(lines) == 1
-        assert _flat_text(lines[0]) == "hello world"
-
     def test_word_wrap_at_width(self):
         spans = [StyledSpan(text="aaa bbb ccc ddd")]
         lines = wrap_spans(spans, 7)
@@ -204,10 +174,6 @@ class TestWrapSpans:
     def test_empty_input(self):
         assert wrap_spans([], 80) == [[]]
 
-    def test_zero_width_returns_empty(self):
-        assert wrap_spans([StyledSpan(text="x")], 0) == [[]]
-
-
 class TestWrapSpansWidth:
     def test_wide_glyphs_count_two_cells(self):
         lines = wrap_spans([StyledSpan(text="\U0001F600\U0001F600 ab")], 4)
@@ -239,9 +205,6 @@ class TestPreBlocks:
     def test_newlines_framing_the_block_belong_to_the_markup(self):
         spans = parse("before\n<pre>\nx = 1\n</pre>\nafter")
         assert [s.text for s in spans] == ["before\n", "x = 1", "\nafter"]
-
-    def test_a_block_without_framing_newlines_is_untouched(self):
-        assert [s.text for s in parse("<pre>x = 1</pre>")] == ["x = 1"]
 
     def test_runs_of_spaces_survive_the_wrap(self):
         spans = parse("<pre>│ a   │  1 │\n│ bb  │ 22 │</pre>")

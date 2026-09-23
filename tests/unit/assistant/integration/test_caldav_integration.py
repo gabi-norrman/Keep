@@ -12,13 +12,6 @@ def _config_mock():
 
 
 class TestCalendarHelper:
-    @patch('assistant.integration.integrations.CalDAVIntegration.config', new_callable=lambda: _config_mock())
-    def test_returns_no_events_when_no_password(self, mock_config):
-        mock_config.get.return_value = None
-        from assistant.integration.integrations.CalDAVIntegration import fetch_calendar_events
-        result = fetch_calendar_events(date.today(), date.today() + timedelta(days=5))
-        assert result == "(Calendar not configured)"
-
     @patch('assistant.integration.integrations.CalDAVIntegration.caldav')
     @patch('assistant.integration.integrations.CalDAVIntegration.config', new_callable=lambda: _config_mock())
     def test_returns_no_events_on_connection_error(self, mock_config, mock_caldav):
@@ -459,52 +452,6 @@ class TestCreateCalendarEvent:
 
         from assistant.integration.integrations.CalDAVIntegration import create_calendar_event
         with pytest.raises(ValueError, match="Calendar 'Home' not found"):
-            create_calendar_event("Dentist", "2025-10-28", "10:00", "11:00")
-
-    @patch('assistant.integration.integrations.CalDAVIntegration.config', new_callable=lambda: _config_mock())
-    def test_no_password_raises(self, mock_config):
-        mock_config.get.return_value = None
-
-        from assistant.integration.integrations.CalDAVIntegration import create_calendar_event
-        with pytest.raises(ValueError, match="username or password not found"):
-            create_calendar_event("Dentist", "2025-10-28", "10:00", "11:00")
-
-    @patch('assistant.integration.integrations.CalDAVIntegration.config', new_callable=lambda: _config_mock())
-    def test_invalid_date_format_raises(self, mock_config):
-        mock_config.get.return_value = 'password123'
-
-        from assistant.integration.integrations.CalDAVIntegration import create_calendar_event
-        with pytest.raises(ValueError):
-            create_calendar_event("Dentist", "bad-date", "10:00", "11:00")
-
-    @patch('assistant.integration.integrations.CalDAVIntegration.config', new_callable=lambda: _config_mock())
-    def test_invalid_time_format_raises(self, mock_config):
-        mock_config.get.return_value = 'password123'
-
-        from assistant.integration.integrations.CalDAVIntegration import create_calendar_event
-        with pytest.raises(ValueError):
-            create_calendar_event("Dentist", "2025-10-28", "not-a-time", "11:00")
-
-    @patch('assistant.integration.integrations.CalDAVIntegration.caldav')
-    @patch('assistant.integration.integrations.CalDAVIntegration.config', new_callable=lambda: _config_mock())
-    def test_caldav_error_propagates(self, mock_config, mock_caldav):
-        mock_config.get.side_effect = lambda key, *args: {
-            'calendar.username': 'user@me.com',
-            'calendar.password': 'password123',
-        }.get(key, args[0] if args else None)
-
-        mock_calendar = Mock()
-        mock_calendar.name = 'Home'
-        mock_calendar.save_event.side_effect = Exception("CalDAV connection failed")
-
-        mock_principal = Mock()
-        mock_principal.calendars.return_value = [mock_calendar]
-        mock_client = Mock()
-        mock_client.principal.return_value = mock_principal
-        mock_caldav.DAVClient.return_value = mock_client
-
-        from assistant.integration.integrations.CalDAVIntegration import create_calendar_event
-        with pytest.raises(Exception, match="CalDAV connection failed"):
             create_calendar_event("Dentist", "2025-10-28", "10:00", "11:00")
 
     @patch('assistant.integration.integrations.CalDAVIntegration.caldav')

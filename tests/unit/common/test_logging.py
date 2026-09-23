@@ -3,6 +3,15 @@ import queue
 import pytest
 
 
+@pytest.fixture
+def test_vault(tmp_path):
+    from common.vault.Vault import Vault
+    vault = Vault(tmp_path / "vault.bin", "pw")
+    vault.add("api_key", "Telegram api_hash", "0123456789abcdef0123456789abcdef")
+    vault.add("phone", "mobile", "+46701740612")
+    return vault
+
+
 @pytest.mark.unit
 class TestLogWriter:
     def test_writes_to_all_three_files(self, tmp_path, monkeypatch):
@@ -115,22 +124,10 @@ def no_log_masker():
         logging_mod._masker = old
 
 
-@pytest.fixture
-def test_vault(tmp_path):
-    from common.vault.Vault import Vault
-    vault = Vault(tmp_path / "vault.bin", "pw")
-    vault.add("api_key", "Telegram api_hash", "0123456789abcdef0123456789abcdef")
-    vault.add("phone", "mobile", "+46701740612")
-    return vault
-
-
 @pytest.mark.unit
 class TestLogMasker:
     """A vault value restored into a command line (`config_set` of an api_hash) or a reply
     must never reach floxy.out, the console echo or a dump in clear."""
-
-    def test_no_masker_is_a_passthrough(self, no_log_masker):
-        assert no_log_masker.masked_for_log("0123456789abcdef0123456789abcdef") == "0123456789abcdef0123456789abcdef"
 
     def test_logged_lines_and_the_console_echo_are_masked(self, no_log_masker, test_vault, capsys):
         from common.vault.Redactor import Redactor

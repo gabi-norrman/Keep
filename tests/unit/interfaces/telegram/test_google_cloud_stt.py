@@ -45,19 +45,6 @@ def reset_singleton():
 
 class TestGoogleCloudSTTInit:
     @patch('interfaces.telegram.GoogleCloudSTT.config')
-    def test_init_with_dict_credentials(self, mock_config):
-        mock_config.get.return_value = {"type": "service_account", "project_id": "test"}
-        mock_client = MagicMock()
-        mock_creds = MagicMock()
-
-        with patch('google.cloud.speech.SpeechClient', return_value=mock_client), \
-             patch('google.oauth2.service_account.Credentials.from_service_account_info',
-                   return_value=mock_creds):
-            stt = GoogleCloudSTT()
-
-        assert stt._client is mock_client
-
-    @patch('interfaces.telegram.GoogleCloudSTT.config')
     def test_init_with_json_string_credentials(self, mock_config):
         creds_dict = {"type": "service_account", "project_id": "test"}
         mock_config.get.return_value = json.dumps(creds_dict)

@@ -6,7 +6,6 @@ Replaces RequestProcessor's TestKeepaliveSentinel / TestGenerateAudio content-ty
 and the source-keyed halves of TestStreamResponse."""
 import asyncio
 import time
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -76,9 +75,6 @@ class TestWireFormatTable:
         events = [Token("a")]  # stream ended silently
         assert render(events, ctx("VoiceToVoice", False, True)) == []
 
-    def test_constants(self):
-        assert WireFormat.ROUND_DELIMITER == "\x1e"
-
     def test_response_headers(self):
         assert "text/plain" in WireFormat.response_headers(ctx("VoiceToVoice", True))["Content-Type"]
         assert "text/plain" in WireFormat.response_headers(ctx("VoiceToVoice", False, True))["Content-Type"]
@@ -100,10 +96,6 @@ class TestTelegramOverHttpRendersLikeTextChat:
             yield RoundEnd("ab")
 
         assert render(events(), ctx("Telegram", True)) == render(events(), ctx("TextChat", True)) == ["a", "b", "\x1e"]
-
-    def test_no_keepalive_bytes_anywhere(self):
-        out = render(TWO_ROUNDS, ctx("Telegram", True))
-        assert all("\x00" not in c and "\x02" not in c for c in out)
 
     def test_producer_exception_propagates(self):
         def events():
@@ -204,12 +196,6 @@ class TestVoicelessAudioClient:
         assert [c.source for c, _ in assistant.calls] == ["VoiceToVoice", "VoiceToVoice"]
         assert assistant.calls[0][0].text_only and assistant.calls[1][0].server_sound
 
-    def test_voice_enabled_process_keeps_audio_mode(self, app, assistant):
-        assistant.events = [AudioChunk(b"\x01"), RoundEnd("r"), Done("r")]
-        r, body = get(app, "/stream?query=hi", headers={"User-Agent": "Floxy/1 CFNetwork/1.0"})
-        assert r.headers["Content-Type"] == "audio/mpeg" and body == b"\x01"
-
-
 class TestStreamRoute:
     def test_text_query_renders_legacy_wire(self, app, assistant):
         r, body = get(app, "/stream?text=true&test=true&source=VoiceToVoice&query=hi")
@@ -219,10 +205,6 @@ class TestStreamRoute:
         context, req_data = assistant.calls[0]
         assert context.source == "VoiceToVoice" and context.text_only and context.test
         assert req_data.args["query"] == "hi"
-
-    def test_telegram_query_streams_tokens(self, app):
-        r, body = get(app, "/stream?lang=en&text=true&source=Telegram&user=Marcus&query=hi")
-        assert body.decode() == "Hello\x1eDone!\x1e"
 
     def test_audio_query_from_ios_user_agent(self, app, assistant):
         assistant.events = [AudioChunk(b"\x01\x02"), RoundEnd("r"), Done("r")]

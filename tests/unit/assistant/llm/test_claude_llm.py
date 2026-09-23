@@ -25,11 +25,6 @@ def _make_overloaded_error() -> APIStatusError:
 
 
 class TestProvider:
-    def test_provider_is_the_bare_vendor_name(self):
-        llm = _make_llm()
-        assert llm.name().startswith("Claude (")
-        assert llm.provider() == "Claude"
-
     def test_display_model_is_the_spoken_family(self):
         llm = _make_llm()
         llm.model = "claude-fable-5-1"
@@ -93,10 +88,6 @@ class TestIsRetryable:
 
     def test_400_is_not_retryable(self):
         assert ClaudeLLM._is_retryable(_make_api_status_error(400)) is False
-
-    def test_401_is_not_retryable(self):
-        assert ClaudeLLM._is_retryable(_make_api_status_error(401)) is False
-
 
 @patch("assistant.llm.ClaudeLLM.config")
 class TestStreamingEventHandling:

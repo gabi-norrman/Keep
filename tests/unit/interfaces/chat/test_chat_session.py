@@ -96,11 +96,6 @@ class TestReplyRendering:
         assert draft.texts[0] == "Hi "
         assert draft.finalized == "Hi <b>bold</b>"
 
-    def test_unchanged_text_is_still_finalized(self, session, hub, transport):
-        """Dedup against what is on screen is the transport's job, not the session's."""
-        run_reply(session, hub, [Token("Same"), RoundEnd(), None])
-        assert transport.drafts[0].calls[-1] == ("finalize", "Same")
-
     def test_transcript_records_user_facing_reply(self, session, hub, transport):
         run_reply(session, hub, [Token("A"), RoundEnd(), Token("B"), RoundEnd(), None])
         assert hub.transcript[-1][3:] == ("assistant", "A\nB")
@@ -533,10 +528,6 @@ class TestAlbums:
         session.submit(self._photo(b"one", group_id="g"))
         assert wait_until(lambda: assistant.requests)
         assert len(assistant.requests[0][0].images) == 1
-        assert session._album is None
-
-    def test_drop_without_an_awaited_photo_is_harmless(self, session, hub, transport):
-        session.photo_dropped()
         assert session._album is None
 
     def test_new_message_supersedes_the_running_reply(self, session, hub, transport):

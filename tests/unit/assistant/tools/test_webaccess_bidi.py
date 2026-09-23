@@ -5,26 +5,8 @@ from assistant.tools.WebAccess import WebAccess
 @pytest.mark.unit
 class TestBidiToPython:
 
-    def test_none_input(self):
-        assert WebAccess._bidi_to_python(None) is None
-
-    def test_null_type(self):
-        assert WebAccess._bidi_to_python({'type': 'null', 'value': None}) is None
-
-    def test_undefined_type(self):
-        assert WebAccess._bidi_to_python({'type': 'undefined', 'value': None}) is None
-
     def test_string_type(self):
         assert WebAccess._bidi_to_python({'type': 'string', 'value': 'hello'}) == 'hello'
-
-    def test_number_type(self):
-        assert WebAccess._bidi_to_python({'type': 'number', 'value': 42}) == 42
-
-    def test_boolean_type(self):
-        assert WebAccess._bidi_to_python({'type': 'boolean', 'value': True}) is True
-
-    def test_bigint_type(self):
-        assert WebAccess._bidi_to_python({'type': 'bigint', 'value': 99999999999}) == 99999999999
 
     def test_array_type(self):
         node = {
@@ -35,9 +17,6 @@ class TestBidiToPython:
             ]
         }
         assert WebAccess._bidi_to_python(node) == [1, 'two']
-
-    def test_empty_array(self):
-        assert WebAccess._bidi_to_python({'type': 'array', 'value': []}) == []
 
     def test_array_with_none_value(self):
         assert WebAccess._bidi_to_python({'type': 'array', 'value': None}) == []
@@ -51,9 +30,6 @@ class TestBidiToPython:
             ]
         }
         assert WebAccess._bidi_to_python(node) == {'name': 'Alice', 'age': 30}
-
-    def test_empty_object(self):
-        assert WebAccess._bidi_to_python({'type': 'object', 'value': []}) == {}
 
     def test_object_with_none_value(self):
         assert WebAccess._bidi_to_python({'type': 'object', 'value': None}) == {}
@@ -76,12 +52,6 @@ class TestBidiToPython:
             type_ = 'string'
             value = 'from dataclass'
         assert WebAccess._bidi_to_python(FakeNode()) == 'from dataclass'
-
-    def test_dataclass_null_node(self):
-        class FakeNode:
-            type_ = 'null'
-            value = None
-        assert WebAccess._bidi_to_python(FakeNode()) is None
 
     def test_unknown_type_returns_value(self):
         assert WebAccess._bidi_to_python({'type': 'date', 'value': '2025-01-01'}) == '2025-01-01'

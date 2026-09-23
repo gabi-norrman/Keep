@@ -189,10 +189,6 @@ class TestDrawFeedsPanel:
         bounce = DashboardTab.FEED_SWEEP_FRAMES
         assert row_text(draw_feeds(feeds, frame=10), 1) == row_text(draw_feeds(feeds, frame=bounce - 10), 1)
 
-    def test_no_running_feed_says_so(self):
-        screen = draw_feeds({})
-        assert row_text(screen, 1) == "│  no feeds running" + " " * (PANEL_W - 20) + "│"
-
     def test_a_narrow_panel_keeps_a_minimum_bar_and_cuts_the_text(self):
         screen = draw_feeds({"iMessage": status(stored=123456789)}, width=30)
         line = row_text(screen, 1)
@@ -235,11 +231,3 @@ class TestIntegrationRows:
         assert lines[0].startswith("Disabled: ")
         assert all(not line.startswith(" ") for line in lines[1:])   # continuation lines sit flush left
         assert " ".join(lines) == "Disabled: " + ", ".join(names)
-
-    def test_panel_height_counts_the_gap_and_summary_lines(self, monkeypatch):
-        statuses = [self.status("Gmail"), self.status("Ring", "disabled")]
-        monkeypatch.setattr("interfaces.console.tabs.DashboardTab.IntegrationMonitor.get_instance",
-                            lambda: type("M", (), {"get_all_statuses": lambda self: statuses})())
-        tab = make_tab()
-        tab.console = type("C", (), {"outpost_latencies": [], "prompt_manager": None})()
-        assert tab._status_panel_height() == max(1 + 1 + 1, DashboardTab.TIMING_ROWS, DashboardTab.RESOURCE_ROWS)

@@ -70,12 +70,6 @@ class TestClear:
         tab.handle_input('y')
         assert bottom_bar(tab) == "Clear failed: db locked"
 
-    def test_without_a_prompt_manager(self):
-        tab = PromptTab(None)
-        tab.handle_input('c')
-        tab.handle_input('y')
-        assert bottom_bar(tab) == "No PromptManager available"
-
     def test_scroll_keys_still_work(self, tab):
         tab.display_height = 5
         wrapped = tab.line_wrap

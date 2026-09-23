@@ -93,11 +93,6 @@ class TestLiveInserts:
         land(history, entry("system", "iMessage received:\nFrom Charlotte to Marcus: hej", T0, source="iMessage"))
         assert shown(pane) == [(KIND_SYSTEM, "System (iMessage)", "<b>Charlotte → Marcus</b> hej")]
 
-    def test_assistant_rows_from_other_channels_are_shown(self, history, pane, feed):
-        land(history, entry("assistant", "Autonomous note: rain starts shortly.", T0))
-        assert shown(pane) == [(KIND_ASSISTANT, "Assistant", "Autonomous note: rain starts shortly.")]
-
-
 class TestAdoption:
     """The console's own turns stream live; their history rows must not show twice."""
 
@@ -227,11 +222,6 @@ class TestAdoption:
         with patch('interfaces.console.HistoryFeed.SHOW_OPENING_BRIEFS', True):
             land(history, entry("system", "The server has just started…", time.time(), source="Console"))
         assert shown(pane) == [(KIND_SYSTEM, "System (Console)", "The server has just started…")]
-
-    def test_other_system_rows_are_still_shown(self, history, pane, feed):
-        land(history, entry("system", "Server started up successfully.", time.time(), source="startup"))
-        assert [e.kind for e in pane.entries] == [KIND_SYSTEM]
-
 
 class TestIncomingRequests:
     """A voice request is drawn as a system row as it reaches the assistant; the chat

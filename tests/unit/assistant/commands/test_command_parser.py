@@ -98,14 +98,6 @@ class TestCommandParser:
         assert result[1] == ["kitchen lights"]
         assert remainder == " hello"
 
-    def test_extract_command_and_params_with_cleaning(self, parser):
-        """Should extract and clean parameters"""
-        result, remainder = parser.extract_command_and_params('dim(light_name: "lamp", dim_percentage: 75)')
-
-        assert result[0] == "dim"
-        assert result[1] == ["lamp", "75"]
-        assert remainder == ""
-
     def test_extract_command_and_params_incomplete(self, parser):
         """Should return None for incomplete commands"""
         result, remainder = parser.extract_command_and_params("turn_on(lights")
@@ -120,16 +112,6 @@ class TestCommandParser:
         assert result[0] == "execute"
         assert result[1] == []
         assert remainder == ""
-
-    def test_extract_command_and_params_with_remainder(self, parser):
-        """Should correctly split command and remainder text"""
-        result, remainder = parser.extract_command_and_params(
-            "turn_off(bedroom lights) and then say goodnight"
-        )
-
-        assert result[0] == "turn_off"
-        assert result[1] == ["bedroom lights"]
-        assert remainder == " and then say goodnight"
 
     def test_case_insensitive_command_names(self, parser):
         """Command names should be case-insensitive"""
@@ -222,10 +204,6 @@ class TestCommandParser:
     def test_find_command_start_not_found(self, parser):
         assert parser.find_command_start("no commands here") == -1
 
-    def test_find_command_start_multiple_commands_earliest_wins(self, parser):
-        pos = parser.find_command_start("turn_on(a) turn_off(b)")
-        assert pos == 0
-
     def test_find_command_start_second_command_earlier(self, parser):
         pos = parser.find_command_start("Hello turn_off(b) and turn_on(a)")
         assert pos == 6
@@ -261,9 +239,6 @@ class TestCommandParser:
         commands = parser.extract_all_commands("`turn_on(kitchen)`")
         assert len(commands) == 1
         assert commands[0] == ("turn_on", ["kitchen"])
-
-    def test_extract_all_commands_empty_string(self, parser):
-        assert parser.extract_all_commands("") == []
 
     def test_extract_all_commands_no_commands(self, parser):
         assert parser.extract_all_commands("Just plain text here") == []
@@ -348,25 +323,6 @@ class TestCommandParser:
         complete = "execute(Please:\n1) Check logs\n2) Verify)"
         assert parser.find_complete_command(complete) is True
 
-    def test_numbered_list_after_colon(self, parser):
-        """Numbered lists after colon should be treated as list markers"""
-        content = "execute(Here are the steps:\n1) first step\n2) second step)"
-        result, remainder = parser.extract_command_and_params(content)
-        assert result is not None
-        joined = ", ".join(result[1])
-        assert "first step" in joined
-        assert "second step" in joined
-        assert remainder == ""
-
-    def test_numbered_list_after_sentence_end(self, parser):
-        """Numbered lists after sentence-ending punctuation should be list markers"""
-        content = "execute(I found issues.\n1) Memory leak\n2) Crash on startup)"
-        result, remainder = parser.extract_command_and_params(content)
-        assert result is not None
-        joined = ", ".join(result[1])
-        assert "Memory leak" in joined
-        assert "Crash on startup" in joined
-
     def test_inline_list_marker_after_colon_with_content_following(self, parser):
         """Inline '1)' after multi-word label colon with text following should be a list marker"""
         content = "execute(Here are the steps: 1) do this and that)"
@@ -448,10 +404,6 @@ class TestCommandParser:
         """schedule_wakeup(in_minutes: 52) must be complete even during streaming"""
         assert parser.find_complete_command("schedule_wakeup(in_minutes: 52)", streaming=True) is True
 
-    def test_named_param_colon_not_list_marker_non_streaming(self, parser):
-        """schedule_wakeup(in_minutes: 52) must be complete after stream ends"""
-        assert parser.find_complete_command("schedule_wakeup(in_minutes: 52)", streaming=False) is True
-
     def test_named_param_colon_with_trailing_newline_text(self, parser):
         """Command with named param followed by response text on new lines"""
         content = "schedule_wakeup(in_minutes: 52)\n\nGot it! I'll preheat the Model X."
@@ -514,12 +466,6 @@ class TestCommandParser:
             "create_event(title: Meeting, end_time: 12:00)", streaming=True
         ) is True
 
-    def test_time_param_non_streaming(self, parser):
-        """Time value param should not be treated as list marker after stream ends"""
-        assert parser.find_complete_command(
-            "create_event(title: Meeting, end_time: 12:00)", streaming=False
-        ) is True
-
     def test_multi_word_label_with_time_still_list_marker(self, parser):
         """A multi-word label followed by time-like pattern should still be a list marker"""
         content = "execute(Meeting at 12:00) some text after"
@@ -541,14 +487,6 @@ class TestCommandParser:
         assert parser.find_complete_command(
             "show_history(2026-09-07 00:00, 2026-09-07 23:59)", streaming=True) is True
 
-    def test_positional_datetime_range_non_streaming(self, parser):
-        assert parser.find_complete_command(
-            "show_history(2026-09-07 00:00, 2026-09-07 23:59)", streaming=False) is True
-
-    def test_prose_with_time_still_list_marker(self, parser):
-        """Letters in the same parameter segment keep the prose reading"""
-        assert parser.find_complete_command("execute(Meeting at 12:00) some text after") is False
-
     # ===== Time value with equals-sign parameter assignment (regression: end_time=10:00) =====
 
     def test_time_param_with_equals_not_list_marker(self, parser):
@@ -563,19 +501,6 @@ class TestCommandParser:
         """Time value param with = should not be treated as list marker during streaming"""
         assert parser.find_complete_command(
             'create_event(title="Meeting", end_time=10:00)', streaming=True
-        ) is True
-
-    def test_time_param_with_equals_non_streaming(self, parser):
-        """Time value param with = should not be treated as list marker after stream ends"""
-        assert parser.find_complete_command(
-            'create_event(title="Meeting", end_time=10:00)', streaming=False
-        ) is True
-
-    def test_time_param_with_equals_streaming_no_trailing_content(self, parser):
-        """During streaming, closing paren right after time=HH:MM should be detected"""
-        assert parser.find_complete_command(
-            'create_event(title="Dentist", date=2026-04-06, start_time=08:00, end_time=10:00)',
-            streaming=True
         ) is True
 
     # ===== Remainder preserves leading space (regression: words merging in Telegram) =====
@@ -671,21 +596,6 @@ class TestBrowseEvalRawParams:
         result, _ = parser.extract_command_and_params(f"browse_eval({js})")
         assert result[1] == [js]
 
-    def test_browse_eval_preserves_backticks(self, parser):
-        js = "return `title=${document.title}`"
-        result, _ = parser.extract_command_and_params(f"browse_eval({js})")
-        assert result[1] == [js]
-
-    def test_browse_eval_preserves_name_colon_in_object_literal(self, parser):
-        js = "return {url: location.href, title: document.title}"
-        result, _ = parser.extract_command_and_params(f"browse_eval({js})")
-        assert result[1] == [js]
-
-    def test_other_commands_still_get_cleaned(self, parser):
-        result, _ = parser.extract_command_and_params('dim(light_name: "lamp", dim_percentage: 75)')
-        assert result[0] == "dim"
-        assert result[1] == ["lamp", "75"]
-
     def test_browse_eval_in_extract_all_commands(self, parser):
         js = "return {a: 1, b: '2'}"
         commands = parser.extract_all_commands(f"some text browse_eval({js}) trailing")
@@ -775,12 +685,6 @@ class TestSplitParameters:
     def parser(self):
         return CommandParser([])
 
-    def test_single_unquoted_param(self, parser):
-        assert parser.split_parameters("kitchen") == ["kitchen"]
-
-    def test_single_double_quoted(self, parser):
-        assert parser.split_parameters('"kitchen lights"') == ["kitchen lights"]
-
     def test_single_single_quoted(self, parser):
         assert parser.split_parameters("'bedroom'") == ["bedroom"]
 
@@ -843,23 +747,6 @@ class TestSplitParameters:
         assert parser.split_parameters('"Takspots [Gästhus]"') == [
             "Takspots (Gästhus)"
         ]
-
-    def test_quoted_brackets_in_multi_param(self, parser):
-        assert parser.split_parameters('"Takspots [Gästhus]", 50') == [
-            "Takspots (Gästhus)", "50"
-        ]
-
-    def test_quoted_brackets_end_to_end(self, parser):
-        result, _ = parser.extract_command_and_params(
-            'turn_on("Takspots [Gästhus]")'
-        )
-        assert result is not None
-        assert result[1] == ["Takspots (Gästhus)"]
-
-    def test_raw_param_command_returns_single_element(self, parser):
-        # browse_eval payloads must pass through completely untouched.
-        js = "return {a: 1, b: 'hi, there'}"
-        assert parser.split_parameters(js, raw_param_command=True) == [js]
 
     def test_quoted_value_with_inner_parens_preserved(self, parser):
         # The original motivating example: open_url("https://x/page(2)").

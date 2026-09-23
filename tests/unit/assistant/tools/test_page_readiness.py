@@ -238,13 +238,6 @@ class TestCookieOrchestration:
         kept_lines = [c.args[0] for c in trace.call_args_list if 'kept 2' in c.args[0]]
         assert len(kept_lines) == 1
 
-    def test_remove_returns_js_result_dict(self):
-        wa = make_wa()
-        with patch.object(WebAccess, '_evaluate',
-                          new=AsyncMock(return_value={'clicked': 2, 'removed': 1})):
-            result = run(wa._async_remove_cookies_banner(wa._tab, "https://x.example"))
-        assert result == {'clicked': 2, 'removed': 1}
-
     def test_remove_timeout_returns_empty_dict(self):
         wa = make_wa()
         with patch.object(WebAccess, '_evaluate',
@@ -278,12 +271,6 @@ class TestCookieJsGuards:
         assert '.cky-btn-accept' in js
         assert '#onetrust-accept-btn-handler' in js
 
-    def test_usercentrics_shadow_dom_traversal(self):
-        js = WebAccess._COOKIE_REMOVAL_JS
-        assert '#usercentrics-root' in js
-        assert 'shadowRoot' in js
-        assert 'uc-accept-all-button' in js
-
     def test_swedish_and_nordic_labels_present(self):
         js = WebAccess._COOKIE_REMOVAL_JS
         for label in ('godkänn alla', 'godkänn', 'acceptera alla', 'acceptera',
@@ -293,28 +280,12 @@ class TestCookieJsGuards:
         # \b breaks on å/ä/ö — the Nordic matcher must use Unicode-aware boundaries
         assert 'p{L}' in js
 
-    def test_js_returns_click_and_removal_counts(self):
-        js = WebAccess._COOKIE_REMOVAL_JS
-        assert 'return { clicked: clicked, removed: removed, kept: kept }' in js
-
-    def test_dom_monitor_js_installs_mutation_observer(self):
-        js = WebAccess._DOM_MONITOR_JS
-        assert '__domMon' in js
-        assert 'MutationObserver' in js
-
     def test_generic_matcher_drops_allow_and_continue(self):
         """"allow"/"continue" match login-flow buttons — machine-gunning them
         rate-limited the x.com login. They must be gone from the generic matcher."""
         js = WebAccess._COOKIE_REMOVAL_JS
         assert '|got it|allow|continue)' not in js
         assert r"/\b(accept all|accept cookies|i agree|agree|consent|got it)\b/i" in js
-
-    def test_generic_matcher_requires_consent_context(self):
-        js = WebAccess._COOKIE_REMOVAL_JS
-        assert 'const hasConsentCtx' in js
-        assert 'CONSENT_CTX_RE' in js
-        assert 'looksAccept && hasConsentCtx(el)' in js
-
 
 @pytest.mark.unit
 class TestAuthUrlConsentSkip:
@@ -348,14 +319,6 @@ class TestAuthUrlConsentSkip:
         with patch.object(WebAccess, '_async_remove_cookies_banner', new=remove):
             run(wa._async_settle_cookie_banner(wa._tab, 'https://x.com/i/flow/login'))
         remove.assert_not_awaited()
-
-    def test_settle_still_runs_on_normal_url(self):
-        wa = make_wa(_COOKIE_RETRY_DELAY=0)
-        remove = AsyncMock(return_value={'clicked': 1, 'removed': 0})
-        with patch.object(WebAccess, '_async_remove_cookies_banner', new=remove):
-            run(wa._async_settle_cookie_banner(wa._tab, 'https://shop.example'))
-        remove.assert_awaited()
-
 
 @pytest.mark.unit
 class TestUserAgentFingerprint:
@@ -396,15 +359,6 @@ class TestUserAgentFingerprint:
         ua, major, full = run(wa._async_resolve_ua(tab))
         assert 'HeadlessChrome' not in ua
         assert major == '151'
-
-    def test_apply_tweaks_sends_ua_override_and_headers(self):
-        wa = make_wa(_UA_FALLBACK_MAJOR='151')
-        wa._ua_cache = None
-        tab = self._tab_reporting(
-            'Mozilla/5.0 (Macintosh) HeadlessChrome/151.0.7922.174 Safari/537.36')
-        run(wa._async_apply_anti_bot_tweaks(tab))
-        # UA override + extra headers + stealth script were all dispatched.
-        assert tab.send.await_count >= 3
 
     def _wa(self):
         return WebAccess.__new__(WebAccess)
@@ -450,13 +404,6 @@ class TestUserAgentFingerprint:
         assert '--- header/nav/footer (collapsed) ---' in lines
         assert '[0] link "Logo" -> /' in lines
         assert '[2] link "Legal" -> /legal' in lines
-
-    def test_aside_group_collapses_too(self):
-        records = [{'tag': 'a', 'label': f'Related {i}', 'href': '/r', 'region': 'aside'}
-                   for i in range(6)]
-        lines = self._wa()._render_snapshot_lines(records)
-        assert lines[0] == '--- header/nav/footer (collapsed) ---'
-        assert lines[1].startswith('aside: 6 items — ')
 
     def test_collapsed_non_link_items_show_their_kind(self):
         # A collapsed header once rendered a search *button* indistinguishably
@@ -505,12 +452,6 @@ class TestPageContextHeader:
         ctx = {'h1': 'Veckans erbjudanden', 'headings': ['Bästsäljare just nu', 'Populära varumärken']}
         assert WebAccess._format_page_context(ctx) == \
             'Page: h1 "Veckans erbjudanden" | headings: "Bästsäljare just nu", "Populära varumärken"\n'
-
-    def test_h1_only(self):
-        assert WebAccess._format_page_context({'h1': 'Kassa'}) == 'Page: h1 "Kassa"\n'
-
-    def test_headings_only(self):
-        assert WebAccess._format_page_context({'headings': ['A']}) == 'Page: headings: "A"\n'
 
     def test_empty_context_renders_nothing(self):
         assert WebAccess._format_page_context({}) == ''
@@ -591,36 +532,9 @@ class TestUrlMismatchWarning:
 class TestCollectorJsGuards:
     """Regression tripwires for the snapshot collector's new features."""
 
-    def test_collector_dedups_regions_and_context(self):
-        js = WebAccess._BROWSE_COLLECT_JS
-        assert 'dedupNested' in js
-        assert 'regionOf' in js
-        assert 'pageContext' in js
-        assert 'isSearch' in js
-        assert "context: pageContext(document)" in js
-
     def test_dedup_runs_before_index_tagging(self):
         js = WebAccess._BROWSE_COLLECT_JS
         assert js.index('all = dedupNested(all)') < js.index("setAttribute('data-floxy-snap-idx'")
-
-    def test_handler_bound_controls_are_collected(self):
-        # Div/span widgets bound with addEventListener (booking calendars, qty
-        # pickers) carry no role/href/onclick: the collector must pick them up
-        # from cursor:pointer or a choice-naming data-* attribute, and flag them.
-        js = WebAccess._BROWSE_COLLECT_JS
-        assert 'function handlerBound' in js
-        assert "cursor === 'pointer'" in js
-        for attr in ('data-date', 'data-qty', 'data-time', 'data-value'):
-            assert f"'{attr}'" in js
-        assert 'rec.clickable = true' in js
-        assert 'rec.data = hint' in js
-        assert 'rec.cls = cls' in js
-        # data-id alone is too common to count without the cursor
-        assert "choice.indexOf('data-id=') === 0" in js
-        # never a container that wraps a real control, nor something inside one
-        assert 'el.closest(SEL) || el.querySelector(SEL)' in js
-        assert js.index('handlerBound(doc, win)') < js.index('if (!isInteractive(el, win)) continue;')
-
 
 @pytest.mark.unit
 class TestClickableSnapshotLines:

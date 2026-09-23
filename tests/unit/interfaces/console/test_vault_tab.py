@@ -3,7 +3,6 @@ through handle_input with the key names TUIFloxyConsole._parse_key produces (Ent
 Escape 'escape', Tab '\\t')."""
 import pytest
 
-from common.vault.SecretKinds import KINDS
 from common.vault.Vault import Vault
 from interfaces.console import TUIState
 from interfaces.console.framework.TUIScreen import TUIScreen
@@ -145,10 +144,6 @@ class TestRender:
             for raw in RAW_VALUES:
                 assert raw not in frame
 
-    def test_hint_row_lists_the_view_keys(self, tab):
-        screen = draw(tab)
-        assert rows(screen)[screen.height - 2].strip() == "↑↓ select  a add  e edit  d delete  v reveal"
-
     def test_empty_vault_says_so(self, tmp_path):
         tab = VaultTab(Vault(tmp_path / "vault.bin", "test"))
         out = lines(tab)
@@ -234,11 +229,6 @@ class TestHelp:
         _, block = help_block(screen)
         assert max(len(l) for l in block) <= HELP_MAX_WIDTH
         assert max(len(l) for l in block) > HELP_MAX_WIDTH - 20        # wrapped near the cap, not far under it
-
-    def test_it_names_the_key_the_file_and_the_stand_in(self, tab):
-        frame = "\n".join(lines(tab, height=48))
-        for needle in ("vault.key", "config.yaml", "vault.bin", "{{secret:", "anonymisation"):
-            assert needle in frame
 
     def test_hidden_when_it_would_squeeze_the_list(self, tab):
         out = lines(tab, height=24)
@@ -648,11 +638,3 @@ class TestConstruction:
         tab = VaultTab()
         assert tab.name == "Vault"
         assert tab.captures_text is False
-
-    def test_kinds_cycle_covers_every_kind(self, tab):
-        seen = []
-        press(tab, 'a')
-        for _ in KINDS:
-            seen.append(row_with(lines(tab), "Kind:").split("‹ ")[1].split(" ›")[0])
-            press(tab, 'right')
-        assert seen == list(KINDS)

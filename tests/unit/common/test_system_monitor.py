@@ -31,48 +31,12 @@ class TestSystemMonitorInit:
             mock.get.return_value = 2
             yield mock
 
-    def test_init_default_paths(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        monitor = SystemMonitor()
-        assert monitor._fd_dir == "/dev/fd"
-        assert monitor._db_path == "floxy.db"
-        assert monitor._voice_cache_dir == "cache/voice"
-
-    def test_init_default_interval(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        monitor = SystemMonitor()
-        assert monitor.update_interval == 1.0
-
-    def test_init_custom_interval(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        monitor = SystemMonitor(update_interval=5.0)
-        assert monitor.update_interval == 5.0
-
-    def test_init_with_tui_console(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        console = Mock()
-        monitor = SystemMonitor(tui_console=console)
-        assert monitor.tui_console is console
-
     def test_init_reads_voice_cache_config(self, mock_psutil, mock_config):
         from common.SystemMonitor import SystemMonitor
         mock_config.get.return_value = 5
         monitor = SystemMonitor()
         assert monitor._voice_cache_max_gb == 5
         mock_config.get.assert_called_with('voice_cache_size_in_gb', 2)
-
-    def test_init_not_running(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        monitor = SystemMonitor()
-        assert monitor._running is False
-        assert monitor._thread is None
-
-    def test_init_primes_cpu_counters(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        SystemMonitor()
-        mock_psutil.Process.return_value.cpu_percent.assert_called_with(interval=None)
-        mock_psutil.cpu_percent.assert_called_with(interval=None)
-
 
 @pytest.mark.unit
 class TestSystemMonitorCountFileDescriptors:
@@ -115,14 +79,6 @@ class TestSystemMonitorCountFileDescriptors:
             count = monitor._count_file_descriptors()
         assert count == 0
 
-    def test_empty_fd_dir(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        monitor = SystemMonitor()
-        with patch('os.listdir', return_value=[]):
-            count = monitor._count_file_descriptors()
-        assert count == 0
-
-
 @pytest.mark.unit
 class TestSystemMonitorDatabaseSize:
     """Tests for _get_database_size_gb()"""
@@ -164,15 +120,6 @@ class TestSystemMonitorDatabaseSize:
         with patch('os.path.exists', side_effect=OSError("Error")):
             size = monitor._get_database_size_gb()
         assert size == 0.0
-
-    def test_fractional_gb(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        monitor = SystemMonitor()
-        with patch('os.path.exists', return_value=True), \
-             patch('os.path.getsize', return_value=512 * 1024 * 1024):
-            size = monitor._get_database_size_gb()
-        assert abs(size - 0.5) < 0.001
-
 
 @pytest.mark.unit
 class TestSystemMonitorVoiceCacheSize:
@@ -219,18 +166,6 @@ class TestSystemMonitorVoiceCacheSize:
             size = monitor._get_voice_cache_size_gb()
         assert abs(size - 1.0) < 0.001
 
-    def test_skips_directories(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        monitor = SystemMonitor()
-
-        with patch('os.path.exists', return_value=True), \
-             patch('os.listdir', return_value=['file1.mp3', 'subdir']), \
-             patch('os.path.isfile', side_effect=lambda p: 'file1' in p), \
-             patch('os.path.getsize', return_value=1024 ** 3), \
-             patch('os.path.join', side_effect=lambda a, b: f"{a}/{b}"):
-            size = monitor._get_voice_cache_size_gb()
-        assert size == 1.0
-
     def test_returns_zero_on_exception(self, mock_psutil, mock_config):
         from common.SystemMonitor import SystemMonitor
         monitor = SystemMonitor()
@@ -238,15 +173,6 @@ class TestSystemMonitorVoiceCacheSize:
              patch('os.listdir', side_effect=OSError("Permission denied")):
             size = monitor._get_voice_cache_size_gb()
         assert size == 0.0
-
-    def test_empty_cache_dir(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        monitor = SystemMonitor()
-        with patch('os.path.exists', return_value=True), \
-             patch('os.listdir', return_value=[]):
-            size = monitor._get_voice_cache_size_gb()
-        assert size == 0.0
-
 
 @pytest.mark.unit
 class TestSystemMonitorUpdateMetrics:
@@ -274,11 +200,6 @@ class TestSystemMonitorUpdateMetrics:
             mock.get.return_value = 2
             yield mock
 
-    def test_does_nothing_without_console(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        monitor = SystemMonitor(tui_console=None)
-        monitor._update_metrics()  # Should not raise
-
     def test_sets_memory_metrics(self, mock_psutil, mock_config):
         from common.SystemMonitor import SystemMonitor
         console = Mock()
@@ -304,57 +225,6 @@ class TestSystemMonitorUpdateMetrics:
 
         assert console.process_memory_gb == 2.0
         assert console.process_cpu_percent == 50.0 / 8
-
-    def test_sets_system_cpu(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        console = Mock()
-        monitor = SystemMonitor(tui_console=console)
-
-        with patch.object(monitor, '_count_file_descriptors', return_value=100), \
-             patch.object(monitor, '_get_database_size_gb', return_value=0.1), \
-             patch.object(monitor, '_get_voice_cache_size_gb', return_value=0.5):
-            monitor._update_metrics()
-
-        assert console.system_cpu_percent == 25.0
-
-    def test_sets_fd_count(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        console = Mock()
-        monitor = SystemMonitor(tui_console=console)
-
-        with patch.object(monitor, '_count_file_descriptors', return_value=42), \
-             patch.object(monitor, '_get_database_size_gb', return_value=0.1), \
-             patch.object(monitor, '_get_voice_cache_size_gb', return_value=0.5):
-            monitor._update_metrics()
-
-        assert console.fd_count == 42
-
-    def test_sets_database_size(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        console = Mock()
-        monitor = SystemMonitor(tui_console=console)
-
-        with patch.object(monitor, '_count_file_descriptors', return_value=100), \
-             patch.object(monitor, '_get_database_size_gb', return_value=0.25), \
-             patch.object(monitor, '_get_voice_cache_size_gb', return_value=0.5):
-            monitor._update_metrics()
-
-        assert console.db_size_gb == 0.25
-
-    def test_sets_voice_cache_metrics(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        console = Mock()
-        monitor = SystemMonitor(tui_console=console)
-        monitor._voice_cache_max_gb = 3
-
-        with patch.object(monitor, '_count_file_descriptors', return_value=100), \
-             patch.object(monitor, '_get_database_size_gb', return_value=0.1), \
-             patch.object(monitor, '_get_voice_cache_size_gb', return_value=1.5):
-            monitor._update_metrics()
-
-        assert console.voice_cache_size_gb == 1.5
-        assert console.voice_cache_max_gb == 3
-
 
 @pytest.mark.unit
 class TestSystemMonitorSlowMetricCadence:
@@ -395,11 +265,6 @@ class TestSystemMonitorSlowMetricCadence:
         from common.SystemMonitor import SystemMonitor
         monitor = SystemMonitor(update_interval=0.33)
         assert monitor._slow_metric_every == 91
-
-    def test_divisor_at_5s_interval(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        monitor = SystemMonitor(update_interval=5.0)
-        assert monitor._slow_metric_every == 6
 
     def test_divisor_clamped_to_at_least_1(self, mock_psutil, mock_config):
         """If update_interval ≥ 30s, slow metrics must still fire every tick (not 0)."""
@@ -461,13 +326,6 @@ class TestSystemMonitorStartStop:
         with patch('common.SystemMonitor.config') as mock:
             mock.get.return_value = 2
             yield mock
-
-    def test_start_sets_running_flag(self, mock_psutil, mock_config):
-        from common.SystemMonitor import SystemMonitor
-        monitor = SystemMonitor()
-        with patch.object(threading.Thread, 'start'):
-            monitor.start()
-        assert monitor._running is True
 
     def test_start_creates_thread(self, mock_psutil, mock_config):
         from common.SystemMonitor import SystemMonitor

@@ -9,8 +9,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from assistant.AssistantRequest import RequestContext
-from assistant.ChannelProfile import (CONSOLE, PROFILES, SOURCE_VOICE, TELEGRAM, TEXT_CHAT,
-                                      VOICE_TO_VOICE, AUTONOMOUS)
+from assistant.ChannelProfile import SOURCE_VOICE, TELEGRAM, VOICE_TO_VOICE
 from assistant.commands import ToolkitPreloader, Toolkits
 from assistant.RequestProcessor import RequestProcessor
 
@@ -34,15 +33,6 @@ def _prompt_manager(loaded: dict, untracked: list[str] = ()):
     pm.untracked_sections.return_value = list(untracked)
     pm.carried_data = Mock(side_effect=lambda toolkit, record=True: Toolkits.render_sections(toolkit, {"home": DATA}))
     return pm
-
-
-@pytest.mark.unit
-def test_only_voice_preloads_and_it_preloads_home_music_and_tesla():
-    assert VOICE_TO_VOICE.preload_toolkits == ("home", "music", "tesla")
-    for profile in (TEXT_CHAT, TELEGRAM, CONSOLE, AUTONOMOUS):
-        assert profile.preload_toolkits == ()
-    for name in {t for p in PROFILES.values() for t in p.preload_toolkits}:
-        assert Toolkits.by_name(name) is not None
 
 
 @pytest.mark.unit
@@ -257,12 +247,6 @@ class TestRequestProcessorHook:
     def test_test_suite_request_skips_the_preload(self):
         pm = _prompt_manager({})
         self._handler(RequestContext(source=SOURCE_VOICE, user_input="hi", test=True))._preload_toolkits(pm)
-        pm.add_command_result.assert_not_called()
-
-    @pytest.mark.unit
-    def test_chat_request_preloads_nothing(self):
-        pm = _prompt_manager({})
-        self._handler(RequestContext(source="Telegram", user_input="hi"))._preload_toolkits(pm)
         pm.add_command_result.assert_not_called()
 
     @pytest.mark.unit

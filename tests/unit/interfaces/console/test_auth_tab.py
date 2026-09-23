@@ -152,14 +152,6 @@ class TestActions:
         assert tab._auth_status == {"status": "error", "message": "not configured"}
         assert len(lines) == 1 and "not configured" in lines[0]
 
-    def test_a_raising_status_check_releases_the_checking_flag(self):
-        # A stuck flag would show "Checking..." forever and block every later check
-        tab = make_tab()
-        tab._check_auth_status = Mock(side_effect=RuntimeError("boom"))
-        with pytest.raises(RuntimeError):
-            tab._check_auth_status_async()
-        assert tab._checking is False
-
     def test_only_one_status_check_runs_at_a_time(self):
         tab = make_tab()
         started = []

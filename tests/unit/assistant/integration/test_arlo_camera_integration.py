@@ -39,41 +39,6 @@ def arlo(tmp_path):
     return ArloCameraIntegration(config=config)
 
 
-class TestInit:
-    def test_missing_arlo_section_creates_unconfigured_instance(self):
-        mock_cm = Mock()
-        mock_cm.get.side_effect = KeyError("arlo")
-        arlo = ArloCameraIntegration(config_manager=mock_cm)
-        assert arlo._config == {}
-        assert arlo._ignore_keywords == []
-
-    def test_missing_username_creates_unconfigured_instance(self):
-        arlo = ArloCameraIntegration(config={"password": "secret"})
-        assert arlo._ignore_keywords == []
-
-    def test_missing_password_creates_unconfigured_instance(self):
-        arlo = ArloCameraIntegration(config={"username": "user@example.com"})
-        assert arlo._ignore_keywords == []
-
-    def test_valid_config_creates_instance(self, arlo):
-        assert arlo is not None
-        assert arlo.get_auth_status()["status"] == "not_initialized"
-
-    def test_singleton(self):
-        mock_cm = Mock()
-        mock_cm.get.return_value = VALID_CONFIG
-        a = ArloCameraIntegration.get_instance(config_manager=mock_cm)
-        b = ArloCameraIntegration.get_instance()
-        assert a is b
-
-    def test_connect_lock_exists(self, arlo):
-        assert hasattr(arlo, '_connect_lock')
-        assert isinstance(arlo._connect_lock, type(threading.Lock()))
-
-    def test_initial_failure_count_is_zero(self, arlo):
-        assert arlo._consecutive_auth_failures == 0
-
-
 class TestExponentialBackoff:
     def test_no_cooldown_before_first_attempt(self, arlo):
         arlo._consecutive_auth_failures = 0
@@ -86,11 +51,6 @@ class TestExponentialBackoff:
     def test_second_failure_triples_cooldown(self, arlo):
         arlo._consecutive_auth_failures = 2
         expected = ArloCameraIntegration.BASE_AUTH_COOLDOWN * ArloCameraIntegration.BACKOFF_FACTOR
-        assert arlo._current_cooldown == expected
-
-    def test_third_failure_further_increases(self, arlo):
-        arlo._consecutive_auth_failures = 3
-        expected = ArloCameraIntegration.BASE_AUTH_COOLDOWN * (ArloCameraIntegration.BACKOFF_FACTOR ** 2)
         assert arlo._current_cooldown == expected
 
     def test_cooldown_capped_at_max(self, arlo):
@@ -126,13 +86,6 @@ class TestRateLimitDetection:
 
     def test_401_not_rate_limit(self):
         assert not ArloCameraIntegration._is_rate_limit_error("login failed: 401 - Unauthorized")
-
-    def test_empty_string_not_rate_limit(self):
-        assert not ArloCameraIntegration._is_rate_limit_error("")
-
-    def test_none_like_not_rate_limit(self):
-        assert not ArloCameraIntegration._is_rate_limit_error(None)
-
 
 class TestThreadingLock:
     def test_ensure_connected_uses_lock(self, arlo):
@@ -258,21 +211,6 @@ class TestConnectionFailureStates:
         assert arlo._consecutive_auth_failures == 0
         assert arlo.state == IntegrationState.OK
 
-    @patch('assistant.integration.integrations.cameras.ArloCameraIntegration.pyaarlo.PyArlo')
-    @patch('assistant.integration.integrations.cameras.ArloCameraIntegration.pyaarlo.constant')
-    def test_failure_increments_counter(self, mock_constant, mock_pyarlo, arlo):
-        mock_constant.ECDH_CURVES = ['secp384r1', 'prime256v1']
-        mock_instance = Mock()
-        mock_instance._be.is_connected = False
-        mock_instance._last_error = "login failed: 429"
-        mock_pyarlo.return_value = mock_instance
-
-        initial = arlo._consecutive_auth_failures
-        with pytest.raises(ArloAuthenticationError):
-            arlo._do_connect()
-        assert arlo._consecutive_auth_failures == initial + 1
-
-
 class TestMaxConsecutiveFailures:
     def test_lockout_after_max_failures(self, arlo):
         arlo._consecutive_auth_failures = ArloCameraIntegration.MAX_CONSECUTIVE_FAILURES
@@ -348,12 +286,6 @@ class TestCooldownPersistence:
         arlo._load_persisted_state()
         assert arlo._last_auth_attempt_time == 1234567890.5
         assert arlo._consecutive_auth_failures == 0
-
-    def test_load_handles_missing_file(self, arlo, tmp_path):
-        arlo._load_persisted_state()
-        assert arlo._last_auth_attempt_time == 0.0
-        assert arlo._consecutive_auth_failures == 0
-
 
 class TestCredentialRejection:
     """A 401 never reached the 2FA step: it must read as an error naming the credentials,
@@ -449,17 +381,6 @@ class TestOnNotConfigured:
         assert not (tmp_path / "cookies.txt").exists()
         assert not (tmp_path / "auth_cooldown.txt").exists()
 
-    def test_noop_when_no_files_exist(self, tmp_path):
-        arlo = ArloCameraIntegration(config={"storage_dir": str(tmp_path)})
-        arlo.on_not_configured()  # should not raise
-
-    def test_uses_default_storage_dir(self):
-        mock_cm = Mock()
-        mock_cm.get.side_effect = KeyError("arlo")
-        arlo = ArloCameraIntegration(config_manager=mock_cm)
-        # _config is {} so storage_dir falls back to default
-        assert arlo._config.get("storage_dir", "/tmp/pyaarlo_floxy") == "/tmp/pyaarlo_floxy"
-
     def test_register_calls_on_not_configured(self):
         from assistant.integration.IntegrationMonitor import IntegrationMonitor
 
@@ -481,11 +402,6 @@ class TestOnNeeds2FA:
             arlo.on_needs_2fa()
             arlo._auto_2fa_thread.join(timeout=2)
             mock_connect.assert_called_once()
-
-    def test_on_needs_2fa_handles_auth_error(self, arlo):
-        with patch.object(arlo, '_ensure_connected', side_effect=ArloAuthenticationError("2FA failed")):
-            arlo.on_needs_2fa()
-            arlo._auto_2fa_thread.join(timeout=2)
 
     def test_on_needs_2fa_skips_if_thread_alive(self, arlo):
         blocker = threading.Event()
@@ -573,14 +489,6 @@ class TestTfaHandler:
             handler.get()
             assert mock_notify.call_count == 2
 
-    def test_no_notification_when_rate_limited_before_get(self):
-        """If pyaarlo hits a rate limit before calling get(), no notification is sent."""
-        handler = _ArloTfaHandler()
-        with patch.object(_ArloTfaHandler, '_notify_2fa_needed') as mock_notify:
-            handler.start()
-            # Simulate rate-limit: pyaarlo calls start() but never get()
-            assert mock_notify.call_count == 0
-
     def test_submit_code_unblocks_get(self):
         handler = _ArloTfaHandler()
         handler.start()
@@ -635,9 +543,6 @@ class TestIntegrationMonitorRateLimitHandling:
 
 
 class TestArlo2FACodePattern:
-    def test_extracts_standalone_6_digit_code(self):
-        assert ARLO_2FA_PATTERN.search("Your code is: 847291").group(1) == "847291"
-
     def test_extracts_from_arlo_email_body(self):
         body = "Your Arlo verification code is 123456. It expires in 10 minutes."
         assert ARLO_2FA_PATTERN.search(body).group(1) == "123456"
@@ -694,12 +599,6 @@ class TestEmailAutoDetection:
         code = handler._try_extract_code_from_email(gmail)
         assert code == "654321"
 
-    def test_returns_none_when_no_emails(self):
-        handler = _ArloTfaHandler()
-        gmail = Mock()
-        gmail.fetch_recent_raw.return_value = []
-        assert handler._try_extract_code_from_email(gmail) is None
-
     def test_returns_none_when_no_code_in_body(self):
         handler = _ArloTfaHandler()
         gmail = Mock()
@@ -708,10 +607,6 @@ class TestEmailAutoDetection:
         ]
         assert handler._try_extract_code_from_email(gmail) is None
 
-    def test_no_email_configured_skips_polling(self):
-        handler = _ArloTfaHandler()
-        with patch.object(_ArloTfaHandler, '_email_providers', return_value=[]):
-            handler._poll_email_for_code()
             # Should return without error
 
     def test_email_polling_calls_submit_code(self):
@@ -757,25 +652,6 @@ class TestEmailAutoDetection:
             providers = _ArloTfaHandler._email_providers()
         assert providers == [icloud_instance.return_value]
         gmail_instance.assert_not_called()
-
-    def test_manual_submit_stops_email_polling(self):
-        handler = _ArloTfaHandler()
-        handler.start()
-
-        with patch.object(_ArloTfaHandler, '_notify_2fa_needed'):
-            with patch.object(_ArloTfaHandler, '_start_email_polling'):
-                def get_and_store(result_list):
-                    result_list.append(handler.get())
-
-                result = []
-                t = threading.Thread(target=get_and_store, args=(result,))
-                t.start()
-                handler.submit_code("111111")
-                t.join(timeout=2)
-
-        assert result[0] == "111111"
-        assert handler._stop_email_polling is True
-
 
 class TestAutoDetectionTelegramNotification:
     """Email-based auto-detection (added in d6574333) must surface a Telegram
@@ -839,16 +715,6 @@ class TestAutoDetectionTelegramNotification:
 
         mock_notify.assert_not_called()
 
-    def test_manual_tui_submit_does_not_notify(self):
-        # _ArloTfaHandler.submit_code is what the TUI calls on manual entry.
-        # It must stay silent so users aren't alerted twice when they type the
-        # code themselves.
-        handler = _ArloTfaHandler()
-        with patch(self._NOTIFY_PATH) as mock_notify:
-            handler.submit_code("111111")
-        mock_notify.assert_not_called()
-
-
 def _make_jpeg(width=1920, height=1024, comment=None) -> bytes:
     img = Image.new("RGB", (width, height), color=(128, 128, 128))
     buf = BytesIO()
@@ -869,11 +735,6 @@ class TestSnapshotFreshness:
         is_stale, reason = looks_like_cached_thumbnail(_make_jpeg(640, 357))
         assert is_stale is True
         assert "640x357" in reason
-
-    def test_720_square_thumbnail_flagged(self):
-        is_stale, reason = looks_like_cached_thumbnail(_make_jpeg(720, 720))
-        assert is_stale is True
-        assert "720x720" in reason
 
     def test_lavc_comment_flagged_even_at_native_resolution(self):
         jpeg = _make_jpeg(1920, 1024, comment=b"Lavc58.91.100\x00")

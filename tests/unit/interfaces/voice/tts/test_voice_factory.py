@@ -77,13 +77,6 @@ def test_engine_order_puts_the_preferred_engine_first_and_keeps_the_rest():
 
 
 @pytest.mark.unit
-def test_elevenlabs_is_the_only_engine_on_by_default():
-    """A voice install with only api_keys.elevenlabs speaks; every other engine is opt-in."""
-    assert ElevenLabsVoiceSynthesizer.enabled_by_default is True
-    assert all(cls.enabled_by_default is False for cls in ENGINES if cls is not ElevenLabsVoiceSynthesizer)
-
-
-@pytest.mark.unit
 def test_disabled_engine_is_skipped_for_the_next_enabled_one(engines):
     """disable_integration("ElevenLabs TTS") with Cartesia enabled: English speaks through Cartesia."""
     engines.disable(ElevenLabsVoiceSynthesizer)

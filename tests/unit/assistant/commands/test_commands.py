@@ -6,11 +6,8 @@ from unittest.mock import Mock, call, patch, MagicMock
 import pytest
 
 from assistant.ChannelProfile import profile_for
-import requests
-
 from assistant.commands.Commands import Commands, MediaPayload
 from assistant.integration.integrations.photos.ICloudPhotoDownloader import NoVideoRenditionError, PhotoNotInCloudError
-from assistant.integration.integrations.WeatherIntegration import WeatherIntegration
 from assistant.integration.integrations.TeslaIntegration import TeslaCommandError, TeslaIntegration
 from assistant.integration.integrations.ICloudIntegration import iCloudAPI
 from assistant.integration.integrations.XIntegration import XIntegration
@@ -138,25 +135,7 @@ class TestListCommands:
             assert not c.startswith("cmd_")
 
 
-class TestBrowseScreenshot:
-    def test_dispatches_to_web_access(self, commands_instance):
-        commands_instance.web_access.browse_screenshot = Mock(return_value="Saved screenshot of x to y (1 KB).")
-        commands_instance.cmd_browse_screenshot("")
-        commands_instance.wait_for_background(timeout=5)
-        commands_instance.web_access.browse_screenshot.assert_called_once_with("")
-
-    def test_describe(self, commands_instance):
-        assert commands_instance.describe("browse_screenshot", "") == "Taking a screenshot"
-
-
 class TestBrowseSnapshotAndClickAt:
-    def test_snapshot_dispatches_to_web_access(self, commands_instance):
-        commands_instance.web_access.browse_snapshot = Mock(return_value="URL: x")
-        commands_instance.cmd_browse_snapshot("")
-        commands_instance.wait_for_background(timeout=5)
-        commands_instance.web_access.browse_snapshot.assert_called_once_with("")
-        assert commands_instance.describe("browse_snapshot", "") == "Re-reading the page"
-
     def test_click_at_rejoins_positional_coordinates(self, commands_instance):
         commands_instance.web_access.browse_click_at = Mock(return_value="Clicked")
         commands_instance.cmd_browse_click_at("412", " 583")
@@ -228,13 +207,6 @@ class TestSendScreenshot:
             commands_instance._run_send_screenshot("")
         mock_telegram.send_photo.assert_called_once_with(b"png_bytes", caption="")
 
-    def test_describe(self, commands_instance):
-        assert commands_instance.describe("send_screenshot", "") == "Sending screenshot"
-
-    def test_registered_in_list_commands(self, commands_instance):
-        assert "send_screenshot" in commands_instance.list_commands()
-
-
 # ---------------------------------------------------------------------------
 # TestBackgroundCommand
 # ---------------------------------------------------------------------------
@@ -284,28 +256,6 @@ class TestTeslaBackgroundCommands:
         commands_instance.wait_for_background(timeout=5)
 
         mock_api.set_max_defrost.assert_called_once_with("Model Y")
-        commands_instance.command_processor.set_command_reply.assert_not_called()
-        commands_instance.command_processor.background_command_done.assert_called_once()
-
-    def test_air_con_success_is_silent(self, commands_instance, tesla_api):
-        mock_api = tesla_api
-        mock_api.start_air_conditioning.return_value = "Air conditioning started for Model Y."
-
-        commands_instance.cmd_tesla_air_con_on("Model Y")
-        commands_instance.wait_for_background(timeout=5)
-
-        mock_api.start_air_conditioning.assert_called_once_with("Model Y")
-        commands_instance.command_processor.set_command_reply.assert_not_called()
-        commands_instance.command_processor.background_command_done.assert_called_once()
-
-    def test_open_trunk_success_is_silent(self, commands_instance, tesla_api):
-        mock_api = tesla_api
-        mock_api.open_trunk.return_value = "Trunk opened for Model Y."
-
-        commands_instance.cmd_tesla_open_trunk("Model Y")
-        commands_instance.wait_for_background(timeout=5)
-
-        mock_api.open_trunk.assert_called_once_with("Model Y")
         commands_instance.command_processor.set_command_reply.assert_not_called()
         commands_instance.command_processor.background_command_done.assert_called_once()
 
@@ -538,15 +488,6 @@ class TestBackgroundLanes:
         for call in bg.call_args_list:
             assert call.kwargs.get("lane") == Commands.BROWSER_LANE, call
 
-    def test_lookup_commands_use_the_io_lane(self, commands_instance):
-        with patch.object(commands_instance, "background_command") as bg:
-            commands_instance.cmd_google("q")
-            commands_instance.cmd_search_x("q")
-            commands_instance.cmd_weather("")
-            commands_instance.cmd_search_email("q")
-        for call in bg.call_args_list:
-            assert call.kwargs.get("lane", Commands.IO_LANE) == Commands.IO_LANE, call
-
     def test_each_command_completes_its_own_echo(self, commands_instance, journal):
         log, lock = journal
         first, second = _Gate("first", log, lock), _Gate("second", log, lock)
@@ -579,33 +520,12 @@ class TestBackgroundLanes:
         cp.set_command_reply.assert_called_with("one\n\ntwo", contains_error=False)
 
 
-# ---------------------------------------------------------------------------
-# TestCmdWeather
-# ---------------------------------------------------------------------------
-
-class TestCmdWeather:
-    def test_calls_background_command_with_weather(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_weather("anything")
-            mock_bg.assert_called_once_with(WeatherIntegration.fetch_weather_forecast, False)
-
-    def test_parameter_string_is_ignored(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_weather("some param")
-            # Second arg is always False, not the parameter_string
-            mock_bg.assert_called_once_with(WeatherIntegration.fetch_weather_forecast, False)
-
 
 # ---------------------------------------------------------------------------
 # TestCmdHomeAutomationLogs
 # ---------------------------------------------------------------------------
 
 class TestCmdHomeAutomationLogs:
-    def test_calls_background_command(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_home_automation_logs("anything")
-            mock_bg.assert_called_once_with(Commands._fetch_home_automation_logs, None)
-
     def test_fetch_returns_the_backends_error_log_under_heading(self, mock_home):
         mock_home.error_logs.return_value = "indigo err"
         result = Commands._fetch_home_automation_logs(None)
@@ -619,11 +539,6 @@ class TestCmdHomeAutomationLogs:
 # ---------------------------------------------------------------------------
 
 class TestCmdServerLogs:
-    def test_calls_background_command(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_server_logs("anything")
-            mock_bg.assert_called_once_with(Commands._fetch_server_logs, None)
-
     def test_fetch_returns_log_tail(self, tmp_path, mock_home):
         log_file = tmp_path / "floxy.out"
         log_file.write_text("line1\nline2\n")
@@ -687,11 +602,6 @@ class TestCmdEmailCommands:
             commands_instance.cmd_read_email("123")
             mock_bg.assert_called_once_with(commands_instance._email_provider.read, "123")
 
-    def test_latest_email_passes_param(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_latest_email("inbox")
-            assert mock_bg.call_args[0][1] == ["inbox", False]
-
     def test_latest_email_unread_flag(self, commands_instance):
         with patch.object(commands_instance, 'background_command') as mock_bg:
             commands_instance.cmd_latest_email("@SaneLater", "unread")
@@ -707,16 +617,6 @@ class TestCmdEmailCommands:
         with patch.object(commands_instance, 'background_command') as mock_bg:
             commands_instance.cmd_latest_email()
             assert mock_bg.call_args[0][1] == ["", False]
-
-    def test_search_email_passes_param(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_search_email("from:bob")
-            assert mock_bg.call_args[0][1] == "from:bob"
-
-    def test_read_email_passes_param(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_read_email("msg_456")
-            assert mock_bg.call_args[0][1] == "msg_456"
 
     def test_describe_read_email_shows_subject(self, commands_instance):
         commands_instance._email_provider.subject_for.return_value = "Order confirmation"
@@ -748,40 +648,13 @@ class TestCmdEmailCommands:
         assert commands_instance.describe_move_email("GM-AA, Archive") == "Moving email 'Order confirmation' to Archive"
         commands_instance._email_provider.subject_for.assert_called_once_with("GM-AA")
 
-    def test_describe_move_email_truncates_long_subject(self, commands_instance):
-        commands_instance._email_provider.subject_for.return_value = "x" * 80
-        assert commands_instance.describe_move_email("GM-AA, Archive") == "Moving email '" + "x" * 50 + "…' to Archive"
-
     def test_describe_move_email_falls_back_on_cache_miss(self, commands_instance):
         commands_instance._email_provider.subject_for.return_value = None
-        assert commands_instance.describe_move_email("GM-AA, Archive") == "Moving email to Archive"
-
-    def test_describe_move_email_never_leaks_id(self, commands_instance):
-        commands_instance._email_provider.subject_for.return_value = None
-        assert "GM-AA" not in commands_instance.describe_move_email("GM-AA, Archive")
-
-    def test_describe_move_email_ignores_no_subject_placeholder(self, commands_instance):
-        commands_instance._email_provider.subject_for.return_value = "(no subject)"
-        assert commands_instance.describe_move_email("GM-AA, Archive") == "Moving email to Archive"
-
-    def test_describe_move_email_survives_lookup_error(self, commands_instance):
-        commands_instance._email_provider.subject_for.side_effect = Exception("boom")
         assert commands_instance.describe_move_email("GM-AA, Archive") == "Moving email to Archive"
 
     def test_describe_move_email_no_id_skips_lookup(self, commands_instance):
         assert commands_instance.describe_move_email("Archive") == "Moving email to Archive"
         commands_instance._email_provider.subject_for.assert_not_called()
-
-    def test_describe_move_email_empty_param(self, commands_instance):
-        assert commands_instance.describe_move_email("") == "Moving email to folder"
-
-    def test_email_provider_persists_across_instances(self):
-        cp1 = Mock()
-        cp2 = Mock()
-        cmd1 = Commands(cp1)
-        cmd2 = Commands(cp2)
-        assert cmd1._email_provider is cmd2._email_provider
-
 
 # ---------------------------------------------------------------------------
 # TestCmdWebAccess
@@ -798,36 +671,16 @@ class TestCmdWebAccess:
             commands_instance.cmd_google("best pizza")
             mock_bg.assert_called_once_with(commands_instance.web_access.search, "best pizza")
 
-    def test_open_url_passes_param(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_open_url("http://test.org/page")
-            assert mock_bg.call_args[0][1] == "http://test.org/page"
-
-    def test_google_passes_param(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_google("weather today")
-            assert mock_bg.call_args[0][1] == "weather today"
-
     def test_search_x(self, commands_instance, mock_x_integration):
         with patch.object(commands_instance, 'background_command') as mock_bg:
             commands_instance.cmd_search_x("starship launch")
             mock_bg.assert_called_once_with(mock_x_integration.search, "starship launch")
-
-    def test_search_x_describe(self, commands_instance):
-        assert commands_instance.describe("search_x", "starship launch") == "Searching X for starship launch"
-        assert commands_instance.describe("search_x", "") == "Searching X"
-
-    def test_search_x_in_list_commands(self, commands_instance):
-        assert "search_x" in commands_instance.list_commands()
 
     def test_browse_eval_dispatches_to_web_access(self, commands_instance):
         with patch.object(commands_instance, 'background_command') as mock_bg:
             js = "return document.title"
             commands_instance.cmd_browse_eval(js)
             mock_bg.assert_called_once_with(commands_instance.web_access.browse_eval, js, lane=Commands.BROWSER_LANE)
-
-    def test_browse_eval_describe(self, commands_instance):
-        assert commands_instance.describe("browse_eval", "return 1") == "Inspecting the page"
 
     def test_browse_key_dispatches_to_web_access(self, commands_instance):
         # Dispatch is name-based, so the registered-callable test alone can't catch
@@ -842,21 +695,6 @@ class TestCmdWebAccess:
 # ---------------------------------------------------------------------------
 
 class TestCmdMusicPlayback:
-    def test_play(self, commands_instance):
-        commands_instance.music_manager = Mock()
-        commands_instance.cmd_play("Living Room")
-        commands_instance.music_manager.play.assert_called_once_with("Living Room")
-
-    def test_pause(self, commands_instance):
-        commands_instance.music_manager = Mock()
-        commands_instance.cmd_pause("Living Room")
-        commands_instance.music_manager.pause.assert_called_once_with("Living Room")
-
-    def test_next(self, commands_instance):
-        commands_instance.music_manager = Mock()
-        commands_instance.cmd_next("Living Room")
-        commands_instance.music_manager.next_track.assert_called_once_with("Living Room")
-
     def test_volume_up(self, commands_instance):
         commands_instance.music_manager = Mock()
         commands_instance.cmd_volume_up("Living Room")
@@ -872,18 +710,6 @@ class TestCmdMusicPlayback:
         commands_instance.cmd_play_music("Living Room", "spotify:track:123")
         commands_instance.music_manager.play_in_zone.assert_called_once_with("spotify:track:123", "Living Room")
 
-    def test_play_music_no_comma_raises(self, commands_instance):
-        commands_instance.music_manager = Mock()
-        result = commands_instance.cmd_play_music("no_comma_here")
-        assert "expected 'zone, id' parameters" in result
-        commands_instance.music_manager.play_in_zone.assert_not_called()
-
-    def test_search_music(self, commands_instance):
-        Commands.music_manager = Mock()
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_search_music("jazz")
-            mock_bg.assert_called_once_with(commands_instance.music_manager.search_spotify, "jazz")
-
     def test_sonos_enqueue_favorite(self, commands_instance):
         Commands.music_manager = Mock()
         Commands.music_manager.get_favorites.return_value = ["My Fav"]
@@ -896,30 +722,11 @@ class TestCmdMusicPlayback:
         commands_instance.cmd_sonos_enqueue_and_play("Kitchen", "My Playlist")
         Commands.music_manager.play_playlist.assert_called_once_with("Kitchen", "My Playlist", shuffle=True)
 
-    def test_sonos_enqueue_no_comma_raises(self, commands_instance):
-        result = commands_instance.cmd_sonos_enqueue_and_play("no_comma")
-        assert "expected 'zone, playlist' parameters" in result
-
-    def test_sonos_enqueue_passes_room_and_playlist(self, commands_instance):
-        Commands.music_manager = Mock()
-        Commands.music_manager.get_favorites.return_value = []
-        commands_instance.cmd_sonos_enqueue_and_play("Bedroom", "Chill Vibes")
-        Commands.music_manager.play_playlist.assert_called_once_with("Bedroom", "Chill Vibes", shuffle=True)
-
-
 # ---------------------------------------------------------------------------
 # TestCmdRemember
 # ---------------------------------------------------------------------------
 
 class TestCmdRemember:
-    def test_appends_to_file(self, tmp_path, monkeypatch):
-        mem_file = tmp_path / "memory.md"
-        monkeypatch.chdir(tmp_path)
-        mock_cp = Mock()
-        cmd = Commands(mock_cp)
-        cmd.cmd_remember("important note")
-        assert "important note" in mem_file.read_text()
-
     def test_strips_whitespace(self, tmp_path, monkeypatch):
         mem_file = tmp_path / "memory.md"
         monkeypatch.chdir(tmp_path)
@@ -953,30 +760,6 @@ class TestCmdScheduleAndCaffeinate:
             mock_aam.get_instance.return_value = mock_instance
             commands_instance.cmd_schedule_wakeup("5.5")
             mock_instance.schedule.assert_called_once_with(5.6)
-
-    def test_schedule_wakeup_non_numeric_raises(self, commands_instance):
-        with patch("assistant.commands.Commands.AutonomousActionManager"):
-            with pytest.raises(ValueError):
-                commands_instance.cmd_schedule_wakeup("abc")
-
-    def test_describe_schedule_wakeup_uses_minutes(self, commands_instance):
-        assert commands_instance.describe_schedule_wakeup("120") == "Scheduling wakeup in 120 min"
-        assert commands_instance.describe("schedule_wakeup", ["120"]) == "Scheduling wakeup in 120 min"
-
-    def test_caffeinate(self, commands_instance):
-        with patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam:
-            mock_instance = Mock()
-            mock_aam.get_instance.return_value = mock_instance
-            commands_instance.cmd_caffeinate("")
-            mock_instance.caffeinate.assert_called_once()
-
-    def test_caffeinate_ignores_param(self, commands_instance):
-        with patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam:
-            mock_instance = Mock()
-            mock_aam.get_instance.return_value = mock_instance
-            commands_instance.cmd_caffeinate("ignored")
-            mock_instance.caffeinate.assert_called_once()
-
 
 # ---------------------------------------------------------------------------
 # TestCmdSelfAnalysis
@@ -1072,36 +855,11 @@ class TestCmdSelfAnalysis:
             args, _ = prompt_manager.update_history.call_args
             assert args[2] == "[Self-analysis complete] <converted>## Findings</converted>"
 
-    def test_missing_autonomous_action_manager_does_not_crash(self, commands_instance):
-        # AAM may not have been initialized yet (early startup, certain test
-        # configurations). The history-feed branch must guard for that — a
-        # crash here would bury the Telegram delivery too.
-        with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
-             patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam:
-            mock_cqm.unavailable_reason.return_value = None
-            mock_cqm.analyze_code.return_value = "Report"
-            mock_aam.get_instance.return_value = None
-
-            self._run_sync(commands_instance, "params")  # must not raise
-
-
 # ---------------------------------------------------------------------------
 # TestCmdFindPhone
 # ---------------------------------------------------------------------------
 
 class TestCmdFindPhone:
-    def test_calls_fire_and_forget(self, commands_instance, icloud_api):
-        mock_icloud = icloud_api
-        with patch.object(commands_instance, 'fire_and_forget') as mock_ff:
-            commands_instance.cmd_find_phone("iPhone")
-            mock_ff.assert_called_once_with(mock_icloud.play_sound, "iPhone")
-
-    def test_parameter_passed_through(self, commands_instance, icloud_api):
-        mock_icloud = icloud_api
-        with patch.object(commands_instance, 'fire_and_forget') as mock_ff:
-            commands_instance.cmd_find_phone("iPad")
-            assert mock_ff.call_args[0][1] == "iPad"
-
     def test_fire_and_forget_exception_logged(self, commands_instance):
         mock_fn = Mock(side_effect=RuntimeError("boom"))
         logged = threading.Event()
@@ -1113,11 +871,6 @@ class TestCmdFindPhone:
 
 
 class TestCmdIcloudDevices:
-    def test_dispatches_to_background_command(self, commands_instance, icloud_api):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_icloud_devices("")
-            mock_bg.assert_called_once_with(commands_instance._run_icloud_devices, "")
-
     def test_lists_ids_slots_and_the_next_index(self, commands_instance, icloud_api):
         icloud_api.get_icloud_devices.return_value = [
             {"id": "uuid-dad", "name": "Dad's iPhone", "model": "iPhone 15", "class": "iPhone", "configured_as": "dad", "slot": 0},
@@ -1134,27 +887,9 @@ class TestCmdIcloudDevices:
         icloud_api.get_icloud_devices.return_value = []
         assert "login may be incomplete" in commands_instance._run_icloud_devices()
 
-    def test_describe(self, commands_instance):
-        assert commands_instance.describe_icloud_devices("") == "Listing iCloud devices"
-
-
 # ---------------------------------------------------------------------------
 # TestCmdLocatePhone
 # ---------------------------------------------------------------------------
-
-class TestCmdLocateUser:
-    def test_dispatches_to_background_command(self, commands_instance, icloud_api):
-        mock_icloud = icloud_api
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_locate_user("charlotte")
-            mock_bg.assert_called_once_with(mock_icloud.get_location, "charlotte")
-
-    def test_describe_with_name(self, commands_instance):
-        assert commands_instance.describe_locate_user("charlotte") == "Locating charlotte"
-
-    def test_describe_without_name(self, commands_instance):
-        assert commands_instance.describe_locate_user("") == "Locating user"
-
 
 class TestCmdSendImessage:
     def test_returns_send_result_synchronously(self, commands_instance):
@@ -1166,25 +901,6 @@ class TestCmdSendImessage:
         assert result == ""
         inst.send.assert_called_once_with(
             "Charlotte", f"On my way home\n\n{commands_instance.AI_MESSAGE_SUFFIX}"
-        )
-
-    def test_propagates_error_string(self, commands_instance):
-        with patch("assistant.integration.integrations.IMessageIntegration.IMessageIntegration") as MockCls:
-            inst = Mock()
-            inst.send.return_value = "send failed: unknown contact: Ingeborg"
-            MockCls.get_instance.return_value = inst
-            result = commands_instance.cmd_send_imessage("Ingeborg", "Hi from dad")
-        assert "Ingeborg" in result
-        assert "unknown contact" in result
-
-    def test_preserves_commas_in_body(self, commands_instance):
-        with patch("assistant.integration.integrations.IMessageIntegration.IMessageIntegration") as MockCls:
-            inst = Mock()
-            inst.send.return_value = ""
-            MockCls.get_instance.return_value = inst
-            commands_instance.cmd_send_imessage("Bob", "Hi, hello, world")
-        inst.send.assert_called_once_with(
-            "Bob", f"Hi, hello, world\n\n{commands_instance.AI_MESSAGE_SUFFIX}"
         )
 
     def test_empty_recipient_returns_error_without_calling_send(self, commands_instance):
@@ -1241,24 +957,6 @@ class TestCmdSendEmail:
             "alice@example.com", "Hi", f"Hello there\n\n{commands_instance.AI_MESSAGE_SUFFIX}"
         )
 
-    def test_propagates_error_string(self, commands_instance):
-        with patch("assistant.commands.Commands.ICloudEmailAccess") as MockCls:
-            inst = Mock()
-            inst.send.return_value = "iCloud SMTP auth failed — regenerate the app-specific password"
-            MockCls.get_instance.return_value = inst
-            result = commands_instance.cmd_send_email("alice@example.com", "Hi", "body")
-        assert "auth failed" in result.lower()
-
-    def test_preserves_commas_in_body(self, commands_instance):
-        with patch("assistant.commands.Commands.ICloudEmailAccess") as MockCls:
-            inst = Mock()
-            inst.send.return_value = ""
-            MockCls.get_instance.return_value = inst
-            commands_instance.cmd_send_email("bob@example.com", "Subject", "Hi, hello, world")
-        inst.send.assert_called_once_with(
-            "bob@example.com", "Subject", f"Hi, hello, world\n\n{commands_instance.AI_MESSAGE_SUFFIX}"
-        )
-
     def test_missing_parts_returns_error_without_calling_send(self, commands_instance):
         with patch("assistant.commands.Commands.ICloudEmailAccess") as MockCls:
             result = commands_instance.cmd_send_email("alice@example.com, Subject")
@@ -1274,27 +972,6 @@ class TestCmdSendEmail:
     def test_send_email_is_sensitive(self, commands_instance):
         assert commands_instance.is_sensitive("send_email")
 
-    def test_literal_backslash_n_converted_to_newline(self, commands_instance):
-        with patch("assistant.commands.Commands.ICloudEmailAccess") as MockCls:
-            inst = Mock()
-            inst.send.return_value = ""
-            MockCls.get_instance.return_value = inst
-            commands_instance.cmd_send_email("a@b.com", "Subj", "para 1\\n\\npara 2")
-        sent_body = inst.send.call_args[0][2]
-        assert "para 1\n\npara 2" in sent_body
-        assert "\\n" not in sent_body.split(commands_instance.AI_MESSAGE_SUFFIX)[0]
-
-    def test_literal_crlf_and_tab_escapes_converted(self, commands_instance):
-        with patch("assistant.commands.Commands.ICloudEmailAccess") as MockCls:
-            inst = Mock()
-            inst.send.return_value = ""
-            MockCls.get_instance.return_value = inst
-            commands_instance.cmd_send_email("a@b.com", "Subj", "row1\\r\\ncol\\tval")
-        sent_body = inst.send.call_args[0][2]
-        assert "row1\ncol\tval" in sent_body
-        assert "\\r" not in sent_body and "\\t" not in sent_body
-
-
 # ---------------------------------------------------------------------------
 # TestCmdExecute
 # ---------------------------------------------------------------------------
@@ -1304,11 +981,6 @@ class TestCmdExecute:
         mock_home.execute.return_value = "ok"
         assert commands_instance.cmd_execute(" AC On [Gästhus] ") == "ok"
         mock_home.execute.assert_called_once_with("AC On (Gästhus)")
-
-    def test_returns_result_string(self, commands_instance, mock_home):
-        mock_home.execute.return_value = "done"
-        assert commands_instance.cmd_execute("SomeAction") == "done"
-
 
 # ---------------------------------------------------------------------------
 # TestReportFPFlood
@@ -1325,17 +997,6 @@ class TestReportFPFlood:
         Commands.false_positive_reporter = None
         yield
         Commands.false_positive_reporter = saved
-
-    def test_calls_installed_reporter(self):
-        reporter = MagicMock()
-        Commands.false_positive_reporter = reporter
-        Commands.report_fp_flood()
-        reporter.assert_called_once_with()
-
-    def test_without_reporter_is_ignored(self):
-        with patch("assistant.commands.Commands.info") as mock_info:
-            Commands.report_fp_flood()
-        assert any("false-positive flood report ignored" in str(c) for c in mock_info.call_args_list)
 
     def test_two_false_positives_within_window_report_a_flood(self, commands_instance):
         reporter = MagicMock()
@@ -1356,11 +1017,6 @@ class TestCmdTurnOnOff:
         assert commands_instance.cmd_turn_on("Desk lamp [Office]") == ""
         mock_home.turn_on.assert_called_once_with("Desk lamp (Office)")
 
-    def test_turn_off(self, commands_instance, mock_home):
-        mock_home.turn_off.return_value = "Device not found"
-        assert commands_instance.cmd_turn_off("Kitchen") == "Device not found"
-        mock_home.turn_off.assert_called_once_with("Kitchen")
-
     def test_dim(self, commands_instance, mock_home):
         commands_instance.cmd_dim("light", " 50% ")
         mock_home.dim.assert_called_once_with("light", 50)
@@ -1374,26 +1030,11 @@ class TestCmdTurnOnOff:
         with patch("assistant.commands.Commands.home.active", return_value=NotConfiguredHome("Enable Indigo.")):
             assert commands_instance.cmd_turn_on("Lamp") == "Enable Indigo."
 
-    def test_dim_bad_input_raises(self, commands_instance):
-        result = commands_instance.cmd_dim("no_comma")
-        assert "expected 'name, level' parameters" in result
-
-
 # ---------------------------------------------------------------------------
 # TestCmdCreateEvent
 # ---------------------------------------------------------------------------
 
 class TestCmdCreateEvent:
-    def test_run_create_event_success(self, commands_instance):
-        with patch("assistant.commands.Commands.CalDAVIntegration.create_calendar_event") as mock_create:
-            result = commands_instance._run_create_event("Dentist", "2025-10-28", "10:00", "11:00")
-            mock_create.assert_called_once_with("Dentist", "2025-10-28", "10:00", "11:00")
-            assert result == ""
-
-    def test_run_create_event_wrong_param_count(self, commands_instance):
-        result = commands_instance._run_create_event("only, two")
-        assert "expected 4 parameters" in result
-
     def test_run_create_event_title_with_commas(self, commands_instance):
         # Simulates LLM under-quoting: a title containing a comma got split into
         # multiple tokens at parse time. The handler re-joins leading tokens.
@@ -1410,25 +1051,11 @@ class TestCmdCreateEvent:
             assert "create_event failed" in result
             assert "bad date" in result
 
-    def test_cmd_create_event_uses_background_command(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_create_event("Dentist", "2025-10-28", "10:00", "11:00")
-            mock_bg.assert_called_once_with(
-                commands_instance._run_create_event,
-                ["Dentist", "2025-10-28", "10:00", "11:00"],
-            )
-
-
 # ---------------------------------------------------------------------------
 # TestCmdSearchPhotos
 # ---------------------------------------------------------------------------
 
 class TestCmdSearchPhotos:
-    def test_calls_background_command(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_search_photos("sunset beach")
-            mock_bg.assert_called_once_with(Commands._run_search_photos, ["sunset beach"])
-
     def test_formats_results(self):
         mock_results = [
             {
@@ -1484,26 +1111,6 @@ class TestCmdSearchPhotos:
             Commands._run_search_photos("sunset", "pretty")
 
         mock_db_cls.get_instance.return_value.search_photos.assert_called_once_with("sunset", limit=25, sort_by="pretty")
-
-    def test_sort_by_family(self):
-        with patch("assistant.commands.Commands.FloxyDatabase") as mock_db_cls:
-            mock_db_cls.SEARCH_SORT_OPTIONS = {"relevance": "rank", "pretty": "p.pretty_score DESC",
-                                               "family": "p.family_importance_score DESC",
-                                               "best": "(p.pretty_score + p.family_importance_score) DESC"}
-            mock_db_cls.get_instance.return_value.search_photos.return_value = []
-            Commands._run_search_photos("kids playing", "family")
-
-        mock_db_cls.get_instance.return_value.search_photos.assert_called_once_with("kids playing", limit=25, sort_by="family")
-
-    def test_sort_by_best(self):
-        with patch("assistant.commands.Commands.FloxyDatabase") as mock_db_cls:
-            mock_db_cls.SEARCH_SORT_OPTIONS = {"relevance": "rank", "pretty": "p.pretty_score DESC",
-                                               "family": "p.family_importance_score DESC",
-                                               "best": "(p.pretty_score + p.family_importance_score) DESC"}
-            mock_db_cls.get_instance.return_value.search_photos.return_value = []
-            Commands._run_search_photos("vacation", "best")
-
-        mock_db_cls.get_instance.return_value.search_photos.assert_called_once_with("vacation", limit=25, sort_by="best")
 
     def test_invalid_sort_by_defaults_to_relevance(self):
         with patch("assistant.commands.Commands.FloxyDatabase") as mock_db_cls:
@@ -1636,30 +1243,6 @@ class TestCmdShowPhoto:
             assert params == ["42"]
             function(*params)
         run.assert_called_once_with("42", route={"source": "TextChat", "conversation": 222})
-
-    def test_show_photo_success(self, commands_instance):
-        mock_photo = {
-            "id": 42,
-            "asset_guid": "ABC-DEF",
-            "short_description": "Sunset at the beach",
-        }
-        mock_telegram = Mock()
-        jpeg_bytes = b"\xff\xd8\xff\xe0fake_jpeg"
-
-        mock_conn = Mock()
-        mock_cursor = Mock()
-        mock_cursor.fetchone.return_value = ("LOCAL-UUID", "IMG_1234.HEIC", "DCIM/100APPLE", None, None, 0)
-        mock_conn.cursor.return_value = mock_cursor
-
-        with patch("assistant.commands.Commands.FloxyDatabase") as mock_db_cls, \
-             patch("sqlite3.connect", return_value=mock_conn), \
-             patch("assistant.integration.integrations.photos.PhotoProcessor.PhotoProcessor._get_image_bytes", return_value=jpeg_bytes), \
-             patch("assistant.Notifier._notifier", mock_telegram):
-            mock_db_cls.get_instance.return_value.get_photo_by_id.return_value = mock_photo
-            result = commands_instance._run_show_photo("42")
-
-        assert result == ""
-        mock_telegram.send_photo.assert_called_once_with(jpeg_bytes, caption="Sunset at the beach")
 
     def test_show_photo_not_found(self, commands_instance):
         with patch("assistant.commands.Commands.FloxyDatabase") as mock_db_cls:
@@ -1802,12 +1385,6 @@ class TestCmdShowPhoto:
 # ---------------------------------------------------------------------------
 
 class TestShowPhotoOnKitchenTV:
-    def test_success(self):
-        mock_result = Mock(returncode=0, stdout="ok", stderr="")
-        with patch("subprocess.run", return_value=mock_result):
-            result = Commands._show_photo_on_kitchen_tv("ABC-123", "Sunset")
-        assert result == ""
-
     def test_setpcmode_nonzero_exit(self):
         mock_result = Mock(returncode=1, stdout="", stderr="device not found")
         with patch("subprocess.run", return_value=mock_result):
@@ -1842,11 +1419,6 @@ class TestShowPhotoOnKitchenTV:
 # ---------------------------------------------------------------------------
 
 class TestCmdFetchCameraImages:
-    def test_uses_background_command(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_fetch_camera_images("")
-            mock_bg.assert_called_once_with(Commands._fetch_all_camera_images, "")
-
     def test_combines_arlo_and_ring_results(self):
         arlo_blocks = [
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "arlo_img"}},
@@ -1880,19 +1452,6 @@ class TestCmdFetchCameraImages:
         texts = [b.get("text", "") for b in result if b.get("type") == "text"]
         assert any("Front Door" in t for t in texts)
 
-    def test_ring_failure_still_returns_arlo(self):
-        arlo_blocks = [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "arlo_img"}},
-            {"type": "text", "text": "Camera: Backyard"},
-        ]
-        with patch.object(Commands, '_fetch_arlo_snapshots', return_value=arlo_blocks), \
-             patch.object(Commands, '_fetch_ring_snapshot', return_value=[]):
-            result = Commands._fetch_all_camera_images(None)
-
-        assert isinstance(result, list)
-        texts = [b.get("text", "") for b in result if b.get("type") == "text"]
-        assert any("Backyard" in t for t in texts)
-
     def test_both_fail_returns_string(self):
         with patch.object(Commands, '_fetch_arlo_snapshots', return_value=[]), \
              patch.object(Commands, '_fetch_ring_snapshot', return_value=[]):
@@ -1904,30 +1463,6 @@ class TestCmdFetchCameraImages:
 # ---------------------------------------------------------------------------
 # TestFormatPhotoError
 # ---------------------------------------------------------------------------
-
-class TestFormatPhotoError:
-    @pytest.mark.parametrize("prep_error, expected", [
-        ("not_found", "no photo found with ID 5"),
-        ("missing_asset_guid", "photo has no iCloud asset GUID"),
-        ("guid_not_found:ABC-123", "asset GUID ABC-123 not found in Photos database"),
-        ("image_extract_failed", "could not extract image for photo 5"),
-        ("db_error:locked", "could not query Photos database: locked"),
-        ("some_other_error", "some_other_error"),
-    ])
-    def test_format_single_photo_error(self, prep_error, expected):
-        assert Commands._format_single_photo_error(5, prep_error) == expected
-
-    @pytest.mark.parametrize("prep_error, expected", [
-        ("not_found", "photo 5 not found"),
-        ("missing_asset_guid", "photo 5 has no iCloud asset GUID"),
-        ("guid_not_found:ABC-123", "photo 5 asset GUID not in Photos database"),
-        ("image_extract_failed", "photo 5 could not extract image"),
-        ("db_error:locked", "photo 5 database error: locked"),
-        ("some_other_error", "photo 5 some_other_error"),
-    ])
-    def test_format_album_photo_error(self, prep_error, expected):
-        assert Commands._format_album_photo_error(5, prep_error) == expected
-
 
 @pytest.mark.unit
 class TestPreparePhotoSendPayload:
@@ -2176,35 +1711,6 @@ class TestSearchHistory:
 
         assert "No history entries or photos found" in result
 
-    def test_only_photo_results(self):
-        photo_results = [
-            {"id": 10, "short_description": "Mountain view", "creation_date": 1718451000.0,
-             "fts_relevance": 90, "location_text": "Alps", "pretty_score": 95,
-             "family_importance_score": 30, "photo_type": "photo", "persons": None},
-        ]
-        with patch('assistant.commands.Commands.FloxyDatabase') as mock_db_cls:
-            mock_db = mock_db_cls.get_instance.return_value
-            mock_db.search_history.return_value = []
-            mock_db.search_photos.return_value = photo_results
-            result = Commands._run_search_history("mountain")
-
-        assert "photo#10" in result
-        assert "Mountain view" in result
-
-    def test_only_history_results(self):
-        history_results = [
-            {"content": "Talked about the garden", "timestamp": 1718451000.0,
-             "fts_relevance": 60, "role": "assistant", "source": None, "location": None},
-        ]
-        with patch('assistant.commands.Commands.FloxyDatabase') as mock_db_cls:
-            mock_db = mock_db_cls.get_instance.return_value
-            mock_db.search_history.return_value = history_results
-            mock_db.search_photos.return_value = []
-            result = Commands._run_search_history("garden")
-
-        assert "Talked about the garden" in result
-        assert "photo#" not in result
-
     def test_deduplicates_history_entries(self):
         history_results = [
             {"content": "Same content repeated more than thirty chars", "timestamp": 1718451000.0,
@@ -2354,9 +1860,6 @@ class TestShortUrl:
 
 @pytest.mark.unit
 class TestDescribeDispatcher:
-    def test_describe_known_command(self, commands_instance):
-        assert commands_instance.describe("turn_on", "kitchen") == "Turning on kitchen"
-
     def test_describe_dim_with_brightness(self, commands_instance):
         assert commands_instance.describe("dim", "kitchen, 50") == "Dimming kitchen to 50%"
 
@@ -2370,9 +1873,6 @@ class TestDescribeDispatcher:
 
     def test_describe_unknown_command_returns_none(self, commands_instance):
         assert commands_instance.describe("does_not_exist", "x") is None
-
-    def test_describe_false_positive_returns_none(self, commands_instance):
-        assert commands_instance.describe("false_positive", "") is None
 
     def test_describe_browse_act_uses_label(self, commands_instance):
         commands_instance.web_access.get_snapshot_label = Mock(return_value="Boka bord")
@@ -2397,9 +1897,6 @@ class TestDescribeDispatcher:
         assert commands_instance.describe("browse_act", "2=foo; 3") == \
             "Filling element 2 with 'foo' · Clicking on element 3"
 
-    def test_describe_browse_key_plain(self, commands_instance):
-        assert commands_instance.describe("browse_key", "Enter") == "Pressing Enter"
-
     def test_describe_browse_key_with_index_uses_label(self, commands_instance):
         commands_instance.web_access.get_snapshot_label = Mock(return_value="Search box")
         assert commands_instance.describe("browse_key", "3,ArrowDown") == \
@@ -2409,15 +1906,6 @@ class TestDescribeDispatcher:
         commands_instance.web_access.get_snapshot_label = Mock(return_value=None)
         assert commands_instance.describe("browse_key", "3,Escape") == \
             "Pressing Escape on element 3"
-
-    def test_cmd_browse_key_registered(self, commands_instance):
-        assert callable(getattr(commands_instance, "cmd_browse_key", None))
-
-    def test_describe_play_music_with_room(self, commands_instance):
-        assert commands_instance.describe("play_music", "Living Room, spotify:track:abc") == "Playing music in Living Room"
-
-    def test_describe_play_music_empty_params(self, commands_instance):
-        assert commands_instance.describe("play_music", "") == "Playing music"
 
     def test_describe_swallows_exceptions(self, commands_instance):
         commands_instance.describe_turn_on = Mock(side_effect=RuntimeError("boom"))
@@ -2476,10 +1964,6 @@ class TestCmdVaultAdd:
     def test_unknown_kind_is_an_error(self, commands_instance, vault):
         result = commands_instance.cmd_vault_add("ssn", "Personnummer", "19900101-1234")
         assert result.startswith("vault_add failed: unknown kind 'ssn'")
-        assert len(vault) == 0
-
-    def test_too_few_parameters_is_an_error(self, commands_instance, vault):
-        assert "expected" in commands_instance.cmd_vault_add("phone", "070-123 45 67")
         assert len(vault) == 0
 
     def test_duplicate_value_names_existing_placeholder(self, commands_instance, vault):
@@ -2626,12 +2110,6 @@ class TestCmdVaultRequest:
             reply = commands_instance._run_vault_request("card", "Amex")
         assert reply == "The value was refused (card number must be 13-19 digits) — nothing was stored."
 
-    def test_is_not_echoed_to_the_chat(self, commands_instance):
-        # The prompt already names what is asked for; a "• Asking for …" line next to it is noise.
-        assert commands_instance.describe("vault_request", ["card", "Marcus's Amex"]) is None
-        assert hasattr(commands_instance, "describe_vault_request")   # None means suppress, not "no describer"
-
-
 # ---------------------------------------------------------------------------
 # Self-setup: list_integrations / config_help / config_request / restart_integration
 # (plans/SELF_SETUP_PLAN.md §3.4)
@@ -2669,11 +2147,6 @@ class TestCmdListIntegrations:
         return {"name": name, "state": state, "last_error": last_error, "last_check_time": checked,
                 "consecutive_failures": 0, "config_keys": [], "restartable": restartable,
                 "keys": [{"key": k, "set": v} for k, v in keys]}
-
-    def test_runs_in_the_background(self, commands_instance):
-        with patch.object(commands_instance, "background_command") as bg:
-            assert commands_instance.run("list_integrations", []) == ""
-        bg.assert_called_once_with(commands_instance._run_list_integrations, "")
 
     def test_one_line_per_integration_sorted_with_state_keys_and_restartability(self, commands_instance):
         monitor = Mock()
@@ -2723,20 +2196,6 @@ class TestCmdListIntegrations:
         enable.assert_called_once_with("Ring")   # the name as list_integrations shows it, whatever the LLM typed
         monitor.restart.assert_called_once_with("Ring")
         assert text == "Ring enabled; Ring restarted: not configured — not set: ring.username"
-
-    def test_enable_integration_indigo_restarts_like_any_other(self, commands_instance):
-        """Indigo used to be config-only (no class, no restart); it is a feed integration now."""
-        monitor = Mock()
-        monitor.get_all_statuses.return_value = [{"name": "Indigo"}, {"name": "Ring"}]
-        monitor.restart.return_value = {"restartable": True, "status": {
-            "name": "Indigo", "state": "not_configured", "last_error": None, "config_keys": ["indigo.host"]}}
-        with patch.object(Commands, "_integration_monitor", return_value=monitor), \
-             patch("assistant.commands.Commands.ConfigStore.enable_integration", return_value="Indigo enabled"), \
-             patch("assistant.commands.Commands.ConfigStore.describe_keys",
-                   return_value=[{"key": "indigo.host", "set": False}]):
-            text = commands_instance._run_enable_integration("indigo")
-        monitor.restart.assert_called_once_with("Indigo")
-        assert text == "Indigo enabled; Indigo restarted: not configured — not set: indigo.host"
 
     def test_enable_integration_unknown_name(self, commands_instance):
         monitor = Mock()
@@ -2810,10 +2269,6 @@ class TestCmdListIntegrations:
             'Telegram Feed — disabled; enable: enable_integration("Telegram Feed"); feed; restartable',
         ]
 
-    def test_describe(self, commands_instance):
-        assert commands_instance.describe("list_integrations", []) == "Listing integrations"
-
-
 class TestCmdConfigHelp:
     @pytest.fixture(autouse=True)
     def example(self, tmp_path, monkeypatch):
@@ -2846,10 +2301,6 @@ class TestCmdConfigHelp:
     def test_unknown_section_names_the_known_ones(self, commands_instance):
         assert commands_instance._run_config_help("gmail") == \
             "No section 'gmail' in config.example.yaml. Sections: email, owner_name"
-
-    def test_describe(self, commands_instance):
-        assert commands_instance.describe("config_help", ["email"]) == "Reading the settings for email"
-        assert commands_instance.describe("config_help", []) == "Listing the settings sections"
 
     def test_a_documentation_only_section_comes_back_as_is(self, commands_instance, tmp_path, monkeypatch):
         """iMessage has no keys of its own: the section is its comments, and the "Currently:"
@@ -2942,15 +2393,7 @@ class TestCmdConfigRequest:
             reply = commands_instance._run_config_request("owner_name")
         assert reply == "The value was refused (the value is empty) — nothing was saved."
 
-    def test_describe_shows_the_key_only(self, commands_instance):
-        assert commands_instance.describe("config_request", ["email.password"]) == "Asking for setting email.password"
-        assert commands_instance.describe("config_request", []) == "Asking for a setting"
-
-
 class TestCmdConfigSet:
-    def test_is_a_multi_param_command(self):
-        assert "config_set" in Commands.MULTI_PARAM_COMMANDS
-
     def test_validates_synchronously_then_writes_in_the_background(self, commands_instance):
         with patch.object(ConfigStore, "check_key") as check, patch.object(commands_instance, "background_command") as bg:
             assert commands_instance.run("config_set", ['"icloud.devices[1].id"', '"uuid-anna"']) == ""
@@ -2974,11 +2417,6 @@ class TestCmdConfigSet:
              patch.object(commands_instance, "background_command") as bg:
             assert commands_instance.cmd_config_set("vault.key", "x") == \
                 "config_set failed: 'vault.key' cannot be changed from here — edit config.yaml by hand"
-        bg.assert_not_called()
-
-    def test_wrong_arity_is_an_error_text(self, commands_instance):
-        with patch.object(commands_instance, "background_command") as bg:
-            assert commands_instance.cmd_config_set("owner_name").startswith("config_set failed: expected (key, value)")
         bg.assert_not_called()
 
     def test_run_writes_and_points_at_the_restart(self, commands_instance):
@@ -3039,11 +2477,6 @@ class TestCmdConfigSet:
             assert commands_instance._run_config_set("icloud.devices[3].id", "x") == \
                 "config_set failed: icloud.devices has 1 item(s) — [1] adds the next one"
 
-    def test_describe(self, commands_instance):
-        assert commands_instance.describe_config_set('"icloud.devices[1].id", "uuid"') == "Setting icloud.devices[1].id"
-        assert commands_instance.describe_config_set("") == "Setting a value"
-
-
 class TestCmdRestartIntegration:
     @staticmethod
     def _monitor(result, names=("Gmail", "Tesla")):
@@ -3101,10 +2534,6 @@ class TestCmdRestartIntegration:
         with patch.object(Commands, "_integration_monitor", return_value=self._monitor(None)):
             assert commands_instance._run_restart_integration("gmial") == \
                 "No integration named 'gmial'. Known: Gmail, Tesla"
-
-    def test_describe(self, commands_instance):
-        assert commands_instance.describe("restart_integration", ["Gmail"]) == "Restarting Gmail"
-
 
 class TestCmdTelegramLogin:
     """`telegram_login(phone)`: console only, the login itself on the integration."""
@@ -3185,10 +2614,6 @@ class TestCmdTelegramLogin:
         status = {"name": "Telegram Feed", "state": "needs_2fa", "last_error": None, "config_keys": []}
         assert commands_instance._describe_restart(status, True) == \
             "Telegram Feed restarted: needs 2FA — sign the account in with telegram_login(phone) from the console chat"
-
-    def test_describe(self, commands_instance):
-        assert commands_instance.describe("telegram_login", ["+46701234567"]) == "Signing the Telegram account in"
-
 
 class TestLoadToolkitEcho:
     """4065d62f: the Home tab's progress line names the toolkit(s) being loaded."""

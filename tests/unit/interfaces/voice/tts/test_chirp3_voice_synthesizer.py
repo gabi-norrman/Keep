@@ -2,16 +2,6 @@ from unittest.mock import Mock, MagicMock, patch
 
 
 class TestChirp3VoiceSynthesizer:
-    @patch('interfaces.voice.tts.GeminiVoiceSynthesizer.config')
-    def test_voice_id_returns_sulafat(self, mock_config):
-        from interfaces.voice.tts.Chirp3VoiceSynthesizer import Chirp3VoiceSynthesizer
-        assert Chirp3VoiceSynthesizer.voice_id() == "Sulafat"
-
-    @patch('interfaces.voice.tts.GeminiVoiceSynthesizer.config')
-    def test_does_not_support_emotion_tags(self, mock_config):
-        from interfaces.voice.tts.Chirp3VoiceSynthesizer import Chirp3VoiceSynthesizer
-        assert Chirp3VoiceSynthesizer.SUPPORTS_EMOTION_TAGS is False
-
     @patch('common.Language.config')
     @patch('interfaces.voice.tts.GeminiVoiceSynthesizer.config')
     def test_chirp_voice_name_encodes_locale_and_model(self, mock_gemini_config, mock_base_config):

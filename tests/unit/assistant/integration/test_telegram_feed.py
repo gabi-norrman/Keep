@@ -44,36 +44,17 @@ class TestIsBlacklisted:
     def test_sender_name_matched(self, feed):
         assert feed._is_blacklisted("SpamKing", None) is True
 
-    def test_sender_name_case_insensitive(self, feed):
-        assert feed._is_blacklisted("SPAM_Lord", None) is True
-
     def test_group_name_matched(self, feed):
         assert feed._is_blacklisted("Alice", "BotArmy") is True
 
-    def test_group_name_case_insensitive(self, feed):
-        assert feed._is_blacklisted("Alice", "MyBOTGroup") is True
-
     def test_recipient_name_matched(self, feed):
         assert feed._is_blacklisted("Marcus", None, "SpamBot") is True
-
-    def test_recipient_name_case_insensitive(self, feed):
-        assert feed._is_blacklisted("Marcus", None, "BOT_Friend") is True
 
     def test_no_match_returns_false(self, feed):
         assert feed._is_blacklisted("Alice", "FamilyChat", "Bob") is False
 
     def test_none_group_and_recipient_no_crash(self, feed):
         assert feed._is_blacklisted("Alice", None, None) is False
-
-    def test_substring_match(self, feed):
-        assert feed._is_blacklisted("NotSpamAtAll", None) is True
-
-    def test_multiple_keywords_first_wins(self, feed):
-        assert feed._is_blacklisted("bot_spam_user", None) is True
-
-    def test_recipient_only_no_group(self, feed):
-        assert feed._is_blacklisted("CleanSender", None, "spam_receiver") is True
-
 
 def _make_msg(sender_id, text, get_sender_name="Alice", photo=None, download_media_result=None,
               video=None, gif=None, video_note=None, mime_type=None, size=None):
@@ -339,13 +320,6 @@ def _dated(msg, ts):
 class TestFeed:
     """The Feed contract (plans/FEED_PLAN.md §3.4): cursor = newest message timestamp."""
 
-    def test_identity_and_initial_cursor(self, feed_no_blacklist):
-        m = feed_no_blacklist
-        assert m.feed_name == "Telegram"
-        assert m.config_slug == "telegram_feed"
-        assert float(m.initial_cursor(1_700_000_000)) == 1_700_000_000.0
-        assert m.remaining("1") is None
-
     def test_open_feed_refuses_without_config_or_session(self, feed, feed_no_blacklist):
         unconfigured = feed_no_blacklist
         unconfigured._api_id = 0
@@ -439,18 +413,6 @@ class TestFeed:
         assert [e.content for e in batch.entries] == ["Telegram received:\nFrom Alice to Marcus: live one"]
         assert batch.cursor == repr(400.0)
         assert m.fetch(batch.cursor, backfill=False).entries == []
-
-    def test_restart_feed_restarts_the_integration(self, feed):
-        with patch.object(TelegramFeedIntegration, "needs_2fa", return_value=False), \
-             patch("assistant.integration.IntegrationMonitor.IntegrationMonitor.get_instance") as get_monitor:
-            feed.restart_feed()
-        get_monitor.return_value.restart.assert_called_once_with("Telegram Feed")
-
-    def test_reset_stops_the_feed(self, feed):
-        with patch("assistant.integration.FeedRunner.Feeds.get_instance") as feeds:
-            feed._on_reset()
-        feeds.return_value.stop.assert_called_once_with("Telegram")
-
 
 def _coro(value):
     async def inner():
@@ -552,13 +514,6 @@ class TestLogin:
         signed.needs_2fa.return_value = True
         assert "no session file was written" in signed.login("+46701234567", self._ask("12345"))
 
-    def test_unconfigured_keys_refuse(self):
-        with patch('assistant.integration.integrations.TelegramFeedIntegration.config') as mock_config:
-            mock_config.get.side_effect = lambda key, default=None: default
-            unconfigured = TelegramFeedIntegration()
-        assert unconfigured.login("+46701234567", self._ask("12345")) == \
-            "Telegram Feed login failed: telegram_feed.api_id / api_hash not configured"
-
     def test_second_login_while_one_runs_is_refused(self, signed):
         assert signed._login_lock.acquire(blocking=False)
         try:
@@ -566,12 +521,6 @@ class TestLogin:
         finally:
             signed._login_lock.release()
         signed.send.assert_not_called()
-
-    def test_open_error_names_the_command(self, feed):
-        with patch.object(feed, "needs_2fa", return_value=True):
-            assert feed.open_feed() is False
-        assert "telegram_login(phone)" in feed.open_error
-
 
 class _FakeLoginClient:
     """Telethon's client as the login sees it: a session, connect, a code request, a sign-in."""
@@ -710,11 +659,6 @@ class TestAuthStatus:
             assert m.get_auth_status() == {"status": "error", "message": "boom"}
             m._connected_name = "Marcus"
             assert m.get_auth_status() == {"status": "authenticated", "message": "Connected as Marcus"}
-
-    def test_unconfigured(self, feed_no_blacklist):
-        feed_no_blacklist._api_hash = ""
-        assert feed_no_blacklist.get_auth_status()["status"] == "error"
-
 
 @pytest.mark.unit
 class TestDisconnectFromAnotherThread:

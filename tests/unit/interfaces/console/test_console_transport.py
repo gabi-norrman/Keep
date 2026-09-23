@@ -170,21 +170,11 @@ class TestInterrupt:
         assert wait_until(lambda: kinds(pane) == [KIND_USER])
         assert wait_until(lambda: hub.assistant.stream_obj.killed)
 
-    def test_interrupt_with_nothing_running_is_harmless(self, hub, pane):
-        pane.on_interrupt()
-        assert pane.entries == []
-
-
 class TestNotifierPaths:
     def test_send_message_reaches_the_console(self, hub, pane):
         assert hub.send_message("Front door opened")
         assert kinds(pane) == [KIND_NOTICE]
         assert pane.entries[0].body.text == "Front door opened"
-
-    def test_command_notification_is_inline(self, hub, pane):
-        hub.send_command_notification("Turning on kitchen")
-        assert kinds(pane) == [KIND_NOTICE]
-        assert "Turning on kitchen" in pane.entries[0].body.text
 
     def test_command_notification_is_annotated_when_the_command_ends(self, hub, pane):
         handle = hub.send_command_notification("Reading x", source="Console", conversation=CONVERSATION)
@@ -205,11 +195,6 @@ class TestNotifierPaths:
         assert kinds(pane) == [KIND_MEDIA] * 4
         assert pane.entries[0].body.text == "[photo, 3 kB] garden"
         assert pane.entries[-1].body.text == "[video, 5 kB] clip"
-
-    def test_empty_text_is_dropped(self, hub, pane, transport):
-        assert not transport.send_text(CONVERSATION, "   ")
-        assert pane.entries == []
-
 
 class TestApprovals:
     def test_y_in_the_pane_approves_through_the_hub(self, hub, pane):

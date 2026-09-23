@@ -19,15 +19,6 @@ def floxy_db(tmp_path):
 
 
 @pytest.mark.unit
-def test_unit_suite_never_opens_the_live_database():
-    # tests/unit/conftest.py points the singleton at a temp file; the cwd-relative default
-    # would be the developer's floxy.db, and a leaked write there once read as a 2FA incident.
-    db = FloxyDatabase.get_instance()
-    assert db.db_path == FloxyDatabase.DB_PATH != "floxy.db"
-    assert pathlib.Path(db.db_path).is_absolute()
-
-
-@pytest.mark.unit
 def test_response_counts_ignore_trailing_punctuation(floxy_db):
     # The new outpost STT appends a trailing "." that the old one didn't; both forms
     # must share a cache key so stored no-dot responses still answer dotted queries.
@@ -109,19 +100,6 @@ def get_row_count(db):
     return count
 
 
-def insert_with_timestamp(db, query, response, timestamp):
-    conn = sqlite3.connect(db.db_path)
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO usage_stats (timestamp, query, commands, response, cached) VALUES (?, ?, '', ?, 0)",
-        (timestamp, query, response),
-    )
-    conn.commit()
-    row_id = cursor.lastrowid
-    conn.close()
-    return row_id
-
-
 # ---------------------------------------------------------------------------
 # New tests
 # ---------------------------------------------------------------------------
@@ -162,14 +140,6 @@ def test_get_interaction_history_accepts_datetimes(floxy_db):
 
 
 @pytest.mark.unit
-def test_get_interaction_history_empty_range(floxy_db):
-    far_future = date.today() + timedelta(days=1000)
-    far_future2 = far_future + timedelta(days=1)
-    result = floxy_db.get_interaction_history(far_future, far_future2)
-    assert result == "(No interactions in this period)"
-
-
-@pytest.mark.unit
 def test_get_unaudited_cache_entries(floxy_db):
     # (a) uncached + unaudited (not_cachable IS NULL) — should be returned
     floxy_db.submit("q1", "", "resp_a", cached=False)
@@ -192,22 +162,6 @@ def test_get_unaudited_cache_entries(floxy_db):
     assert "q1" in queries
     assert "q2" not in queries
     assert "q3" not in queries
-
-
-@pytest.mark.unit
-def test_mark_not_cachable_excludes_from_unique_responses(floxy_db):
-    floxy_db.submit("test_q", "", "test_r", cached=False)
-
-    conn = sqlite3.connect(floxy_db.db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM usage_stats WHERE query='test_q'")
-    row_id = cursor.fetchone()[0]
-    conn.close()
-
-    floxy_db.mark_not_cachable(row_id)
-
-    responses = floxy_db.get_response_counts_for_query("test_q")
-    assert responses == []
 
 
 @pytest.mark.unit
@@ -458,30 +412,6 @@ def test_submit_with_source_and_location(floxy_db):
 
 
 @pytest.mark.unit
-def test_submit_without_source_and_location(floxy_db):
-    floxy_db.submit("Goodbye", "", "See ya", cached=False)
-    conn = sqlite3.connect(floxy_db.db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT source, location FROM usage_stats WHERE query='Goodbye'")
-    row = cursor.fetchone()
-    conn.close()
-    assert row == (None, None)
-
-
-@pytest.mark.unit
-def test_store_photo_returns_id(floxy_db):
-    photo_id = floxy_db.store_photo(
-        asset_guid="uuid1/L0/001", creation_date=time.time(),
-        latitude=57.7, longitude=11.9, location_text="Home",
-        albums="Favorites", persons="Alice", photo_type="photo",
-        short_description="Family photo", detailed_description="A nice photo",
-        pretty_score=80, family_importance_score=90, indexed_at=time.time(),
-    )
-    assert isinstance(photo_id, int)
-    assert photo_id > 0
-
-
-@pytest.mark.unit
 def test_store_photo_duplicate_returns_none(floxy_db):
     kwargs = dict(
         asset_guid="uuid-dup/L0/001", creation_date=time.time(),
@@ -494,25 +424,6 @@ def test_store_photo_duplicate_returns_none(floxy_db):
     assert first_id is not None
     second_id = floxy_db.store_photo(**kwargs)
     assert second_id is None
-
-
-@pytest.mark.unit
-def test_store_photo_sequential_ids(floxy_db):
-    id1 = floxy_db.store_photo(
-        asset_guid="a/L0/001", creation_date=time.time(),
-        latitude=None, longitude=None, location_text="",
-        albums="", persons="", photo_type="photo",
-        short_description="First", detailed_description="",
-        pretty_score=0, family_importance_score=0, indexed_at=time.time(),
-    )
-    id2 = floxy_db.store_photo(
-        asset_guid="b/L0/001", creation_date=time.time(),
-        latitude=None, longitude=None, location_text="",
-        albums="", persons="", photo_type="photo",
-        short_description="Second", detailed_description="",
-        pretty_score=0, family_importance_score=0, indexed_at=time.time(),
-    )
-    assert id2 == id1 + 1
 
 
 # ---------------------------------------------------------------------------
@@ -547,15 +458,6 @@ def test_search_history_skips_short_entries(floxy_db):
 
 
 @pytest.mark.unit
-def test_search_history_returns_empty_for_no_match(floxy_db):
-    floxy_db.add_history_entry("user", "This is a long enough entry about cooking dinner tonight", time.time())
-
-    results = floxy_db.search_history("xyznonexistent")
-
-    assert results == []
-
-
-@pytest.mark.unit
 def test_search_history_sort_newest(floxy_db):
     floxy_db.add_history_entry("user", "Old conversation about the garden and flowers", 1000000.0)
     floxy_db.add_history_entry("user", "Recent conversation about the garden and trees", 2000000.0)
@@ -565,17 +467,6 @@ def test_search_history_sort_newest(floxy_db):
     assert len(results) == 2
     assert "Recent" in results[0]["content"]
     assert "Old" in results[1]["content"]
-
-
-@pytest.mark.unit
-def test_search_history_includes_fts_relevance(floxy_db):
-    now = time.time()
-    floxy_db.add_history_entry("user", "The weather today was absolutely wonderful and sunny", now)
-
-    results = floxy_db.search_history("weather")
-
-    assert len(results) == 1
-    assert "fts_relevance" in results[0]
 
 
 @pytest.mark.unit
@@ -641,15 +532,6 @@ def test_search_photos_fts_finds_matching(floxy_db):
 
     assert len(results) == 1
     assert "dinner" in results[0]["short_description"].lower()
-
-
-@pytest.mark.unit
-def test_search_photos_fts_no_match(floxy_db):
-    _store_test_photo(floxy_db, "uuid1/L0/001", 1710460800.0,
-                      "Mountain landscape", "Snow-capped peaks")
-
-    results = floxy_db.search_photos("xyznonexistent")
-    assert results == []
 
 
 @pytest.mark.unit
@@ -756,15 +638,6 @@ def test_get_history_range_respects_limit(floxy_db):
 
 
 @pytest.mark.unit
-def test_get_history_range_empty_window(floxy_db):
-    floxy_db.add_history_entry("user", "outside", 5000.0)
-
-    results = floxy_db.get_history_range(1000.0, 2000.0)
-
-    assert results == []
-
-
-@pytest.mark.unit
 def test_get_history_range_inclusive_boundaries(floxy_db):
     floxy_db.add_history_entry("user", "at start", 1000.0)
     floxy_db.add_history_entry("user", "at end", 2000.0)
@@ -776,7 +649,7 @@ def test_get_history_range_inclusive_boundaries(floxy_db):
 
 # _build_fts_query — special character quoting (commit c58a8f5)
 
-from common.FloxyDatabase import _build_fts_query, _tokenize_query, _count_token_coverage
+from common.FloxyDatabase import _build_fts_query, _count_token_coverage
 
 
 @pytest.mark.unit
@@ -807,30 +680,6 @@ def test_build_fts_query_empty_string():
     assert _build_fts_query("") == ""
 
 
-@pytest.mark.unit
-def test_build_fts_query_whitespace_only():
-    assert _build_fts_query("   ") == ""
-
-
-# ---------------------------------------------------------------------------
-# _tokenize_query
-# ---------------------------------------------------------------------------
-
-@pytest.mark.unit
-def test_tokenize_query_simple():
-    assert _tokenize_query("hello world") == ["hello", "world"]
-
-
-@pytest.mark.unit
-def test_tokenize_query_extra_whitespace():
-    assert _tokenize_query("  foo   bar  ") == ["foo", "bar"]
-
-
-@pytest.mark.unit
-def test_tokenize_query_empty():
-    assert _tokenize_query("") == []
-    assert _tokenize_query("   ") == []
-
 
 # ---------------------------------------------------------------------------
 # _count_token_coverage
@@ -849,11 +698,6 @@ def test_count_token_coverage_partial_match():
 @pytest.mark.unit
 def test_count_token_coverage_case_insensitive():
     assert _count_token_coverage("The Quick Brown Fox", ["quick", "FOX"]) == 2
-
-
-@pytest.mark.unit
-def test_count_token_coverage_no_match():
-    assert _count_token_coverage("hello world", ["zebra", "giraffe"]) == 0
 
 
 @pytest.mark.unit

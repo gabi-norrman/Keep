@@ -38,24 +38,6 @@ def sent_payload(call):
 @pytest.mark.unit
 class TestKeyTable:
 
-    def test_enter_definition(self):
-        assert WebAccess._KEY_DEFS['enter'] == ('Enter', 'Enter', 13, '\r')
-
-    def test_escape_has_no_text(self):
-        key, code, vk, text = WebAccess._KEY_DEFS['escape']
-        assert (key, vk, text) == ('Escape', 27, '')
-
-    def test_backspace_definition(self):
-        assert WebAccess._KEY_DEFS['backspace'] == ('Backspace', 'Backspace', 8, '')
-
-    def test_tab_produces_tab_char(self):
-        assert WebAccess._KEY_DEFS['tab'] == ('Tab', 'Tab', 9, '\t')
-
-    def test_arrow_virtual_key_codes(self):
-        vks = {name: WebAccess._KEY_DEFS[name][2]
-               for name in ('arrowleft', 'arrowup', 'arrowright', 'arrowdown')}
-        assert vks == {'arrowleft': 37, 'arrowup': 38, 'arrowright': 39, 'arrowdown': 40}
-
     def test_alias_resolution(self):
         assert WebAccess._resolve_key('esc') == WebAccess._KEY_DEFS['escape']
         assert WebAccess._resolve_key('return') == WebAccess._KEY_DEFS['enter']
@@ -98,14 +80,6 @@ class TestDispatchKey:
         assert down['params']['type'] == 'keyDown'
         assert 'text' not in down['params']
         assert down['params']['windowsVirtualKeyCode'] == 27
-
-    def test_backspace_dispatches_vk8(self):
-        wa = make_wa()
-        run(wa._async_dispatch_key('backspace'))
-        down = sent_payload(wa._tab.send.await_args_list[0])
-        assert down['params']['key'] == 'Backspace'
-        assert down['params']['windowsVirtualKeyCode'] == 8
-        assert 'text' not in down['params']
 
     def test_unknown_key_raises(self):
         wa = make_wa()
@@ -196,9 +170,6 @@ class TestBrowseActEnterMarker:
 
 @pytest.mark.unit
 class TestSplitActBatch:
-
-    def test_single_op_is_not_split(self):
-        assert WebAccess._split_act_batch('3=foo') == ['3=foo']
 
     def test_splits_fills_and_trailing_click(self):
         assert WebAccess._split_act_batch('4=2026-05-02; 5=4; 6=19:00; 7') == \
@@ -405,19 +376,6 @@ class TestBrowseKey:
         with p[0], p[1], p[2], p[3], p[4], p[5]:
             result = run(wa._async_browse_key(spec))
         return result, dispatch
-
-    def test_no_session_errors(self):
-        wa = make_wa(_browse_session_url=None)
-        assert run(wa._async_browse_key('Enter')).startswith('ERROR: no browse session')
-
-    def test_pdf_session_errors(self):
-        wa = make_wa(_browse_pdf_text='pdf text')
-        result = run(wa._async_browse_key('Enter'))
-        assert result.startswith('ERROR: current session is a PDF')
-
-    def test_empty_spec_errors(self):
-        wa = make_wa()
-        assert run(wa._async_browse_key('')).startswith('ERROR: browse_key needs a key')
 
     def test_unknown_key_lists_supported_set(self):
         result, dispatch = self._key('F5')

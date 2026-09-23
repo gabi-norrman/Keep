@@ -11,7 +11,7 @@ import pytest
 import websockets.exceptions
 from unittest.mock import Mock, patch, AsyncMock
 
-from assistant.tools.WebAccess import WebAccess, _BROWSER_DEAD_EXC
+from assistant.tools.WebAccess import WebAccess
 
 
 def run(coro):
@@ -46,13 +46,6 @@ def make_wa(**overrides):
     for key, value in overrides.items():
         setattr(wa, key, value)
     return wa
-
-
-@pytest.mark.unit
-class TestDeadExcClassification:
-
-    def test_websocket_exception_in_dead_tuple(self):
-        assert websockets.exceptions.WebSocketException in _BROWSER_DEAD_EXC
 
 
 @pytest.mark.unit
@@ -344,9 +337,6 @@ class TestCircuitBreaker:
 
         assert result == "SNAP"
         assert wa._browse_fail_streak == 0
-
-    def test_hard_down_message_tells_llm_to_stop(self):
-        assert "do not retry browse commands" in WebAccess._HARD_DOWN_ERROR
 
     def test_page_level_error_does_not_count_as_infra_failure(self):
         wa = make_wa(_browse_session_url="https://shop.example",

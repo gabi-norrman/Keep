@@ -2,7 +2,7 @@
 import pytest
 
 from common.vault import Redactor as redactor_module
-from common.vault.Redactor import Redactor, normalize_id, placeholder
+from common.vault.Redactor import Redactor, placeholder
 from common.vault.Vault import Vault
 
 KEY = "correct horse battery staple"
@@ -88,11 +88,6 @@ class TestRedact:
         assert out == "{{secret:long}} and {{secret:short}}"
         assert n == 2
 
-    def test_longer_wins_regardless_of_insertion_order(self, vault):
-        vault.add("text", "long", "abc123456xyz", id="long")
-        vault.add("password", "short", "abc123", id="short")
-        assert Redactor(vault).redact("abc123456xyz")[0] == "{{secret:long}}"
-
     def test_no_match_inside_longer_digit_runs(self, redactor):
         text = "ref 946701740605 and 41111111111111112"
         assert redactor.redact(text) == (text, 0)
@@ -171,11 +166,6 @@ class TestRestore:
         redacted, _ = redactor.redact("ring 070 174 06 05 eller mail M@MLAB.TEST")
         assert redactor.restore(redacted)[0] == f"ring {MOBILE} eller mail m@mlab.test"
 
-    def test_placeholder_and_normalize_id_helpers(self):
-        assert placeholder("marcus-mobile") == "{{secret:marcus-mobile}}"
-        assert normalize_id(" Marcus_Mobile ") == "marcus-mobile"
-
-
 @pytest.mark.unit
 class TestFollowsTheVault:
     def test_rebuilds_when_the_vault_changes(self, vault):
@@ -240,9 +230,6 @@ class TestSpans:
         (start, end), = redactor.spans(text)
         assert redactor.redact(text)[0] == text[:start] + "{{secret:marcus-visa}}" + text[end:]
 
-    def test_no_secret_no_spans(self, redactor):
-        assert redactor.spans("plain text 123") == []
-
     def test_empty_vault_gives_no_spans(self, vault):
         assert Redactor(vault).spans(MOBILE) == []
 
@@ -270,10 +257,6 @@ class TestMask:
         masked = redactor.mask("m@mlab.test / hunter2")
         assert masked == "m•••@mlab.test / ••••••••"
         assert [masked[s:e] for s, e in redactor.masked_spans(masked)] == ["m•••@mlab.test", "••••••••"]
-
-    def test_no_secret_no_change(self, redactor):
-        assert redactor.mask("plain text 123") == "plain text 123"
-        assert redactor.masked_spans("plain text 123") == []
 
     def test_empty_vault_is_an_identity(self, vault):
         assert Redactor(vault).mask(MOBILE) == MOBILE

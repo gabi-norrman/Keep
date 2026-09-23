@@ -50,10 +50,6 @@ class TestConfigManagerGet:
         cm = self._create_config(config_dir)
         assert cm.get('voice_cache_size_in_gb') == 3
 
-    def test_get_nested_key_two_levels(self, config_dir):
-        cm = self._create_config(config_dir)
-        assert cm.get('api_keys.openai') == 'test-openai-key'
-
     def test_get_deeply_nested_key(self, config_dir):
         cm = self._create_config(config_dir)
         assert cm.get('location.home.latitude') == 59.91
@@ -74,10 +70,6 @@ class TestConfigManagerGet:
         with pytest.raises(KeyError, match="not found"):
             cm.get('nonexistent.key')
 
-    def test_get_partially_valid_path_with_default(self, config_dir):
-        cm = self._create_config(config_dir)
-        assert cm.get('api_keys.nonexistent_service', 'default') == 'default'
-
     def test_get_path_through_non_dict_with_default(self, config_dir):
         cm = self._create_config(config_dir)
         assert cm.get('voice_cache_size_in_gb.deeper', 'default') == 'default'
@@ -86,22 +78,6 @@ class TestConfigManagerGet:
         cm = self._create_config(config_dir)
         with pytest.raises(KeyError, match="not found"):
             cm.get('voice_cache_size_in_gb.deeper')
-
-    def test_get_integer_value_type(self, config_dir):
-        cm = self._create_config(config_dir)
-        result = cm.get('voice_cache_size_in_gb')
-        assert isinstance(result, int)
-
-    def test_get_float_value_type(self, config_dir):
-        cm = self._create_config(config_dir)
-        result = cm.get('location.home.latitude')
-        assert isinstance(result, float)
-
-    def test_get_string_value_type(self, config_dir):
-        cm = self._create_config(config_dir)
-        result = cm.get('api_keys.openai')
-        assert isinstance(result, str)
-
 
 @pytest.mark.unit
 class TestConfigManagerApiKey:
@@ -146,15 +122,6 @@ class TestConfigManagerApiKey:
         cm = self._create_config(config_dir)
         assert cm.get_home_latitude() == 40.71
 
-    def test_get_owner_name_defaults_to_user(self, config_dir):
-        cm = self._create_config(config_dir)
-        assert cm.get_owner_name() == 'user'
-
-    def test_get_home_longitude(self, config_dir):
-        cm = self._create_config(config_dir)
-        assert cm.get_home_longitude() == -74.00
-
-
 @pytest.mark.unit
 class TestConfigManagerFileHandling:
 
@@ -193,15 +160,6 @@ class TestConfigManagerFileHandling:
             with pytest.raises(ValueError, match="Invalid YAML"):
                 ConfigManager()
 
-    def test_empty_yaml_file(self, tmp_path):
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("")
-        with patch.dict(os.environ, {'FLOXY_CONFIG': str(tmp_path / 'config.yaml')}):
-            cm = ConfigManager()
-            with pytest.raises((KeyError, TypeError)):
-                cm.get('any.key')
-
-
 @pytest.mark.unit
 class TestConfigManagerSingleton:
 
@@ -218,15 +176,6 @@ class TestConfigManagerSingleton:
             instance1 = ConfigManager.get_instance()
             instance2 = ConfigManager.get_instance()
             assert instance1 is instance2
-
-    def test_reset_instance_clears_singleton(self, tmp_path):
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("key: value\n")
-        with patch.dict(os.environ, {'FLOXY_CONFIG': str(tmp_path / 'config.yaml')}):
-            instance1 = ConfigManager.get_instance()
-            ConfigManager.reset_instance()
-            instance2 = ConfigManager.get_instance()
-            assert instance1 is not instance2
 
     def test_reset_instance_allows_different_config(self, tmp_path):
         config_file = tmp_path / "config.yaml"

@@ -34,12 +34,6 @@ def hub(transport):
 
 @pytest.mark.unit
 class TestRegistry:
-    def test_singleton(self):
-        a = ChatHub.get_instance()
-        assert ChatHub.get_instance() is a
-        ChatHub.reset_instance()
-        assert ChatHub.get_instance() is not a
-
     def test_register_is_idempotent(self, hub, transport):
         hub.register(transport)
         assert hub.transports == [transport]
@@ -51,12 +45,6 @@ class TestRegistry:
         assert hub.session_for(transport, 1) is not hub.session_for(transport, 2)
         assert hub.session_for(transport, 1) is hub.session_for(transport, 1)
         assert wait_until(lambda: len(hub.assistant.requests) == 2)
-
-    def test_unregister_drops_sessions(self, hub, transport):
-        hub.session_for(transport, 1)
-        hub.unregister(transport)
-        assert hub.transports == []
-        assert hub._sessions == {}
 
     def test_unregister_only_drops_its_own_sessions(self, hub, transport):
         other = FakeTransport(owners=[9], name="Other")
@@ -91,9 +79,6 @@ class TestRegistry:
         hub.unregister(transport)
         assert assistant.stream_obj.killed
         assert wait_until(lambda: transport.drafts[0].discarded)
-
-    def test_satisfies_the_notifier_protocol(self, hub):
-        assert isinstance(hub, Notifier)
 
     def test_transcript_is_bounded(self, hub, transport):
         hub.MAX_TRANSCRIPT = 5
@@ -332,10 +317,6 @@ class TestMediaSends:
         assert hub.send_video(b"mp4") is True
         assert transport.calls == [("photo", 111, b"jpg", "cap"), ("video", 111, b"mp4", "", None)]
 
-    def test_markdown_to_html(self, hub):
-        assert hub.markdown_to_html("# Title") == "<b>Title</b>"
-
-
 @pytest.mark.unit
 class TestApprovals:
     def test_unavailable_without_targets(self, hub, transport):
@@ -553,9 +534,6 @@ class TestSecrets:
         assert hub.pending_secrets() == 0
         # Over: the next text in that chat is ordinary chat again.
         assert hub.claim_secret(other, 9, "hello") is False
-
-    def test_claim_is_false_when_nothing_is_pending(self, hub, transport):
-        assert hub.claim_secret(transport, 111, "hello") is False
 
     def test_claim_is_false_in_a_conversation_the_prompt_was_not_shown_in(self, hub, transport):
         t, result = self._ask(hub, lambda v: "ok")

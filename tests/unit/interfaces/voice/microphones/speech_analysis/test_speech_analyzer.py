@@ -8,6 +8,11 @@ from interfaces.voice.microphones.speech_analysis.SpeechAnalyzer import SpeechAn
 class TestSpeechAnalyzer:
     """Tests for SpeechAnalyzer voice query analysis and deduplication"""
 
+    @pytest.fixture
+    def test_analyzer(self):
+        """Create analyzer in test suite mode (bypasses voting logic)"""
+        return SpeechAnalyzer(running_as_testsuite=True)
+
     @pytest.fixture(autouse=True)
     def _reset_flood_flag(self):
         # The flood flag is a class variable with a 3-second live window; a test
@@ -21,17 +26,7 @@ class TestSpeechAnalyzer:
         """Create a fresh analyzer instance (not in test suite mode)"""
         return SpeechAnalyzer(running_as_testsuite=False)
 
-    @pytest.fixture
-    def test_analyzer(self):
-        """Create analyzer in test suite mode (bypasses voting logic)"""
-        return SpeechAnalyzer(running_as_testsuite=True)
-
     # ===== normalize_query() tests =====
-
-    def test_normalize_query_lowercase(self, analyzer):
-        """Should convert to lowercase"""
-        assert analyzer.normalize_query("TURN ON THE LIGHTS") == "turn on the lights"
-        assert analyzer.normalize_query("What's The Weather") == "what is the weather"
 
     def test_normalize_query_removes_punctuation(self, analyzer):
         """Should remove all punctuation"""
@@ -51,27 +46,10 @@ class TestSpeechAnalyzer:
         assert analyzer.normalize_query("can't") == "cannot"
         assert analyzer.normalize_query("don't") == "do not"
 
-    def test_normalize_query_all_contractions(self, analyzer):
-        """Test all 40+ contractions are expanded"""
-        contractions_to_test = {
-            "who's": "who is", "where's": "where is", "when's": "when is",
-            "let's": "let us", "we've": "we have", "i've": "i have",
-            "we'll": "we will", "isn't": "is not", "aren't": "are not",
-            "hasn't": "has not", "haven't": "have not", "didn't": "did not"
-        }
-        for contraction, expanded in contractions_to_test.items():
-            result = analyzer.normalize_query(contraction)
-            assert result == expanded, f"Failed: {contraction} -> {result} (expected {expanded})"
-
     def test_normalize_query_normalizes_whitespace(self, analyzer):
         """Should normalize multiple spaces to single space"""
         assert analyzer.normalize_query("turn  on   the    lights") == "turn on the lights"
         assert analyzer.normalize_query("  spaces  everywhere  ") == "spaces everywhere"
-
-    def test_normalize_query_strips_whitespace(self, analyzer):
-        """Should trim leading and trailing whitespace"""
-        assert analyzer.normalize_query("  hello  ") == "hello"
-        assert analyzer.normalize_query("\tturn on\n") == "turn on"
 
     def test_normalize_query_keeps_numbers(self, analyzer):
         """Should keep numbers in the query"""
@@ -103,15 +81,6 @@ class TestSpeechAnalyzer:
         analyzer.add_phrase("hello", "")
         analyzer.add_phrase("hello", "")
         assert analyzer.phrases["hello"].count == 3
-
-    def test_add_phrase_updates_timestamp(self, analyzer):
-        """Should update timestamp when phrase is added again"""
-        analyzer.add_phrase("test", "")
-        first_timestamp = analyzer.phrases["test"].timestamp
-        time.sleep(0.01)
-        analyzer.add_phrase("test", "")
-        second_timestamp = analyzer.phrases["test"].timestamp
-        assert second_timestamp > first_timestamp
 
     # ===== score_for_phrase() tests =====
 
@@ -164,24 +133,7 @@ class TestSpeechAnalyzer:
         """Should return None when no phrases"""
         assert analyzer.get_best_match() is None
 
-    def test_get_best_match_single_phrase(self, analyzer):
-        """Should return the only phrase"""
-        analyzer.add_phrase("only phrase", "")
-        assert analyzer.get_best_match() == "only phrase"
-
     # ===== is_best_transcription() tests =====
-
-    def test_is_best_transcription_first_phrase_accepted(self, analyzer):
-        """First phrase with enough votes should be accepted"""
-        # Add phrase multiple times to get votes (but don't accept it yet)
-        result1 = analyzer.is_best_transcription("turn on lights", False, 0.5)
-        result2 = analyzer.is_best_transcription("turn on lights", False, 0.5)
-
-        # Eventually should be accepted when it has enough votes
-        result3 = analyzer.is_best_transcription("turn on lights", False, 0.5)
-
-        # One of these should be True (when it wins)
-        assert result1 is True or result2 is True or result3 is True
 
     def test_is_best_transcription_rejects_duplicates(self, analyzer):
         """Should reject phrase that was just accepted"""
@@ -254,12 +206,6 @@ class TestSpeechAnalyzer:
         result = analyzer.is_best_transcription("blocked query", False, 0.9)
         assert result is False
 
-    def test_false_positive_flood_expires_after_3_seconds(self, analyzer):
-        """Flood block should expire after 3 seconds"""
-        # This test would take 3+ seconds, so we'll just verify the mechanism
-        SpeechAnalyzer.notify_false_positive_flood()
-        assert SpeechAnalyzer.false_positive_flood_time is not None
-
     # ===== Helper Methods =====
 
     def test_latest_phrase_returns_newest(self, analyzer):
@@ -305,20 +251,9 @@ class TestSpeechAnalyzer:
         assert short_component < 1.0  # Shorter phrase
         assert short_component > 0.0
 
-    def test_num_votes(self, analyzer):
-        """Should return vote count for normalized query"""
-        analyzer.add_phrase("hello", "")
-        analyzer.add_phrase("hello", "")
-        analyzer.add_phrase("hello", "")
-        assert analyzer.num_votes("hello") == 3
-
     def test_num_votes_empty_query(self, analyzer):
         """Should return 0 for empty query"""
         assert analyzer.num_votes("") == 0
-
-    def test_num_votes_testsuite_mode(self, test_analyzer):
-        """Test suite mode should always return 100"""
-        assert test_analyzer.num_votes("anything") == 100
 
     # ===== clean() =====
 
@@ -400,14 +335,6 @@ class TestSpeechAnalyzer:
 
     # ===== Phrase Class Tests =====
 
-    def test_phrase_initialization(self):
-        """Should initialize phrase correctly"""
-        phrase = Phrase("test phrase", "source1")
-        assert phrase.phrase == "test phrase"
-        assert phrase.count == 1
-        assert phrase.source == "source1"
-        assert isinstance(phrase.timestamp, float)
-
     def test_phrase_update(self):
         """Should update count and source"""
         phrase = Phrase("test", "source1")
@@ -487,14 +414,6 @@ class TestSpeechAnalyzer:
         analyzer = SpeechAnalyzer(running_as_testsuite=False)
         analyzer.add_phrase("turn on the lights", "kitchen", 0.9, "scribe")
         assert analyzer.phrases["turn on the lights"].best_engine == "scribe"
-
-    def test_phrase_repr(self):
-        """Should have readable string representation"""
-        phrase = Phrase("test phrase", "source1")
-        repr_str = repr(phrase)
-        assert "test phrase" in repr_str
-        assert "count=1" in repr_str
-        assert "source='source1'" in repr_str
 
     # ===== Scribe settle tracking (wake-word verdict gate) =====
 

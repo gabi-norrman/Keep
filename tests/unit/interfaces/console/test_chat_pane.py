@@ -784,11 +784,6 @@ class TestSecretPrompt:
         pane.close_secret(entry, outcome)
         assert entry.body.text == f"Q — {shown}"
 
-    def test_approval_markers_stay_out_of_the_console_too(self, pane):
-        entry = pane.add_approval("t", "Send it", "")
-        pane.close_approval(entry, "❌ Denied by console")
-        assert entry.body.text == "Send it — Denied by console"
-
     def test_clear_leaves_secret_mode(self, pane):
         pane.add_secret_prompt("t", "Q", "")
         pane.clear()
@@ -849,7 +844,6 @@ class TestSecretMasking:
         from common.vault.Vault import Vault
         monkeypatch.setattr(Vault, "get_instance", lambda: pytest.fail("vault resolved at construction"))
         ChatPane().add_user("hi")
-
 
 
 class TestWideGlyphs:

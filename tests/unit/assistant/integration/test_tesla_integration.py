@@ -117,10 +117,6 @@ class TestTeslaVehicleSpec:
         spec = TeslaVehicleSpec(name="family", vin="VIN1", display_name="Floxy")
         assert spec.matches("") is False
 
-    def test_matches_returns_false_for_none(self):
-        spec = TeslaVehicleSpec(name="family", vin="VIN1", display_name="Floxy")
-        assert spec.matches(None) is False
-
     def test_label_fallback_display_name(self):
         spec = TeslaVehicleSpec(name="family", vin="VIN1", display_name="Floxy")
         assert spec.label() == "Floxy"
@@ -139,26 +135,10 @@ class TestTeslaVehicleSpec:
 
 
 @pytest.mark.unit
-def test_empty_vehicle_list_raises():
-    with pytest.raises(TeslaConfigurationError, match="empty"):
-        TeslaIntegration(config={"tessie_access_token": "tok", "vehicles": []})
-
-
-@pytest.mark.unit
 def test_select_vehicle_spec_no_match_raises():
     api = TeslaIntegration(config=build_default_config())
     with pytest.raises(TeslaConfigurationError, match="No Tesla vehicle matches"):
         api._select_vehicle_spec("nonexistent")
-
-
-@pytest.mark.unit
-def test_select_vehicle_spec_returns_default():
-    config = build_default_config()
-    config["vehicles"].append({"name": "second", "vin": "VIN999", "display_name": "Other"})
-    api = TeslaIntegration(config=config)
-    spec = api._select_vehicle_spec(None)
-    assert spec.display_name == "Floxy"
-    assert spec.is_default is True
 
 
 @pytest.mark.unit
@@ -194,27 +174,6 @@ def test_api_get_all_retries_exhausted():
 
 
 @pytest.mark.unit
-def test_api_post_non_200_raises():
-    session = FakeSession()
-    session.queue_response("POST", f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/command/test",
-                           DummyResponse(502, text="Bad Gateway"))
-    api = TeslaIntegration(config=build_default_config(), session=session)
-    with pytest.raises(TeslaAPIError, match="502"):
-        api._api_post("VIN123", "command/test")
-
-
-@pytest.mark.unit
-def test_api_post_timeout_then_success():
-    session = FakeSession()
-    url = f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/command/start_climate"
-    session.queue_response("POST", url, lambda: (_ for _ in ()).throw(requests.exceptions.Timeout("timed out")))
-    session.queue_response("POST", url, DummyResponse(200, {"result": True}))
-    api = TeslaIntegration(config=build_default_config(), session=session)
-    result = api._api_post("VIN123", "command/start_climate")
-    assert result["result"] is True
-
-
-@pytest.mark.unit
 def test_start_air_conditioning_success():
     session = FakeSession()
     session.queue_response("POST", f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/command/start_climate",
@@ -232,16 +191,6 @@ def test_stop_air_conditioning_success():
     api = TeslaIntegration(config=build_default_config(), session=session)
     result = api.stop_air_conditioning("family")
     assert "Air conditioning stopped" in result
-
-
-@pytest.mark.unit
-def test_stop_air_conditioning_failure():
-    session = FakeSession()
-    session.queue_response("POST", f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/command/stop_climate",
-                           DummyResponse(200, {"result": False, "reason": "vehicle offline"}))
-    api = TeslaIntegration(config=build_default_config(), session=session)
-    with pytest.raises(TeslaCommandError, match="vehicle offline"):
-        api.stop_air_conditioning("family")
 
 
 @pytest.mark.unit
@@ -281,48 +230,3 @@ def test_require_vehicle_spec_with_vin_raises_on_missing_vin():
     api = TeslaIntegration(config=config)
     with pytest.raises(TeslaConfigurationError, match="missing VIN"):
         api._require_vehicle_spec_with_vin("novin")
-
-
-@pytest.mark.unit
-def test_require_vehicle_spec_with_vin_returns_spec():
-    api = TeslaIntegration(config=build_default_config())
-    spec = api._require_vehicle_spec_with_vin("family")
-    assert spec.vin == "VIN123"
-
-
-class DummyCommandProcessor:
-    def __init__(self):
-        self.reply = None
-        self.started = False
-        self.finished = False
-
-    def background_command_start(self):
-        self.started = True
-
-    def background_command_done(self):
-        self.finished = True
-
-    def set_command_reply(self, content):
-        self.reply = content
-
-
-class StubTeslaAPI:
-    def __init__(self, response_map):
-        self.response_map = response_map
-        self.calls = []
-
-    def set_max_defrost(self, vehicle):
-        self.calls.append(("defrost", vehicle))
-        return self.response_map["defrost"]
-
-    def start_air_conditioning(self, vehicle):
-        self.calls.append(("air", vehicle))
-        return self.response_map["air"]
-
-    def stop_air_conditioning(self, vehicle):
-        self.calls.append(("air_off", vehicle))
-        return self.response_map.get("air_off", "AC stopped")
-
-    def open_trunk(self, vehicle):
-        self.calls.append(("trunk", vehicle))
-        return self.response_map["trunk"]

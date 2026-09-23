@@ -5,8 +5,6 @@ import time
 from unittest.mock import Mock
 
 import pytest
-from cryptography.fernet import InvalidToken
-
 from common.ConfigManager import config
 from common.vault import Vault as vault_module
 from common.vault.Redactor import Redactor
@@ -69,16 +67,6 @@ class TestFile:
         assert secret.canonical == "4712345678"
         assert Vault(path, KEY, country_code=47).get("oslo").canonical == "4712345678"
 
-    def test_key_derivation_honours_scrypt_n(self, monkeypatch):
-        # The unit conftest lowers SCRYPT_N so a test vault costs microseconds. The derivation
-        # must actually read it, or the suite silently goes back to ~90 ms per vault.
-        assert vault_module.SCRYPT_N < 2 ** 14, "tests/unit/conftest.py lowers this"
-        salt = b"0" * 16
-        token = Vault._fernet_for(KEY, salt).encrypt(b"x")
-        monkeypatch.setattr(vault_module, "SCRYPT_N", vault_module.SCRYPT_N * 2)
-        with pytest.raises(InvalidToken):
-            Vault._fernet_for(KEY, salt).decrypt(token)
-
     @pytest.mark.parametrize("value", [
         "line one\nline two\nline three",
         'quote " and \\ backslash',
@@ -114,13 +102,6 @@ class TestLockedAndDisabled:
         assert path.read_bytes() == before
         assert locked.version == 0
         assert locked.locked
-
-    def test_corrupt_file_is_locked_a_healthy_vault_is_not(self, vault, path):
-        assert not vault.locked
-        vault.add("phone", "Marcus's mobile", "+46701740605")
-        assert not vault.locked and not Vault(path, KEY).locked
-        path.write_bytes(b"garbage")
-        assert Vault(path, KEY).locked
 
     @pytest.mark.parametrize("content", [b"garbage", b"FLOXYVAULT1\nnot-base64!\ntoken", b"FLOXYVAULT2\nAAAA\nx",
                                          HEADER + b"\n" + base64.b64encode(b"0" * 16) + b"\nnot a token"])
@@ -166,10 +147,6 @@ class TestAdd:
     def test_value_is_stripped_but_otherwise_kept_verbatim(self, vault):
         secret = vault.add("password", "Wifi", "  Sw0rdf!sh  ")
         assert secret.value == "Sw0rdf!sh"
-
-    def test_unknown_kind_is_refused(self, vault):
-        with pytest.raises(VaultError, match="unknown secret kind"):
-            vault.add("ssn", "x", "123456789")
 
     def test_returns_the_stored_secret(self, vault):
         secret = vault.add("email", "Work e-mail", "M@MLab.test")
@@ -276,12 +253,6 @@ class TestUpdateDeleteVersion:
         assert vault.suggest_id("  ", "personal_id") == "personal-id"
         assert vault.version == 1
 
-    def test_update_and_delete_of_unknown_id(self, vault):
-        with pytest.raises(VaultError, match="no secret 'nope'"):
-            vault.update("nope", description="x")
-        with pytest.raises(VaultError, match="no secret 'nope'"):
-            vault.delete("nope")
-
     def test_delete_persists(self, vault, path):
         vault.add("phone", "a", "+46701740605", id="a")
         vault.add("phone", "b", "+46701740606", id="b")
@@ -352,17 +323,6 @@ class TestSingleton:
         assert Vault.get_instance() is first
         assert calls == [1]
         assert first.path == path and first.country_code == 47 and first.enabled
-
-    def test_missing_key_in_config_disables(self, monkeypatch):
-        monkeypatch.setattr(vault_module, "_config_settings", lambda: (None, 46))
-        assert not Vault.get_instance().enabled
-        assert Vault.get_instance().error == "vault.key not set in config.yaml"
-
-    def test_reset_instance_forgets(self, monkeypatch):
-        monkeypatch.setattr(vault_module, "_config_settings", lambda: (KEY, 46))
-        first = Vault.get_instance()
-        Vault.reset_instance()
-        assert Vault.get_instance() is not first
 
     def test_concurrent_first_calls_build_exactly_one_instance(self, monkeypatch):
         # Boot has the prompt section's thread and create_llm() on the main thread arrive

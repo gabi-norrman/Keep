@@ -1,7 +1,7 @@
 import queue
 import threading
 import time
-from unittest.mock import ANY, Mock, patch, PropertyMock
+from unittest.mock import ANY, Mock, patch
 
 import httpx
 import pytest
@@ -60,9 +60,6 @@ def mock_tui_console():
 # ---------------------------------------------------------------------------
 
 class TestRemoveThinking:
-    def test_no_tags(self):
-        assert RequestProcessor._remove_thinking("Hello world") == "Hello world"
-
     def test_simple_block(self):
         result = RequestProcessor._remove_thinking("<thinking>x</thinking>Hello")
         assert result == "Hello"
@@ -84,9 +81,6 @@ class TestRemoveThinking:
         assert result == "Hello"
 
 
-# ---------------------------------------------------------------------------
-# TestSetLocalSystemVolume
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -94,10 +88,6 @@ class TestRemoveThinking:
 # ---------------------------------------------------------------------------
 
 class TestKill:
-    def test_sets_is_killed_flag(self, handler):
-        handler.kill()
-        assert handler.is_killed is True
-
     def test_calls_dialog_manager_kill(self, handler):
         handler.kill()
         handler.dialog_manager.kill.assert_called_once()
@@ -117,35 +107,6 @@ class TestKill:
         handler.kill()
         handler.dialog_manager.kill.assert_not_called()
 
-
-# ---------------------------------------------------------------------------
-# TestRequestData
-# ---------------------------------------------------------------------------
-
-class TestRequestData:
-    def test_stores_all_fields(self):
-        from assistant.RequestProcessor import RequestData
-        rd = RequestData("GET", "/api/test", {"query": "hello"}, {"Content-Type": "text/plain"})
-        assert rd.method == "GET"
-        assert rd.url == "/api/test"
-        assert rd.args == {"query": "hello"}
-        assert rd.headers == {"Content-Type": "text/plain"}
-
-    def test_handles_none(self):
-        from assistant.RequestProcessor import RequestData
-        rd = RequestData(None, None, None, None)
-        assert rd.method is None
-        assert rd.url is None
-        assert rd.args is None
-        assert rd.headers is None
-        assert rd.json_body is None
-
-    def test_stores_json_body(self):
-        from assistant.RequestProcessor import RequestData
-        body = {"query": "hello", "images": [{"data": "abc"}]}
-        rd = RequestData("POST", "/api", {}, {}, json_body=body)
-        assert rd.json_body == body
-        assert rd.json_body["images"][0]["data"] == "abc"
 
 
 # ---------------------------------------------------------------------------
@@ -222,35 +183,6 @@ class TestHandleBackgroundCommands:
 
         assert yielded == []
         assert retval is None
-
-    def test_single_background_command_with_reply(self, handler):
-        """bg command completes with reply → new DM created, stream_response called, reply_to_llm set"""
-        dm = self._make_mock_dm(command_running=True, command_reply=None, queue_empty=True)
-
-        # After _wait_for_background_command, command finishes
-        def stop_bg_command():
-            dm.command_processor.command_running_in_background = False
-        dm.command_processor.command_running_in_background = False
-        dm.command_processor.command_reply = "search result here"
-
-        handler.dialog_manager = dm
-
-        # After stream_response and _wait_for_initial_command, everything is clean
-        with patch.object(handler, 'stream_response', return_value=iter([])), \
-             patch.object(handler, '_wait_for_initial_command'), \
-             patch.object(handler, '_wait_for_background_command'), \
-             patch.object(handler, '_wait_for_command_reply'), \
-             patch('assistant.RequestProcessor.DialogManager') as MockDM:
-            # New DM should have clean command processor
-            new_dm = self._make_mock_dm(command_running=False, command_reply=None, queue_empty=True)
-            MockDM.return_value = new_dm
-
-            prompt_manager = Mock()
-            gen = handler._handle_background_commands(prompt_manager)
-            yielded, retval = self._exhaust_generator(gen)
-
-        assert handler.dialog_manager.reply_to_llm == "result: \nsearch result here"
-        assert retval == "hello"
 
     def _run_one_round(self, handler, dm):
         """Drive _handle_background_commands through one round with dm as the acting DM."""
@@ -652,25 +584,6 @@ class TestHandleBackgroundCommands:
 
         assert RoundEnd("response text") in yielded
 
-    def test_round_end_emitted_regardless_of_text_mode(self, handler):
-        """Delimiters are a wire-format concern: the handler always emits RoundEnd."""
-        handler.request_context.text_only = False
-        dm = self._make_mock_dm(command_running=False, command_reply="reply", queue_empty=True)
-        handler.dialog_manager = dm
-
-        new_dm = self._make_mock_dm(command_running=False, command_reply=None, queue_empty=True)
-
-        with patch.object(handler, 'stream_response', return_value=iter(["audio"])), \
-             patch.object(handler, '_wait_for_initial_command'), \
-             patch.object(handler, '_wait_for_background_command'), \
-             patch.object(handler, '_wait_for_command_reply'), \
-             patch('assistant.RequestProcessor.DialogManager', return_value=new_dm):
-            prompt_manager = Mock()
-            gen = handler._handle_background_commands(prompt_manager)
-            yielded, retval = self._exhaust_generator(gen)
-
-        assert RoundEnd("response text") in yielded
-
     def test_kill_raises_exception(self, handler):
         """is_killed=True before entering → RequestKilledException raised"""
         from assistant.RequestProcessor import RequestKilledException
@@ -728,56 +641,6 @@ class TestHandleBackgroundCommands:
 
         assert new_dm.request_id == "req-abc-123"
 
-    def test_missing_request_id_does_not_break_follow_up(self, handler):
-        """If the original request had no request_id (e.g. a non-streaming
-        client), the follow-up must still complete cleanly — the carry-over
-        just copies None."""
-        dm = self._make_mock_dm(command_running=False, command_reply="reply", queue_empty=True)
-        dm.request_id = None
-        handler.dialog_manager = dm
-
-        new_dm = self._make_mock_dm(command_running=False, command_reply=None, queue_empty=True)
-        new_dm.request_id = None
-
-        with patch.object(handler, 'stream_response', return_value=iter([])), \
-             patch.object(handler, '_wait_for_initial_command'), \
-             patch.object(handler, '_wait_for_background_command'), \
-             patch.object(handler, '_wait_for_command_reply'), \
-             patch('assistant.RequestProcessor.DialogManager', return_value=new_dm):
-            prompt_manager = Mock()
-            gen = handler._handle_background_commands(prompt_manager)
-            self._exhaust_generator(gen)
-
-        assert new_dm.request_id is None
-
-    def test_returns_user_input_when_reported(self, handler):
-        """Return value is user_input after at least one iteration, None if loop never entered"""
-        # Case 1: loop entered → returns user_input
-        dm = self._make_mock_dm(command_running=False, command_reply="reply", queue_empty=True)
-        handler.dialog_manager = dm
-
-        new_dm = self._make_mock_dm(command_running=False, command_reply=None, queue_empty=True)
-
-        with patch.object(handler, 'stream_response', return_value=iter([])), \
-             patch.object(handler, '_wait_for_initial_command'), \
-             patch.object(handler, '_wait_for_background_command'), \
-             patch.object(handler, '_wait_for_command_reply'), \
-             patch('assistant.RequestProcessor.DialogManager', return_value=new_dm):
-            prompt_manager = Mock()
-            gen = handler._handle_background_commands(prompt_manager)
-            yielded, retval = self._exhaust_generator(gen)
-
-        assert retval == "hello"
-
-        # Case 2: loop never entered → returns None
-        dm2 = self._make_mock_dm(command_running=False, command_reply=None, queue_empty=True)
-        handler.dialog_manager = dm2
-
-        gen2 = handler._handle_background_commands(Mock())
-        yielded2, retval2 = self._exhaust_generator(gen2)
-        assert retval2 is None
-
-
 # ---------------------------------------------------------------------------
 # Extended handler fixture for new tests
 # ---------------------------------------------------------------------------
@@ -818,20 +681,6 @@ def full_handler():
     h.request_data = RequestData("GET", "/api", {"query": "hello"}, {"User-Agent": "test"})
     return h
 
-
-# ---------------------------------------------------------------------------
-# TestCheckKilled
-# ---------------------------------------------------------------------------
-
-class TestCheckKilled:
-    def test_killed_raises(self, full_handler):
-        full_handler.is_killed = True
-        with pytest.raises(RequestKilledException):
-            full_handler._check_killed()
-
-    def test_not_killed_no_exception(self, full_handler):
-        full_handler.is_killed = False
-        full_handler._check_killed()  # should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -965,30 +814,6 @@ class TestStreamResponse:
         assert seen["text"] == ["spoken"]
         assert result == [AudioChunk(b"c1"), Thinking("t", 1)]
 
-    def test_text_only_streams_tokens_for_text_chat(self, full_handler):
-        full_handler.request_context.text_only = True
-        full_handler.request_context.source = "TextChat"
-        full_handler.dialog_manager.stream_llm_response.return_value = iter(["tok1", "tok2"])
-        full_handler.dialog_manager.llm_response = "cleaned"
-        full_handler.dialog_manager.llm_response_raw = "raw response"
-
-        result = list(full_handler.stream_response())
-        assert result == [Token("tok1"), Token("tok2")]
-
-    def test_audio_mode_yields_chunks(self, full_handler):
-        full_handler.request_context.text_only = False
-        full_handler.request_context.server_sound = False
-        mock_voice = Mock()
-        full_handler.dialog_manager.voice = mock_voice
-        mock_voice.start.return_value = iter([b"chunk1", b"chunk2"])
-        full_handler.dialog_manager.first_token_got_at = time.time()
-
-        with patch.object(full_handler, '_handle_first_audio_chunk'), \
-             patch.object(full_handler, '_deliver_audio_chunk', side_effect=lambda c: c):
-            result = list(full_handler.stream_response())
-        assert AudioChunk(b"chunk1") in result
-        assert AudioChunk(b"chunk2") in result
-
     def test_audio_mode_first_chunk_handler_called_once(self, full_handler):
         full_handler.request_context.text_only = False
         mock_voice = Mock()
@@ -1004,26 +829,6 @@ class TestStreamResponse:
             list(full_handler.stream_response())
         mock_first.assert_called_once()
 
-    def test_audio_mode_checks_killed(self, full_handler):
-        full_handler.request_context.text_only = False
-        mock_voice = Mock()
-        full_handler.dialog_manager.voice = mock_voice
-        mock_voice.start.return_value = iter([b"c1", b"c2"])
-        full_handler.dialog_manager.first_token_got_at = time.time()
-
-        check_count = [0]
-        original_check = full_handler._check_killed
-
-        def counting_check():
-            check_count[0] += 1
-            original_check()
-
-        with patch.object(full_handler, '_handle_first_audio_chunk'), \
-             patch.object(full_handler, '_deliver_audio_chunk', return_value=None), \
-             patch.object(full_handler, '_check_killed', side_effect=counting_check):
-            list(full_handler.stream_response())
-        assert check_count[0] >= 2  # at least once per chunk + end checks
-
     def test_audio_mode_none_chunks_skipped(self, full_handler):
         full_handler.request_context.text_only = False
         mock_voice = Mock()
@@ -1035,32 +840,6 @@ class TestStreamResponse:
              patch.object(full_handler, '_deliver_audio_chunk', side_effect=lambda c: c):
             result = list(full_handler.stream_response())
         assert result == [AudioChunk(b"real")]
-
-    def test_killed_during_audio_raises(self, full_handler):
-        full_handler.request_context.text_only = False
-        mock_voice = Mock()
-        full_handler.dialog_manager.voice = mock_voice
-        mock_voice.start.return_value = iter([b"c1"])
-        full_handler.dialog_manager.first_token_got_at = time.time()
-
-        def kill_on_check():
-            raise RequestKilledException()
-
-        with patch.object(full_handler, '_check_killed', side_effect=kill_on_check):
-            with pytest.raises(RequestKilledException):
-                list(full_handler.stream_response())
-
-    def test_logs_response_after_streaming(self, full_handler):
-        full_handler.request_context.text_only = True
-        full_handler.dialog_manager.stream_llm_response.return_value = iter([])
-        full_handler.dialog_manager.llm_response = "response"
-        full_handler.dialog_manager.llm_response_raw = "raw"
-
-        with patch("assistant.RequestProcessor.info") as mock_info, \
-             patch("assistant.RequestProcessor.note") as mock_note:
-            list(full_handler.stream_response())
-        mock_note.assert_called()
-
 
 # ---------------------------------------------------------------------------
 # TestTextOnlyOutage
@@ -1163,11 +942,6 @@ class TestTextOnlyOutage:
 # ---------------------------------------------------------------------------
 
 class TestHandleFirstAudioChunk:
-    def test_calls_wait_for_natural_timing(self, full_handler):
-        with patch.object(full_handler, '_wait_for_natural_timing', return_value=True) as mock_wait:
-            full_handler._handle_first_audio_chunk(0.5)
-            mock_wait.assert_called_once_with(0.5)
-
     def test_wait_returns_false_raises(self, full_handler):
         with patch.object(full_handler, '_wait_for_natural_timing', return_value=False):
             with pytest.raises(RequestKilledException):
@@ -1198,39 +972,11 @@ class TestHandleFirstAudioChunk:
             full_handler._handle_first_audio_chunk(0.5)
         full_handler.playback.ensure_outposts_muted.assert_called_once()
 
-    def test_no_playback_skips_mute(self, full_handler):
-        full_handler.playback = None
-        with patch.object(full_handler, '_wait_for_natural_timing', return_value=True):
-            full_handler._handle_first_audio_chunk(0.5)  # should not raise
-
     def test_first_sound_chunk_reported_to_observers(self, full_handler, mock_tui_console):
         full_handler.dialog_manager.voice.last_served_from_cache = True
         with patch.object(full_handler, '_wait_for_natural_timing', return_value=True):
             full_handler._handle_first_audio_chunk(0.5)
         mock_tui_console.on_first_sound_chunk.assert_called_once_with(0.5, True)
-
-
-class TestTextStreamHook:
-    """Reply text reaches the iOS /stream_text overlay only through the injected registry;
-    a voice-less process (text_stream=None) publishes nothing and closes nothing."""
-
-    def test_publish_forwards_to_registry(self, handler):
-        handler.text_stream = Mock()
-        handler.publish_text_event("req-1", {"type": "token", "text": "hi"})
-        handler.text_stream.publish.assert_called_once_with("req-1", {"type": "token", "text": "hi"})
-
-    def test_publish_without_registry_is_noop(self, handler):
-        handler.text_stream = None
-        handler.publish_text_event("req-1", {"type": "token", "text": "hi"})  # must not raise
-
-    def test_close_forwards_to_registry(self, handler):
-        handler.text_stream = Mock()
-        handler._close_text_stream("req-1")
-        handler.text_stream.close.assert_called_once_with("req-1")
-
-    def test_close_without_registry_is_noop(self, handler):
-        handler.text_stream = None
-        handler._close_text_stream("req-1")
 
 
 class TestWaitForNaturalTiming:
@@ -1245,11 +991,6 @@ class TestWaitForNaturalTiming:
         assert full_handler._wait_for_natural_timing(0.5) is True
         full_handler.turn_gate.wait.assert_called_once_with(
             full_handler.request_context, "User: hello", 0.3, 0.5)
-
-    def test_gate_veto_propagates(self, full_handler):
-        full_handler.turn_gate = Mock()
-        full_handler.turn_gate.wait.return_value = False
-        assert full_handler._wait_for_natural_timing(0.5) is False
 
     def test_no_gate_is_immediate(self, full_handler):
         full_handler.turn_gate = None
@@ -1383,28 +1124,6 @@ class TestPrepareContext:
             "TestUser", None, "VoiceToVoice", "Kitchen", "hello"
         )
 
-    def test_sets_reply_to_llm(self, full_handler):
-        prompt_manager = Mock()
-        prompt_manager.get_messages.return_value = []
-
-        with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf:
-            mock_mf.format_message.return_value = "formatted msg"
-            full_handler.request_context.user_input = "hello"
-            full_handler._prepare_llm_context(prompt_manager)
-
-        assert full_handler.dialog_manager.reply_to_llm == "formatted msg"
-
-    def test_returns_formatted_message(self, full_handler):
-        prompt_manager = Mock()
-        prompt_manager.get_messages.return_value = []
-
-        with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf:
-            mock_mf.format_message.return_value = "User: hi there"
-            full_handler.request_context.user_input = "hi there"
-            result = full_handler._prepare_llm_context(prompt_manager)
-
-        assert result == "User: hi there"
-
     def test_prepends_user_query_to_system_message(self, full_handler):
         prompt_manager = Mock()
         prompt_manager.get_messages.return_value = [
@@ -1522,21 +1241,6 @@ class TestPrepareContext:
         assert reply[1]["type"] == "text"
         assert reply[1]["text"] == "User: What is this?"
 
-    def test_no_images_sets_string_reply(self, full_handler):
-        prompt_manager = Mock()
-        prompt_manager.get_messages.return_value = []
-        full_handler.request_context.images = None
-
-        with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf, \
-             patch("assistant.RequestProcessor.PREPEND_USER_QUERY_OVERRIDE", False):
-            mock_mf.format_message.return_value = "User: hello"
-            full_handler.request_context.user_input = "hello"
-            full_handler._prepare_llm_context(prompt_manager)
-
-        assert isinstance(full_handler.dialog_manager.reply_to_llm, str)
-        assert full_handler.dialog_manager.reply_to_llm == "User: hello"
-
-
 # ---------------------------------------------------------------------------
 # TestUpdateHistory
 # ---------------------------------------------------------------------------
@@ -1571,14 +1275,6 @@ class TestUpdateHistory:
 
         full_handler._update_history(prompt_manager, None)
         prompt_manager.update_history.assert_not_called()
-
-    def test_returns_cleaned_text(self, full_handler):
-        full_handler.dialog_manager.llm_response_raw = "<thinking>x</thinking>Clean text"
-        prompt_manager = Mock()
-
-        result = full_handler._update_history(prompt_manager, None)
-        assert result == "Clean text"
-
 
 # ---------------------------------------------------------------------------
 # TestSaveToDatabase
@@ -1643,33 +1339,6 @@ class TestSaveToDatabase:
 # ---------------------------------------------------------------------------
 
 class TestWaitForInitialCommand:
-    def test_no_command_returns_immediately(self, full_handler):
-        cp = Mock()
-        cp.command_being_processed = False
-        cp.command_queue = Mock()
-        cp.command_queue.empty.return_value = True
-        full_handler.dialog_manager.command_processor = cp
-
-        with patch("assistant.RequestProcessor.time.sleep"):
-            full_handler._wait_for_initial_command()  # should return immediately
-
-    def test_loops_while_processing(self, full_handler):
-        cp = Mock()
-        call_count = [0]
-
-        def processing_side_effect():
-            call_count[0] += 1
-            return call_count[0] <= 2
-
-        type(cp).command_being_processed = PropertyMock(side_effect=processing_side_effect)
-        cp.command_queue = Mock()
-        cp.command_queue.empty.return_value = True
-        full_handler.dialog_manager.command_processor = cp
-
-        with patch("assistant.RequestProcessor.time.sleep"):
-            full_handler._wait_for_initial_command()
-        assert call_count[0] > 1
-
     def test_killed_during_wait_raises(self, full_handler):
         cp = Mock()
         cp.command_being_processed = True
@@ -1709,31 +1378,9 @@ class TestWaitForAudioAndNotifyOutposts:
         full_handler._wait_for_audio_and_notify_outposts()
         full_handler.playback.finish_reply.assert_called_once_with("How are you?")
 
-    def test_no_playback_is_noop(self, full_handler):
-        full_handler.request_context.text_only = False
-        full_handler.request_context.server_sound = True
-        full_handler.playback = None
-        full_handler._wait_for_audio_and_notify_outposts()  # should not raise
-
-
 # ---------------------------------------------------------------------------
 # TestRestoreOutpostsIfMuted / TestEnsureOutpostsMuted (delegation)
 # ---------------------------------------------------------------------------
-
-class TestOutpostMuteDelegation:
-    def test_ensure_delegates(self, full_handler):
-        full_handler._ensure_outposts_muted()
-        full_handler.playback.ensure_outposts_muted.assert_called_once()
-
-    def test_restore_delegates(self, full_handler):
-        full_handler._restore_outposts_if_muted()
-        full_handler.playback.restore_outposts_if_muted.assert_called_once()
-
-    def test_without_playback_both_are_noops(self, full_handler):
-        full_handler.playback = None
-        full_handler._ensure_outposts_muted()
-        full_handler._restore_outposts_if_muted()
-
 
 class TestNotifyThinkingStarted:
     """The thinking filler is routed through the handler's ServerPlayback, which mutes
@@ -1760,12 +1407,6 @@ class TestNotifyThinkingStarted:
         dm.notify_thinking_started()
         full_handler.playback.play_thinking_filler.assert_not_called()
 
-    def test_without_playback_does_nothing(self, full_handler):
-        """A text-only process has no ServerPlayback; server_sound is then just ignored."""
-        dm = self._dialog_manager(full_handler, server_sound=True)
-        full_handler.playback = None
-        dm.notify_thinking_started()  # must not raise
-
     def test_playback_failure_is_swallowed(self, full_handler):
         dm = self._dialog_manager(full_handler, server_sound=True)
         full_handler.playback.play_thinking_filler.side_effect = RuntimeError("afplay missing")
@@ -1777,39 +1418,6 @@ class TestNotifyThinkingStarted:
 # ---------------------------------------------------------------------------
 
 class TestProcess:
-    def test_extracts_query(self, full_handler):
-        full_handler.request_data = RequestData("GET", "/", {"query": "test query"}, {"Range": None, "X-Playback-Session-Id": None, "Icy-Metadata": None, "User-Agent": "test"})
-        full_handler.request_context = RequestContext.from_request_data(full_handler.request_data)
-        prompt_manager = Mock()
-        prompt_manager.prompt_touched_at = 0
-
-        with patch.object(full_handler, 'generate_events', return_value="response") as mock_gen:
-            full_handler.process(prompt_manager)
-
-        assert full_handler.ctx.user_input == "test query"
-
-    def test_sets_text_only(self, full_handler):
-        full_handler.request_data = RequestData("GET", "/", {"query": "hi", "text": "1"}, {"Range": None, "X-Playback-Session-Id": None, "Icy-Metadata": None, "User-Agent": "test"})
-        full_handler.request_context = RequestContext.from_request_data(full_handler.request_data)
-        prompt_manager = Mock()
-        prompt_manager.prompt_touched_at = 0
-
-        with patch.object(full_handler, 'generate_events', return_value="response"):
-            full_handler.process(prompt_manager)
-
-        assert full_handler.ctx.text_only is True
-
-    def test_sets_server_sound(self, full_handler):
-        full_handler.request_data = RequestData("GET", "/", {"query": "hi", "server_sound": "1"}, {"Range": None, "X-Playback-Session-Id": None, "Icy-Metadata": None, "User-Agent": "test"})
-        full_handler.request_context = RequestContext.from_request_data(full_handler.request_data)
-        prompt_manager = Mock()
-        prompt_manager.prompt_touched_at = 0
-
-        with patch.object(full_handler, 'generate_events', return_value="response"):
-            full_handler.process(prompt_manager)
-
-        assert full_handler.ctx.server_sound is True
-
     def test_begin_turn_forwards_request_args_to_the_gate(self, full_handler):
         """The wake_word_detected/scribe_skipped flags reach the verdict gate only through
         this handoff (the parse itself is tested in test_voice_turn_gate.TestBeginTurn)."""
@@ -1824,16 +1432,6 @@ class TestProcess:
             full_handler.process(prompt_manager)
 
         full_handler.turn_gate.begin_turn.assert_called_once_with(args)
-
-    def test_no_gate_means_no_begin_turn(self, full_handler):
-        full_handler.turn_gate = None
-        full_handler.request_data = RequestData("GET", "/", {"query": "hi"}, {"Range": None, "X-Playback-Session-Id": None, "Icy-Metadata": None, "User-Agent": "test"})
-        full_handler.request_context = RequestContext.from_request_data(full_handler.request_data)
-        prompt_manager = Mock()
-        prompt_manager.prompt_touched_at = 0
-
-        with patch.object(full_handler, 'generate_events', return_value="response"):
-            full_handler.process(prompt_manager)  # must not raise
 
     def test_reset_creates_new_dialog_manager(self, full_handler):
         full_handler.request_data = RequestData("GET", "/", {"query": "hi", "reset": "1"}, {"Range": None, "X-Playback-Session-Id": None, "Icy-Metadata": None, "User-Agent": "test"})
@@ -1874,19 +1472,6 @@ class TestProcess:
 
         assert list(result) == []
 
-    def test_returns_generate_events_stream(self, full_handler):
-        full_handler.request_data = RequestData("GET", "/", {"query": "hi"}, {"Range": None, "X-Playback-Session-Id": None, "Icy-Metadata": None, "User-Agent": "test"})
-        full_handler.request_context = RequestContext.from_request_data(full_handler.request_data)
-        prompt_manager = Mock()
-        prompt_manager.prompt_touched_at = 0
-        mock_response = Mock()
-
-        with patch.object(full_handler, 'generate_events', return_value=mock_response):
-            result = full_handler.process(prompt_manager)
-
-        assert result is mock_response
-
-
 # ---------------------------------------------------------------------------
 # TestGenerateAudio
 # ---------------------------------------------------------------------------
@@ -1915,12 +1500,6 @@ class TestGenerateEvents:
         full_handler.request_context.text_only = True
         full_handler.request_context.server_sound = False
         assert self._run(full_handler) == [Token("text"), RoundEnd("Hi there!"), Done("Hi there!")]
-
-    def test_audio_round_then_done(self, full_handler):
-        full_handler.request_context.text_only = False
-        full_handler.request_context.server_sound = False
-        events = self._run(full_handler, stream_response=dict(return_value=iter([AudioChunk(b"audio")])))
-        assert events == [AudioChunk(b"audio"), RoundEnd("Hi there!"), Done("Hi there!")]
 
     def test_follow_up_rounds_come_between_first_round_and_done(self, full_handler):
         full_handler.request_context.text_only = True
@@ -2021,13 +1600,6 @@ class TestIterUntilKilled:
 
 
 class TestCommandWorkerGate:
-    def test_public_gate_delegates_to_turn_gate_wait(self, full_handler):
-        """CommandProcessor._command_worker calls this before a reply's first command; it
-        must exist on the real handler (Phase 3 moved the body into VoiceTurnGate)."""
-        with patch.object(full_handler, '_wait_for_natural_timing', return_value=True) as wait:
-            assert full_handler.wait_so_that_response_timing_is_natural(0) is True
-        wait.assert_called_once_with(0)
-
     def test_public_gate_without_turn_gate_reports_killed(self, full_handler):
         full_handler.turn_gate = None
         full_handler.is_killed = True

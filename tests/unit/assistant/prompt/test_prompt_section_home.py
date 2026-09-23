@@ -62,11 +62,6 @@ class TestFetchContent:
         with patch(f"{MODULE}.active", return_value=backend), pytest.raises(RuntimeError):
             section._fetch_content()
 
-    def test_section_name_and_interval(self, section):
-        assert section.section_name == "HomeData"
-        assert section.UPDATE_INTERVAL == 30
-
-
 @pytest.mark.unit
 class TestIsNight:
     @pytest.fixture(autouse=True)
@@ -93,10 +88,6 @@ class TestIsNight:
         assert section.is_night() is False
         section._latest = HomeSnapshot()
         assert section.is_night() is False
-
-    def test_the_default_variable_is_night(self):
-        assert DEFAULT_NIGHT_VARIABLE == "Night"
-
 
 @pytest.mark.unit
 class TestPollCadence:

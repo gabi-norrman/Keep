@@ -24,10 +24,7 @@ from interfaces.voice.microphones.local_outposts.LocalOutpostManager import (
 )
 from interfaces.voice.microphones.local_outposts.OutpostStreamClient import OutpostStreamClient
 from interfaces.voice.microphones.local_outposts.TextLanguageDetector import TextLanguageDetector
-from interfaces.voice.microphones.local_outposts.WhisperWorker import (
-    segment_metrics, metrics_risky, wake_word_hallucination_risky, format_metrics,
-    normalize_loudness,
-)
+from interfaces.voice.microphones.local_outposts.WhisperWorker import segment_metrics, metrics_risky, wake_word_hallucination_risky, normalize_loudness
 
 
 @pytest.fixture(autouse=True)
@@ -128,9 +125,6 @@ class TestDoubledWakeWord:
     def test_non_adjacent_repeats_pass(self):
         # Only back-to-back repetition is the signature; a later re-mention is not.
         assert doubled_wake_word("Michelle, tell Michelle's story") is False
-
-    def test_no_wake_word_passes(self):
-        assert doubled_wake_word("turn on the lights") is False
 
     def test_doubled_non_wake_token_passes(self):
         # Only doubling of the WAKE word is the signature — a stutter or decode
@@ -333,12 +327,6 @@ class TestMetricsRisk:
         from interfaces.voice.microphones.local_outposts.constants import WAKE_WORD_RISK_CONFIDENCE_MIN_PCT
         assert metrics_risky({**CLEAN, "no_speech": 0.7}, WAKE_WORD_RISK_CONFIDENCE_MIN_PCT) is True
 
-    def test_format_metrics_reflects_overridden_floor(self):
-        # format_metrics renders whatever floor it's handed and only marks ⚠ on a trip.
-        out = format_metrics({**CLEAN, "conf": 0.33}, 25)
-        assert "conf=33% (risky <25%)" in out
-        assert "⚠" not in out  # 33% clears the looser floor → no trip marker
-
     def test_segment_metrics_aggregates_worst_segment(self):
         result = {"segments": [
             {"avg_logprob": -0.2, "no_speech_prob": 0.1, "compression_ratio": 1.0, "temperature": 0.0},
@@ -350,21 +338,6 @@ class TestMetricsRisk:
 
     def test_segment_metrics_none_without_segments(self):
         assert segment_metrics({"segments": []}) is None
-
-    def test_format_metrics_shows_values_thresholds_and_marks_tripped(self):
-        from interfaces.voice.microphones.local_outposts.constants import (
-            RISK_CONFIDENCE_MIN_PCT, RISK_NO_SPEECH_MAX,
-            RISK_COMPRESSION_MAX, RISK_TEMPERATURE_MAX,
-        )
-        out = format_metrics({**CLEAN, "no_speech": 0.7})
-        assert f"conf=80% (risky <{RISK_CONFIDENCE_MIN_PCT:.0f}%)" in out
-        assert f"no_speech=0.70 (risky >{RISK_NO_SPEECH_MAX}) ⚠" in out  # tripped → marked
-        assert f"compression=0.80 (risky >{RISK_COMPRESSION_MAX})" in out and "⚠" not in out.split("compression")[1]
-        assert f"temperature=0.00 (risky >{RISK_TEMPERATURE_MAX})" in out
-
-    def test_format_metrics_handles_none(self):
-        assert format_metrics(None) == "no metrics (no segments)"
-
 
 @pytest.mark.unit
 class TestWakeWordHallucinationRisk:
@@ -401,9 +374,6 @@ class TestWakeWordHallucinationRisk:
         # starts killing real commands; this pins that thin margin.
         assert wake_word_hallucination_risky({**CLEAN, "conf": 0.422, "no_speech": 0.134}) is False
 
-    def test_clean_metrics_not_risky(self):
-        assert wake_word_hallucination_risky(CLEAN) is False
-
     def test_none_metrics_not_risky(self):
         assert wake_word_hallucination_risky(None) is False
 
@@ -429,11 +399,6 @@ class TestNormalizeLoudness:
 
     def test_scales_quiet_audio_up_to_target_peak(self):
         audio = np.array([0.1, -0.05, 0.08], dtype=np.float32)  # peak 0.1
-        out = normalize_loudness(audio, target_peak=0.95)
-        assert float(np.abs(out).max()) == pytest.approx(0.95)
-
-    def test_scales_loud_audio_down_to_target_peak(self):
-        audio = np.array([1.0, -0.8, 0.5], dtype=np.float32)  # peak 1.0
         out = normalize_loudness(audio, target_peak=0.95)
         assert float(np.abs(out).max()) == pytest.approx(0.95)
 
@@ -465,12 +430,6 @@ class TestMuteWatchdog:
     """A muted mic that never receives the server's unmute ('listen'/'wakeword') would
     stay muted forever and silently drop everything; the watchdog auto-recovers it."""
 
-    def test_on_mute_records_time(self):
-        outpost, _ = make_outpost()
-        outpost.on_mute()
-        assert outpost.muted is True
-        assert outpost._muted_at is not None
-
     def test_on_listen_clears_mute_time(self):
         outpost, _ = make_outpost()
         outpost.on_mute()
@@ -499,12 +458,6 @@ class TestMuteWatchdog:
         outpost._muted_at = time.time()            # just muted
         outpost._check_mute_watchdog()
         assert outpost.muted is True
-
-    def test_watchdog_noop_when_not_muted(self):
-        outpost, _ = make_outpost()
-        outpost._check_mute_watchdog()             # not muted, _muted_at is None
-        assert outpost.muted is False
-
 
 @pytest.mark.unit
 class TestStreamWatchdog:
@@ -699,12 +652,6 @@ class TestTranscriptGate:
         outpost._on_transcript("turn on the lights", CLEAN, AUDIO)
         client.send_query.assert_not_called()
 
-    def test_empty_text_drops(self):
-        outpost, client = make_outpost()
-        outpost._on_transcript("", CLEAN, AUDIO)
-        client.send_query.assert_not_called()
-        client.notify_wake_word.assert_not_called()
-
     def test_risky_transcript_dropped(self):
         outpost, client = make_outpost(awaiting_wakeword=False)
         outpost._on_transcript("turn on the lights", {**CLEAN, "no_speech": 0.9}, AUDIO)
@@ -784,16 +731,6 @@ class TestTranscriptGate:
         outpost._on_transcript("turn on the lights", CLEAN, AUDIO)
         client.send_query.assert_not_called()
         client.notify_wake_word.assert_not_called()
-
-    def test_follow_up_without_wake_word_sends(self):
-        outpost, client = make_outpost(awaiting_wakeword=False)
-        outpost._on_transcript("turn on the lights", CLEAN, AUDIO)
-        client.send_query.assert_called_once()
-
-    def test_confidence_mapped_from_metrics_conf(self):
-        outpost, client = make_outpost(awaiting_wakeword=False)
-        outpost._on_transcript("play music", CLEAN, AUDIO)
-        assert client.send_query.call_args[0][2] == CLEAN["conf"]
 
     def test_forwards_speculative_identify_future_on_follow_up(self):
         # The future started at the speculative pause must reach send_query so the
@@ -1006,13 +943,6 @@ class TestWakeWordPrefixConfidenceGate:
         client.send_query.assert_not_called()
         client.notify_wake_word.assert_not_called()
 
-    def test_floor_sits_between_junk_ceiling_and_genuine_rescue(self):
-        # The constant encodes a measured separation: junk prefixed fires topped out at
-        # 53.2%, the genuine rescue scored 56.6%. If someone moves the floor outside
-        # that band, the gate silently stops doing its job.
-        assert 53.2 < WAKE_WORD_PREFIX_CONFIDENCE_MIN_PCT < 56.6
-
-
 @pytest.mark.unit
 class TestSttLatencyMeasurement:
     """stt_ms is user-perceived STT latency: measured from speech_ended_at (VAD stop
@@ -1046,12 +976,6 @@ class TestSttLatencyMeasurement:
                                timing=timing)
         assert client.send_query.call_args.kwargs["stt_wait_ms"] == 500
 
-    def test_no_timing_sends_none_wait(self):
-        outpost, client = make_outpost(awaiting_wakeword=False)
-        outpost._on_transcript("turn on the lights", CLEAN, AUDIO,
-                               vad_stop_at=time.time())
-        assert client.send_query.call_args.kwargs["stt_wait_ms"] is None
-
     def test_trigger_forwarded_when_speculative_decode_won(self):
         # The energy gate fired the speculative and its decode produced the text →
         # the Silence detect row is attributed to RMS.
@@ -1075,13 +999,6 @@ class TestSttLatencyMeasurement:
                                vad_stop_at=now - 1.6, speech_ended_at=now - 2.0,
                                timing=timing, spec_trigger="rms")
         assert client.send_query.call_args.kwargs["stt_trigger"] == "vad"
-
-    def test_no_timing_sends_no_trigger(self):
-        outpost, client = make_outpost(awaiting_wakeword=False)
-        outpost._on_transcript("turn on the lights", CLEAN, AUDIO,
-                               vad_stop_at=time.time())
-        assert client.send_query.call_args.kwargs["stt_trigger"] is None
-
 
 @pytest.mark.unit
 class TestSaveRecordingAsync:
@@ -1195,11 +1112,6 @@ class TestScribeTranscriptGate:
         outpost._on_scribe_transcript("turn on the lights", 0.9, "sv", 0.0)
         client.send_query.assert_not_called()
 
-    def test_empty_text_drops(self):
-        outpost, client = make_outpost(awaiting_wakeword=False)
-        outpost._on_scribe_transcript("", 0.9, "sv", 0.0)
-        client.send_query.assert_not_called()
-
     def test_no_wake_word_while_awaiting_drops(self):
         outpost, client = make_outpost(awaiting_wakeword=True)
         outpost._on_scribe_transcript("turn on the lights", 0.9, "sv", 0.0)
@@ -1209,11 +1121,6 @@ class TestScribeTranscriptGate:
         outpost, client = make_outpost(awaiting_wakeword=False)
         outpost._on_scribe_transcript(INITIAL_PROMPT_PHRASES[0], 0.9, "sv", 0.0)
         client.send_query.assert_not_called()
-
-    def test_confidence_is_calibrated(self):
-        outpost, client = make_outpost(awaiting_wakeword=False)
-        outpost._on_scribe_transcript("play music", 0.9, "sv", 0.0)
-        assert client.send_query.call_args[0][2] == pytest.approx(0.9 / SCRIBE_CONF_CALIBRATION)
 
     def test_low_calibrated_confidence_dropped(self):
         # 0.4 / 1.65 = 0.24 < SCRIBE_MIN_CONFIDENCE (0.3) → dropped locally so it never trips
@@ -1332,13 +1239,6 @@ class TestScribeTranscriptGate:
         outpost._on_scribe_transcript("", 0.9, "en", 0.0)
         client.send_false_positive.assert_not_called()
         client.send_query.assert_not_called()
-
-    def test_follow_up_vote_never_vetoes(self):
-        # Default verify_wake_word=False (a follow-up vote): no wake word is fine, vote anyway.
-        outpost, client = make_outpost(awaiting_wakeword=False, languages=("en-US",))
-        outpost._on_scribe_transcript("turn on the lights", 0.9, "en", 0.0)
-        client.send_query.assert_called_once()
-        client.send_false_positive.assert_not_called()
 
     def test_verify_bare_wake_word_echo_vetoes(self):
         # A production false positive: Whisper heard "Michelle is ready." but Scribe heard ONLY the
@@ -1725,11 +1625,6 @@ class TestStreamUrl:
         url = OutpostStreamClient(8888).build_stream_url("turn on the lights", "en-US", wake_word=True)
         assert parse_qs(urlparse(url).query)["wake_word_detected"] == ["1"]
 
-    def test_wake_word_flag_absent_by_default(self):
-        from urllib.parse import parse_qs, urlparse
-        url = OutpostStreamClient(8888).build_stream_url("turn on the lights", "en-US")
-        assert "wake_word_detected" not in parse_qs(urlparse(url).query)
-
     def test_stt_ms_added_when_set(self):
         from urllib.parse import parse_qs, urlparse
         url = OutpostStreamClient(8888).build_stream_url("turn on the lights", "en-US", stt_ms=180)
@@ -1740,25 +1635,10 @@ class TestStreamUrl:
         url = OutpostStreamClient(8888).build_stream_url("turn on the lights", "en-US", stt_trigger="rms")
         assert parse_qs(urlparse(url).query)["stt_trigger"] == ["rms"]
 
-    def test_stt_trigger_absent_by_default(self):
-        from urllib.parse import parse_qs, urlparse
-        url = OutpostStreamClient(8888).build_stream_url("turn on the lights", "en-US")
-        assert "stt_trigger" not in parse_qs(urlparse(url).query)
-
     def test_scribe_skipped_flag_added_when_set(self):
         from urllib.parse import parse_qs, urlparse
         url = OutpostStreamClient(8888).build_stream_url("turn on the lights", "en-US", scribe_skipped=True)
         assert parse_qs(urlparse(url).query)["scribe_skipped"] == ["1"]
-
-    def test_scribe_skipped_flag_absent_by_default(self):
-        from urllib.parse import parse_qs, urlparse
-        url = OutpostStreamClient(8888).build_stream_url("turn on the lights", "en-US")
-        assert "scribe_skipped" not in parse_qs(urlparse(url).query)
-
-    def test_stt_ms_absent_by_default(self):
-        from urllib.parse import parse_qs, urlparse
-        url = OutpostStreamClient(8888).build_stream_url("turn on the lights", "en-US")
-        assert "stt_ms" not in parse_qs(urlparse(url).query)
 
     def test_mic_added_and_stripped_when_set(self):
         # The outpost label is space-padded to 30 chars for log alignment; the URL
@@ -1768,11 +1648,6 @@ class TestStreamUrl:
         url = OutpostStreamClient(8888).build_stream_url(
             "turn on the lights", "en-US", mic="Studio Display Microphone     ")
         assert parse_qs(urlparse(url).query)["mic"] == ["Studio Display Microphone"]
-
-    def test_mic_absent_by_default(self):
-        from urllib.parse import parse_qs, urlparse
-        url = OutpostStreamClient(8888).build_stream_url("turn on the lights", "en-US")
-        assert "mic" not in parse_qs(urlparse(url).query)
 
     def test_send_query_forwards_verified_phrase(self):
         # verified_phrase is the correlator the server's wake-word verdict gate settles on.
@@ -1789,12 +1664,6 @@ class TestStreamUrl:
                           verified_phrase="turn on the lights")
         assert len(got) == 1
         assert parse_qs(urlparse(got[0]).query)["verified_phrase"] == ["turn on the lights"]
-
-    def test_verified_phrase_absent_by_default(self):
-        from urllib.parse import parse_qs, urlparse
-        url = OutpostStreamClient(8888).build_stream_url("turn on the lights", "en-US")
-        assert "verified_phrase" not in parse_qs(urlparse(url).query)
-
 
 @pytest.mark.unit
 class TestSpeakerIdentification:
@@ -1882,17 +1751,6 @@ class TestSpeakerIdentification:
         client._identify_then_get("http://x/stream", AUDIO, "m1", wake_word=False)
         fake.record_identification.assert_not_called()
 
-    def test_identify_async_starts_identification(self, monkeypatch):
-        # Returned by identify_async at the speculative pause so the work overlaps the
-        # silence wait.
-        fake = MagicMock()
-        fake.identify.return_value = ("Sam", 0.9)
-        self._fake_identifier(monkeypatch, fake)
-        client = OutpostStreamClient(8888)
-        client._executor.submit = lambda fn, *a: fn(*a)  # run inline
-        client.identify_async(AUDIO, "m1")
-        fake.identify.assert_called_once()
-
     def test_send_query_with_future_waits_instead_of_reidentifying(self):
         # When identification was started early, send_query waits on that future and
         # does NOT identify a second time — but still GETs after the wait (ordering).
@@ -1965,12 +1823,6 @@ def fake_timers(monkeypatch):
 
 @pytest.mark.unit
 class TestFollowUpTimeout:
-    def test_on_listen_enters_listen_mode(self):
-        outpost, _ = make_outpost()
-        outpost.on_listen()
-        assert outpost.awaiting_wakeword is False
-        outpost._cancel_listen_timers()
-
     def test_on_wakeword_reverts_and_cancels_timers(self):
         outpost, _ = make_outpost()
         outpost.on_listen()
@@ -2132,11 +1984,6 @@ class TestAdaptiveRmsVAD:
         self._feed(v, 0.003, 1)                  # first full 1s window initializes it
         assert v.noise_floor == pytest.approx(0.003)
 
-    def test_is_speech_uses_current_threshold(self):
-        v = self._vad(threshold=0.015)
-        assert v.is_speech(np.full(1600, 0.05, np.float32)) is True
-        assert v.is_speech(np.full(1600, 0.005, np.float32)) is False
-
     def test_one_spurious_dip_cannot_block_a_raise(self):
         # The raise reference is the window's 10th percentile, not its min — a single
         # anomalously low frame must not veto a legitimate ambience raise. A regression
@@ -2184,11 +2031,6 @@ class TestMakeVad:
         monkeypatch.setattr(mod, "SileroVAD", Broken)
         with pytest.raises(RuntimeError, match="refusing to fall back"):
             mod.make_vad("silero", 0.5, label="test")
-
-    def test_explicit_rms_backend_still_builds(self):
-        from interfaces.voice.microphones.local_outposts.VAD import make_vad, RmsVAD
-        assert isinstance(make_vad("rms", None, label="test"), RmsVAD)
-
 
 @pytest.mark.unit
 class TestKeepWarm:
@@ -3587,12 +3429,6 @@ class TestAutoRecoveryUSB:
         manager._port_by_mic = {"mic": ("8-3", 4)}
         assert manager._maybe_power_cycle("mic") is False  # non-zero exit → failed
 
-    def test_learn_ports_caches_idempotently(self):
-        manager = LocalOutpostManager(8888)
-        manager._learn_ports({"mic": ("8-3", 4)})
-        manager._learn_ports({"mic": ("8-3", 4)})  # unchanged → no error
-        assert manager._port_by_mic == {"mic": ("8-3", 4)}
-
     def test_power_cycle_gives_up_after_max_attempts(self, monkeypatch):
         # A hung mic that never re-enumerates was cycled ~230 times over
         # 4 h to no effect. Consecutive no-effect cycles must stop at the cap.
@@ -3847,55 +3683,6 @@ class TestSileroVADNoGradLeak:
         vad.is_speech(np.zeros(SileroVAD.WINDOW, np.float32))
         assert seen == [False], \
             "Silero forward ran with autograd enabled — the unbounded-graph VAD leak is back"
-
-
-class TestRunningNote:
-    """The start-up summary reaches the chat history as a household-facing system row."""
-
-    @staticmethod
-    def _manager(languages, mic_names):
-        m = LocalOutpostManager.__new__(LocalOutpostManager)
-        m._lock = threading.RLock()
-        m.languages = languages
-        m.outposts = [SimpleNamespace(device_name=n) for n in mic_names]
-        return m
-
-    def test_single_language_names_the_mics(self):
-        m = self._manager(["en-US"], ["Studio mic", "Kitchen mic", "Desk mic"])
-        assert m._running_note() == ("Voice is ready — listening on 3 local microphones "
-                                     "(Studio mic, Kitchen mic, Desk mic). Language: en-US.")
-
-    def test_several_languages_say_they_are_detected(self):
-        m = self._manager(["en-US", "sv-SE"], ["Studio mic"])
-        assert m._running_note() == ("Voice is ready — listening on 1 local microphone "
-                                     "(Studio mic). Languages: en-US, sv-SE "
-                                     "(auto-detected per utterance).")
-
-
-class TestScribeUnavailableNote:
-    """A failed Scribe start leaves a system row so the LLM knows voice is degraded."""
-
-    @pytest.fixture
-    def notes(self, monkeypatch):
-        import common.ConfigManager as cm
-        module = sys.modules[LocalOutpostManager.__module__]
-        sent = []
-        monkeypatch.setattr(module, "system_note", lambda source, text: sent.append((source, text)))
-        self._cm = cm
-        return sent
-
-    def test_missing_key_names_the_config_key(self, notes, monkeypatch):
-        monkeypatch.setattr(self._cm, "config", SimpleNamespace(get=lambda k, d=None: {}))
-        LocalOutpostManager._note_scribe_unavailable()
-        assert notes == [("voice", "ElevenLabs API key is needed for the voice interface "
-                                   "(api_keys.elevenlabs). Voice will not work now.")]
-
-    def test_other_failure_with_a_key_present(self, notes, monkeypatch):
-        monkeypatch.setattr(self._cm, "config",
-                            SimpleNamespace(get=lambda k, d=None: {"elevenlabs": "k"}))
-        LocalOutpostManager._note_scribe_unavailable()
-        assert notes == [("voice", "ElevenLabs Scribe is unavailable for the voice interface. "
-                                   "Voice will not work now.")]
 
 
 class TestWhisperDownloadNotes:

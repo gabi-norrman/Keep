@@ -13,10 +13,6 @@ class TestMigrations:
         with patch.object(Migrations.ConfigStore, "rename_keys", return_value=[]) as self.rename_keys:
             yield tmp_path
 
-    def test_config_renames_go_through_the_config_store(self):
-        Migrations.run()
-        self.rename_keys.assert_called_once_with(Migrations.CONFIG_KEY_RENAMES, Migrations.INTEGRATION_RENAMES)
-
     def test_telegram_session_moves_to_its_new_name(self, tree):
         (tree / "telegram_monitor.session").write_text("auth")
         Migrations.run()

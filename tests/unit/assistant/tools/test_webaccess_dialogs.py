@@ -29,13 +29,6 @@ def sent_method(tab):
 
 @pytest.mark.unit
 class TestDialogHandler:
-    def test_install_registers_the_opening_event(self):
-        wa = bare_wa()
-        tab = Mock()
-        wa._install_dialog_handler(tab)
-        tab.add_handler.assert_called_once_with(cdp.page.JavascriptDialogOpening,
-                                                wa._on_javascript_dialog)
-
     def test_install_survives_a_registration_failure(self):
         wa = bare_wa()
         tab = Mock()

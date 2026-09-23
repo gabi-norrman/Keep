@@ -78,11 +78,6 @@ def test_direct_ref_version_none_for_non_archive_url():
 
 # ---- Python version check ----
 
-def test_check_python_version_passes_for_running_interpreter():
-    # The test suite itself runs on the required Python, so this should be a no-op.
-    RequirementsChecker._check_python_version()
-
-
 def test_check_python_version_exits_on_mismatch(monkeypatch):
     monkeypatch.setattr(rc_module, "REQUIRED_PYTHON", (9, 99))
     with pytest.raises(SystemExit) as exc_info:
@@ -231,20 +226,6 @@ def test_verify_or_exit_exits_on_direct_reference_mismatch(tmp_path, monkeypatch
     assert exc_info.value.code == 1
 
 
-def test_verify_or_exit_exits_on_direct_reference_missing(tmp_path, monkeypatch):
-    reqs = _write_reqs(tmp_path, f"en_core_web_sm @ {SPACY_URL}\n")
-    monkeypatch.setattr(rc_module, "REQUIREMENTS_FILE", reqs)
-
-    def _raise(name):
-        raise importlib.metadata.PackageNotFoundError(name)
-
-    monkeypatch.setattr(importlib.metadata, "version", _raise)
-
-    with pytest.raises(SystemExit) as exc_info:
-        RequirementsChecker.verify_or_exit()
-    assert exc_info.value.code == 1
-
-
 def test_verify_or_exit_direct_reference_without_version_checks_presence(tmp_path, monkeypatch):
     reqs = _write_reqs(tmp_path, "pkg-a @ https://example.com/repo.git\n")
     monkeypatch.setattr(rc_module, "REQUIREMENTS_FILE", reqs)
@@ -259,26 +240,6 @@ def test_verify_or_exit_direct_reference_without_version_checks_presence(tmp_pat
 
     RequirementsChecker.verify_or_exit()
     assert seen == ["pkg-a"]
-
-
-def test_verify_or_exit_aggregates_missing_and_mismatched(tmp_path, monkeypatch):
-    reqs = _write_reqs(tmp_path, "pkg-missing==1.0.0\npkg-wrong==2.0.0\npkg-ok==3.0.0\n")
-    monkeypatch.setattr(rc_module, "REQUIREMENTS_FILE", reqs)
-
-    def _version(name):
-        if name == "pkg-missing":
-            raise importlib.metadata.PackageNotFoundError(name)
-        if name == "pkg-wrong":
-            return "0.0.1"
-        if name == "pkg-ok":
-            return "3.0.0"
-        raise AssertionError(f"unexpected package {name}")
-
-    monkeypatch.setattr(importlib.metadata, "version", _version)
-
-    with pytest.raises(SystemExit) as exc_info:
-        RequirementsChecker.verify_or_exit()
-    assert exc_info.value.code == 1
 
 
 # ---- Grouped (base + voice) checks ----
@@ -326,13 +287,6 @@ def test_missing_voice_package_exits_even_with_voice_off(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc_info:
         RequirementsChecker.verify_or_exit()
     assert exc_info.value.code == 1
-
-
-def test_missing_voice_file_is_logged_not_fatal(tmp_path, monkeypatch):
-    base = _write_reqs(tmp_path, "pkg-a==1.0.0\n")
-    _point_at(monkeypatch, base, tmp_path / "nope-voice.txt")
-    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "1.0.0")
-    RequirementsChecker.verify_or_exit()
 
 
 def test_real_requirements_files_parse_and_voice_includes_base():

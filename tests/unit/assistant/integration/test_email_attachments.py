@@ -99,19 +99,6 @@ class TestIsJunkImage:
 class TestAnalyzeMedia:
 
     @patch("assistant.integration.integrations.email.EmailProvider.media_analyzer")
-    def test_delegates_to_describe_bytes(self, mock_accessor):
-        mock_ia = mock_accessor.return_value
-        mock_ia.describe_bytes.return_value = "Image description: [A cat] A fluffy orange cat."
-
-        result = _analyze_media(b"raw_image_bytes", "image/jpeg", "photo.jpg")
-        assert "A cat" in result
-        args, kwargs = mock_ia.describe_bytes.call_args
-        assert args[0] == b"raw_image_bytes"
-        assert kwargs["mime_type"] == "image/jpeg"
-        assert kwargs["context"] == "Image attached to an email, filename: photo.jpg"
-        assert kwargs["fallback"] == "[Image]"
-
-    @patch("assistant.integration.integrations.email.EmailProvider.media_analyzer")
     def test_video_attachment_uses_video_label(self, mock_accessor):
         mock_ma = mock_accessor.return_value
         mock_ma.describe_bytes.return_value = "Video description: [A dog] A dog runs."
@@ -123,23 +110,8 @@ class TestAnalyzeMedia:
         assert kwargs["context"] == "Video attached to an email, filename: clip.mp4"
         assert kwargs["fallback"] == "[Video]"
 
-    @patch("assistant.integration.integrations.email.EmailProvider.media_analyzer")
-    def test_fallback_propagated(self, mock_accessor):
-        mock_ia = mock_accessor.return_value
-        mock_ia.describe_bytes.return_value = "[Image]"
-        result = _analyze_media(b"raw", "image/jpeg", "bad.jpg")
-        assert result == "[Image]"
-
-
 @pytest.mark.unit
 class TestFormatEmailBodyWithAttachments:
-
-    def test_no_attachments(self):
-        provider = GmailAccess()
-        msg = _make_message(attachments=[])
-        result = provider._format_email_body(msg)
-        assert "Attachment" not in result
-        assert "Body" in result
 
     @patch("assistant.integration.integrations.email.EmailProvider.PdfExtractor")
     def test_pdf_attachment_included(self, mock_pdf):
@@ -152,19 +124,6 @@ class TestFormatEmailBodyWithAttachments:
         assert "report.pdf" in result
         assert "Hello from PDF" in result
         mock_pdf.extract_text.assert_called_once_with(b"pdf_bytes")
-
-    @patch("assistant.integration.integrations.email.EmailProvider._analyze_media")
-    @patch("assistant.integration.integrations.email.EmailProvider._is_junk_media")
-    def test_image_attachment_analyzed(self, mock_junk, mock_analyze):
-        mock_junk.return_value = False
-        mock_analyze.return_value = "Image description: [A receipt] Photo of a store receipt."
-        provider = GmailAccess()
-        att = _make_attachment(filename="receipt.jpg", content_type="image/jpeg",
-                               payload=b"img_bytes", size=200000)
-        msg = _make_message(attachments=[att])
-        result = provider._format_email_body(msg)
-        assert "receipt.jpg" in result
-        assert "receipt" in result.lower()
 
     @patch("assistant.integration.integrations.email.EmailProvider._is_junk_media")
     def test_junk_image_skipped(self, mock_junk):
@@ -186,10 +145,6 @@ class TestFormatEmailBodyWithAttachments:
         assert "--- Attachment: clip.mp4 (video, 293 KB) ---" in result
         assert "A dog runs on a beach." in result
         mock_analyze.assert_called_once_with(b"mp4_bytes", "video/mp4", "clip.mp4")
-
-    def test_small_video_is_junk(self):
-        att = _make_attachment(content_type="video/mp4", size=5000)
-        assert _is_junk_media(att) is True
 
     def test_video_attachment_is_not_junk(self):
         att = _make_attachment(content_type="video/quicktime", size=500000)

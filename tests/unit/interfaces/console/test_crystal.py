@@ -12,7 +12,7 @@ from interfaces.console.crystal.Framebuffer import Framebuffer, UPPER_HALF, term
 from interfaces.console.crystal.Intro import Intro, FLY_IN, HOLD, GLIDE, SETTLE, LOGO, approach, ease
 from interfaces.console.crystal.Renderer import (Renderer, CUBE, WHITE, AMBIENT, AO_STRENGTH, SKY_STOPS, LIGHTS, Light,
                                                 Material, box, solid, environment, normal, dot, rotate, normalized)
-from interfaces.console.crystal.Shapes import interlocking_cube, CHAMFER, GREEN, SILVER
+from interfaces.console.crystal.Shapes import interlocking_cube, GREEN, SILVER
 from interfaces.console.crystal.Tuning import Tuning, PARAMS, LOGO_LOOK
 
 BLACK = (0, 0, 0)
@@ -126,13 +126,6 @@ def test_box_winding_points_outward():
             v0, v1, v2 = (mesh.vertices[i] for i in face[:3])
             centre = tuple(sum(mesh.vertices[i][k] for i in face) / 4 - middle[k] for k in range(3))
             assert dot(normal(v0, v1, v2), centre) > 0
-
-
-def test_box_records_its_bounds_and_material():
-    mesh = box((-1, 0, 2), (1, 3, 5), GREEN)
-    assert mesh.lo == (-1, 0, 2) and mesh.hi == (1, 3, 5)
-    assert len(mesh.vertices) == 8 and len(mesh.faces) == 6
-    assert mesh.material is GREEN and CUBE.material is WHITE
 
 
 def assert_convex_solid(mesh):

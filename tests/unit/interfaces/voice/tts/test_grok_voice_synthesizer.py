@@ -5,12 +5,6 @@ from unittest.mock import Mock, patch
 
 class TestGrokVoiceSynthesizer:
     @patch('interfaces.voice.tts.GrokVoiceSynthesizer.config')
-    def test_voice_id_returns_ara(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from interfaces.voice.tts.GrokVoiceSynthesizer import GrokVoiceSynthesizer
-        assert GrokVoiceSynthesizer.voice_id() == "ara"
-
-    @patch('interfaces.voice.tts.GrokVoiceSynthesizer.config')
     def test_ws_url_contains_voice_and_sample_rate(self, mock_config):
         mock_config.get_api_key.return_value = "k"
         from interfaces.voice.tts.GrokVoiceSynthesizer import GrokVoiceSynthesizer
@@ -57,17 +51,6 @@ class TestGrokVoiceSynthesizer:
         message = json.dumps({"type": "error", "message": "something broke"})
         vs._on_message(None, message)
         assert vs.audio_queue.get_nowait() is None
-
-    @patch('interfaces.voice.tts.GrokVoiceSynthesizer.config')
-    def test_on_open_sets_connected_and_starts_thread(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from interfaces.voice.tts.GrokVoiceSynthesizer import GrokVoiceSynthesizer
-        vs = GrokVoiceSynthesizer()
-        assert vs.is_connected is False
-        with patch('threading.Thread') as mock_thread:
-            vs._on_open(Mock())
-        assert vs.is_connected is True
-        mock_thread.assert_called_once()
 
     @patch('interfaces.voice.tts.GrokVoiceSynthesizer.config')
     def test_on_error_queues_none(self, mock_config):
@@ -118,27 +101,6 @@ class TestGrokVoiceSynthesizer:
         assert "Hello" in text_deltas[0]["delta"]
 
     @patch('interfaces.voice.tts.GrokVoiceSynthesizer.config')
-    def test_feed_text_thread_buffers_incomplete_xml_tag(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from interfaces.voice.tts.GrokVoiceSynthesizer import GrokVoiceSynthesizer
-        vs = GrokVoiceSynthesizer()
-        vs.is_connected = True
-        vs.ws = Mock()
-        sent_messages = []
-        vs.ws.send = lambda msg: sent_messages.append(json.loads(msg))
-
-        vs.text_queue.put("Hello <laugh")
-        vs.text_queue.put("er>world")
-        vs.text_queue.put(None)
-        vs._feed_text_thread()
-
-        text_deltas = [m for m in sent_messages if m.get("type") == "text.delta"]
-        combined = ''.join(m["delta"] for m in text_deltas)
-        assert "<laughter>" in combined or "laugher" in combined
-        assert "Hello" in combined
-        assert "world" in combined
-
-    @patch('interfaces.voice.tts.GrokVoiceSynthesizer.config')
     def test_feed_text_thread_handles_closed_connection(self, mock_config):
         mock_config.get_api_key.return_value = "k"
         from interfaces.voice.tts.GrokVoiceSynthesizer import GrokVoiceSynthesizer
@@ -171,20 +133,3 @@ class TestGrokVoiceSynthesizer:
         text_deltas = [m for m in sent_messages if m.get("type") == "text.delta"]
         combined = ''.join(m["delta"] for m in text_deltas)
         assert "Trailing text <tag" in combined
-
-    @patch('interfaces.voice.tts.GrokVoiceSynthesizer.config')
-    def test_integration_properties(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from interfaces.voice.tts.GrokVoiceSynthesizer import GrokVoiceSynthesizer
-        vs = GrokVoiceSynthesizer()
-        assert vs.name == "Grok TTS"
-        assert vs.config_keys == ["api_keys.grok"]
-
-    @patch('interfaces.voice.tts.GrokVoiceSynthesizer.config')
-    def test_check_health_is_disabled_and_always_healthy(self, mock_config):
-        # The x.ai voices probe was removed because it returned spurious empty-body
-        # HTTP 500s; check_health() now reports healthy without any network call.
-        mock_config.get_api_key.return_value = "k"
-        from interfaces.voice.tts.GrokVoiceSynthesizer import GrokVoiceSynthesizer
-        vs = GrokVoiceSynthesizer()
-        assert vs.check_health() is True

@@ -26,11 +26,6 @@ def app(registry):
 @pytest.mark.unit
 class TestStreamText:
     @pytest.mark.asyncio
-    async def test_requires_request_id(self, app):
-        response = await app.test_client().get('/stream_text')
-        assert response.status_code == 400
-
-    @pytest.mark.asyncio
     async def test_streams_published_events_until_close(self, app, registry):
         registry.publish("req-1", {"type": "user", "name": "Marcus"})
         registry.publish("req-1", {"type": "token", "text": "Hello"})

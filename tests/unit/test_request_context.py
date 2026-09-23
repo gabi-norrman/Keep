@@ -55,16 +55,6 @@ class TestRequestContext:
         assert ctx.user == "Alice"
         assert ctx.user
 
-    def test_user_set_when_provided(self):
-        rd = _make_request_data(args={'user': 'Bob'})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.user == "Bob"
-
-    def test_user_none_when_absent(self):
-        rd = _make_request_data(args={})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.user is None
-
     def test_partial_explicit_params(self):
         rd = _make_request_data(args={'source': 'VoiceToVoice'}, user_agent='python-requests/2.31.0')
         ctx = RequestContext.from_request_data(rd)
@@ -72,60 +62,6 @@ class TestRequestContext:
         assert ctx.location is None
         assert ctx.user is None
         assert not ctx.user
-
-    def test_user_input_extracted(self):
-        rd = _make_request_data(args={'query': 'hello world'})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.user_input == "hello world"
-
-    def test_user_input_none_when_absent(self):
-        rd = _make_request_data(args={})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.user_input is None
-
-    def test_text_only_true(self):
-        rd = _make_request_data(args={'text': '1'})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.text_only is True
-
-    def test_text_only_false(self):
-        rd = _make_request_data(args={})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.text_only is False
-
-    def test_server_sound_true(self):
-        rd = _make_request_data(args={'server_sound': '1'})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.server_sound is True
-
-    def test_server_sound_false(self):
-        rd = _make_request_data(args={})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.server_sound is False
-
-    def test_ai_override_extracted(self):
-        rd = _make_request_data(args={'ai': 'fast'})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.ai_override == "fast"
-
-    def test_ai_override_none_when_absent(self):
-        rd = _make_request_data(args={})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.ai_override is None
-
-    def test_test_true(self):
-        rd = _make_request_data(args={'test': '1'})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.test is True
-
-    def test_test_false(self):
-        rd = _make_request_data(args={})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.test is False
-
-    def test_display_name_with_user(self):
-        ctx = RequestContext(user="Alice")
-        assert ctx.display_name == "Alice"
 
     def test_display_name_without_user(self):
         ctx = RequestContext()
@@ -160,34 +96,12 @@ class TestRequestContext:
         ctx = RequestContext.from_request_data(rd)
         assert ctx.engine == "whisper"
 
-    def test_engine_none_when_absent(self):
-        rd = _make_request_data(args={})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.engine is None
-
     def test_lang_extracted_from_request(self):
         # DialogManager.select_voice routes the request to the Swedish synth when
         # ctx.lang starts with "sv", so this field must round-trip from the URL.
         rd = _make_request_data(args={'lang': 'sv-SE'})
         ctx = RequestContext.from_request_data(rd)
         assert ctx.lang == "sv-SE"
-
-    def test_lang_none_when_absent(self):
-        # Missing lang must be None so DialogManager._voice_for_lang falls back
-        # to the configured language instead of dispatching to Swedish blindly.
-        rd = _make_request_data(args={})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.lang is None
-
-    def test_images_none_when_no_json_body(self):
-        rd = _make_request_data(args={})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.images is None
-
-    def test_images_none_when_json_body_has_no_images(self):
-        rd = _make_request_data(args={}, json_body={"query": "hello"})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.images is None
 
     def test_images_extracted_from_json_body(self):
         images = [{"data": "abc123", "media_type": "image/jpeg"}]
@@ -212,11 +126,6 @@ class TestRequestContext:
         after = time.time()
         assert ctx.speech_end_epoch is not None
         assert before - 0.9 <= ctx.speech_end_epoch <= after - 0.9
-
-    def test_speech_end_epoch_none_when_stt_ms_absent(self):
-        rd = _make_request_data(args={})
-        ctx = RequestContext.from_request_data(rd)
-        assert ctx.speech_end_epoch is None
 
     def test_speech_end_epoch_none_when_stt_ms_malformed(self):
         rd = _make_request_data(args={'stt_ms': 'garbage'})

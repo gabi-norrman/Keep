@@ -12,10 +12,6 @@ class TestFormatInspectResult:
         assert "ERROR" in result
         assert "[5]" in result
 
-    def test_none_result_returns_error(self):
-        result = WebAccess._format_inspect_result(0, None, None)
-        assert "ERROR" in result
-
     def test_not_found_error(self):
         result = WebAccess._format_inspect_result(3, None, {'error': 'not_found'})
         assert "no longer in DOM" in result
@@ -68,11 +64,6 @@ class TestFormatInspectResult:
         assert "textContent" not in result
         assert "outerHTML" not in result
 
-    def test_unknown_tag_fallback(self):
-        result = WebAccess._format_inspect_result(0, None, {'attributes': {}})
-        assert "<?" in result
-
-
 @pytest.mark.unit
 class TestBrowseInspectValidation:
 
@@ -94,28 +85,10 @@ class TestBrowseInspectValidation:
         wa._loop_thread.submit = lambda coro, timeout=None: asyncio.run(coro)
         return wa
 
-    def test_no_browser(self):
-        wa = self._make_wa()
-        wa._tab = None
-        with patch.object(WebAccess, '_async_ensure_browser', new=AsyncMock(return_value=False)):
-            result = wa.browse_inspect("0")
-        assert "ERROR" in result and "not available" in result
-
-    def test_no_session(self):
-        wa = self._make_wa()
-        wa._browse_session_url = None
-        result = wa.browse_inspect("0")
-        assert "ERROR" in result and "no browse session" in result
-
     def test_no_snapshot(self):
         wa = self._make_wa(n_elements=0)
         result = wa.browse_inspect("0")
         assert "ERROR" in result and "no current snapshot" in result
-
-    def test_empty_spec(self):
-        wa = self._make_wa()
-        result = wa.browse_inspect("")
-        assert "ERROR" in result and "needs an argument" in result
 
     def test_non_integer_index(self):
         wa = self._make_wa()

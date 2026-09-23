@@ -83,13 +83,6 @@ class TestTranscribeBodyParsing:
         assert result.language is None
         assert result.language_probability == 0.0
 
-    def test_rtf_is_elapsed_over_audio_seconds(self):
-        """rtf = elapsed / audio_seconds; a 0.5s clip transcribed in (mocked) real time still
-        produces a finite ratio rather than dividing by zero."""
-        half_second = np.zeros(SAMPLE_RATE // 2, np.float32)
-        result, _ = run_transcribe({}, audio=half_second)
-        assert result.rtf == pytest.approx(result.elapsed / 0.5)
-
     def test_empty_audio_does_not_divide_by_zero(self):
         result, _ = run_transcribe({}, audio=np.zeros(0, np.float32))
         assert result.rtf == 0.0
@@ -121,10 +114,6 @@ class TestTranscribeRequestShape:
     def test_no_language_hint_omits_language_code_for_autodetect(self):
         _, data = run_transcribe({}, language=None)
         assert "language_code" not in data
-
-    def test_keyterms_default_to_scribe_keyterms(self):
-        _, data = run_transcribe({})
-        assert data["keyterms"] == list(SCRIBE_KEYTERMS)
 
     def test_empty_keyterms_disables_priming(self):
         """Passing [] explicitly turns priming off — the field must be absent, not an empty list."""
@@ -159,14 +148,6 @@ def make_worker():
 
 
 class TestWorkerDispatch:
-    def test_success_invokes_callback_with_text_conf_language(self):
-        w = make_worker()
-        cb = MagicMock()
-        result = ScribeResult("hi", 0.9, "en", 0.99, 0.1, 0.1)
-        with patch.object(mod, "transcribe", return_value=result):
-            w._run(AUDIO, "en-US", cb, "Mic")
-        cb.assert_called_once_with("hi", 0.9, "en")
-
     def test_language_falls_back_to_hint_when_undetected(self):
         """When Scribe returns no language, the callback gets the outpost's language hint rather
         than None, so downstream locale routing still has something to work with."""

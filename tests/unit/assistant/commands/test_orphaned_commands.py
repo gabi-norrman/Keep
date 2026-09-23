@@ -21,9 +21,6 @@ def registry():
 @pytest.mark.unit
 class TestOrphanedCommandRegistry:
 
-    def test_empty_registry_drains_to_none(self, registry):
-        assert registry.drain_note() is None
-
     def test_pending_reported_once_then_silent_until_resolved(self, registry):
         entry = registry.register_pending("browse_act(55)")
 

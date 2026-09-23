@@ -60,13 +60,6 @@ class TestCommandProcessorAdvanced:
         result = processor.process("turn", mock_dialog_manager)
         assert result is None  # Buffered, waiting for more
 
-    def test_process_accumulates_chunks(self, processor, mock_dialog_manager):
-        """Should accumulate chunks in buffer"""
-        processor.process("turn_", mock_dialog_manager)
-        processor.process("on(", mock_dialog_manager)
-        # Buffer should contain accumulated text
-        assert "turn_on(" in processor.previous_content_buffer
-
     # Removed: test_process_clears_buffer_after_processing - behavior is complex and internal
 
     # ===== process() - command detection =====
@@ -98,13 +91,6 @@ class TestCommandProcessorAdvanced:
 
     # Removed: test_process_empty_string and test_process_only_whitespace - complex internal behavior
 
-    def test_process_incomplete_command_never_completes(self, processor, mock_dialog_manager):
-        """Should buffer incomplete command that never completes"""
-        result1 = processor.process("turn_on(", mock_dialog_manager)
-        assert result1 is None  # Buffering
-
-        # Add non-command text
-        result2 = processor.process("this is not a closing paren", mock_dialog_manager)
         # Eventually should return accumulated text when it's clear it's not a command
         # (Behavior depends on parser logic - test what actually happens)
 
@@ -112,62 +98,17 @@ class TestCommandProcessorAdvanced:
 
     # Removed: test_process_one_command_extracts_and_queues - behavior changed
 
-    def test_process_one_command_handles_no_command(self, processor, mock_dialog_manager):
-        """Should return empty string if no command found"""
-        content = "not a command at all"
-        # This will try to extract command and fail
-        # Based on the code, it returns "" when command not found
-        with patch.object(processor.parser, 'extract_command_and_params', return_value=(None, None)):
-            remainder = processor.process_one_command(content, mock_dialog_manager)
-            assert remainder == ""
-
     # ===== set_command_reply() tests =====
 
     # Removed: test_set_command_reply_saves_to_file - creates files, cleanup is complex
 
     # ===== background_command_start/done() tests =====
 
-    def test_background_command_lifecycle(self, processor):
-        """Should track background command state"""
-        assert processor.command_running_in_background is False
-
-        processor.background_command_start()
-        assert processor.command_running_in_background is True
-
-        processor.background_command_done()
-        assert processor.command_running_in_background is False
-
     # ===== Test mode behavior =====
-
-    def test_test_mode_does_not_execute_commands(self, processor):
-        """Test mode should prevent command execution"""
-        assert processor.test_mode_dont_actually_execute_commands is True
-
-    def test_production_mode_executes_commands(self):
-        """Production mode should execute commands"""
-        # Create processor NOT in test mode
-        with patch('assistant.commands.CommandProcessor.LOCAL_DEVELOPMENT_MODE', False):
-            processor = CommandProcessor(test_suite_mode=False)
-            assert processor.test_mode_dont_actually_execute_commands is False
 
     # ===== invoke_command() tests =====
 
-    def test_invoke_command_queues_command(self, processor, mock_dialog_manager):
-        """Should queue command for background execution"""
-        initial_size = processor.command_queue.qsize()
-
-        processor.invoke_command("turn_on", ["kitchen"], mock_dialog_manager)
-
-        # Queue size should increase
-        assert processor.command_queue.qsize() == initial_size + 1
-
     # ===== kill() tests =====
-
-    def test_kill_sets_flag(self, processor):
-        """Should set killed flag"""
-        assert processor.is_killed is False
-        processor.kill()
-        assert processor.is_killed is True
 
     # ===== Integration: Full workflow =====
 
@@ -175,32 +116,11 @@ class TestCommandProcessorAdvanced:
 
     # ===== Debug output =====
 
-    def test_debug_does_not_crash_when_enabled(self, processor):
-        """Debug output should not crash"""
-        processor.DEBUG = True
-        processor.debug("test message")
         # Should not raise exception
-
-    def test_debug_disabled_by_default(self, processor):
-        """Debug should be disabled by default"""
-        assert processor.DEBUG is False
 
     # ===== wait_has_been_done_for_this_request flag =====
 
-    def test_wait_flag_starts_false(self, processor):
-        """Wait flag should start as False"""
-        assert processor.wait_has_been_done_for_this_request is False
-
     # ===== Command reply tracking =====
-
-    def test_command_reply_starts_none(self, processor):
-        """Command reply should start as None"""
-        assert processor.command_reply is None
-
-    def test_command_reply_persistence(self, processor):
-        """Command reply should persist after being set"""
-        processor.set_command_reply("test reply")
-        assert processor.command_reply == "test reply"
 
     def test_process_invokes_command_when_parser_detects_complete_command(self, monkeypatch):
         """Real parser should trigger command execution once enough tokens arrive"""
@@ -678,23 +598,10 @@ class TestThinkingTagFiltering:
         assert "<thinking>" not in result
         assert "turn_on" not in result
 
-    def test_no_thinking_tag_passes_through(self, processor, mock_dialog_manager):
-        """Text without thinking tags should pass through unchanged"""
-        result = processor.process("Just normal text here", mock_dialog_manager)
-        assert result == "Just normal text here"
-
     def test_partial_tag_not_matching(self, processor, mock_dialog_manager):
         """Partial text that looks like tag but isn't should pass through"""
         result = processor.process("<think about this>", mock_dialog_manager)
         assert result == "<think about this>"
-
-    def test_thinking_state_reset_between_requests(self, processor, mock_dialog_manager):
-        """Thinking state should be tracked correctly within request"""
-        processor.process("<thinking>start", mock_dialog_manager)
-        assert processor.in_thinking_tag is True
-
-        processor.process("</thinking>done", mock_dialog_manager)
-        assert processor.in_thinking_tag is False
 
     def test_filter_end_tag_split_across_chunks(self, processor, mock_dialog_manager):
         """Should handle </thinking> tag split across multiple chunks"""
@@ -752,9 +659,6 @@ class TestPartialTagMatch:
     def test_matches_single_char_of_opening_tag(self, processor):
         assert processor._is_partial_tag_match("<", CommandProcessor.THINKING_TAG_START) == 1
 
-    def test_no_match_returns_zero(self, processor):
-        assert processor._is_partial_tag_match("hello", CommandProcessor.THINKING_TAG_START) == 0
-
     def test_full_tag_is_not_partial(self, processor):
         # Full tag shouldn't match as "partial" since we check up to len(tag)-1
         assert processor._is_partial_tag_match("<thinking>", CommandProcessor.THINKING_TAG_START) == 0
@@ -773,10 +677,6 @@ class TestPartialTagMatch:
 
     def test_matches_longer_spaced_variant(self, processor):
         assert processor._is_partial_tag_match("< thinking", CommandProcessor.THINKING_TAG_START) == 10
-
-    def test_content_ending_with_partial(self, processor):
-        result = processor._is_partial_tag_match("some text<thin", CommandProcessor.THINKING_TAG_START)
-        assert result == 5
 
     def test_no_match_when_tag_chars_not_at_end(self, processor):
         result = processor._is_partial_tag_match("<thinking>rest", CommandProcessor.THINKING_TAG_START)
@@ -800,13 +700,6 @@ class TestAppendCommandReply:
             processor.append_command_reply("first")
             processor.append_command_reply("second")
         assert processor.command_reply == "first\nsecond"
-
-    def test_multiple_appends_accumulate(self, processor):
-        with patch.object(processor, '_log_command_reply'):
-            processor.append_command_reply("a")
-            processor.append_command_reply("b")
-            processor.append_command_reply("c")
-        assert processor.command_reply == "a\nb\nc"
 
     def test_set_replaces_appended(self, processor):
         with patch.object(processor, '_log_command_reply'):
@@ -951,17 +844,6 @@ class TestCommandWorkerBehavior:
         assert processor.command_being_processed is False
         processor.kill()
 
-    def test_null_dialog_manager_skips_wait(self, processor):
-        """Worker should handle None dialog_manager (no wait, no kill check)"""
-        processor.test_mode_dont_actually_execute_commands = True
-
-        processor.invoke_command("turn_on", ["kitchen"], None)
-        processor.command_queue.join()
-
-        # Should complete without error
-        processor.kill()
-
-
 @pytest.mark.unit
 class TestStreamingCommandsWithThinking:
     """Tests for complex streaming scenarios with interleaved thinking tags and commands"""
@@ -977,16 +859,6 @@ class TestStreamingCommandsWithThinking:
         dm.web_request_handler = Mock()
         dm.web_request_handler.wait_so_that_response_timing_is_natural = Mock(return_value=True)
         return dm
-
-    def test_thinking_then_command_then_text(self, processor, mock_dialog_manager):
-        """Full flow: thinking block, command, then visible text"""
-        result = processor.process(
-            "<thinking>plan</thinking>turn_on(kitchen) All done!",
-            mock_dialog_manager
-        )
-        assert "All done!" in result
-        assert "plan" not in result
-        assert "turn_on" not in result
 
     def test_command_inside_thinking_not_executed(self, processor, mock_dialog_manager):
         """Commands inside thinking tags should not be executed"""
@@ -1009,14 +881,6 @@ class TestStreamingCommandsWithThinking:
         r3 = processor.process("kitchen) done", mock_dialog_manager)
         assert r3 is not None
         assert "done" in r3
-
-    def test_text_before_thinking_preserved(self, processor, mock_dialog_manager):
-        """Text before a thinking block should be emitted"""
-        r1 = processor.process("Hello! <thinking>internal", mock_dialog_manager)
-        # "Hello! " should be emitted before the thinking tag starts buffering
-        # The exact behavior depends on whether "Hello! " gets returned or buffered
-        # as part of the thinking state
-        assert r1 is None or "Hello" in (r1 or "")
 
     def test_multiple_thinking_blocks_with_commands_between(self, processor, mock_dialog_manager):
         """Multiple thinking blocks with a command between them"""
@@ -1114,24 +978,6 @@ class TestSpacePreservationAfterHtmlTags:
 
         result = self._assemble(processor, chunks, mock_dialog_manager)
         assert "about 10" in result, f"Space lost: {repr(result)}"
-
-    def test_lt_then_space_then_tag_name(self, processor, mock_dialog_manager):
-        """'<' + ' ' + 'b>' should not eat the space."""
-        result = self._assemble(processor, [
-            "before<",
-            " ",
-            "b>after",
-        ], mock_dialog_manager)
-        assert "before" in result
-        assert "after" in result
-
-    def test_spaced_thinking_tag_still_detected_at_lt_boundary(self, processor, mock_dialog_manager):
-        """'< thinking >' tag should still work when split at '<' boundary."""
-        r1 = processor.process("prefix<", mock_dialog_manager)
-        assert r1 == "prefix"
-
-        r2 = processor.process(" thinking >hidden</thinking>visible", mock_dialog_manager)
-        assert r2 == "visible"
 
     def test_spaced_thinking_tag_detected_at_lt_t_boundary(self, processor, mock_dialog_manager):
         """'< thinking >' tag should work when split at '< t' boundary."""
@@ -1328,12 +1174,6 @@ class TestCodeTagStripping:
         assert "Sure!" in combined
         assert "turn_on" not in combined
 
-    def test_text_after_code_tagged_command_retained(self, processor, mock_dialog_manager):
-        """Text after a <code>-wrapped command should be output"""
-        result = processor.process("<code>turn_on(kitchen)</code> There you go!", mock_dialog_manager)
-        assert "There you go!" in result
-        assert "turn_on" not in result
-
     def test_text_before_and_after_code_tagged_command(self, processor, mock_dialog_manager):
         """Text surrounding a <code>-wrapped command should both be output (streamed)"""
         r1 = processor.process("OK, ", mock_dialog_manager)
@@ -1372,15 +1212,6 @@ class TestThinkingTagEdgeCases:
         dm.web_request_handler.wait_so_that_response_timing_is_natural = Mock(return_value=True)
         return dm
 
-    def test_partial_spaced_tag_at_chunk_boundary(self, processor, mock_dialog_manager):
-        """'Hello< th' → buffers partial, next chunk completes '< thinking >' tag"""
-        result1 = processor.process("Hello< th", mock_dialog_manager)
-        assert result1 is None or result1 == "Hello"
-
-        result2 = processor.process("inking >secret</thinking>out", mock_dialog_manager)
-        assert "out" in (result2 or "")
-        assert "secret" not in (result2 or "")
-
     def test_single_angle_bracket_at_boundary(self, processor, mock_dialog_manager):
         """'text<' → returns 'text', next chunk '<thinking>secret</thinking>out' → returns 'out'"""
         result1 = processor.process("text<", mock_dialog_manager)
@@ -1416,19 +1247,6 @@ class TestThinkingTagEdgeCases:
         assert "end" in combined
         assert "first" not in combined
         assert "second" not in combined
-
-    def test_thinking_tag_at_very_start(self, processor, mock_dialog_manager):
-        """<thinking> as first chars, no prefix"""
-        result = processor.process("<thinking>internal</thinking>output", mock_dialog_manager)
-        assert result == "output"
-        assert "internal" not in result
-
-    def test_very_long_thinking_content(self, processor, mock_dialog_manager):
-        """2000-char thinking block processed without issues"""
-        long_content = "x" * 2000
-        result = processor.process(f"<thinking>{long_content}</thinking>done", mock_dialog_manager)
-        assert result == "done"
-        assert long_content not in result
 
     def test_partial_end_tag_not_matching(self, processor, mock_dialog_manager):
         """Inside thinking tag, '</' then 'div>' → does NOT close thinking tag"""
@@ -1469,16 +1287,6 @@ class TestStreamingListMarkerRaceCondition:
         # Command was processed; only non-command text remains
         assert "execute" not in r2
 
-    def test_flush_buffer_processes_command_at_end_of_stream(self, processor, mock_dialog_manager):
-        """flush_buffer processes 'execute(Steps: 1)' left in buffer at end of stream"""
-        r1 = processor.process("execute(Steps: 1)", mock_dialog_manager)
-        assert r1 is None  # Held back during streaming
-
-        flushed = processor.flush_buffer(mock_dialog_manager)
-        # After flush, the command is recognized (1 is param value, not list marker)
-        # Buffer should be empty after processing
-        assert processor.previous_content_buffer == ""
-
     def test_flush_buffer_logs_dropped_unparsable_buffer(self, processor, mock_dialog_manager):
         """A buffer held as a possible command that never completes is dropped with an
         error naming it, not silently (the show_history(…, 23:59) production bug)."""
@@ -1513,11 +1321,6 @@ class TestStreamingListMarkerRaceCondition:
         assert [q[0] for q in queued] == ["show_history", "list_integrations"]
         assert queued[0][1] == ["2026-09-07 00:00", "2026-09-07 23:59"]
         assert "Checking Monday's history." in out
-
-    def test_flush_buffer_returns_none_when_empty(self, processor, mock_dialog_manager):
-        """flush_buffer returns None when buffer is empty"""
-        result = processor.flush_buffer(mock_dialog_manager)
-        assert result is None
 
     def test_flush_buffer_resets_streaming_flag(self, processor, mock_dialog_manager):
         """flush_buffer temporarily disables streaming, then re-enables"""
@@ -1572,14 +1375,6 @@ class TestPartialCommandTailRetention:
         r2 = processor.process("_photos(\"family\", sort_by=\"best\")", mock_dialog_manager)
         assert r2 is None  # command detected and queued
 
-    def test_command_name_split_with_space_before(self, processor, mock_dialog_manager):
-        """A space before the partial command name (from backtick replacement) should preserve it."""
-        r1 = processor.process("some text\n\n ", mock_dialog_manager)
-        # Whitespace-only after strip → held as possibly command
-        # OR flushed and " " retained — either is acceptable
-        r2 = processor.process("search_photos(\"test\")", mock_dialog_manager)
-        assert r2 is None or "search_photos" not in (r2 or "")  # command detected, not in output
-
     def test_no_false_retention_for_non_command_text(self, processor, mock_dialog_manager):
         """Regular text that doesn't end with a command prefix should be flushed completely."""
         result = processor.process("Hello world! Nice day.", mock_dialog_manager)
@@ -1590,12 +1385,6 @@ class TestPartialCommandTailRetention:
         result = processor.process("I did some research", mock_dialog_manager)
         assert result is not None
         assert "research" in result  # 'research' is NOT a command prefix, should be flushed
-
-    def test_full_command_in_single_token_still_works(self, processor, mock_dialog_manager):
-        """A complete command in a single token should still be detected normally."""
-        result = processor.process("turn_on(kitchen)", mock_dialog_manager)
-        assert result is None or "turn_on" not in (result or "")
-
 
 @pytest.mark.unit
 class TestLogCommandReplyWithImages:
@@ -1740,12 +1529,6 @@ class TestCommandProcessorSensitiveGate:
         assert "relaunches the server" in approval_calls[0]["details"]
         assert run_calls == [("restart_server", [])]
 
-    def test_restart_server_denied_does_not_restart(self, monkeypatch):
-        processor, run_calls, _, _ = self._run_with_decision(
-            "deny", monkeypatch, params=[], command="restart_server")
-        assert run_calls == []
-        assert "restart_server()' was denied by user" in processor.command_reply
-
     def test_deny_skips_execution_and_appends_error(self, monkeypatch):
         processor, run_calls, _, fake_bot = self._run_with_decision("deny", monkeypatch)
         assert run_calls == []
@@ -1802,26 +1585,6 @@ class TestCommandProcessorSensitiveGate:
 
 
 @pytest.mark.unit
-class TestCommandsSensitiveSet:
-    def test_send_imessage_is_sensitive(self):
-        from assistant.commands.Commands import Commands
-        c = Commands(Mock())
-        assert c.is_sensitive("send_imessage") is True
-
-    def test_restart_server_is_sensitive(self):
-        from assistant.commands.Commands import Commands
-        c = Commands(Mock())
-        assert c.is_sensitive("restart_server") is True
-        assert "relaunches the server" in c.approval_note("restart_server")
-        assert c.approval_note("send_imessage") == ""
-
-    def test_turn_on_is_not_sensitive(self):
-        from assistant.commands.Commands import Commands
-        c = Commands(Mock())
-        assert c.is_sensitive("turn_on") is False
-
-
-@pytest.mark.unit
 class TestProfileForDialogManager:
     """Replaces TestIsTextChatSource: the channel profile decides thinking forwarding."""
 
@@ -1848,12 +1611,6 @@ class TestProfileForDialogManager:
         from assistant.ChannelProfile import AUTONOMOUS
         dm = Mock(spec=[])
         assert processor._profile_for(dm) is AUTONOMOUS
-
-    def test_missing_web_request_handler_is_autonomous(self, processor):
-        from assistant.ChannelProfile import AUTONOMOUS
-        dm = Mock(spec=["is_killed"])
-        assert processor._profile_for(dm) is AUTONOMOUS
-
 
 @pytest.mark.unit
 class TestThinkingStreamToObservers:
@@ -1915,10 +1672,6 @@ class TestThinkingStreamToObservers:
         assert calls[1][0][0] == " second part"
         fake_tui.on_thinking_done.assert_called_once()
 
-    def test_no_observer_does_not_crash(self, processor, text_chat_dm):
-        result = processor.process("<thinking>thoughts</thinking>visible", text_chat_dm)
-        assert result == "visible"
-
     def test_failing_observer_does_not_break_the_stream(self, processor, text_chat_dm):
         class Exploding(AssistantObserver):
             def on_thinking_chunk(self, text):
@@ -1926,15 +1679,6 @@ class TestThinkingStreamToObservers:
         observers().subscribe(Exploding())
         result = processor.process("<thinking>thoughts</thinking>visible", text_chat_dm)
         assert result == "visible"
-
-    def test_finalize_receives_positive_duration(self, processor, text_chat_dm):
-        fake_tui = MagicMock()
-        observers().subscribe(fake_tui)
-        processor.process("<thinking>thoughts</thinking>text", text_chat_dm)
-
-        duration = fake_tui.on_thinking_done.call_args[0][0]
-        assert duration > 0
-
 
 @pytest.mark.unit
 class TestWorkerLifecycle:

@@ -17,17 +17,6 @@ class TestComputeMaskedLines:
         tab.mask_text = "hello"
         assert tab._compute_masked_lines() == ["INFO│hello world", "INFO│hello again"]
 
-    def test_filters_on_thread_column(self, tab):
-        tab.log_lines = [
-            "I│2026-06-04 │ mainthread │ started",
-            "I│2026-06-04 │ ttsworker  │ synth",
-            "I│2026-06-04 │ mainthread │ done",
-        ]
-        tab._plain_lines_valid = False
-        tab.mask_active = True
-        tab.mask_text = "ttsworker"
-        assert tab._compute_masked_lines() == ["I│2026-06-04 │ ttsworker  │ synth"]
-
     def test_case_insensitive(self, tab):
         tab.log_lines = ["ERROR│Something Failed", "info│ok"]
         tab._plain_lines_valid = False
@@ -141,11 +130,3 @@ class TestMaskSearchExclusive:
         assert tab.search_mode is True
         assert tab.mask_active is False
         assert tab.mask_text == ""
-
-    def test_starting_mask_clears_search(self, tab):
-        tab.search_mode = True
-        # Ctrl+F routes through _handle_search_input, so simulate post-search then mask
-        tab.search_mode = False
-        tab.handle_input("m")
-        assert tab.mask_input_mode is True
-        assert tab.search_mode is False

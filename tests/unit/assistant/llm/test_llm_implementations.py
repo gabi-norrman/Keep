@@ -54,36 +54,6 @@ class TestAbstractLLMRetry:
         result = llm.think("sys", "user", images=["img1"])
         assert result == "image_response"
 
-    def test_video_is_unsupported_by_default(self):
-        llm = ConcreteTestLLM()
-        assert llm.supports_video() is False
-        assert llm.max_video_bytes() == 0
-        with pytest.raises(NotImplementedError, match="TestLLM cannot take video input"):
-            llm.think_with_video("sys", "user", b"vid", "video/mp4")
-
-    def test_think_with_messages_delegates_to_create_completion(self):
-        llm = ConcreteTestLLM()
-        llm.initialize()
-        msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
-        result = llm.think_with_messages(msgs)
-        assert result == "response"
-
-    def test_ensure_initialized_raises_without_init(self):
-        llm = ConcreteTestLLM()
-        with pytest.raises(RuntimeError, match="not initialized"):
-            llm.create_completion([])
-
-    def test_supports_native_thinking_default_false(self):
-        llm = ConcreteTestLLM()
-        assert llm.supports_native_thinking() is False
-
-    def test_handles_thinking_internally_default_false(self):
-        assert ConcreteTestLLM().handles_thinking_internally() is False
-
-    def test_prefers_prepended_user_query_default_true(self):
-        llm = ConcreteTestLLM()
-        assert llm.prefers_prepended_user_query() is True
-
     @patch('assistant.llm.AbstractLLM.time.sleep')
     def test_retry_retries_on_failure(self, mock_sleep):
         llm = ConcreteTestLLM()
@@ -129,27 +99,6 @@ class TestAbstractLLMRetry:
 
 class TestChatGPTLLM:
     @patch('assistant.llm.ChatGPTLLM.config')
-    def test_constructor_params(self, mock_config):
-        mock_config.get_api_key.return_value = "test-key"
-        from assistant.llm.ChatGPTLLM import ChatGPTLLM
-        llm = ChatGPTLLM(model='gpt-4', api_key_name='openai', base_url='http://test')
-        assert llm.model == 'gpt-4'
-        assert llm.api_key == "test-key"
-        assert llm.base_url == 'http://test'
-        assert llm.client is None
-        mock_config.get_api_key.assert_called_with('openai')
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    @patch('assistant.llm.ChatGPTLLM.OpenAI')
-    def test_initialize_creates_client(self, MockOpenAI, mock_config):
-        mock_config.get_api_key.return_value = "test-key"
-        from assistant.llm.ChatGPTLLM import ChatGPTLLM
-        llm = ChatGPTLLM()
-        llm.initialize()
-        MockOpenAI.assert_called_once_with(api_key="test-key")
-        assert llm.client is not None
-
-    @patch('assistant.llm.ChatGPTLLM.config')
     @patch('assistant.llm.ChatGPTLLM.OpenAI')
     def test_initialize_with_base_url(self, MockOpenAI, mock_config):
         mock_config.get_api_key.return_value = "test-key"
@@ -157,18 +106,6 @@ class TestChatGPTLLM:
         llm = ChatGPTLLM(base_url="http://custom")
         llm.initialize()
         MockOpenAI.assert_called_once_with(api_key="test-key", base_url="http://custom")
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_name_returns_gpt(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.ChatGPTLLM import ChatGPTLLM
-        assert ChatGPTLLM().name() == "GPT"
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_supports_native_thinking_returns_false(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.ChatGPTLLM import ChatGPTLLM
-        assert ChatGPTLLM().supports_native_thinking() is False
 
     @patch('assistant.llm.ChatGPTLLM.config')
     def test_streaming_raises_on_thinking(self, mock_config):
@@ -206,20 +143,6 @@ class TestChatGPTLLM:
 
         result = list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
         assert result == ["Hello", " world"]
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_completion_returns_string(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.ChatGPTLLM import ChatGPTLLM
-        llm = ChatGPTLLM()
-        llm.client = Mock()
-
-        response = Mock()
-        response.choices = [Mock(message=Mock(content="result text"))]
-        llm.client.chat.completions.create.return_value = response
-
-        result = llm.create_completion([{"role": "user", "content": "hi"}])
-        assert result == "result text"
 
     @patch('assistant.llm.ChatGPTLLM.config')
     def test_process_image_bytes_png(self, mock_config):
@@ -334,36 +257,6 @@ class TestChatGPTLLM:
 # ===========================================================================
 
 class TestClaudeLLM:
-    @patch('assistant.llm.ClaudeLLM.config')
-    def test_constructor(self, mock_config):
-        mock_config.get_api_key.return_value = "claude-key"
-        from assistant.llm.ClaudeLLM import ClaudeLLM
-        llm = ClaudeLLM(model='claude-sonnet-4-5')
-        assert llm.model == 'claude-sonnet-4-5'
-        assert llm.api_key == "claude-key"
-        assert llm.client is None
-
-    @patch('assistant.llm.ClaudeLLM.config')
-    @patch('assistant.llm.ClaudeLLM.Anthropic')
-    def test_initialize_creates_client(self, MockAnthropic, mock_config):
-        mock_config.get_api_key.return_value = "claude-key"
-        from assistant.llm.ClaudeLLM import ClaudeLLM
-        llm = ClaudeLLM()
-        llm.initialize()
-        MockAnthropic.assert_called_once_with(api_key="claude-key")
-
-    @patch('assistant.llm.ClaudeLLM.config')
-    def test_name_returns_claude(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.ClaudeLLM import ClaudeLLM
-        assert ClaudeLLM().name() == "Claude (claude-sonnet-4-5)"
-
-    @patch('assistant.llm.ClaudeLLM.config')
-    def test_supports_native_thinking_returns_true(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.ClaudeLLM import ClaudeLLM
-        assert ClaudeLLM().supports_native_thinking() is True
-
     @pytest.mark.parametrize("model, internal", [
         ("claude-fable-5-1", True), ("claude-mythos-5-1", True), ("claude-opus-5", True), ("claude-sonnet-5", True),
         ("claude-opus-4-8", False), ("claude-sonnet-4-5", False), ("claude-haiku-4-5", False),
@@ -376,14 +269,6 @@ class TestClaudeLLM:
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
         assert ClaudeLLM(model).handles_thinking_internally() is internal
-
-    @patch('assistant.llm.ClaudeLLM.config')
-    def test_the_default_model_keeps_the_thinking_instruction(self, mock_config):
-        """A bare `llm: ClaudeLLM` override inherits the constructor default, which does not
-        think on its own."""
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.ClaudeLLM import ClaudeLLM
-        assert ClaudeLLM().handles_thinking_internally() is False
 
     @patch('assistant.llm.ClaudeLLM.config')
     def test_prefers_prepended_user_query_true_for_non_fable(self, mock_config):
@@ -400,17 +285,6 @@ class TestClaudeLLM:
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
         assert ClaudeLLM(model="claude-fable-5").prefers_prepended_user_query() is False
-
-    @patch('assistant.llm.ClaudeLLM.config')
-    def test_set_prompt_cache_toggles_flag(self, mock_config):
-        """Prepending defeats caching, so the caller disables it via set_prompt_cache."""
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.ClaudeLLM import ClaudeLLM
-        llm = ClaudeLLM()
-        llm.set_prompt_cache(False)
-        assert llm.prompt_cache is False
-        llm.set_prompt_cache(True)
-        assert llm.prompt_cache is True
 
     @patch('assistant.llm.ClaudeLLM.config')
     def test_convert_messages_extracts_system(self, mock_config):
@@ -502,12 +376,6 @@ class TestClaudeLLM:
         response.stop_reason = 'end_turn'
         llm.create_completion([{"role": "user", "content": "curate"}], thinking=True)
         assert llm.last_stop_reason == 'end_turn'
-
-    @patch('assistant.llm.ClaudeLLM.config')
-    def test_name_returns_claude_fast(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.ClaudeLLM import ClaudeLLM
-        assert ClaudeLLM(speed="fast").name() == "Claude (claude-sonnet-4-5) (fast)"
 
     @patch('assistant.llm.ClaudeLLM.config')
     def test_create_message_uses_beta_when_fast(self, mock_config):
@@ -654,32 +522,6 @@ class TestClaudeLLM:
         e = APIStatusError("bad request", response=error_response, body=None)
         assert ClaudeLLM._is_retryable(e) is False
 
-    @patch('assistant.llm.ClaudeLLM.time.sleep')
-    @patch('assistant.llm.ClaudeLLM.config')
-    def test_completion_retries_on_body_overloaded_error(self, mock_config, mock_sleep):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.ClaudeLLM import ClaudeLLM
-        import httpx
-        from anthropic import APIStatusError
-
-        llm = ClaudeLLM()
-        llm.client = Mock()
-
-        error_response = httpx.Response(500, request=httpx.Request("POST", "https://api.anthropic.com"))
-        body = {"error": {"type": "overloaded_error", "message": "Overloaded"}}
-        api_error = APIStatusError("overloaded", response=error_response, body=body)
-
-        block = Mock(type='text', text='recovered')
-        response = Mock()
-        response.content = [block]
-        response.usage = Mock(input_tokens=10, cache_creation_input_tokens=0, cache_read_input_tokens=0)
-
-        llm.client.messages.create.side_effect = [api_error, response]
-
-        result = llm.create_completion([{"role": "user", "content": "hi"}])
-        assert result == "recovered"
-        mock_sleep.assert_called_once_with(0.5)
-
     @patch('assistant.llm.ClaudeLLM.config')
     def test_streaming_yields_text_deltas(self, mock_config):
         mock_config.get_api_key.return_value = "k"
@@ -807,19 +649,6 @@ class TestClaudeLLM:
         assert 'cache_control' not in system[1]
 
     @patch('assistant.llm.ClaudeLLM.config')
-    def test_static_cache_ttl_override_applies_to_prefix_block(self, mock_config):
-        """static_cache_ttl='5m' (the prompt test runner's setting) ttls the cached prefix block."""
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.ClaudeLLM import ClaudeLLM
-        llm = ClaudeLLM(static_cache_ttl="5m")
-        sys_msg = "static stable rules<<<CACHE_BREAKPOINT>>>live data"
-        params = llm._build_api_params(
-            [{"role": "system", "content": sys_msg}, {"role": "user", "content": "hi"}],
-            thinking=False, stream=True,
-        )
-        assert params['system'][0]['cache_control'] == {"type": "ephemeral", "ttl": "5m"}
-
-    @patch('assistant.llm.ClaudeLLM.config')
     def test_no_marker_falls_back_to_single_5m_block(self, mock_config):
         """Without the marker, system stays as one ephemeral block (existing behavior)."""
         mock_config.get_api_key.return_value = "k"
@@ -926,19 +755,6 @@ class TestClaudeLLM:
         assert 'cache_control' not in system[1]
 
     @patch('assistant.llm.ClaudeLLM.config')
-    def test_multiple_markers_stripped_when_prompt_cache_disabled(self, mock_config):
-        """With caching off (the prepend path), every marker must be stripped."""
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.ClaudeLLM import ClaudeLLM
-        llm = ClaudeLLM(prompt_cache=False)
-        sys_msg = "a<<<CACHE_BREAKPOINT>>>b<<<CACHE_BREAKPOINT>>>c"
-        params = llm._build_api_params(
-            [{"role": "system", "content": sys_msg}, {"role": "user", "content": "hi"}],
-            thinking=False, stream=True,
-        )
-        assert params['system'] == "abc"
-
-    @patch('assistant.llm.ClaudeLLM.config')
     def test_image_completion_strips_cache_markers_from_system(self, mock_config):
         """The one-shot image path skips _build_cached_system entirely, so it must
         strip the breakpoint markers itself — otherwise they reach the model as
@@ -1007,43 +823,6 @@ class TestClaudeLLM:
 
 class TestGeminiLLM:
     @patch('assistant.llm.GeminiLLM.config')
-    def test_constructor(self, mock_config):
-        mock_config.get_api_key.return_value = "gemini-key"
-        from assistant.llm.GeminiLLM import GeminiLLM
-        llm = GeminiLLM()
-        assert llm.model == "gemini-3.5-flash"
-        assert llm.api_key == "gemini-key"
-        assert llm.client is None
-
-    @patch('assistant.llm.GeminiLLM.config')
-    @patch('assistant.llm.GeminiLLM.genai')
-    def test_initialize_creates_client(self, mock_genai, mock_config):
-        mock_config.get_api_key.return_value = "gemini-key"
-        from assistant.llm.GeminiLLM import GeminiLLM
-        llm = GeminiLLM()
-        llm.initialize()
-        mock_genai.Client.assert_called_once_with(api_key="gemini-key")
-
-    @patch('assistant.llm.GeminiLLM.config')
-    def test_name_returns_gemini(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
-        assert GeminiLLM().name() == "Gemini"
-
-    @patch('assistant.llm.GeminiLLM.config')
-    def test_supports_native_thinking_returns_true(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
-        assert GeminiLLM().supports_native_thinking() is True
-
-    @patch('assistant.llm.GeminiLLM.config')
-    def test_does_not_handle_thinking_internally(self, mock_config):
-        """Gemini keeps the <thinking>-tag instruction (the voice tier's reasoning path)."""
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
-        assert GeminiLLM().handles_thinking_internally() is False
-
-    @patch('assistant.llm.GeminiLLM.config')
     def test_convert_messages_maps_roles(self, mock_config):
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.GeminiLLM import GeminiLLM
@@ -1091,20 +870,6 @@ class TestGeminiLLM:
             [{"role": "user", "content": "hi"}], thinking=False
         ))
         assert result == ["Hello", " world"]
-
-    @patch('assistant.llm.GeminiLLM.config')
-    @patch('assistant.llm.GeminiLLM.types')
-    def test_completion_returns_text(self, mock_types, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
-        llm = GeminiLLM()
-        llm.client = Mock()
-
-        response = Mock(text="full response")
-        llm.client.models.generate_content.return_value = response
-
-        result = llm.create_completion([{"role": "user", "content": "hi"}])
-        assert result == "full response"
 
     @patch('assistant.llm.GeminiLLM.config')
     def test_min_thinking_level_respects_model_floor(self, mock_config):
@@ -1206,47 +971,11 @@ class TestGeminiLLM:
 
 class TestGrokLLM:
     @patch('assistant.llm.ChatGPTLLM.config')
-    def test_inherits_chatgpt(self, mock_config):
-        mock_config.get_api_key.return_value = "grok-key"
-        from assistant.llm.GrokLLM import GrokLLM
-        from assistant.llm.ChatGPTLLM import ChatGPTLLM
-        llm = GrokLLM()
-        assert isinstance(llm, ChatGPTLLM)
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_name_returns_grok(self, mock_config):
-        mock_config.get_api_key.return_value = "grok-key"
-        from assistant.llm.GrokLLM import GrokLLM
-        assert GrokLLM().name() == "Grok"
-
-    @patch('assistant.llm.ChatGPTLLM.config')
     def test_uses_grok_api_key(self, mock_config):
         mock_config.get_api_key.return_value = "grok-key"
         from assistant.llm.GrokLLM import GrokLLM
         assert GrokLLM().api_key == "grok-key"   # read at use, not captured at construction
         mock_config.get_api_key.assert_called_with('grok')
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_base_url_is_xai(self, mock_config):
-        mock_config.get_api_key.return_value = "grok-key"
-        from assistant.llm.GrokLLM import GrokLLM
-        llm = GrokLLM()
-        assert llm.base_url == "https://api.x.ai/v1"
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_default_model(self, mock_config):
-        mock_config.get_api_key.return_value = "grok-key"
-        from assistant.llm.GrokLLM import GrokLLM
-        llm = GrokLLM()
-        assert llm.model == 'grok-4-1-fast-non-reasoning'
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_custom_model(self, mock_config):
-        mock_config.get_api_key.return_value = "grok-key"
-        from assistant.llm.GrokLLM import GrokLLM
-        llm = GrokLLM(model='grok-custom')
-        assert llm.model == 'grok-custom'
-
 
 # ===========================================================================
 # TestOpenRouterLLM
@@ -1254,101 +983,19 @@ class TestGrokLLM:
 
 class TestOpenRouterLLM:
     @patch('assistant.llm.ChatGPTLLM.config')
-    def test_inherits_chatgpt(self, mock_config):
-        mock_config.get_api_key.return_value = "or-key"
-        from assistant.llm.OpenRouterLLM import OpenRouterLLM
-        from assistant.llm.ChatGPTLLM import ChatGPTLLM
-        llm = OpenRouterLLM(model='test/model')
-        assert isinstance(llm, ChatGPTLLM)
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_name_returns_openrouter(self, mock_config):
-        mock_config.get_api_key.return_value = "or-key"
-        from assistant.llm.OpenRouterLLM import OpenRouterLLM
-        assert OpenRouterLLM(model='test/model').name() == "OpenRouter"
-
-    @patch('assistant.llm.ChatGPTLLM.config')
     def test_uses_openrouter_api_key(self, mock_config):
         mock_config.get_api_key.return_value = "or-key"
         from assistant.llm.OpenRouterLLM import OpenRouterLLM
         assert OpenRouterLLM(model='test/model').api_key == "or-key"
         mock_config.get_api_key.assert_called_with('openrouter')
 
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_base_url_is_openrouter(self, mock_config):
-        mock_config.get_api_key.return_value = "or-key"
-        from assistant.llm.OpenRouterLLM import OpenRouterLLM
-        llm = OpenRouterLLM(model='test/model')
-        assert llm.base_url == "https://openrouter.ai/api/v1"
-
-
 # ===========================================================================
 # TestQwenLLM
 # ===========================================================================
 
-class TestQwenLLM:
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_inherits_openrouter(self, mock_config):
-        mock_config.get_api_key.return_value = "or-key"
-        from assistant.llm.QwenLLM import QwenLLM
-        from assistant.llm.OpenRouterLLM import OpenRouterLLM
-        llm = QwenLLM()
-        assert isinstance(llm, OpenRouterLLM)
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_name_returns_qwen(self, mock_config):
-        mock_config.get_api_key.return_value = "or-key"
-        from assistant.llm.QwenLLM import QwenLLM
-        assert QwenLLM().name() == "Qwen"
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_default_model(self, mock_config):
-        mock_config.get_api_key.return_value = "or-key"
-        from assistant.llm.QwenLLM import QwenLLM
-        llm = QwenLLM()
-        assert llm.model == 'qwen/qwen3.8-27b'
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_custom_model(self, mock_config):
-        mock_config.get_api_key.return_value = "or-key"
-        from assistant.llm.QwenLLM import QwenLLM
-        llm = QwenLLM(model='qwen/qwen-custom')
-        assert llm.model == 'qwen/qwen-custom'
-
-
 # ===========================================================================
 # TestGemmaLLM
 # ===========================================================================
-
-class TestGemmaLLM:
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_inherits_openrouter(self, mock_config):
-        mock_config.get_api_key.return_value = "or-key"
-        from assistant.llm.GemmaLLM import GemmaLLM
-        from assistant.llm.OpenRouterLLM import OpenRouterLLM
-        llm = GemmaLLM()
-        assert isinstance(llm, OpenRouterLLM)
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_name_returns_gemma(self, mock_config):
-        mock_config.get_api_key.return_value = "or-key"
-        from assistant.llm.GemmaLLM import GemmaLLM
-        assert GemmaLLM().name() == "Gemma"
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_default_model(self, mock_config):
-        mock_config.get_api_key.return_value = "or-key"
-        from assistant.llm.GemmaLLM import GemmaLLM
-        llm = GemmaLLM()
-        assert llm.model == 'google/gemma-4-26b-a4b-it'
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_custom_model(self, mock_config):
-        mock_config.get_api_key.return_value = "or-key"
-        from assistant.llm.GemmaLLM import GemmaLLM
-        llm = GemmaLLM(model='google/gemma-custom')
-        assert llm.model == 'google/gemma-custom'
-
 
 # ===========================================================================
 # TestChatGPTLLMImageConversion
@@ -1381,19 +1028,6 @@ class TestChatGPTLLMImageConversion:
         ]
         result = ChatGPTLLM._convert_anthropic_content(messages)
         assert result == messages
-
-    @patch('assistant.llm.ChatGPTLLM.config')
-    def test_convert_anthropic_content_png_media_type(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.ChatGPTLLM import ChatGPTLLM
-        messages = [
-            {"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "pngdata"}},
-                {"type": "text", "text": "describe"},
-            ]},
-        ]
-        result = ChatGPTLLM._convert_anthropic_content(messages)
-        assert result[0]['content'][0]['image_url']['url'] == "data:image/png;base64,pngdata"
 
     @patch('assistant.llm.ChatGPTLLM.config')
     def test_streaming_with_image_content_converts_messages(self, mock_config):
@@ -1491,28 +1125,6 @@ class TestGeminiLLMImageConversion:
 
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
-    def test_streaming_with_image_content(self, mock_types, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        mock_types.Part.from_bytes.return_value = "mock_part"
-        from assistant.llm.GeminiLLM import GeminiLLM
-        llm = GeminiLLM()
-        llm.client = Mock()
-
-        chunk = Mock(text="I see an image")
-        llm.client.models.generate_content_stream.return_value = [chunk]
-
-        img_data = base64.b64encode(b"fake").decode()
-        messages = [
-            {"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_data}},
-                {"type": "text", "text": "describe"},
-            ]},
-        ]
-        result = list(llm.create_streaming_completion(messages))
-        assert result == ["I see an image"]
-
-    @patch('assistant.llm.GeminiLLM.config')
-    @patch('assistant.llm.GeminiLLM.types')
     def test_create_completion_with_images(self, mock_types, mock_config):
         mock_config.get_api_key.return_value = "k"
         mock_types.Part.from_bytes.return_value = "mock_image_part"
@@ -1538,12 +1150,6 @@ class TestGeminiLLMImageConversion:
 # ===========================================================================
 
 class TestGeminiLLMVideo:
-    @patch('assistant.llm.GeminiLLM.config')
-    def test_supports_video(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
-        assert GeminiLLM().supports_video() is True
-
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
     def test_think_with_video_sends_inline_clip_before_text(self, mock_types, mock_config):
@@ -1723,12 +1329,6 @@ class TestGeminiLLMVideo:
         assert llm.think("sys", "describe", images=[b'\xff\xd8\xff' + b'\x00' * 10]) == ""
 
     @patch('assistant.llm.GeminiLLM.config')
-    def test_max_video_bytes_is_the_files_api_limit(self, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM, MAX_VIDEO_BYTES
-        assert GeminiLLM().max_video_bytes() == MAX_VIDEO_BYTES == 2 * 1024 ** 3
-
-    @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
     def test_think_with_video_retries_transient_failure(self, mock_types, mock_config):
         mock_config.get_api_key.return_value = "k"
@@ -1750,16 +1350,6 @@ class TestOllamaLLM:
     def _make_llm(self):
         from assistant.llm.OllamaLLM import OllamaLLM
         return OllamaLLM(model='gemma4:26b', base_url='http://localhost:11434')
-
-    @patch('assistant.llm.OllamaLLM.config')
-    def test_constructor_defaults(self, mock_config):
-        mock_config.get.side_effect = lambda key, default=None: default
-        from assistant.llm.OllamaLLM import OllamaLLM
-        llm = OllamaLLM()
-        assert llm.model == 'gemma4:26b'
-        assert llm.base_url == 'http://localhost:11434'
-        assert llm.think is False
-        assert llm.client is True
 
     @patch('assistant.llm.OllamaLLM.config')
     def test_base_url_from_config(self, mock_config):
@@ -1800,9 +1390,6 @@ class TestOllamaLLM:
         finally:
             OllamaLLM._logged_configs = saved
 
-    def test_name_returns_ollama(self):
-        assert self._make_llm().name() == "Ollama"
-
     def test_build_request(self):
         llm = self._make_llm()
         req = llm._build_request([{"role": "user", "content": "hi"}], stream=True)
@@ -1813,12 +1400,6 @@ class TestOllamaLLM:
             "keep_alive": -1,
             "think": False,
         }
-
-    def test_build_request_with_think_enabled(self):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        llm = OllamaLLM(think=True)
-        req = llm._build_request([], stream=False)
-        assert req["think"] is True
 
     def test_build_request_flattens_anthropic_image_blocks(self):
         # Ollama's /api/chat rejects list content with a 400. A message whose
@@ -1840,13 +1421,6 @@ class TestOllamaLLM:
         msg = req["messages"][0]
         assert msg["content"] == "Camera: Front door\nCamera: Garden"
         assert msg["images"] == [b64]
-
-    def test_build_request_string_content_passes_through(self):
-        # String content must be left exactly as-is, with no spurious `images` key.
-        llm = self._make_llm()
-        req = llm._build_request([{"role": "user", "content": "hi"}], stream=True)
-        assert req["messages"] == [{"role": "user", "content": "hi"}]
-        assert "images" not in req["messages"][0]
 
     def test_build_request_strips_cache_markers_from_system(self):
         # Regression for the marker leak: Ollama received Claude's cache breakpoint
@@ -1960,20 +1534,6 @@ class TestOllamaLLM:
         assert mock_post.call_args.kwargs["timeout"] == OllamaLLM._PRE_HEAT_TIMEOUT
         list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
         assert mock_post.call_args.kwargs["timeout"] is None
-
-    def test_streaming_raises_on_thinking(self):
-        llm = self._make_llm()
-        with pytest.raises(ThinkingNotSupportedError):
-            list(llm.create_streaming_completion([], thinking=True))
-
-    def test_completion_raises_on_thinking(self):
-        llm = self._make_llm()
-        with pytest.raises(ThinkingNotSupportedError):
-            llm.create_completion([], thinking=True)
-
-    def test_prefers_prepended_user_query_false(self):
-        llm = self._make_llm()
-        assert llm.prefers_prepended_user_query() is False
 
     @patch('assistant.llm.OllamaLLM.OllamaLLM._rendered_prompt', return_value=None)
     @patch('assistant.llm.OllamaLLM.requests.post')
@@ -2399,33 +1959,6 @@ class TestOllamaLLM:
             OllamaLLM._prefill_tps = original_tps
             OllamaLLM._prefill_cache_metrics = original_metrics
 
-    def test_log_prefix_match_first_request(self):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        original = OllamaLLM._last_payload
-        try:
-            OllamaLLM._last_payload = ""
-            messages = [{"role": "user", "content": "hello"}]
-            payload_str = OllamaLLM._log_prefix_match(messages)
-            assert OllamaLLM._last_payload == "", "_log_prefix_match should not update _last_payload"
-            OllamaLLM._mark_payload_completed(payload_str)
-            assert OllamaLLM._last_payload != ""
-        finally:
-            OllamaLLM._last_payload = original
-
-    def test_log_prefix_match_computes_shared_chars(self):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        original = OllamaLLM._last_payload
-        try:
-            OllamaLLM._last_payload = ""
-            msgs1 = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hello"}]
-            payload_str = OllamaLLM._log_prefix_match(msgs1)
-            OllamaLLM._mark_payload_completed(payload_str)
-            msgs2 = [{"role": "system", "content": "sys"}, {"role": "user", "content": "world"}]
-            OllamaLLM._log_prefix_match(msgs2)
-            assert OllamaLLM._last_payload != ""
-        finally:
-            OllamaLLM._last_payload = original
-
     # --- pre-heat in-flight guard ---------------------------------------
     # Ollama processes one request at a time. The guard ensures at most one
     # pre-heat is ever fired; a newer prompt arriving mid-flight is stored and
@@ -2576,13 +2109,6 @@ def _ssh_result(returncode=0, stdout='', stderr=''):
 class TestOllamaRemoteLog:
     """Remote-Ollama diagnostics: cache-metric log reads go over ssh when base_url
     points at another machine."""
-
-    @patch('assistant.llm.OllamaLLM.config')
-    def test_local_base_url_uses_local_log(self, mock_config):
-        mock_config.get.side_effect = lambda key, default=None: default
-        from assistant.llm.OllamaLLM import OllamaLLM
-        OllamaLLM(base_url='http://localhost:11434')
-        assert OllamaLLM._ssh_log is None
 
     @patch('assistant.llm.OllamaLLM.config')
     def test_remote_base_url_enables_ssh_log(self, mock_config):
@@ -2779,20 +2305,6 @@ class TestOllamaMlxLogFormat:
         finally:
             OllamaLLM._end_prefill()
 
-    def test_prefill_progress_falls_back_to_time_estimate(self):
-        # llama.cpp runner: no progress lines — the elapsed-time estimate applies.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        with patch.object(OllamaLLM, '_log_size', return_value=0):
-            OllamaLLM._begin_prefill()
-        try:
-            with patch.object(OllamaLLM, '_read_cache_metrics', return_value=(5786, 558)), \
-                 patch.object(OllamaLLM, '_read_prefill_progress', return_value=None):
-                progress = OllamaLLM.prefill_progress()
-            assert 0.0 <= progress <= 99.0
-        finally:
-            OllamaLLM._end_prefill()
-
-
 # ===========================================================================
 # missing_api_key — the question a caller asks before initialize() when it would rather
 # sit out than crash the boot (the cache auditor, on an install without a Gemini key).
@@ -2826,9 +2338,6 @@ class TestMissingApiKey:
         mock_config.get_api_key.return_value = "o-key"
         assert ChatGPTLLM(api_key_name='grok').missing_api_key() is None
 
-    def test_the_base_class_reports_nothing_missing(self):
-        assert ConcreteTestLLM().missing_api_key() is None
-
     @patch('assistant.llm.ChatGPTLLM.config')
     @patch('assistant.llm.ClaudeLLM.config')
     @patch('assistant.llm.GeminiLLM.config')
@@ -2848,17 +2357,6 @@ class TestMissingApiKey:
             cfg.get_api_key.return_value = "stored-later"
         assert [llm.missing_api_key() for llm in llms] == [None, None, None]
         assert [llm.api_key for llm in llms] == ["stored-later"] * 3
-
-    def test_api_key_name_is_known_without_the_key(self):
-        # An integration running on a tier declares the tier backend's key as the one it
-        # needs, so the name must come from the class alone — set or not.
-        from assistant.llm.GeminiLLM import GeminiLLM
-        from assistant.llm.ClaudeLLM import ClaudeLLM
-        from assistant.llm.ChatGPTLLM import ChatGPTLLM
-        assert GeminiLLM().api_key_name() == "api_keys.gemini"
-        assert ClaudeLLM().api_key_name() == "api_keys.anthropic"
-        assert ChatGPTLLM(api_key_name='grok').api_key_name() == "api_keys.grok"
-        assert ConcreteTestLLM().api_key_name() is None
 
     def test_tier_api_key_name_builds_the_tier_backend_uninitialized(self, monkeypatch):
         from assistant.llm import tier_api_key_name

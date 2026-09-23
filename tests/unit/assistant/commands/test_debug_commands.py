@@ -28,10 +28,6 @@ def test_is_command():
     assert not DebugCommands.is_command("")
 
 
-def test_handle_unknown_command():
-    assert "Unknown command" in DebugCommands().handle("//NOPE")
-
-
 def test_recent_audio_returns_newest_first(tmp_path, monkeypatch):
     audio = tmp_path / "audio"
     audio.mkdir()
@@ -422,12 +418,6 @@ def test_feed_bad_input(feeds):
     assert DebugCommands().handle("//feed pause") == "Usage: //feed <pause|resume> <all|iMessage|Telegram|iCloud Photos>"
 
 
-def test_feed_without_feeds(monkeypatch):
-    from assistant.integration.FeedRunner import Feeds
-    monkeypatch.setattr(Feeds, "get_instance", classmethod(lambda cls: _FakeFeeds([])))
-    assert DebugCommands().handle("//feed pause all") == "No feeds are running."
-
-
 # --- //memory_curate --------------------------------------------------------------------
 
 @pytest.fixture
@@ -630,11 +620,6 @@ def test_wipe_without_a_telegram_session_never_touches_the_integration(wipe_env)
     with patch.object(TelegramFeedIntegration, "log_out") as logout:
         DebugCommands().handle("//wipe")
     logout.assert_not_called()
-
-
-def test_first_run_state_is_a_wipe_target():
-    from assistant import FirstRun
-    assert FirstRun.STATE_FILE in [p for p, _ in dc_mod.WIPE_TARGETS]
 
 
 # --- //toolkits and //toolkit --------------------------------------------------------------

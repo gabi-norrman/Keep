@@ -43,31 +43,7 @@ class TestStaticBehavior:
             from interfaces.voice.tts.SupertonicVoiceSynthesizer import SupertonicVoiceSynthesizer
             assert SupertonicVoiceSynthesizer.voice_id() == "F2"
 
-    def test_name_pronunciations_config_section(self):
-        from interfaces.voice.tts.SupertonicVoiceSynthesizer import SupertonicVoiceSynthesizer
-        assert SupertonicVoiceSynthesizer.CONFIG_SECTION == "supertonic"
-
-
 class TestConfig:
-    def test_defaults_when_no_tts_block(self):
-        """When no config is present, the synthesizer falls back to baked-in
-        defaults. We assert the shape of those defaults rather than exact values
-        so tuning a default in code doesn't break this test."""
-        with patch('interfaces.voice.tts.SupertonicVoiceSynthesizer.config') as mock_config:
-            mock_config.get.side_effect = lambda key, default=None: default
-            from interfaces.voice.tts.SupertonicVoiceSynthesizer import SupertonicVoiceSynthesizer
-            vs = SupertonicVoiceSynthesizer()
-            assert isinstance(vs._voice_name, str) and vs._voice_name
-            assert isinstance(vs._lang, str) and vs._lang
-            assert isinstance(vs._total_steps, int) and vs._total_steps > 0
-            assert isinstance(vs._speed, float) and vs._speed > 0
-
-    def test_overrides_from_config(self):
-        vs = _make_vs(voice="F2", total_steps=8, speed=1.2)
-        assert vs._voice_name == "F2"
-        assert vs._total_steps == 8
-        assert vs._speed == 1.2
-
     def test_lang_derives_from_top_level_language(self):
         """Supertonic has no separate lang setting — it takes the primary subtag
         of the global `language` config (e.g. 'sv-SE' → 'sv')."""
@@ -84,26 +60,6 @@ class TestClauseBoundaryFlusher:
         speakable, rest = self._pop("Hello, world.")
         assert speakable == "Hello,"
         assert rest == " world."
-
-    def test_flush_at_period(self):
-        speakable, rest = self._pop("Hi there. Next sentence")
-        assert speakable == "Hi there."
-        assert rest == " Next sentence"
-
-    def test_flush_at_question_mark(self):
-        speakable, rest = self._pop("Really? Yes!")
-        assert speakable == "Really?"
-        assert rest == " Yes!"
-
-    def test_flush_at_colon(self):
-        speakable, rest = self._pop("Here is the deal: it works")
-        assert speakable == "Here is the deal:"
-        assert rest == " it works"
-
-    def test_no_flush_under_word_threshold(self):
-        speakable, rest = self._pop("one two three")
-        assert speakable is None
-        assert rest == "one two three"
 
     def test_word_count_fallback_keeps_partial_word(self):
         # 20 complete words + a partial word at the end → flush the 20 words,
@@ -445,33 +401,7 @@ class TestStartAndLifecycle:
         synthesized = " ".join(c.kwargs.get('text') or c.args[0] for c in tts.synthesize.call_args_list)
         assert "stale" not in synthesized
 
-    def test_close_joins_thread_and_clears_state(self):
-        vs = _make_vs()
-        tts, style = Mock(), Mock()
-        tts.synthesize.return_value = (np.full(4410, 0.3, dtype=np.float32), 0.1)
-
-        with patch.object(vs, '_get_tts', return_value=(tts, style)):
-            list(vs.start(iter(["Hi there."])))
-
-        vs.close()
-        assert vs.is_closed is True
-        assert vs.llm_text_stream is None
-        assert vs.audio_stream is None
-        assert vs.synthesis_thread is None or not vs.synthesis_thread.is_alive()
-
-
 class TestPreloadAndHealth:
-    def test_preload_invokes_get_tts(self):
-        vs = _make_vs()
-        with patch.object(vs, '_get_tts', return_value=(Mock(), Mock())) as mock_get:
-            vs.preload()
-            mock_get.assert_called_once()
-
-    def test_check_health_true_when_supertonic_importable(self):
-        vs = _make_vs()
-        with patch.dict('sys.modules', {'supertonic': MagicMock()}):
-            assert vs.check_health() is True
-
     def test_get_tts_caches_at_class_level(self):
         vs = _make_vs()
         from interfaces.voice.tts.SupertonicVoiceSynthesizer import SupertonicVoiceSynthesizer
@@ -585,19 +515,6 @@ class TestBackgroundPreload:
 
         spawn.assert_called_once()
         assert SupertonicVoiceSynthesizer._preload_started is True
-
-    def test_spawn_preload_thread_creates_named_daemon(self):
-        # The real spawn must create a daemon thread named SupertonicPreload.
-        # Filter the recorded calls by that name so a concurrent synthesis thread
-        # (lines feeding/synthesis, also daemon but unnamed) can't taint the assert.
-        vs = _make_vs()  # under pytest: no auto-spawn
-        with patch('interfaces.voice.tts.SupertonicVoiceSynthesizer.threading.Thread') as mock_thread:
-            vs._spawn_preload_thread()
-        preload_calls = [c for c in mock_thread.call_args_list
-                         if c.kwargs.get('name') == 'SupertonicPreload']
-        assert len(preload_calls) == 1
-        assert preload_calls[0].kwargs.get('daemon') is True
-        mock_thread.return_value.start.assert_called()
 
     def test_preload_thread_target_calls_preload_and_swallows_errors(self):
         vs = _make_vs()

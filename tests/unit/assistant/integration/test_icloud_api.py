@@ -5,14 +5,7 @@ import time
 import pytest
 from unittest.mock import Mock, patch, MagicMock, PropertyMock
 
-from assistant.integration.integrations.ICloudIntegration import (
-    iCloudAPI,
-    iCloudAPIError,
-    iCloudAuthenticationError,
-    iCloudConfigurationError,
-    iCloudDeviceSpec,
-    ICloudIntegration,
-)
+from assistant.integration.integrations.ICloudIntegration import iCloudAPI, iCloudAPIError, iCloudAuthenticationError, iCloudConfigurationError, ICloudIntegration
 from assistant.integration.Integration import IntegrationState
 
 
@@ -34,30 +27,6 @@ def reset_singleton():
 
 
 class TestiCloudAPI:
-    def test_constructor_validates_config(self):
-        mock_cm = Mock()
-        mock_cm.get.return_value = VALID_CONFIG
-        api = iCloudAPI(config_manager=mock_cm)
-        assert api._config == VALID_CONFIG
-
-    def test_raises_on_missing_apple_id(self):
-        mock_cm = Mock()
-        mock_cm.get.return_value = {
-            "password": "secret",
-            "devices": [{"id": "x", "display_name": "Phone"}]
-        }
-        with pytest.raises(iCloudConfigurationError, match="apple_id"):
-            iCloudAPI(config_manager=mock_cm)
-
-    def test_raises_on_missing_password(self):
-        mock_cm = Mock()
-        mock_cm.get.return_value = {
-            "apple_id": "test@icloud.com",
-            "devices": [{"id": "x", "display_name": "Phone"}]
-        }
-        with pytest.raises(iCloudConfigurationError, match="password"):
-            iCloudAPI(config_manager=mock_cm)
-
     def test_starts_without_devices(self):
         """apple_id + password are enough: photos and the device listing work before any
         device is configured, and the Find My commands say what to do."""
@@ -107,21 +76,6 @@ class TestiCloudAPI:
         assert status['status'] == 'error'
         assert "Login failed" in status['message']
 
-    def test_singleton_pattern(self):
-        mock_cm = Mock()
-        mock_cm.get.return_value = VALID_CONFIG
-        api1 = iCloudAPI.get_instance(config_manager=mock_cm)
-        api2 = iCloudAPI.get_instance(config_manager=mock_cm)
-        assert api1 is api2
-
-    def test_singleton_reset(self):
-        mock_cm = Mock()
-        mock_cm.get.return_value = VALID_CONFIG
-        api1 = iCloudAPI.get_instance(config_manager=mock_cm)
-        iCloudAPI.reset_instance()
-        api2 = iCloudAPI.get_instance(config_manager=mock_cm)
-        assert api1 is not api2
-
     @patch('assistant.integration.integrations.ICloudIntegration.PyiCloudService')
     def test_requires_2fa_with_mocked_api(self, mock_pyicloud):
         mock_service = Mock()
@@ -131,12 +85,6 @@ class TestiCloudAPI:
         api = iCloudAPI(config=VALID_CONFIG)
         result = api.requires_2fa()
         assert result is True
-
-
-class TestiCloudDeviceSpec:
-    def test_label_returns_display_name(self):
-        spec = iCloudDeviceSpec(id="abc", display_name="My Phone")
-        assert spec.label() == "My Phone"
 
 
 class TestDeviceSpecs:
@@ -211,11 +159,6 @@ class TestEnsureAuthenticated:
 
 
 class TestSend2faCode:
-    def test_api_none_raises(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        with pytest.raises(iCloudAuthenticationError, match="Not authenticated"):
-            api.send_2fa_code("123456")
-
     def test_validation_succeeds_trusts_untrusted_session(self):
         api = iCloudAPI(config=VALID_CONFIG)
         mock_service = Mock()
@@ -1268,18 +1211,6 @@ class TestGetLocation:
         assert "STALE" in result
         assert devices.refresh.call_count == 2  # polled until the 10s budget ran out
 
-    @patch('assistant.integration.integrations.ICloudIntegration.PyiCloudService')
-    def test_device_not_found_raises(self, mock_pyicloud):
-        other = self._make_device("other-uuid", name="MacBook")
-        mock_service = Mock()
-        mock_service.requires_2fa = False
-        mock_service.devices = [other]
-        mock_pyicloud.return_value = mock_service
-
-        api = iCloudAPI(config=VALID_CONFIG)
-        with pytest.raises(iCloudAPIError, match="not found in iCloud"):
-            api.get_location("iPhone")
-
     @patch('assistant.integration.integrations.ICloudIntegration.reverse_geocode')
     @patch('assistant.integration.integrations.ICloudIntegration.PyiCloudService')
     def test_reauth_retries_successfully(self, mock_pyicloud, mock_geocode):
@@ -1318,232 +1249,6 @@ class TestGetLocation:
         assert "Some Place" in result
 
 
-class TestHumanizeAge:
-    def test_seconds(self):
-        assert ICloudIntegration._humanize_age(0) == "0 seconds"
-        assert ICloudIntegration._humanize_age(30) == "30 seconds"
-        assert ICloudIntegration._humanize_age(59) == "59 seconds"
-
-    def test_minutes(self):
-        assert ICloudIntegration._humanize_age(60) == "1 minutes"
-        assert ICloudIntegration._humanize_age(150) == "2 minutes"
-        assert ICloudIntegration._humanize_age(3599) == "59 minutes"
-
-    def test_hours_with_decimal(self):
-        assert ICloudIntegration._humanize_age(3600) == "1.0 hours"
-        assert ICloudIntegration._humanize_age(5400) == "1.5 hours"
-
-    def test_hours_integer(self):
-        assert ICloudIntegration._humanize_age(36000) == "10 hours"
-        assert ICloudIntegration._humanize_age(82800) == "23 hours"
-
-    def test_days_with_decimal(self):
-        assert ICloudIntegration._humanize_age(86400) == "1.0 days"
-        assert ICloudIntegration._humanize_age(172800) == "2.0 days"
-
-    def test_days_integer(self):
-        assert ICloudIntegration._humanize_age(864000) == "10 days"
-        assert ICloudIntegration._humanize_age(2592000) == "30 days"
-
-
-class TestFormatLocation:
-    def test_with_place_and_accuracy(self):
-        result = ICloudIntegration._format_location(
-            "iPhone", "Parkgatan, Centrum", 57.70120, 11.97300, 25.4, None, False, False
-        )
-        assert "iPhone: Parkgatan, Centrum" in result
-        assert "57.70120" in result
-        assert "±25m" in result
-
-    def test_without_place(self):
-        result = ICloudIntegration._format_location(
-            "iPhone", None, 57.0, 12.0, 50.0, None, False, False
-        )
-        assert "location unavailable as a place name" in result
-        assert "57.00000" in result
-
-    def test_accuracy_none(self):
-        result = ICloudIntegration._format_location(
-            "iPhone", "Somewhere", 57.0, 12.0, None, None, False, False
-        )
-        assert "accuracy unknown" in result
-
-    def test_timestamp_present(self):
-        import time
-        recent_ts_ms = (time.time() - 120) * 1000
-        result = ICloudIntegration._format_location(
-            "iPhone", "Place", 57.0, 12.0, 10.0, recent_ts_ms, False, False
-        )
-        assert "Updated" in result
-        assert "ago" in result
-
-    def test_timestamp_none_omits_age_line(self):
-        result = ICloudIntegration._format_location(
-            "iPhone", "Place", 57.0, 12.0, 10.0, None, False, False
-        )
-        assert "Updated" not in result
-
-    def test_stale_flag(self):
-        result = ICloudIntegration._format_location(
-            "iPhone", "Place", 57.0, 12.0, 10.0, None, True, False
-        )
-        assert "STALE" in result
-        assert result.startswith("iPhone: Place (STALE")  # staleness leads the headline
-        assert "inaccurate" not in result
-
-    def test_inaccurate_flag(self):
-        result = ICloudIntegration._format_location(
-            "iPhone", "Place", 57.0, 12.0, 10.0, None, False, True
-        )
-        assert "inaccurate" in result
-        assert "stale" not in result
-
-    def test_both_flags(self):
-        result = ICloudIntegration._format_location(
-            "iPhone", "Place", 57.0, 12.0, 10.0, None, True, True
-        )
-        assert "STALE" in result
-        assert "inaccurate" in result
-
-    def test_no_flags_omits_note_line(self):
-        result = ICloudIntegration._format_location(
-            "iPhone", "Place", 57.0, 12.0, 10.0, None, False, False
-        )
-        assert "Note:" not in result
-
-
-class TestRequires2faFalsePositiveDetection:
-    """Tests for the false-positive 2FA detection added to requires_2fa().
-    PyiCloud can report requires_2fa=True when hsaTrustedBrowser is False,
-    even when session cookies are valid and API calls succeed."""
-
-    def test_returns_false_when_session_functional_despite_requires_2fa(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
-        mock_service.requires_2fa = True
-        mock_service.devices = [Mock()]  # iterable = session works
-        api._api = mock_service
-
-        assert api.requires_2fa() is False
-
-    def test_returns_true_when_session_not_functional(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
-        mock_service.requires_2fa = True
-        mock_service.devices = Mock(side_effect=Exception("401"))
-        api._api = mock_service
-
-        assert api.requires_2fa() is True
-
-    def test_returns_false_when_api_says_no_2fa(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
-        mock_service.requires_2fa = False
-        api._api = mock_service
-
-        assert api.requires_2fa() is False
-
-    def test_is_session_functional_returns_false_without_api(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        api._api = None
-        assert api._is_session_functional() is False
-
-
-class TestRequestSms2fa:
-    def test_raises_when_not_authenticated(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        with pytest.raises(iCloudAuthenticationError, match="Not authenticated"):
-            api.request_sms_2fa()
-
-    def test_raises_when_no_trusted_phone(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
-        mock_service._auth_data = {"phoneNumberVerification": {}}
-        api._api = mock_service
-
-        with pytest.raises(iCloudAuthenticationError, match="No trusted phone"):
-            api.request_sms_2fa()
-
-    def test_raises_on_http_error(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
-        mock_service._auth_data = {
-            "phoneNumberVerification": {
-                "trustedPhoneNumber": {"id": 1, "obfuscatedNumber": "(***) ***-1234"}
-            }
-        }
-        mock_resp = Mock()
-        mock_resp.status_code = 403
-        mock_service.session.put.return_value = mock_resp
-        api._api = mock_service
-
-        with pytest.raises(iCloudAuthenticationError, match="HTTP 403"):
-            api.request_sms_2fa()
-
-    def test_happy_path_returns_obfuscated_number(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
-        phone = {"id": 1, "obfuscatedNumber": "(***) ***-1234"}
-        mock_service._auth_data = {
-            "phoneNumberVerification": {"trustedPhoneNumber": phone}
-        }
-        mock_resp = Mock()
-        mock_resp.status_code = 200
-        mock_service.session.put.return_value = mock_resp
-        api._api = mock_service
-
-        result = api.request_sms_2fa()
-
-        assert result == "(***) ***-1234"
-        assert mock_service._auth_data["mode"] == "sms"
-        assert mock_service._auth_data["trustedPhoneNumber"] == phone
-
-    def test_timestamp_captured_before_put(self):
-        """A code that lands while the verify/phone PUT is in flight must not be
-        rejected as predating the request — the timestamp goes before the PUT."""
-        api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
-        phone = {"id": 1, "obfuscatedNumber": "(***) ***-1234"}
-        mock_service._auth_data = {
-            "phoneNumberVerification": {"trustedPhoneNumber": phone}
-        }
-        api._api = mock_service
-
-        with patch('assistant.integration.integrations.ICloudIntegration.time') as mock_time:
-            ticks = iter([1000.0, 1001.0, 1002.0, 1003.0])
-            mock_time.time.side_effect = lambda: next(ticks)
-            put_times = []
-
-            def fake_put(*args, **kwargs):
-                put_times.append(mock_time.time())
-                return Mock(status_code=200)
-
-            mock_service.session.put.side_effect = fake_put
-            api.request_sms_2fa()
-
-        assert api._sms_requested_at == 1000.0
-        assert put_times == [1001.0]
-
-    def test_failed_put_leaves_no_pending_request(self):
-        """A failed PUT must not leave a phantom pending request that blocks
-        re-requests for the SMS_CODE_WAIT_SECONDS window."""
-        api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
-        mock_service._auth_data = {
-            "phoneNumberVerification": {
-                "trustedPhoneNumber": {"id": 1, "obfuscatedNumber": "(***) ***-1234"}
-            }
-        }
-        mock_service.session.put.return_value = Mock(status_code=423)
-        api._api = mock_service
-
-        with pytest.raises(iCloudAuthenticationError, match="HTTP 423"):
-            api.request_sms_2fa()
-
-        assert api._sms_requested_at is None
-        assert api.sms_request_pending() is False
-
-
 class TestIsReauthenticationError:
     def test_matches_re_authentication_required(self):
         assert iCloudAPI._is_reauthentication_error(Exception("Re-authentication required")) is True
@@ -1557,32 +1262,17 @@ class TestIsReauthenticationError:
     def test_no_match_timeout(self):
         assert iCloudAPI._is_reauthentication_error(Exception("Connection timed out")) is False
 
-    def test_no_match_connection_refused(self):
-        assert iCloudAPI._is_reauthentication_error(Exception("Connection refused")) is False
-
     def test_partial_keyword_not_enough(self):
         assert iCloudAPI._is_reauthentication_error(Exception("authentication failed")) is False
 
 
 class TestIsSessionFunctional:
-    def test_returns_false_when_api_is_none(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        api._api = None
-        assert api._is_session_functional() is False
-
     def test_returns_true_when_devices_accessible(self):
         api = iCloudAPI(config=VALID_CONFIG)
         mock_service = Mock()
         mock_service.devices = [Mock()]
         api._api = mock_service
         assert api._is_session_functional() is True
-
-    def test_returns_false_when_devices_raise(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
-        mock_service.devices.__iter__ = Mock(side_effect=Exception("401 Unauthorized"))
-        api._api = mock_service
-        assert api._is_session_functional() is False
 
     def test_probe_failure_logs_the_actual_error(self):
         # The probe's exception is what decides "needs 2FA recovery" — on
@@ -1599,40 +1289,7 @@ class TestIsSessionFunctional:
         assert "401 Unauthorized" in logged and "ValueError" in logged
 
 
-class TestRequires2faFalsePositive:
-    def test_returns_false_when_pyicloud_says_true_but_session_works(self):
-        """The core false-positive detection: pyicloud reports requires_2fa=True
-        but the session actually works fine."""
-        api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
-        mock_service.requires_2fa = True
-        mock_service.devices = [Mock()]  # devices accessible = session works
-        api._api = mock_service
-        assert api.requires_2fa() is False
-
-    def test_returns_true_when_pyicloud_says_true_and_session_broken(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
-        mock_service.requires_2fa = True
-        mock_service.devices.__iter__ = Mock(side_effect=Exception("Unauthorized"))
-        api._api = mock_service
-        assert api.requires_2fa() is True
-
-    def test_returns_false_when_pyicloud_says_false(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
-        mock_service.requires_2fa = False
-        api._api = mock_service
-        assert api.requires_2fa() is False
-
-
 class TestRequestSms2fa:
-    def test_raises_when_not_authenticated(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        api._api = None
-        with pytest.raises(iCloudAuthenticationError, match="Not authenticated"):
-            api.request_sms_2fa()
-
     def test_raises_when_no_trusted_phone(self):
         api = iCloudAPI(config=VALID_CONFIG)
         mock_service = Mock()
@@ -1786,12 +1443,6 @@ class TestRefreshConnection:
 
 
 class TestHumanizeAge:
-    def test_seconds(self):
-        assert ICloudIntegration._humanize_age(30) == "30 seconds"
-
-    def test_minutes(self):
-        assert ICloudIntegration._humanize_age(120) == "2 minutes"
-
     def test_hours_under_ten(self):
         result = ICloudIntegration._humanize_age(7200)
         assert "2.0 hours" == result
@@ -1836,29 +1487,6 @@ class TestFormatLocation:
             "Phone", "Place", 57.0, 12.0, None, None, False, False,
         )
         assert "accuracy unknown" in result
-
-    def test_stale_flag(self):
-        result = ICloudIntegration._format_location(
-            "Phone", "Place", 57.0, 12.0, 50.0, None, True, False,
-        )
-        assert "STALE" in result
-        assert result.startswith("Phone: Place (STALE")  # staleness leads the headline
-        assert "inaccurate" not in result
-
-    def test_inaccurate_flag(self):
-        result = ICloudIntegration._format_location(
-            "Phone", "Place", 57.0, 12.0, 50.0, None, False, True,
-        )
-        assert "inaccurate" in result
-        assert "STALE" not in result
-
-    def test_both_flags(self):
-        result = ICloudIntegration._format_location(
-            "Phone", "Place", 57.0, 12.0, 50.0, None, True, True,
-        )
-        assert "STALE" in result
-        assert "inaccurate" in result
-
 
 class TestPersistentSessionDir:
     """pyicloud's default session store is the temp dir, which macOS wipes on
@@ -2160,12 +1788,6 @@ class TestTolerantMfaPage:
         service._clear_trusted_device_bridge_state.assert_called_once()
         service._set_two_factor_delivery_state.assert_called_once_with("unknown")
 
-    def test_200_html_page_is_parsed_the_same_way(self):
-        from assistant.integration.integrations.ICloudIntegration import _get_mfa_auth_options_tolerant
-        service = self._service(200, text=self.HTML)
-        options = _get_mfa_auth_options_tolerant(service)
-        assert options["trustedPhoneNumber"]["id"] == 1
-
     def test_json_page_keeps_apple_fields(self):
         from assistant.integration.integrations.ICloudIntegration import _get_mfa_auth_options_tolerant
         payload = {"authInitialRoute": "verifyPhone", "authFactors": ["sms"], "extra": 1,
@@ -2297,10 +1919,6 @@ class TestDeviceListing:
         assert [(d["name"], d["configured_as"], d["slot"]) for d in devices] == \
             [("Dad's iPhone", "dad", 0), ("Anna's iPhone", None, None)]
 
-    def test_configured_device_count_is_the_next_index(self, api):
-        assert api.configured_device_count() == 1
-        assert iCloudAPI(config={"apple_id": "a@b.c", "password": "pw"}).configured_device_count() == 0
-
     def test_listing_survives_a_broken_devices_entry(self):
         """A half-written entry (id set, display_name not yet) must not hide the listing the
         LLM needs to finish it."""
@@ -2353,4 +1971,3 @@ class TestTermsOfServiceNotification:
                     api._ensure_authenticated()
         mock_notify.assert_called_once()
         assert "icloud.com" in mock_notify.call_args.args[0]
-

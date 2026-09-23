@@ -615,14 +615,6 @@ def test_smart_llm_constructed_with_prompt_cache_enabled(monkeypatch):
 
 
 @pytest.mark.unit
-def test_kill_sets_is_killed_and_kills_command_processor(monkeypatch):
-    dm, _ = make_dialog_manager(monkeypatch, [])
-    dm.kill()
-    assert dm.is_killed is True
-    assert dm.command_processor.killed is True
-
-
-@pytest.mark.unit
 def test_kill_closes_every_built_voice_in_background(monkeypatch):
     import threading
     dm, _ = make_dialog_manager(monkeypatch, [])
@@ -632,15 +624,6 @@ def test_kill_closes_every_built_voice_in_background(monkeypatch):
     assert closed.wait(timeout=2), "voice.close was not called in background"
     dm._voices["en-US"].close.assert_called()
     dm._voices["sv-SE"].close.assert_called()
-
-
-@pytest.mark.unit
-def test_kill_without_voices_is_a_noop(monkeypatch):
-    dm, _ = make_dialog_manager(monkeypatch, [])
-    dm._voices = {}
-    dm.voice = None
-    dm.kill()
-    assert dm.is_killed is True
 
 
 @pytest.mark.unit
@@ -900,13 +883,6 @@ def test_use_vision_for_image_reply_noop_on_text(monkeypatch):
 # ===========================================================================
 
 @pytest.mark.unit
-def test_reply_text_returns_string_when_string(monkeypatch):
-    dm, _ = make_dialog_manager(monkeypatch, [])
-    dm.reply_to_llm = "User [Marcus] via Telegram: hello"
-    assert dm.reply_text == "User [Marcus] via Telegram: hello"
-
-
-@pytest.mark.unit
 def test_reply_text_extracts_text_from_content_blocks(monkeypatch):
     dm, _ = make_dialog_manager(monkeypatch, [])
     dm.reply_to_llm = [
@@ -932,13 +908,6 @@ def test_reply_text_empty_string_for_no_text_blocks(monkeypatch):
     dm.reply_to_llm = [
         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc"}},
     ]
-    assert dm.reply_text == ""
-
-
-@pytest.mark.unit
-def test_reply_text_returns_empty_for_empty_string(monkeypatch):
-    dm, _ = make_dialog_manager(monkeypatch, [])
-    dm.reply_to_llm = ""
     assert dm.reply_text == ""
 
 
@@ -1012,17 +981,6 @@ def test_reply_language_directive_follows_detected_language(monkeypatch):
 
     assert dm.ai.observed_messages[-1]["content"].endswith(DialogManager._LANGUAGE_DIRECTIVES["sv"])
     assert dm.messages[-2]["content"] == "Turn on the kitchen lights"   # history stays clean
-
-
-@pytest.mark.unit
-def test_reply_language_directive_english(monkeypatch):
-    dm, _ = make_dialog_manager(monkeypatch, ["reply"])
-    monkeypatch.setattr('assistant.DialogManager.time.time', TimeStub([100.0, 100.1]))
-    dm.web_request_handler.ctx.lang = "en-US"
-
-    list(dm.stream_llm_response())
-
-    assert dm.ai.observed_messages[-1]["content"].endswith(DialogManager._LANGUAGE_DIRECTIVES["en"])
 
 
 @pytest.mark.unit

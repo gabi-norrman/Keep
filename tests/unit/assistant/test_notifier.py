@@ -2,15 +2,10 @@
 quietly — and must never approve a sensitive command."""
 from unittest.mock import Mock
 
-import pytest
-
 from assistant.Notifier import Notifier, NullNotifier, notifier, set_notifier
 
 
 class TestNullNotifier:
-    def test_is_the_default(self):
-        assert isinstance(notifier(), NullNotifier)
-
     def test_send_methods_report_the_drop(self):
         # False = nothing reached the user, so commands can tell the LLM instead of claiming success.
         n = NullNotifier()
@@ -36,13 +31,6 @@ class TestNullNotifier:
         assert NullNotifier().request_secret("vault_request", details="x", accept=accept, timeout=1) == "unavailable"
         accept.assert_not_called()
 
-    def test_markdown_to_html_is_identity(self):
-        assert NullNotifier().markdown_to_html("# Title") == "# Title"
-
-    def test_satisfies_protocol(self):
-        assert isinstance(NullNotifier(), Notifier)
-
-
 class TestSetNotifier:
     def test_set_and_get(self):
         fake = Mock()
@@ -58,12 +46,6 @@ class TestSetNotifier:
 
 
 class TestChatHubSatisfiesProtocol:
-    def test_chat_hub_has_every_notifier_method(self):
-        from interfaces.chat.ChatHub import ChatHub
-        for name in ("send_message", "send_command_notification", "complete_command_notification", "send_photo",
-                     "send_photo_album", "send_video", "request_approval", "request_secret", "markdown_to_html"):
-            assert callable(getattr(ChatHub, name)), name
-
     def test_chat_hub_instance_passes_runtime_check(self):
         from interfaces.chat.ChatHub import ChatHub
         hub = ChatHub.__new__(ChatHub)

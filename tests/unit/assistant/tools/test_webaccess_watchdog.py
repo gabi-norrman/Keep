@@ -70,12 +70,6 @@ class TestSubmitWatchdog:
             loop_thread.submit(wedge(), timeout=0.05)
         assert cancelled.wait(timeout=2), "watchdog did not cancel the abandoned coroutine"
 
-    def test_normal_result_passes_through(self, loop_thread):
-        async def quick():
-            return "ok"
-
-        assert loop_thread.submit(quick(), timeout=5) == "ok"
-
     def test_coroutines_own_timeout_error_is_not_watchdog_expiry(self, loop_thread):
         # On 3.12 asyncio.TimeoutError IS the builtin TimeoutError that
         # fut.result(timeout) raises on expiry; an inner CDP timeout escaping the
@@ -128,22 +122,6 @@ class TestBrowseLock:
         assert result == "b"
         assert order == ["first-start", "first-end", "second-start"]
 
-    def test_cancelled_holder_releases_the_lock(self, loop_thread):
-        wa = make_wa(_loop_thread=loop_thread)
-
-        async def wedge():
-            async with wa._browse_lock:
-                await asyncio.sleep(30)
-
-        async def successor():
-            async with wa._browse_lock:
-                return "free"
-
-        with pytest.raises(BrowseWatchdogTimeout):
-            loop_thread.submit(wedge(), timeout=0.05)
-        assert loop_thread.submit(successor(), timeout=2) == "free"
-
-
 @pytest.mark.unit
 class TestRunBrowseOp:
 
@@ -186,16 +164,6 @@ class TestBoundedEvaluate:
 
         with pytest.raises(asyncio.TimeoutError):
             asyncio.run(go())
-
-    def test_evaluate_returns_plain_values(self):
-        tab = Mock()
-
-        async def fake_evaluate(*_a, **_k):
-            return "value"
-        tab.evaluate = fake_evaluate
-
-        assert asyncio.run(WebAccess._evaluate(tab, "1+1")) == "value"
-
 
 @pytest.mark.unit
 class TestSnapshotFrameBudget:

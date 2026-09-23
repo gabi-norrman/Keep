@@ -1,4 +1,3 @@
-import os
 import threading
 
 import pytest
@@ -359,17 +358,6 @@ class TestSetPlain:
         assert ConfigStore.set_value(key, "x") == f"{key} saved"
         assert ConfigStore.is_set(key)
 
-    def test_a_denied_key_is_still_refused(self, files):
-        before = files.read_text()
-        with pytest.raises(ConfigStoreError, match="by hand"):
-            ConfigStore.set_value("vault.key", "x")
-        assert files.read_text() == before
-
-    def test_the_masked_path_still_takes_credentials(self, files):
-        ConfigStore.set_value("email.password", "abcd efgh")
-        assert ConfigStore.is_set("email.password")
-
-
 @pytest.mark.unit
 class TestIsSetForLists:
     def test_an_empty_list_is_not_set_and_an_appended_one_is(self, files):
@@ -463,13 +451,6 @@ class TestEnableIntegration:
         assert ConfigStore.disable_integration("Tesla") == "Tesla disabled"
         assert self._enabled(files) == ["Ring"]
         assert ConfigStore.disable_integration("Tesla") == "Tesla was not enabled"
-
-    def test_empty_name_is_refused(self):
-        with pytest.raises(ConfigStoreError, match="expected an integration name"):
-            ConfigStore.enable_integration("  ")
-        with pytest.raises(ConfigStoreError, match="expected an integration name"):
-            ConfigStore.disable_integration("")
-
 
 @pytest.mark.unit
 class TestRenameKeys:

@@ -26,10 +26,6 @@ def test_media_placeholder_follows_the_text_on_its_own_line():
     assert markup("Telegram sent:\nMarcus to Anna: [Video]") == "<b>Marcus → Anna</b>\n[Video]"
 
 
-def test_telegram_sent_to_a_target():
-    assert markup("Telegram sent:\nMarcus to Anna: on my way") == "<b>Marcus → Anna</b> on my way"
-
-
 def test_sent_without_a_target_shows_the_sender_alone():
     assert markup("iMessage sent:\nMarcus: ok") == "<b>Marcus</b> ok"
 

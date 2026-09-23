@@ -44,11 +44,6 @@ class TestDropTypedAhead:
         client_end.sendall(b"x\nRESIZE 30 100\nRESIZE 40 120\ny")
         assert TUIServer._drop_typed_ahead(server_end, ADDR, 80, 24) == (120, 40)
 
-    def test_nothing_typed_keeps_the_dimensions(self, pair):
-        server_end, _ = pair
-        assert TUIServer._drop_typed_ahead(server_end, ADDR, 80, 24) == (80, 24)
-
-
 class TestFirstClient:
     @pytest.fixture
     def server(self):

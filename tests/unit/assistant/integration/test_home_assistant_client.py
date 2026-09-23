@@ -10,8 +10,7 @@ import pytest
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
-from assistant.integration.integrations.home.HomeAssistantClient import (
-    AuthRejected, HAError, HomeAssistantClient, NotConnected, websocket_url)
+from assistant.integration.integrations.home.HomeAssistantClient import HAError, HomeAssistantClient, NotConnected, websocket_url
 
 TOKEN = "good-token"
 
@@ -173,13 +172,6 @@ class TestHandshake:
         with pytest.raises(NotConnected):
             client.call("ping")
         client.stop()
-
-    def test_not_started_is_not_connected(self, server):
-        client = HomeAssistantClient(server.url, TOKEN)
-        assert not client.connected
-        with pytest.raises(NotConnected):
-            client.call("ping")
-
 
 class NotHA(FakeHA):
     """Something else on the port (a reverse proxy, the wrong port): no auth_required."""

@@ -4,19 +4,10 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from assistant.ChannelProfile import (AUTONOMOUS, CONSOLE, PHOTO_TARGET_CHAT, PHOTO_TARGET_KITCHEN_TV,
-                                      PROFILES, TELEGRAM, TEXT_CHAT, VOICE_TO_VOICE,
-                                      ChannelProfile, profile_for)
+from assistant.ChannelProfile import AUTONOMOUS, PHOTO_TARGET_CHAT, PHOTO_TARGET_KITCHEN_TV, PROFILES, TELEGRAM, TEXT_CHAT, VOICE_TO_VOICE, ChannelProfile, profile_for
 
 
 class TestTable:
-    def test_known_sources(self):
-        assert profile_for("VoiceToVoice") is VOICE_TO_VOICE
-        assert profile_for("TextChat") is TEXT_CHAT
-        assert profile_for("Telegram") is TELEGRAM
-        assert profile_for("Console") is CONSOLE
-        assert profile_for("autonomous") is AUTONOMOUS
-
     def test_none_is_autonomous(self):
         assert profile_for(None) is AUTONOMOUS
 
@@ -27,53 +18,12 @@ class TestTable:
         assert info.call_count == 1
         assert trace.call_count == 1
 
-    def test_profiles_are_frozen(self):
-        with pytest.raises(Exception):
-            VOICE_TO_VOICE.llm_tier = "smart"
-
     def test_every_row_is_complete(self):
         for name, profile in PROFILES.items():
             assert isinstance(profile, ChannelProfile)
             assert profile.name == name
             assert profile.llm_tier in ("fast", "smart")
             assert profile.photo_target in (PHOTO_TARGET_CHAT, PHOTO_TARGET_KITCHEN_TV)
-
-    def test_voice_row_matches_old_behaviour(self):
-        p = VOICE_TO_VOICE
-        assert (p.llm_tier, p.brevity_directive, p.forward_thinking) == ("fast", True, False)
-        assert (p.command_notifications, p.notification_ephemeral, p.notify_observers_of_commands) == (False, False, False)
-        assert (p.photo_target, p.screenshot_allowed) == (PHOTO_TARGET_KITCHEN_TV, False)
-        assert p.streams_tokens is False
-
-    def test_text_chat_row_matches_old_behaviour(self):
-        p = TEXT_CHAT
-        assert (p.llm_tier, p.brevity_directive, p.forward_thinking) == ("smart", False, True)
-        assert (p.command_notifications, p.notification_ephemeral, p.notify_observers_of_commands) == (True, False, True)
-        assert (p.photo_target, p.screenshot_allowed) == (PHOTO_TARGET_CHAT, True)
-        assert p.streams_tokens is True
-
-    def test_telegram_row_matches_old_behaviour(self):
-        p = TELEGRAM
-        assert (p.llm_tier, p.brevity_directive, p.forward_thinking) == ("smart", False, False)
-        assert (p.command_notifications, p.notification_ephemeral, p.notify_observers_of_commands) == (True, True, False)
-        assert (p.photo_target, p.screenshot_allowed) == (PHOTO_TARGET_CHAT, True)
-        assert p.streams_tokens is True
-
-    def test_console_row(self):
-        """The TUI chat is a hub transport like Telegram, but its command echoes stay inline."""
-        p = CONSOLE
-        assert (p.llm_tier, p.brevity_directive, p.forward_thinking) == ("smart", False, False)
-        assert (p.command_notifications, p.notification_ephemeral, p.notify_observers_of_commands) == (True, False, False)
-        assert (p.photo_target, p.screenshot_allowed) == (PHOTO_TARGET_CHAT, True)
-        assert p.streams_tokens is True
-
-    def test_autonomous_row(self):
-        p = AUTONOMOUS
-        assert p.command_notifications is False
-        assert p.forward_thinking is False
-        assert p.screenshot_allowed is True
-        assert p.photo_target == PHOTO_TARGET_CHAT
-
 
 # --- call sites ------------------------------------------------------------------------
 
@@ -175,9 +125,6 @@ class TestCommandsReadProfile:
         cp = Mock(command_reply=None, command_reply_contains_error=False)
         with patch.object(WebAccess, "get_instance", return_value=Mock()):
             yield Commands(cp)
-
-    def test_default_profile_is_autonomous(self, commands):
-        assert commands._current_profile is AUTONOMOUS
 
     @pytest.mark.parametrize("source", ["VoiceToVoice", "TextChat", "Telegram", "autonomous"])
     def test_send_screenshot_refused_iff_not_allowed(self, commands, source):

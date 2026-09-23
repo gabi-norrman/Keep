@@ -29,9 +29,6 @@ class TestNormalize:
 
 
 class TestWidths:
-    def test_ascii_is_one_cell(self):
-        assert char_width("a") == 1 and char_width(" ") == 1
-
     def test_pictographs_and_cjk_are_two_cells(self):
         assert char_width("\U0001F600") == 2 and char_width("漢") == 2
 

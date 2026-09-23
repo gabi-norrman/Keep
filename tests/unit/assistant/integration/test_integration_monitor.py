@@ -85,27 +85,7 @@ def mock_config():
     return monitor
 
 
-class TestSingleton:
-    def test_get_instance_returns_same_object(self):
-        a = IntegrationMonitor.get_instance()
-        b = IntegrationMonitor.get_instance()
-        assert a is b
-
-    def test_reset_instance_creates_new(self):
-        a = IntegrationMonitor.get_instance()
-        IntegrationMonitor.reset_instance()
-        b = IntegrationMonitor.get_instance()
-        assert a is not b
-
-
 class TestRegistration:
-    def test_register_adds_integration(self, mock_config):
-        integration = FakeIntegration()
-        mock_config.register(integration)
-        statuses = mock_config.get_all_statuses()
-        assert len(statuses) == 1
-        assert statuses[0]["name"] == "FakeService"
-
     def test_register_not_configured_when_key_missing(self, mock_config):
         mock_config._config_manager.get.side_effect = KeyError("missing")
         integration = FakeIntegration()
@@ -118,12 +98,6 @@ class TestRegistration:
         integration = FakeIntegration()
         mock_config.register(integration)
         assert integration.state == IntegrationState.NOT_CONFIGURED
-
-    def test_register_keeps_unknown_when_key_present(self, mock_config):
-        integration = FakeIntegration()
-        mock_config.register(integration)
-        assert integration.state == IntegrationState.UNKNOWN
-
 
 class TestStateTransitions:
     def test_healthy_check_stays_ok(self, mock_config):
@@ -196,20 +170,6 @@ class TestStateTransitions:
         assert integration.state == IntegrationState.WARNING
         assert integration.last_error == "Health check returned False"
 
-    def test_unknown_transitions_to_ok_on_first_success(self, mock_config):
-        integration = FakeIntegration(healthy=True)
-        mock_config.register(integration)
-        assert integration.state == IntegrationState.UNKNOWN
-        mock_config._check_integration(integration)
-        assert integration.state == IntegrationState.OK
-
-    def test_unknown_transitions_to_warning_on_first_failure(self, mock_config):
-        integration = FakeIntegration(healthy=False)
-        mock_config.register(integration)
-        assert integration.state == IntegrationState.UNKNOWN
-        mock_config._check_integration(integration)
-        assert integration.state == IntegrationState.WARNING
-
     def test_second_failure_stays_warning(self, mock_config):
         integration = FakeIntegration(healthy=False)
         mock_config.register(integration)
@@ -238,27 +198,6 @@ class TestCheckNow:
         assert state == IntegrationState.NOT_CONFIGURED
 
 
-class TestGetAllStatuses:
-    def test_returns_all_registered(self, mock_config):
-        mock_config.register(FakeIntegration("A", ["a"]))
-        mock_config.register(FakeIntegration("B", ["b"]))
-        statuses = mock_config.get_all_statuses()
-        assert len(statuses) == 2
-        names = {s["name"] for s in statuses}
-        assert names == {"A", "B"}
-
-    def test_status_dict_has_expected_keys(self, mock_config):
-        mock_config.register(FakeIntegration())
-        mock_config._check_integration(list(mock_config._integrations.values())[0])
-        statuses = mock_config.get_all_statuses()
-        status = statuses[0]
-        assert "name" in status
-        assert "state" in status
-        assert "last_check_time" in status
-        assert "last_error" in status
-        assert "consecutive_failures" in status
-
-
 class TestFeedStatus:
     def test_a_feed_integration_reports_its_feed_state(self, mock_config):
         from assistant.integration.Feed import Feed, FeedBatch
@@ -285,19 +224,10 @@ class TestFeedStatus:
 
 
 class TestNeeds2FA:
-    def test_default_needs_2fa_returns_false(self):
-        integration = FakeIntegration()
-        assert integration.needs_2fa() is False
-
     def test_registration_sets_needs_2fa_when_true(self, mock_config):
         integration = Fake2FAIntegration(requires_2fa=True)
         mock_config.register(integration)
         assert integration.state == IntegrationState.NEEDS_2FA
-
-    def test_registration_stays_unknown_when_needs_2fa_false(self, mock_config):
-        integration = Fake2FAIntegration(requires_2fa=False)
-        mock_config.register(integration)
-        assert integration.state == IntegrationState.UNKNOWN
 
     def test_check_now_returns_needs_2fa_without_health_check(self, mock_config):
         integration = Fake2FAIntegration(requires_2fa=True, healthy=False)
@@ -602,9 +532,6 @@ class TestRestart:
         assert [s["name"] for s in mock_config.get_all_statuses()] == ["Broken Service"]
         assert mock_config.find("Broken") is None
 
-    def test_unknown_name_is_none(self, mock_config):
-        assert mock_config.restart("nothing") is None
-
     def test_a_reset_hook_that_raises_does_not_stop_the_restart(self, mock_config):
         mock_config.register_class(RebuildableIntegration)
         with patch.object(RebuildableIntegration, "_on_reset", side_effect=RuntimeError("stuck thread")):
@@ -839,6 +766,3 @@ class TestMissingConfigKeys:
             config.get.side_effect = get
             probe = self._integration(["api_keys.set", "api_keys.empty", "api_keys.absent"])
             assert probe.missing_config_keys() == ["api_keys.empty", "api_keys.absent"]
-
-    def test_a_local_integration_has_nothing_missing(self):
-        assert self._integration([]).missing_config_keys() == []

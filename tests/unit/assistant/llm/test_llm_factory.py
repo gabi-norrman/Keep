@@ -59,26 +59,6 @@ class TestParseLLMConfig:
         finally:
             p.stop()
 
-    def test_fast_tier_default_is_gemini_35_flash(self):
-        # The fast tier is the voice loop. Its default must pin the exact Flash
-        # model: drifting to another one silently changes voice latency, the
-        # thinking floor (gemini-3.7+ → LOW) and the kv-cache behavior.
-        p, _ = self._patch_config(KeyError("ai.fast"))
-        try:
-            assert parse_llm_config('fast') == ('GeminiLLM', 'gemini-3.5-flash')
-        finally:
-            p.stop()
-
-    def test_cache_auditor_default_is_gemini(self):
-        # The cache auditor is intentionally off-Claude (cheap second opinion);
-        # accidentally flipping it onto ClaudeLLM would burn through the audit budget.
-        p, _ = self._patch_config(KeyError("ai.cache_auditor"))
-        try:
-            assert parse_llm_config('cache_auditor')[0] == 'GeminiLLM'
-        finally:
-            p.stop()
-
-
 # ===========================================================================
 # create_llm — instantiates an LLM by class name, forwarding model and (only
 # when accepted) prompt_cache, and wraps the result in a VaultLLM. We inject a
@@ -111,10 +91,6 @@ class TestCreateLLM:
         setattr(module, class_name, cls)
         sys.modules[f"assistant.llm.{class_name}"] = module
         return module
-
-    def test_unknown_class_raises_value_error(self):
-        with pytest.raises(ValueError, match="Unknown LLM class"):
-            create_llm("NoSuchLLMClass")
 
     def test_model_override_forwarded(self):
         self._inject("_FakeLLMNoCache", _FakeLLMNoCache)

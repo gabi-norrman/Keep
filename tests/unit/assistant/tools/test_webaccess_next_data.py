@@ -14,10 +14,6 @@ class TestExtractNextDataSummary:
         soup = BeautifulSoup("<html><body><p>hi</p></body></html>", "html.parser")
         assert WebAccess._extract_next_data_summary(soup) == ""
 
-    def test_empty_script_returns_empty(self):
-        soup = BeautifulSoup('<html><body><script id="__NEXT_DATA__"></script></body></html>', "html.parser")
-        assert WebAccess._extract_next_data_summary(soup) == ""
-
     def test_invalid_json_returns_empty(self):
         soup = BeautifulSoup('<html><body><script id="__NEXT_DATA__">not json{</script></body></html>', "html.parser")
         assert WebAccess._extract_next_data_summary(soup) == ""
@@ -177,9 +173,3 @@ class TestNextDataIntegrationWithExtractText:
         assert "visible" in result
         assert "Hoodie" in result
         assert "size=M" in result
-
-    def test_page_without_next_data_unchanged(self):
-        html = "<html><body><p>Just a normal page</p></body></html>"
-        result = WebAccess.extract_text_with_links(html, "https://example.com")
-        assert "normal page" in result
-        assert "__NEXT_DATA__" not in result

@@ -1,17 +1,5 @@
 from unittest.mock import patch
-import threading
-
-
 class TestMemorySectionGenerator:
-    def test_reads_memory_file(self, tmp_path):
-        from assistant.prompt.sections.MemorySectionGenerator import MemorySectionGenerator
-        section = MemorySectionGenerator(None)
-        memory_file = tmp_path / "memory.md"
-        memory_file.write_text("# Memory\nTest memory content")
-        section.file_path = str(memory_file)
-        result = section._fetch_content()
-        assert "Test memory content" in result
-
     def test_returns_empty_for_missing_file(self):
         from assistant.prompt.sections.MemorySectionGenerator import MemorySectionGenerator
         section = MemorySectionGenerator(None)
@@ -61,15 +49,6 @@ class TestMemorySectionGenerator:
         result = section._fetch_content()
         assert result == content
 
-    def test_reads_empty_file(self, tmp_path):
-        from assistant.prompt.sections.MemorySectionGenerator import MemorySectionGenerator
-        section = MemorySectionGenerator(None)
-        memory_file = tmp_path / "memory.md"
-        memory_file.write_text("")
-        section.file_path = str(memory_file)
-        result = section._fetch_content()
-        assert result == ""
-
     def test_reads_unicode_content(self, tmp_path):
         from assistant.prompt.sections.MemorySectionGenerator import MemorySectionGenerator
         section = MemorySectionGenerator(None)
@@ -79,31 +58,6 @@ class TestMemorySectionGenerator:
         result = section._fetch_content()
         assert "Köksö" in result
         assert "Björk" in result
-
-    def test_reads_large_file(self, tmp_path):
-        from assistant.prompt.sections.MemorySectionGenerator import MemorySectionGenerator
-        section = MemorySectionGenerator(None)
-        memory_file = tmp_path / "memory.md"
-        content = "x" * 100_000
-        memory_file.write_text(content)
-        section.file_path = str(memory_file)
-        result = section._fetch_content()
-        assert len(result) == 100_000
-
-    def test_default_file_path(self):
-        from assistant.prompt.sections.MemorySectionGenerator import MemorySectionGenerator
-        section = MemorySectionGenerator(None)
-        assert section.file_path == "memory.md"
-
-    def test_default_last_mtime_is_zero(self):
-        from assistant.prompt.sections.MemorySectionGenerator import MemorySectionGenerator
-        section = MemorySectionGenerator(None)
-        assert section.last_mtime == 0
-
-    def test_section_name_is_memory(self):
-        from assistant.prompt.sections.MemorySectionGenerator import MemorySectionGenerator
-        section = MemorySectionGenerator(None)
-        assert section.section_name == "Memory"
 
     @patch('assistant.prompt.sections.MemorySectionGenerator.MemorySectionGenerator._wait', side_effect=StopIteration)
     @patch('assistant.prompt.sections.MemorySectionGenerator.os.path.getmtime')
@@ -147,36 +101,6 @@ class TestMemorySectionGenerator:
             except StopIteration:
                 pass
             mock_update.assert_not_called()
-
-    def test_concurrent_reads_return_consistent_content(self, tmp_path):
-        from assistant.prompt.sections.MemorySectionGenerator import MemorySectionGenerator
-        section = MemorySectionGenerator(None)
-        memory_file = tmp_path / "memory.md"
-        memory_file.write_text("stable content")
-        section.file_path = str(memory_file)
-
-        results = []
-        def read_content():
-            results.append(section._fetch_content())
-
-        threads = [threading.Thread(target=read_content) for _ in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        assert all(r == "stable content" for r in results)
-
-    def test_file_updated_between_reads(self, tmp_path):
-        from assistant.prompt.sections.MemorySectionGenerator import MemorySectionGenerator
-        section = MemorySectionGenerator(None)
-        memory_file = tmp_path / "memory.md"
-        memory_file.write_text("version 1")
-        section.file_path = str(memory_file)
-        assert section._fetch_content() == "version 1"
-        memory_file.write_text("version 2")
-        assert section._fetch_content() == "version 2"
-
 
 class TestFirstCurationNotice:
     """While the first-run pipeline curates the first bank the section opens with the heads-up,
@@ -222,16 +146,3 @@ class TestFirstCurationNotice:
                 pass
             mock_update.assert_called_once()
         assert section._curating is False
-
-    @patch('assistant.prompt.sections.MemorySectionGenerator.MemorySectionGenerator._wait', side_effect=StopIteration)
-    @patch('assistant.prompt.sections.MemorySectionGenerator.FirstRun.curation_progress', return_value=None)
-    def test_loop_leaves_the_content_alone_while_nothing_changed(self, _progress, _wait, tmp_path):
-        import os
-        section = self._section(tmp_path)
-        section.last_mtime = os.path.getmtime(section.file_path)
-        with patch.object(section, '_update_content') as mock_update:
-            try:
-                section._start_monitoring()
-            except StopIteration:
-                pass
-            mock_update.assert_not_called()

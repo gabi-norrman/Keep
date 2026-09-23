@@ -131,14 +131,6 @@ class TestSyncPopupTargets:
         assert wa._tab is base
         assert wa._pending_target_notes == []
 
-    def test_no_change_is_noop(self):
-        base = FakeTab('base', 'https://shop.example')
-        wa = make_wa(base, FakeBrowser([base]))
-        run(wa._async_sync_popup_targets())
-        assert wa._tab is base
-        assert wa._popup_parents == []
-        assert wa._pending_target_notes == []
-
     def test_multiple_popups_form_a_stack(self):
         base = FakeTab('base', 'https://shop.example')
         p1 = FakeTab('pop1', 'https://bank.example/step1')
@@ -162,14 +154,6 @@ class TestSyncPopupTargets:
         assert wa._tab is base
         assert wa._popup_parents == []
         assert len(wa._pending_target_notes) == 2
-
-    def test_no_browser_is_noop(self):
-        base = FakeTab('base', 'https://shop.example')
-        wa = make_wa(base, FakeBrowser([base]))
-        wa._browser = None
-        run(wa._async_sync_popup_targets())
-        assert wa._tab is base
-
 
 @pytest.mark.unit
 class TestClosePopupTargets:
@@ -199,19 +183,6 @@ class TestClosePopupTargets:
         assert wa._tab is base
         assert browser.connection.closed == []
         assert wa._known_page_targets == {'base'}
-
-    def test_no_browser_clears_state(self):
-        base = FakeTab('base', 'https://shop.example')
-        wa = make_wa(base, FakeBrowser([base]))
-        wa._browser = None
-        wa._popup_parents = [base]
-        wa._pending_target_notes = ['note']
-        wa._pending_popup_targets = {'x': 0.0}
-        run(wa._async_close_popup_targets())
-        assert wa._popup_parents == []
-        assert wa._pending_target_notes == []
-        assert wa._pending_popup_targets == {}
-
 
 @pytest.mark.unit
 class TestSessionStateReset:

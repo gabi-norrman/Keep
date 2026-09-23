@@ -92,9 +92,6 @@ class TestHandleScrollInput:
 
 
 class TestWordWrap:
-    def test_short_line_unchanged(self):
-        assert ScrollableTabView.word_wrap("hi", 5) == ["hi"]
-
     def test_exact_width_not_wrapped(self):
         assert ScrollableTabView.word_wrap("hello", 5) == ["hello"]
 

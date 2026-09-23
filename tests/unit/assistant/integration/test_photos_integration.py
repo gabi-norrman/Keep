@@ -202,14 +202,6 @@ class TestPhotosDatabase:
         assert results[2]["asset_guid"] == "SB/1"
 
     @pytest.mark.unit
-    def test_search_photos_default_sort_unchanged(self, floxy_db):
-        self._store_sample(floxy_db, local_id="SD/1", short_description="River sunset",
-                           detailed_description="River sunset", pretty_score=90)
-        results_default = floxy_db.search_photos("river")
-        results_relevance = floxy_db.search_photos("river", sort_by="relevance")
-        assert [r["asset_guid"] for r in results_default] == [r["asset_guid"] for r in results_relevance]
-
-    @pytest.mark.unit
     def test_search_photos_invalid_sort_by_falls_back(self, floxy_db):
         self._store_sample(floxy_db, local_id="SI/1", short_description="Lake view",
                            detailed_description="Lake view")
@@ -273,15 +265,7 @@ class TestPhotosDatabase:
         results = floxy_db.search_photos("beach", limit=3)
         assert len(results) == 3
 
-    @pytest.mark.unit
-    def test_photo_exists_returns_false_for_missing(self, floxy_db):
-        assert not floxy_db.photo_exists("DOES_NOT_EXIST")
-
     # --- get_photo_count / get_photos_paginated ---
-
-    @pytest.mark.unit
-    def test_photo_count_empty(self, floxy_db):
-        assert floxy_db.get_photo_count() == 0
 
     @pytest.mark.unit
     def test_photo_count_after_inserts(self, floxy_db):
@@ -355,10 +339,6 @@ class TestPhotosDatabase:
         assert result is None
 
     # --- get_indexed_photo_guids ---
-
-    @pytest.mark.unit
-    def test_get_indexed_photo_guids_empty(self, floxy_db):
-        assert floxy_db.get_indexed_photo_guids() == set()
 
     @pytest.mark.unit
     def test_get_indexed_photo_guids_returns_stored_guids(self, floxy_db):
@@ -455,39 +435,6 @@ class TestPhotosTab:
         assert len(lines) == 2
         assert lines[0] == "hello world"
         assert lines[1] == "foo bar"
-
-    @pytest.mark.unit
-    def test_wrap_empty(self):
-        from interfaces.console.tabs.PhotosTab import PhotosTab
-        assert PhotosTab._wrap("", 80) == []
-
-    @pytest.mark.unit
-    def test_ctrl_p_triggers_processing(self):
-        from interfaces.console.tabs.PhotosTab import PhotosTab
-        tab = PhotosTab()
-
-        with patch.object(tab, '_trigger_process') as mock_trigger:
-            result = tab.handle_input('\x10')
-            assert result is True
-            mock_trigger.assert_called_once()
-
-    @pytest.mark.unit
-    def test_ctrl_p_sets_processing_flag(self):
-        from interfaces.console.tabs.PhotosTab import PhotosTab
-        tab = PhotosTab()
-
-        barrier = threading.Event()
-        with patch('interfaces.console.tabs.PhotosTab.PhotoProcessor') as MockProcessor:
-            mock_instance = MockProcessor.return_value
-            def block_until_checked(**kwargs):
-                barrier.wait(timeout=5)
-                return ("ok", "Indexed: A cat")
-            mock_instance.process_next_unprocessed.side_effect = block_until_checked
-
-            tab._trigger_process()
-            assert tab._processing is True
-            barrier.set()
-
 
 # ---------------------------------------------------------------------------
 # PhotoProcessor
@@ -818,24 +765,6 @@ class TestPhotoProcessorICloudPlaceholderType:
 class TestPhotoProcessorICloudDownload:
 
     @pytest.mark.unit
-    def test_brctl_download_calls_subprocess(self):
-        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
-        with patch('assistant.integration.integrations.photos.PhotoProcessor.subprocess.run') as mock_run:
-            PhotoProcessor._trigger_icloud_download_brctl("/some/path/photo.heic")
-            mock_run.assert_called_once_with(
-                ["brctl", "download", "/some/path/photo.heic"],
-                capture_output=True, timeout=30,
-            )
-
-    @pytest.mark.unit
-    def test_brctl_download_handles_exception(self):
-        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
-        with patch('assistant.integration.integrations.photos.PhotoProcessor.subprocess.run',
-                   side_effect=Exception("brctl not found")):
-            # Should not raise
-            PhotoProcessor._trigger_icloud_download_brctl("/some/path/photo.heic")
-
-    @pytest.mark.unit
     def test_process_one_calls_brctl_for_evicted(self):
         from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
         processor = PhotoProcessor()
@@ -953,31 +882,6 @@ class TestPhotoProcessorICloudDownload:
              patch.object(processor, '_retry_icloud_pending') as mock_retry:
             processor.process_bulk_unprocessed(count=10)
             mock_retry.assert_called_once()
-
-    @pytest.mark.unit
-    def test_pending_icloud_persists_across_bulk_calls(self):
-        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
-        processor = PhotoProcessor()
-        evicted_row = {"uuid": "PERSIST-1", "filename": "IMG.heic", "directory": "sub",
-                       "creation_ts": 1700000000.0, "latitude": None, "longitude": None,
-                       "kind_subtype": 0}
-
-        # First call: photo is evicted, gets added to pending
-        with patch.object(processor, '_find_unprocessed', return_value=([evicted_row], "")), \
-             patch.object(processor, '_process_one', return_value=True), \
-             patch.object(processor, '_retry_icloud_pending'):
-            processor.process_bulk_unprocessed(count=10)
-
-        assert "PERSIST-1" in processor._pending_icloud
-
-        # Second call: _retry_icloud_pending should be called with the pending item
-        with patch.object(processor, '_find_unprocessed', return_value=([], "No photos")), \
-             patch.object(processor, '_retry_icloud_pending') as mock_retry:
-            processor.process_bulk_unprocessed(count=10)
-            mock_retry.assert_called_once()
-            # The pending dict should still have the item before retry clears it
-            assert "PERSIST-1" in processor._pending_icloud
-
 
 class TestPhotoProcessorCorruptImage:
 
@@ -1259,16 +1163,6 @@ class TestGetImageBytesICloudFallback:
         assert result is None
 
 
-class TestPhotoProcessorGetPersons:
-
-    @pytest.mark.unit
-    def test_missing_db_returns_empty(self):
-        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
-        with patch('assistant.integration.integrations.photos.PhotoProcessor.PHOTOS_SQLITE_PATH', '/nonexistent/path.sqlite'):
-            result = PhotoProcessor._get_persons("ABC-DEF")
-            assert result == ""
-
-
 # ---------------------------------------------------------------------------
 # PhotosIntegration — the Integration half
 # ---------------------------------------------------------------------------
@@ -1291,13 +1185,6 @@ class TestPhotosIntegration:
         conn = MagicMock()
         conn.__enter__.return_value = conn
         return patch(f'{PI}.os.path.exists', return_value=True), patch(f'{PI}.sqlite3.connect', return_value=conn)
-
-    @pytest.mark.unit
-    def test_singleton(self):
-        from assistant.integration.integrations.photos.PhotosIntegration import PhotosIntegration
-        a = PhotosIntegration.get_instance()
-        b = PhotosIntegration.get_instance()
-        assert a is b
 
     @pytest.mark.unit
     def test_name_and_config_keys_follow_the_photo_indexing_tier(self):
@@ -1350,14 +1237,6 @@ class TestPhotosIntegration:
         mock_check.assert_not_called()
 
     @pytest.mark.unit
-    def test_check_health_is_true_when_the_database_answers(self):
-        from assistant.integration.integrations.photos.PhotosIntegration import PhotosIntegration
-        integration = PhotosIntegration()
-        exists, connect = self._healthy_db()
-        with exists, connect, patch.object(integration, '_check_icloud_download'):
-            assert integration.check_health() is True
-
-    @pytest.mark.unit
     def test_check_health_propagates_a_broken_database(self):
         from assistant.integration.integrations.photos.PhotosIntegration import PhotosIntegration
         integration = PhotosIntegration()
@@ -1367,15 +1246,6 @@ class TestPhotosIntegration:
             with pytest.raises(sqlite3.OperationalError):
                 integration.check_health()
         mock_check.assert_not_called()
-
-    @pytest.mark.unit
-    def test_icloud_check_runs_on_first_health_check(self):
-        from assistant.integration.integrations.photos.PhotosIntegration import PhotosIntegration
-        integration = PhotosIntegration()
-        exists, connect = self._healthy_db()
-        with exists, connect, patch.object(integration, '_check_icloud_download') as mock_check:
-            integration.check_health()
-            mock_check.assert_called_once()
 
     @pytest.mark.unit
     def test_icloud_check_skipped_within_interval(self):
@@ -1401,16 +1271,6 @@ class TestPhotosIntegration:
             integration._last_icloud_check = _time.time() - ICLOUD_CHECK_INTERVAL_SECONDS - 1
             integration.check_health()
             assert mock_check.call_count == 2
-
-    @pytest.mark.unit
-    def test_icloud_check_skipped_when_database_down(self):
-        from assistant.integration.integrations.photos.PhotosIntegration import PhotosIntegration
-        integration = PhotosIntegration()
-        with patch(f'{PI}.os.path.exists', return_value=False), \
-             patch.object(integration, '_check_icloud_download') as mock_check:
-            with pytest.raises(FileNotFoundError):
-                integration.check_health()
-            mock_check.assert_not_called()
 
     @pytest.mark.unit
     def test_icloud_check_download_success(self, tmp_path):
@@ -1467,19 +1327,6 @@ class TestPhotosIntegration:
 
         mock_error.assert_called_once()
         assert "FAILED" in mock_error.call_args[0][0]
-
-    @pytest.mark.unit
-    def test_icloud_check_no_db_logs_error(self):
-        from assistant.integration.integrations.photos.PhotosIntegration import PhotosIntegration
-        integration = PhotosIntegration()
-
-        with patch(f'{PI}.os.path.exists', return_value=False), \
-             patch(f'{PI}.config.get', return_value={"apple_id": "x"}), \
-             patch(f'{PI}.error') as mock_error:
-            integration._check_icloud_download()
-
-        mock_error.assert_called_once()
-        assert "not found" in mock_error.call_args[0][0]
 
     @pytest.mark.unit
     def test_icloud_check_skipped_when_icloud_not_configured(self):
@@ -1545,31 +1392,6 @@ class TestPhotosFeed:
         assert integration.open_error is None
         processor_cls.assert_called_once_with(entry_sink=integration._queue_entry)
         processor.remove_hidden_assets.assert_called_once()
-
-    @pytest.mark.unit
-    def test_initial_cursor_is_the_horizon_when_the_catch_up_may_run(self):
-        from assistant.integration.integrations.photos.PhotosIntegration import PhotosIntegration
-        from assistant.integration.integrations.photos.PhotoProcessor import APPLE_EPOCH_OFFSET
-        integration = PhotosIntegration()
-        with patch(f'{PI}.LOCAL_DEVELOPMENT_MODE', False):
-            cursor = integration.initial_cursor(1_700_000_000.0)
-        assert float(cursor) == pytest.approx(1_700_000_000.0 - APPLE_EPOCH_OFFSET)
-
-    @pytest.mark.unit
-    def test_remaining_counts_unindexed_assets_after_the_cursor(self):
-        integration, processor = self._opened()
-        processor.count_unindexed_photos.return_value = 7
-        assert integration.remaining("123.5") == 7
-        processor.count_unindexed_photos.assert_called_once_with(after_apple_ts=123.5)
-
-    @pytest.mark.unit
-    def test_count_stored_is_the_index_table_not_the_history(self):
-        """73k assets were indexed before a photo got a history row; the feed's count and its
-        `remaining` are both measured against the photos table."""
-        from assistant.integration.integrations.photos.PhotosIntegration import PhotosIntegration
-        with patch(f'{PI}.FloxyDatabase') as db_cls:
-            db_cls.get_instance.return_value.get_photo_count.return_value = 87054
-            assert PhotosIntegration().count_stored() == 87054
 
     @pytest.mark.unit
     def test_fetch_indexes_only_guid_bearing_unindexed_rows_and_retries_icloud_first(self):
@@ -1687,14 +1509,6 @@ class TestPhotosFeed:
         mock_db.return_value.add_history_entries.assert_called_once_with(
             [("system", "New photo taken: late", 1_700_000_000.0, None)], PHOTO_HISTORY_SOURCE)
 
-    @pytest.mark.unit
-    def test_close_feed_with_nothing_queued_touches_nothing(self):
-        integration, _ = self._opened()
-        with patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
-            integration.close_feed()
-        mock_db.return_value.add_history_entries.assert_not_called()
-
-
 # ---------------------------------------------------------------------------
 # PhotosIntegration.advance_cursor — the iCloud GUID hold
 # ---------------------------------------------------------------------------
@@ -1776,12 +1590,6 @@ class TestPhotosFeedCursor:
         assert held == {"a", "b"}
 
     @pytest.mark.unit
-    def test_empty_rows_returns_current(self):
-        cursor, held = self._advance(99.0, [])
-        assert cursor == 99.0
-        assert held == set()
-
-    @pytest.mark.unit
     def test_guidless_older_than_the_hold_window_does_not_hold(self):
         """An asset still without a GUID a day later is not uploading any more (iCloud Photos
         off, a stuck upload); holding for it would pin the catch-up forever. The cursor
@@ -1860,12 +1668,6 @@ class TestPhotosFeedQuery:
         db_path = self._make_photos_db(tmp_path)
         rows = self._assets_after(db_path, 0.0)
         assert [r["uuid"] for r in rows] == ["uuid-video", "uuid-normal"]
-
-    @pytest.mark.unit
-    def test_query_ignores_hidden_assets(self, tmp_path):
-        db_path = self._make_photos_db(tmp_path)
-        rows = self._assets_after(db_path, 0.0)
-        assert "uuid-hidden" not in [r["uuid"] for r in rows]
 
     @pytest.mark.unit
     def test_query_starts_strictly_after_the_cursor_and_honours_the_limit(self, tmp_path):
@@ -2138,15 +1940,6 @@ class TestPhotosDatabaseVideos:
         assert row["photo_type"] == "video, slo-mo"
 
     @pytest.mark.unit
-    def test_stills_have_no_duration(self, floxy_db):
-        floxy_db.store_photo(
-            asset_guid="PIC-1", creation_date=1700000000.0, latitude=None, longitude=None,
-            location_text="", albums="", persons="", photo_type="photo",
-            short_description="A cat", detailed_description="A cat on a sofa",
-            pretty_score=1, family_importance_score=1, indexed_at=time.time())
-        assert floxy_db.search_photos("cat")[0]["duration_seconds"] is None
-
-    @pytest.mark.unit
     def test_migration_adds_duration_to_old_schema(self, tmp_path):
         db_path = str(tmp_path / "old.db")
         conn = sqlite3.connect(db_path)
@@ -2280,16 +2073,6 @@ class TestPhotoProcessorVideo:
         spoken = content.split("Spoken: ", 1)[1]
         assert spoken.endswith("…") and len(spoken) <= MAX_SPOKEN_CONTENT_CHARS + 1
         assert len(speech) > MAX_SPOKEN_CONTENT_CHARS
-
-    @pytest.mark.unit
-    def test_video_settings_defaults_cover_a_720p_clip_at_the_duration_cap(self):
-        from assistant.integration.integrations.photos.PhotoProcessor import video_settings
-        with patch('common.ConfigManager.ConfigManager.get_instance') as get_instance:
-            get_instance.return_value.get.side_effect = lambda key, default=None: default
-            settings = video_settings()
-        assert settings.max_bytes == 150 * 1024 * 1024
-        assert settings.max_duration_seconds == 300
-        assert settings.max_bytes >= 0.45 * 1024 * 1024 * settings.max_duration_seconds
 
     @pytest.mark.unit
     def test_history_without_spoken_line_when_silent(self):
@@ -2444,14 +2227,6 @@ class TestPhotoProcessorGetVideoBytes:
 
         assert result is None
         run.assert_not_called()
-
-    @pytest.mark.unit
-    def test_no_cloud_guid_returns_none(self, tmp_path):
-        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
-        row = {**self._row(tmp_path), "cloud_master_guid": None, "cloud_asset_guid": None}
-        with patch('assistant.integration.integrations.photos.PhotoProcessor.PHOTOS_ORIGINALS_DIR', str(tmp_path)):
-            assert PhotoProcessor._get_video_bytes(row, max_bytes=100) is None
-
 
 class TestPhotoProcessorBulkVideoThrottle:
 

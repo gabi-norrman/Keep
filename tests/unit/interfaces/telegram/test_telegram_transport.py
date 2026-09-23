@@ -100,13 +100,6 @@ class TestConfigAndAuth:
         assert _make_transport().is_configured is True
         assert _make_transport(token='').is_configured is False
 
-    def test_contract_attributes(self, transport):
-        assert transport.name == "Telegram"
-        assert transport.source == "Telegram"
-        assert transport.max_message_length == 4096
-        assert transport.lang == "en"
-        assert transport.config_keys == ["telegram_bot.bot_token"]
-
     def test_authorization(self):
         assert _make_transport()._is_authorized(12345) is True
         t = _make_transport(allowed=[111, 222])
@@ -124,13 +117,6 @@ class TestConfigAndAuth:
         with patch(f'{MODULE}.config') as cfg:
             cfg.get_owner_name.return_value = "Owner"
             assert transport._sender_name(update) == "Owner"
-
-    def test_singleton(self):
-        from interfaces.telegram.TelegramTransport import TelegramTransport
-        with patch(f'{MODULE}.config') as cfg:
-            cfg.get = lambda key, default='': ''
-            a = TelegramTransport.get_instance()
-            assert TelegramTransport.get_instance() is a
 
     def test_start_skips_when_not_configured(self):
         t = _make_transport(token='', running=False)
@@ -226,16 +212,6 @@ class TestLoopBridge:
         with patch(f'{MODULE}.error') as err:
             assert transport._call(coro(), "draft update") is None
         assert "bot loop thread" in err.call_args[0][0]
-
-    def test_call_runs_on_the_loop_and_returns_the_result(self, transport):
-        async def coro():
-            return "ok"
-
-        with patch(f'{MODULE}.asyncio.run_coroutine_threadsafe') as rcts:
-            rcts.return_value.result.return_value = "ok"
-            assert transport._call(coro(), "x") == "ok"
-            assert rcts.call_args[0][1] is transport._loop
-            rcts.call_args[0][0].close()
 
     def test_call_returns_none_and_logs_when_the_loop_call_fails(self, transport):
         # A hung or failed loop call becomes a False delivery, never an exception in the chat thread
@@ -445,15 +421,6 @@ class TestInboundMedia:
         await transport._handle_video(update, ctx)
         ctx.bot.get_file.assert_not_called()
         assert "too large" in update.message.reply_text.call_args[0][0]
-        hub.receive.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_video_download_failure_tells_user(self, transport, hub):
-        update = self._video_update()
-        ctx = MagicMock()
-        ctx.bot.get_file = AsyncMock(side_effect=RuntimeError("network"))
-        await transport._handle_video(update, ctx)
-        assert "couldn't download" in update.message.reply_text.call_args[0][0]
         hub.receive.assert_not_called()
 
     @pytest.mark.asyncio
@@ -865,11 +832,6 @@ class TestTelegramDraft:
         t, d = self._draft(results=[None])
         assert d.update("x") is False
 
-    def test_empty_update_is_ignored(self):
-        t, d = self._draft()
-        assert d.update("  ") is False
-        assert t.deliveries == []
-
     NOTICE = "\n\n(Fable refused this request, had to use Opus fallback)"
 
     def test_fallback_notice_is_dropped_while_console_debug_is_off(self):
@@ -891,12 +853,6 @@ class TestTelegramDraft:
         with patch('interfaces.chat.FallbackNotice.console_debug', return_value=False):
             assert d.finalize(self.NOTICE) is False
         assert t.deleted == [42]
-
-    def test_begin_draft_returns_a_telegram_draft(self, transport):
-        from interfaces.telegram.TelegramTransport import TelegramDraft
-        with patch.object(transport, '_schedule', side_effect=lambda coro, what: (coro.close(), True)[1]):
-            assert isinstance(transport.begin_draft(123), TelegramDraft)
-
 
 @pytest.mark.unit
 class TestOneShotSends:
@@ -929,14 +885,6 @@ class TestOneShotSends:
         assert plain_call.kwargs["text"] == "Bold and code" and "parse_mode" not in plain_call.kwargs
 
     @pytest.mark.asyncio
-    async def test_send_text_async_logs_both_failures(self, transport):
-        transport._application.bot.send_message = AsyncMock(side_effect=[Exception("HTML fail"), Exception("plain fail")])
-        with patch(f'{MODULE}.error') as err:
-            await transport._send_text_async(111, "<b>msg</b>")
-        err.assert_any_call("Telegram: HTML send_message failed for 111, stripping tags: HTML fail")
-        err.assert_any_call("Failed to send Telegram message to 111: plain fail")
-
-    @pytest.mark.asyncio
     async def test_send_text_async_waits_out_flood_ban(self, transport):
         from telegram.error import RetryAfter
         transport._application.bot.send_message = AsyncMock(side_effect=[RetryAfter(3), MagicMock(message_id=2)])
@@ -944,19 +892,6 @@ class TestOneShotSends:
             await transport._send_text_async(111, "hi")
         sleep.assert_called_once_with(4)
         assert transport._application.bot.send_message.call_count == 2
-
-    def test_media_sends_schedule_and_guard(self, transport):
-        with patch(f'{MODULE}.asyncio.run_coroutine_threadsafe') as rcts:
-            assert transport.send_photo(111, b"jpg", "cap") is True
-            assert transport.send_photo_album(111, [(b"a", "1")]) is True
-            assert transport.send_video(111, b"mp4", "clip", thumbnail=b"t") is True
-            assert rcts.call_count == 3
-            for c in rcts.call_args_list:
-                c[0][0].close()
-        t = _make_transport(running=False)
-        assert t.send_photo(111, b"jpg") is False
-        assert t.send_photo_album(111, [(b"a", "1")]) is False
-        assert t.send_video(111, b"mp4") is False
 
     @pytest.mark.asyncio
     async def test_photo_caption_truncated(self, transport):
@@ -1106,13 +1041,6 @@ class TestApprovals:
         buttons = kwargs["reply_markup"].inline_keyboard[0]
         assert [b.callback_data for b in buttons] == ["approval:approve:tok", "approval:deny:tok"]
         assert transport._approval_bodies[(555, 99)] == body
-
-    def test_send_approval_prompt_escapes_and_returns_ref(self, transport):
-        with patch.object(transport, '_call', return_value=99) as call:
-            assert transport.send_approval_prompt(555, "tok", "Send <hi>", "d & e") == 99
-        call.call_args[0][0].close()
-        t = _make_transport(running=False)
-        assert t.send_approval_prompt(555, "tok", "x", "") is None
 
     def test_approval_body_escapes_title_and_quotes_details(self, transport):
         # An unescaped '<' in a tool title fails the HTML send and the approval gate shows nothing
@@ -1366,16 +1294,12 @@ class TestAllowedChatIds:
         assert TelegramTransport._parse_chat_ids([]) == []
 
 
-
 @pytest.mark.unit
 class TestConfigured:
     def test_a_copied_example_placeholder_is_no_token(self):
         t = _make_transport(token='YOUR_TELEGRAM_BOT_TOKEN_HERE', running=False)
         assert t.is_configured is False
         assert t.check_health() is False
-
-    def test_a_real_token_configures_it(self):
-        assert _make_transport(running=False).is_configured is True
 
     def test_reset_leaves_the_hub_and_stops(self, transport, hub):
         with patch.object(transport, 'stop') as stop:

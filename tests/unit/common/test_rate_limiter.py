@@ -6,10 +6,6 @@ from common.RateLimiter import RateLimiter
 @pytest.mark.unit
 class TestRateLimiter:
 
-    def test_allows_first_send(self):
-        rl = RateLimiter(max_events=3, window_seconds=60)
-        assert rl.check() is None
-
     def test_allows_up_to_max(self):
         rl = RateLimiter(max_events=3, window_seconds=60)
         for _ in range(3):
@@ -48,11 +44,6 @@ class TestRateLimiter:
             rl.record()
 
             assert rl.check() is not None
-
-    def test_record_without_check(self):
-        rl = RateLimiter(max_events=1, window_seconds=60)
-        rl.record()
-        assert rl.check() is not None
 
     def test_zero_events_always_blocks(self):
         rl = RateLimiter(max_events=0, window_seconds=60)

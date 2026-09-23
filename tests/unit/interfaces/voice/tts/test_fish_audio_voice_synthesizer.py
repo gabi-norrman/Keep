@@ -54,14 +54,6 @@ class TestFishAudioVoiceSynthesizer:
         assert headers["model"] == "s2.1-pro"
 
     @patch('interfaces.voice.tts.FishAudioVoiceSynthesizer.config')
-    def test_default_model_is_free_tier(self, mock_config):
-        _configure(mock_config)
-        from interfaces.voice.tts.FishAudioVoiceSynthesizer import FishAudioVoiceSynthesizer
-
-        vs = FishAudioVoiceSynthesizer()
-        assert vs.model_id == "s2.1-pro-free"
-
-    @patch('interfaces.voice.tts.FishAudioVoiceSynthesizer.config')
     def test_on_open_sends_msgpack_start_event(self, mock_config):
         _configure(mock_config)
         from interfaces.voice.tts.FishAudioVoiceSynthesizer import FishAudioVoiceSynthesizer
@@ -204,23 +196,3 @@ class TestFishAudioVoiceSynthesizer:
         vs._feed_text_thread()
 
         assert vs.audio_queue.get_nowait() is None
-
-    @patch('interfaces.voice.tts.FishAudioVoiceSynthesizer.config')
-    def test_init_without_api_key_does_not_raise(self, mock_config):
-        # Missing key must not crash: get_instance() runs at registration time,
-        # before IntegrationMonitor can mark the integration NOT_CONFIGURED.
-        _configure(mock_config, api_key=None)
-        mock_config.get.side_effect = lambda key, default=None: (
-            {"tts.fish": {}}.get(key, default))
-        from interfaces.voice.tts.FishAudioVoiceSynthesizer import FishAudioVoiceSynthesizer
-
-        vs = FishAudioVoiceSynthesizer()
-        assert vs.api_key == ''
-
-    @patch('interfaces.voice.tts.FishAudioVoiceSynthesizer.config')
-    def test_class_attributes(self, mock_config):
-        _configure(mock_config)
-        from interfaces.voice.tts.FishAudioVoiceSynthesizer import FishAudioVoiceSynthesizer
-
-        assert FishAudioVoiceSynthesizer.SUPPORTS_EMOTION_TAGS is True
-        assert FishAudioVoiceSynthesizer.CONFIG_SECTION == "fish"

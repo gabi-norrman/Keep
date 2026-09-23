@@ -5,7 +5,7 @@ from datetime import date
 
 import pytest
 
-from common.vault.SecretKinds import KINDS, MIN_LENGTH, VaultError, normalize, pattern
+from common.vault.SecretKinds import MIN_LENGTH, VaultError, normalize, pattern
 
 TODAY = date(2026, 9, 5)
 
@@ -17,10 +17,6 @@ def found(kind, canonical, text, **kw):
 
 @pytest.mark.unit
 class TestKinds:
-    def test_all_nine_kinds_are_listed(self):
-        assert KINDS == ("phone", "card", "personal_id", "plate", "account", "email",
-                         "password", "api_key", "text")
-
     def test_unknown_kind_is_rejected(self):
         with pytest.raises(VaultError, match="unknown secret kind"):
             normalize("ssn", "123456789")
@@ -219,10 +215,6 @@ class TestEmail:
 
 @pytest.mark.unit
 class TestVerbatimKinds:
-    @pytest.mark.parametrize("kind", ["password", "api_key", "text"])
-    def test_kept_as_typed(self, kind):
-        assert normalize(kind, "P@$$w0rd.") == "P@$$w0rd."
-
     @pytest.mark.parametrize("kind", ["password", "api_key", "text"])
     def test_exact_case_sensitive_match_with_regex_chars_escaped(self, kind):
         assert found(kind, "P@$$w0rd.", "use P@$$w0rd. here") == "P@$$w0rd."

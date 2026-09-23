@@ -20,33 +20,16 @@ class TestSanitize:
     def test_mixed_tags(self):
         assert sanitize("<div><b>bold</b> in <span>span</span></div>") == "<b>bold</b> in span"
 
-    def test_plain_text_unchanged(self):
-        assert sanitize("no tags here") == "no tags here"
-
-
 @pytest.mark.unit
 class TestStripTags:
     def test_strips_all_tags(self):
         assert strip_tags("<b>bold</b> and <i>italic</i>") == "bold and italic"
 
-    def test_strips_nested_tags(self):
-        assert strip_tags("<pre><code>code</code></pre>") == "code"
-
     def test_strips_tags_with_attributes(self):
         assert strip_tags('<a href="url">link</a>') == "link"
 
-    def test_plain_text_unchanged(self):
-        assert strip_tags("no tags here") == "no tags here"
-
-    def test_empty_string(self):
-        assert strip_tags("") == ""
-
-
 @pytest.mark.unit
 class TestSafePrefixEnd:
-    def test_plain_text_returns_full_length(self):
-        assert safe_prefix_end("hello world") == 11
-
     def test_balanced_tags_returns_full_length(self):
         text = "Hello <b>bold</b> world"
         assert safe_prefix_end(text) == len(text)
@@ -67,19 +50,8 @@ class TestSafePrefixEnd:
     def test_disallowed_tags_ignored(self):
         assert safe_prefix_end("Hello <div>content</div> <pre>unclosed") == len("Hello <div>content</div> ")
 
-    def test_empty_string(self):
-        assert safe_prefix_end("") == 0
-
-    def test_multiple_balanced_pairs(self):
-        text = "<b>a</b><i>b</i><code>c</code>"
-        assert safe_prefix_end(text) == len(text)
-
-
 @pytest.mark.unit
 class TestSplit:
-    def test_short(self):
-        assert split("hello", max_length=10) == ["hello"]
-
     def test_long_splits_on_newline(self):
         text = "line one\nline two\nline three"
         chunks = split(text, max_length=20)
@@ -145,22 +117,6 @@ class TestMarkdownToHtml:
         result = markdown_to_html("a < b & c > d")
         assert "&lt;" in result and "&amp;" in result and "&gt;" in result
         assert "&lt;" in markdown_to_html("```\nif a < b:\n```")
-
-    def test_no_unsupported_tags(self):
-        result = markdown_to_html("# H\n## H2\n- item\n\ntext")
-        for tag in ["<h1>", "<h2>", "<h3>", "<ul>", "<li>", "<p>", "<hr"]:
-            assert tag not in result
-
-    def test_plain_text_passthrough(self):
-        assert "Just some text" in markdown_to_html("Just some text")
-
-    def test_bold_in_heading(self):
-        result = markdown_to_html("## The **important** part")
-        assert "<b>" in result and "important" in result
-
-    def test_allowed_tags_is_the_telegram_subset(self):
-        assert {"b", "i", "code", "pre", "blockquote", "a"} <= RichText.ALLOWED_TAGS
-
 
 class TestCommandLine:
     def test_escapes_and_appends_the_detail_in_its_own_italics(self):

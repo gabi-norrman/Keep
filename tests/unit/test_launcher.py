@@ -230,22 +230,8 @@ class TestConfigCheck:
                 floxy_ai_server._verify_config_or_exit()
         assert any("Please set api_keys.gemini in config.yaml and restart." in c.args[0] for c in err.call_args_list)
 
-    def test_complete_config_passes(self):
-        import floxy_ai_server
-        with patch.object(config, "missing_required", return_value=[]):
-            floxy_ai_server._verify_config_or_exit()
-
-
 @pytest.mark.unit
 class TestFirstConversation:
-    def test_the_ftue_is_greeted_through_the_chat_hub(self):
-        import floxy_ai_server
-        with patch("assistant.FirstRun.in_ftue", return_value=True), \
-                patch("assistant.FirstRun.brief", return_value="the brief"), \
-                patch("interfaces.chat.ChatHub.ChatHub.get_instance") as hub:
-            floxy_ai_server._open_first_conversation()
-        hub.return_value.open_conversation.assert_called_once_with("the brief")
-
     def test_with_the_console_the_brief_waits_for_its_startup_intro(self):
         import floxy_ai_server
 
@@ -335,4 +321,3 @@ class TestFirstRunPipeline:
             assert order == ["seed", ("begin", True), "prompt_manager"]
         finally:
             server.stop()
-

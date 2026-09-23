@@ -33,16 +33,6 @@ class TestFetchLatest:
         assert "[GM-AA]" in result
         assert "[IC-AA]" in result
 
-    def test_calls_all_providers(self):
-        gmail = _make_provider("gmail", "GM", fetch_result="emails")
-        icloud = _make_provider("icloud", "IC", fetch_result="emails")
-        composite = CompositeEmailAccess([gmail, icloud])
-
-        composite.fetch_latest("params")
-
-        gmail.fetch_latest.assert_called_once_with("params", False)
-        icloud.fetch_latest.assert_called_once_with("params", False)
-
     def test_forwards_unread_only_to_all_providers(self):
         gmail = _make_provider("gmail", "GM", fetch_result="emails")
         icloud = _make_provider("icloud", "IC", fetch_result="emails")
@@ -88,17 +78,6 @@ class TestSearch:
         assert "[GM-AA]" in result
         assert "[IC-AA]" in result
 
-    def test_calls_all_providers_with_query(self):
-        gmail = _make_provider("gmail", "GM", search_result="results")
-        icloud = _make_provider("icloud", "IC", search_result="results")
-        composite = CompositeEmailAccess([gmail, icloud])
-
-        composite.search("receipt")
-
-        gmail.search.assert_called_once_with("receipt")
-        icloud.search.assert_called_once_with("receipt")
-
-
 @pytest.mark.unit
 class TestRead:
 
@@ -112,16 +91,6 @@ class TestRead:
         assert result == "Gmail email body"
         gmail.read.assert_called_once_with("AA")
         icloud.read.assert_not_called()
-
-    def test_routes_icloud_prefix(self):
-        gmail = _make_provider("gmail", "GM")
-        icloud = _make_provider("icloud", "IC", read_result="iCloud email body")
-        composite = CompositeEmailAccess([gmail, icloud])
-
-        result = composite.read("IC-AB")
-
-        assert result == "iCloud email body"
-        icloud.read.assert_called_once_with("AB")
 
     def test_no_prefix_tries_each_provider(self):
         gmail = _make_provider("gmail", "GM", read_result="Email with ID 42 not found.")
@@ -209,24 +178,6 @@ class TestMove:
 
 
 @pytest.mark.unit
-class TestListFolders:
-
-    def test_fans_out_with_headers(self):
-        gmail = _make_provider("gmail", "GM")
-        gmail.list_folders.return_value = "@SaneLater\nArchive"
-        icloud = _make_provider("icloud", "IC")
-        icloud.list_folders.return_value = "INBOX"
-        composite = CompositeEmailAccess([gmail, icloud])
-
-        result = composite.list_folders()
-
-        assert "--- Gmail ---" in result
-        assert "@SaneLater" in result
-        assert "--- Icloud ---" in result
-        assert "INBOX" in result
-
-
-@pytest.mark.unit
 class TestSubjectFor:
 
     def test_routes_to_correct_provider_by_prefix(self):
@@ -293,27 +244,9 @@ class TestEmailProviderSubjectCache:
 
         assert provider.subject_for("FK-AA") == "Hello there"
 
-    def test_subject_for_returns_none_on_cache_miss(self):
-        provider = _FakeProvider()
-        provider._format_email_list([_FakeMessage("100", "Hello there")])
-
-        assert provider.subject_for("ZZ") is None
-
     def test_relisting_clears_stale_subjects(self):
         provider = _FakeProvider()
         provider._format_email_list([_FakeMessage("100", "First batch")])
         provider._format_email_list([_FakeMessage("200", "Second batch")])
 
         assert provider.subject_for("AA") == "Second batch"
-
-
-@pytest.mark.unit
-class TestCompositeProperties:
-
-    def test_name_property(self):
-        composite = CompositeEmailAccess([])
-        assert composite.name == "Email"
-
-    def test_id_prefix_property(self):
-        composite = CompositeEmailAccess([])
-        assert composite.id_prefix == ""

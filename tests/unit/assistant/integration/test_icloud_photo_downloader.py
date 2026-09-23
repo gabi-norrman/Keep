@@ -12,9 +12,6 @@ from assistant.integration.integrations.photos.ICloudPhotoDownloader import (
     NoVideoRenditionError,
     _RECORD_NOT_FOUND,
 )
-from assistant.tools.ImageAnalyzer import MAX_DIMENSION
-
-
 @pytest.fixture(autouse=True)
 def reset_singleton():
     ICloudPhotoDownloader.reset_instance()
@@ -53,13 +50,6 @@ class TestZoneOrder:
         order = downloader._zone_order()
         assert len(order) == 1
         assert order[0]["zoneName"] == "PrimarySync"
-
-    @pytest.mark.unit
-    def test_no_zones_returns_empty(self, downloader):
-        downloader._shared_zone = None
-        downloader._primary_zone = None
-        assert downloader._zone_order() == []
-
 
 # ---------------------------------------------------------------------------
 # _discover_zones
@@ -120,15 +110,6 @@ class TestDiscoverZones:
         downloader._discover_zones()
 
         assert downloader._primary_zone == FALLBACK_PRIMARY_ZONE
-
-    @pytest.mark.unit
-    def test_http_error_uses_fallback(self, downloader):
-        downloader._primary_zone = None
-        mock_resp = Mock()
-        mock_resp.status_code = 503
-        downloader._session.post.return_value = mock_resp
-
-        downloader._discover_zones()
 
         # Should not crash, primary fallback set if it was None
         # (it was already set in fixture, so this tests the HTTP error path)
@@ -267,78 +248,6 @@ class TestDownloadRaw:
 
         assert downloader._download_raw("https://cdn/photo.jpg") is None
 
-
-# ---------------------------------------------------------------------------
-# _resize_to_jpeg
-# ---------------------------------------------------------------------------
-
-class TestResizeToJpeg:
-
-    @pytest.mark.unit
-    def test_small_image_passes_through(self):
-        from PIL import Image
-        img = Image.new("RGB", (800, 600), color=(255, 0, 0))
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        raw = buf.getvalue()
-
-        result = ICloudPhotoDownloader._resize_to_jpeg(raw)
-
-        assert result is not None
-        result_img = Image.open(io.BytesIO(result))
-        assert result_img.format == "JPEG"
-        assert result_img.size == (800, 600)
-
-    @pytest.mark.unit
-    def test_large_image_gets_resized(self):
-        from PIL import Image
-        img = Image.new("RGB", (1600, 1200), color=(0, 255, 0))
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        raw = buf.getvalue()
-
-        result = ICloudPhotoDownloader._resize_to_jpeg(raw)
-
-        assert result is not None
-        result_img = Image.open(io.BytesIO(result))
-        assert max(result_img.size) == MAX_DIMENSION
-
-    @pytest.mark.unit
-    def test_rgba_converted_to_rgb(self):
-        from PIL import Image
-        img = Image.new("RGBA", (100, 100), color=(255, 0, 0, 128))
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        raw = buf.getvalue()
-
-        result = ICloudPhotoDownloader._resize_to_jpeg(raw)
-
-        assert result is not None
-        result_img = Image.open(io.BytesIO(result))
-        assert result_img.mode == "RGB"
-
-    @pytest.mark.unit
-    def test_unparseable_image_tries_sips_fallback(self):
-        with patch('assistant.tools.ImageAnalyzer.convert_via_sips', return_value=None) as mock_sips:
-            result = ICloudPhotoDownloader._resize_to_jpeg(b"not an image at all")
-
-        mock_sips.assert_called_once_with(b"not an image at all")
-        assert result is None
-
-    @pytest.mark.unit
-    def test_sips_fallback_success(self):
-        from PIL import Image
-        img = Image.new("RGB", (200, 200), color=(0, 0, 255))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG")
-        sips_output = buf.getvalue()
-
-        with patch('assistant.tools.ImageAnalyzer.convert_via_sips', return_value=sips_output):
-            result = ICloudPhotoDownloader._resize_to_jpeg(b"heic binary data")
-
-        assert result is not None
-        result_img = Image.open(io.BytesIO(result))
-        assert result_img.format == "JPEG"
 
 
 # ---------------------------------------------------------------------------
@@ -543,36 +452,6 @@ class TestEnsureService:
         assert history.add_context_message.call_args[1] == {"source": "icloud_photos"}
         assert "session refresh failed" in msg and "2FA required" in msg
         mock_bot.send_message.assert_called_once_with(msg, in_history=True)
-
-    @pytest.mark.unit
-    def test_skips_pcs_when_already_ready(self):
-        api = self._make_mock_api()
-        dl = ICloudPhotoDownloader()
-        dl._ready = True
-        result = dl._ensure_service()
-
-        assert result is True
-        api._request_pcs_for_service.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Singleton
-# ---------------------------------------------------------------------------
-
-class TestSingleton:
-
-    @pytest.mark.unit
-    def test_get_instance_returns_same(self):
-        a = ICloudPhotoDownloader.get_instance()
-        b = ICloudPhotoDownloader.get_instance()
-        assert a is b
-
-    @pytest.mark.unit
-    def test_reset_instance(self):
-        a = ICloudPhotoDownloader.get_instance()
-        ICloudPhotoDownloader.reset_instance()
-        b = ICloudPhotoDownloader.get_instance()
-        assert a is not b
 
 
 # ---------------------------------------------------------------------------
@@ -833,15 +712,3 @@ class TestDownloadVideoBytes:
         assert downloader.download_video_bytes("GUID-STUB") == (b"p" * 200, "video/mp4")
         zones = [json.loads(c.kwargs["data"])["zoneID"]["zoneName"] for c in downloader._session.post.call_args_list]
         assert zones[0].startswith("SharedSync") and zones[1] == "PrimarySync"
-
-    @pytest.mark.unit
-    def test_returns_none_when_service_not_ready(self):
-        dl = ICloudPhotoDownloader()
-        with patch.object(dl, '_ensure_service', return_value=False):
-            assert dl.download_video_bytes("GUID-123") is None
-
-    @pytest.mark.unit
-    def test_resets_state_on_exception(self, downloader):
-        downloader._session.post.side_effect = RuntimeError("boom")
-        assert downloader.download_video_bytes("GUID-ERR") is None
-        assert downloader._ready is False

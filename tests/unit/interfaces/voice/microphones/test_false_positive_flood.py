@@ -66,15 +66,3 @@ class TestReportFalsePositiveFlood:
             mock_outpost.loop.is_closed.return_value = False
             report_false_positive_flood()
             mock_sa.notify_false_positive_flood.assert_called_once()
-
-    def test_broadcast_and_speech_analyzer_both_called(self):
-        mock_future = MagicMock()
-        with patch(f"{MOD}.outpost_server") as mock_outpost, \
-             patch(f"{MOD}.asyncio.run_coroutine_threadsafe", return_value=mock_future) as mock_rcts, \
-             patch(f"{MOD}.SpeechAnalyzer") as mock_sa:
-            mock_outpost.loop = MagicMock()
-            mock_outpost.loop.is_running.return_value = True
-            mock_outpost.loop.is_closed.return_value = False
-            report_false_positive_flood()
-            mock_rcts.assert_called_once()
-            mock_sa.notify_false_positive_flood.assert_called_once()

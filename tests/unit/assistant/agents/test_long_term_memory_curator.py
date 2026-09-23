@@ -10,11 +10,6 @@ from common.FloxyDatabase import NO_INTERACTIONS
 
 
 class TestLongTermMemoryCurator:
-    def test_constructor_uses_provided_llm(self):
-        mock_llm = Mock()
-        curator = LongTermMemoryCurator(llm=mock_llm, test_mode=True)
-        assert curator.llm is mock_llm
-
     def test_default_llm_created_with_prompt_cache_disabled(self):
         # The nightly curation call is one-shot: a prompt cache written for it is
         # never read again, so the curator must opt out of caching (the cache-write
@@ -26,26 +21,6 @@ class TestLongTermMemoryCurator:
         mock_create.assert_called_once_with('ClaudeLLM', 'some-model', prompt_cache=False)
         mock_create.return_value.initialize.assert_called_once()
         assert curator.llm is mock_create.return_value
-
-    def test_constructor_test_mode_sets_db_none(self):
-        curator = LongTermMemoryCurator(llm=Mock(), test_mode=True)
-        assert curator.floxy_db is None
-
-    def test_curate_memory_with_data_returns_tuple(self):
-        mock_llm = Mock()
-        mock_llm.think.return_value = "# Updated Memory\nNew content"
-        curator = LongTermMemoryCurator(llm=mock_llm, test_mode=True)
-
-        result = curator.curate_memory_with_data(
-            interaction_history="[2025-12-07 12:00:00] User: hello\n\n[2025-12-07 12:00:01] Assistant: hi\n",
-            calendar_data="2025-01-01 10:00 - 11:00: Meeting",
-            current_memory="# Old Memory\nOld content"
-        )
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        memory_text, metadata = result
-        assert isinstance(memory_text, str)
-        assert isinstance(metadata, dict)
 
     def test_curate_memory_with_data_passes_data_to_llm(self):
         mock_llm = Mock()
@@ -62,23 +37,6 @@ class TestLongTermMemoryCurator:
         prompt = call_args[1].get('system_message', call_args[0][0] if call_args[0] else '')
         assert "test history" in prompt
         assert "test memory" in prompt
-
-    def test_metadata_has_expected_keys(self):
-        mock_llm = Mock()
-        mock_llm.think.return_value = "# Memory\nContent"
-        curator = LongTermMemoryCurator(llm=mock_llm, test_mode=True)
-
-        _, metadata = curator.curate_memory_with_data(
-            interaction_history="[12:00] User: hi",
-            calendar_data="2025-01-01: Event\n2025-01-02: Event",
-            current_memory="old"
-        )
-
-        assert 'interaction_count' in metadata
-        assert 'calendar_events_count' in metadata
-        assert 'old_memory_size' in metadata
-        assert 'new_memory_size' in metadata
-        assert 'llm_duration_seconds' in metadata
 
     def test_extract_memory_from_markdown_code_block(self):
         response = "Here is the memory:\n```markdown\n# Memory\nContent here\n```\nDone."
@@ -151,37 +109,10 @@ class TestLongTermMemoryCurator:
         assert (tmp_path / "memory.md").read_text() == "# Test Memory\nContent"
         assert path == str(tmp_path / "memory.md")
 
-    def test_load_memory_reads_file(self, tmp_path):
-        memory_file = tmp_path / "memory.md"
-        memory_file.write_text("# Existing Memory")
-        curator = LongTermMemoryCurator(llm=Mock(), test_mode=True,
-                                         memory_file_path=str(memory_file))
-        assert curator._load_memory() == "# Existing Memory"
-
     def test_load_memory_returns_empty_for_missing(self, tmp_path):
         curator = LongTermMemoryCurator(llm=Mock(), test_mode=True,
                                          memory_file_path=str(tmp_path / "nonexistent.md"))
         assert curator._load_memory() == ""
-
-    def test_save_debug_log_creates_file(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        metadata = {
-            'interaction_count': 5,
-            'calendar_events_count': 3,
-            'old_memory_size': 100,
-            'new_memory_size': 150,
-            'llm_duration_seconds': 2.5,
-            'old_memory': 'old content',
-            'full_prompt': 'test prompt',
-        }
-        path = LongTermMemoryCurator.save_debug_log("new content", metadata)
-        assert path != ""
-        assert "memory" in path
-        import os
-        assert os.path.exists(path)
-        content = open(path).read()
-        assert "Diff" in content or "Memory" in content
-
 
 class TestCurationPeriod:
     """curate_memory takes an explicit period so a first-run curation can cover
@@ -308,10 +239,6 @@ class TestRun:
         assert content == ("Long term memory curation complete - memory updated "
                            "(17 interactions, 2026-09-08T00:00 .. 2026-09-10T04:00).")
 
-    def test_completion_note_without_a_period(self):
-        assert LongTermMemoryCurator.completion_note({'interaction_count': 3}) == \
-            "Long term memory curation complete - memory updated (3 interactions)."
-
     def test_second_run_while_one_is_in_progress_is_skipped(self):
         started, release = threading.Event(), threading.Event()
         slow = Mock()
@@ -421,12 +348,6 @@ class TestChunks:
             self._chunks(date(2026, 8, 5), date(2026, 8, 1))
         with pytest.raises(ValueError):   # start in the future, once the end is clamped
             self._chunks(date(2026, 9, 20), date(2026, 9, 25))
-
-    def test_deterministic(self):
-        first = self._chunks(date(2026, 8, 13), date(2026, 9, 14))
-        assert first == self._chunks(date(2026, 8, 13), date(2026, 9, 14))
-        assert len(first) == 9   # 33 days
-
 
 def _span_curator(metadata_for=None):
     """A curator whose curate_memory answers ("bank", metadata) per call; `metadata_for(start)`

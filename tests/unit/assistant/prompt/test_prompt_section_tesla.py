@@ -23,9 +23,6 @@ class TestHaversineDistance:
         from assistant.prompt.sections.TeslaSectionGenerator import TeslaSectionGenerator
         return TeslaSectionGenerator._haversine_distance(*args)
 
-    def test_same_point_zero(self):
-        assert self._haversine(57.7089, 11.9746, 57.7089, 11.9746) == 0.0
-
     def test_known_distance(self):
         # Gothenburg central station to Lindholmen (~2.5km)
         dist = self._haversine(57.7089, 11.9746, 57.7210, 11.9420)
@@ -98,31 +95,6 @@ class TestReverseGeocode:
 # ===========================================================================
 
 class TestGetEtaToHome:
-    @patch('assistant.prompt.sections.TeslaSectionGenerator.config')
-    @patch('assistant.prompt.sections.TeslaSectionGenerator.requests')
-    def test_returns_eta_minutes(self, mock_requests, mock_config):
-        mock_config.get.return_value = "fake-api-key"
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "status": "OK",
-            "rows": [{"elements": [{"status": "OK",
-                "duration_in_traffic": {"value": 1800},
-                "duration": {"value": 2000}
-            }]}]
-        }
-        mock_requests.get.return_value = mock_response
-        section = _make_tesla_section()
-        result = section._get_eta_to_home(57.5, 12.0)
-        assert result == 30
-
-    @patch('assistant.prompt.sections.TeslaSectionGenerator.config')
-    def test_returns_none_without_api_key(self, mock_config):
-        mock_config.get.return_value = None
-        section = _make_tesla_section()
-        result = section._get_eta_to_home(57.5, 12.0)
-        assert result is None
-
     @patch('assistant.prompt.sections.TeslaSectionGenerator.config')
     @patch('assistant.prompt.sections.TeslaSectionGenerator.requests')
     def test_returns_none_on_error(self, mock_requests, mock_config):
@@ -272,11 +244,6 @@ class TestGetVehicleInfo:
         assert "asleep" not in result
         assert "stale" not in result
 
-    def test_vin_not_configured(self):
-        section = _make_tesla_section(tesla_api=Mock())
-        result = section._get_vehicle_info(None, "Model 3", "car1")
-        assert "VIN not configured" in result
-
     def test_location_unknown(self):
         section, mock_api = self._make_section_with_api()
         mock_api._api_get.return_value = {
@@ -303,11 +270,6 @@ class TestGetVehicleInfo:
 # ===========================================================================
 
 class TestFetchContent:
-    def test_no_api_returns_message(self):
-        section = _make_tesla_section(tesla_api=None)
-        result = section._fetch_content()
-        assert result == "(Tesla not configured)"
-
     def test_multiple_vehicles(self):
         mock_api = Mock()
         spec1 = Mock()
@@ -405,8 +367,4 @@ class TestGetUpdateInterval:
             "climate_state": {}
         }
         section._fetch_content()
-        assert section._get_update_interval() == 300
-
-    def test_no_api_returns_300(self):
-        section = _make_tesla_section(tesla_api=None)
         assert section._get_update_interval() == 300

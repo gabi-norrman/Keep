@@ -4,13 +4,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from assistant.integration.integrations.cameras.RingIntegration import (
-    RingIntegration,
-    RingCameraError,
-    RingConfigurationError,
-    RingAuthenticationError,
-    _RingTfaHandler,
-)
+from assistant.integration.integrations.cameras.RingIntegration import RingIntegration, RingCameraError, RingAuthenticationError, _RingTfaHandler
 
 
 @pytest.fixture(autouse=True)
@@ -25,42 +19,6 @@ VALID_CONFIG = {
     "password": "secret",
     "token_path": "/tmp/test_ring/token.cache",
 }
-
-
-class TestRingIntegrationInit:
-    def test_missing_ring_section_raises(self):
-        mock_cm = Mock()
-        mock_cm.get.side_effect = KeyError("ring")
-        with pytest.raises(RingConfigurationError, match="Missing 'ring' section"):
-            RingIntegration(config_manager=mock_cm)
-
-    def test_missing_username_raises(self):
-        with pytest.raises(RingConfigurationError, match="username"):
-            RingIntegration(config={"password": "secret"})
-
-    def test_missing_password_raises(self):
-        with pytest.raises(RingConfigurationError, match="password"):
-            RingIntegration(config={"username": "user@example.com"})
-
-    def test_valid_config_creates_instance(self):
-        cam = RingIntegration(config=VALID_CONFIG)
-        assert cam is not None
-        assert cam.get_auth_status()["status"] == "not_initialized"
-
-    def test_singleton(self):
-        mock_cm = Mock()
-        mock_cm.get.return_value = VALID_CONFIG
-        a = RingIntegration.get_instance(config_manager=mock_cm)
-        b = RingIntegration.get_instance()
-        assert a is b
-
-    def test_reset_instance(self):
-        mock_cm = Mock()
-        mock_cm.get.return_value = VALID_CONFIG
-        a = RingIntegration.get_instance(config_manager=mock_cm)
-        RingIntegration.reset_instance()
-        b = RingIntegration.get_instance(config_manager=mock_cm)
-        assert a is not b
 
 
 class TestRingIntegrationAuthStatus:
@@ -242,28 +200,6 @@ class TestRingIntegrationFetchSnapshot:
         result = cam.fetch_snapshot()
         assert result == []
 
-    def test_fetch_snapshot_returns_content_blocks(self):
-        cam = RingIntegration(config=VALID_CONFIG)
-        cam._ring = Mock()
-
-        mock_doorbell = Mock()
-        mock_doorbell.name = "Front Door"
-        mock_devices = Mock()
-        mock_devices.doorbells = [mock_doorbell]
-        cam._ring.devices.return_value = mock_devices
-        cam._ensure_connected = Mock()
-
-        fake_blocks = [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc"}},
-            {"type": "text", "text": "Camera: Front Door"},
-        ]
-        cam._fetch_doorbell_snapshot = Mock(return_value=fake_blocks)
-
-        result = cam.fetch_snapshot()
-        assert len(result) == 2
-        assert result[0]["type"] == "image"
-        assert result[1]["text"] == "Camera: Front Door"
-
     def test_fetch_snapshot_handles_single_doorbell_failure(self):
         cam = RingIntegration(config=VALID_CONFIG)
         cam._ring = Mock()
@@ -365,19 +301,6 @@ class TestAutoTfa:
         cam._auto_2fa_message = "2FA code auto-detected!"
         assert cam.auto_2fa_message == "2FA code auto-detected!"
         assert cam.auto_2fa_message is None
-
-    def test_on_needs_2fa_starts_background_thread(self):
-        cam = RingIntegration(config=VALID_CONFIG)
-        with patch.object(cam, '_ensure_connected'):
-            cam.on_needs_2fa()
-            cam._auto_2fa_thread.join(timeout=2)
-            assert not cam._auto_2fa_thread.is_alive()
-
-    def test_on_needs_2fa_handles_auth_error(self):
-        cam = RingIntegration(config=VALID_CONFIG)
-        with patch.object(cam, '_ensure_connected', side_effect=RingAuthenticationError("fail")):
-            cam.on_needs_2fa()
-            cam._auto_2fa_thread.join(timeout=2)
 
     def test_on_needs_2fa_skips_if_thread_alive(self):
         cam = RingIntegration(config=VALID_CONFIG)

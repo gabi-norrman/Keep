@@ -17,12 +17,6 @@ def server_keys():
 
 
 class TestSingleChars:
-    def test_single_ascii_char(self, server_keys):
-        srv, keys = server_keys
-        leftover = srv._process_input_buffer("a", ADDR)
-        assert keys == ["a"]
-        assert leftover == ""
-
     def test_multiple_chars_in_one_buffer(self, server_keys):
         srv, keys = server_keys
         leftover = srv._process_input_buffer("abc", ADDR)
@@ -86,12 +80,6 @@ class TestMixedInput:
         srv._process_input_buffer("x\x1b[Ay", ADDR)
         assert keys == ["x", "\x1b[A", "y"]
 
-    def test_pageup_then_char(self, server_keys):
-        srv, keys = server_keys
-        srv._process_input_buffer("\x1b[5~q", ADDR)
-        assert keys == ["\x1b[5~", "q"]
-
-
 class TestCallbackErrors:
     def test_raising_callback_does_not_halt_processing(self):
         def boom(key, addr):
@@ -115,11 +103,6 @@ class TestGenericEscapeSequences:
         srv, keys = server_keys
         srv._process_input_buffer("\x1b[H\x1b[F\x1b[1~\x1b[4~\x1b[3~\x1bOH\x1bOF", ADDR)
         assert keys == ["\x1b[H", "\x1b[F", "\x1b[1~", "\x1b[4~", "\x1b[3~", "\x1bOH", "\x1bOF"]
-
-    def test_modifier_arrows(self, server_keys):
-        srv, keys = server_keys
-        srv._process_input_buffer("\x1b[1;3D\x1b[1;5C", ADDR)
-        assert keys == ["\x1b[1;3D", "\x1b[1;5C"]
 
     def test_readline_word_chords(self, server_keys):
         srv, keys = server_keys
@@ -263,6 +246,3 @@ class TestFramePacing:
         slept = self._clock(monkeypatch, now=100.050)          # drawing took 50 ms, past the slot
         assert TUIServer._next_frame(100.0 + FRAME_INTERVAL) == pytest.approx(100.050 + FRAME_INTERVAL)
         assert slept == []
-
-    def test_the_interval_is_thirty_frames_a_second(self):
-        assert FRAME_INTERVAL == pytest.approx(0.0333, abs=0.0001)

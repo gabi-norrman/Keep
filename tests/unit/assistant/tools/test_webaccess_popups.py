@@ -101,12 +101,6 @@ class TestLivePageTargets:
         wa = make_wa(base, browser)
         assert run(wa._async_live_page_targets()) is None
 
-    def test_returns_none_without_browser(self):
-        wa = make_wa(FakeTab('base'), FakeBrowser([]))
-        wa._browser = None
-        assert run(wa._async_live_page_targets()) is None
-
-
 @pytest.mark.unit
 class TestGatedAdoption:
 

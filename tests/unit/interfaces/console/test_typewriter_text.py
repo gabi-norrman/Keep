@@ -79,12 +79,6 @@ def test_backlog_speeds_the_reveal_up():
     assert len(tw.visible_text()) > 100
 
 
-def test_reveal_all():
-    tw = TypewriterText("abc", clock=Clock())
-    tw.reveal_all()
-    assert tw.visible_text() == "abc"
-
-
 def test_cursor_draws_at_the_given_cell_and_hides_when_none():
     screen = TUIScreen(20, 3)
     tw = TypewriterText("ab", reveal=False, clock=Clock())

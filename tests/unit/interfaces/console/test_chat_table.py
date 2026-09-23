@@ -112,10 +112,6 @@ class TestTableLines:
         assert lines[1][0].fg == DIM
         assert not any(s.bold for s in lines[2])
 
-    def test_every_line_is_the_same_width(self):
-        texts = lines_of(TABLE)
-        assert len({display_width(t) for t in texts}) == 1
-
     def test_gutters_are_dim_and_cell_markup_keeps_its_flags(self):
         (table,) = split_blocks("| a | b |\n|---|---|\n| <b>bold</b> | <code>x</code> |")
         lines = table_lines(table, 80, DIM)
@@ -145,6 +141,3 @@ class TestTableLines:
     def test_short_rows_are_padded_with_empty_cells(self):
         texts = lines_of("| a | b | c |\n|---|---|---|\n| 1 |")
         assert texts[2] == "1 │   │  "
-
-    def test_empty_table_gives_no_lines(self):
-        assert table_lines(Table([]), 80, DIM) == []

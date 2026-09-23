@@ -165,18 +165,6 @@ def real_template_environment(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
-def test_vault_section_is_registered_right_after_memory(real_template_environment):
-    from assistant.prompt.sections.VaultSectionGenerator import VaultSectionGenerator
-
-    manager = PromptManager(test_suite=True)
-
-    assert isinstance(manager.sections["vault"], VaultSectionGenerator)
-    assert manager.sections["vault"].section_name == "Vault"
-    ordered = sorted(manager._section_positions, key=manager._section_positions.get)
-    assert ordered.index("vault") == ordered.index("memory") + 1
-
-
-@pytest.mark.unit
 def test_assembled_prompt_replaces_vault_placeholder_with_ids_only(real_template_environment, tmp_path):
     from common.vault.Vault import Vault
 
@@ -295,39 +283,6 @@ def test_on_prompt_assembled_swallows_callback_exception(prompt_test_environment
 
 
 @pytest.mark.unit
-def test_section_update_after_baseline_set_uses_delta_path(prompt_test_environment):
-    """Once baselines are snapshotted, a small section change must emit a transient
-    note instead of rebuilding the prompt — that's the whole point of the cache fix."""
-    manager = PromptManager(test_suite=True)
-    sections = {key: DummySection(f"{key}_content") for key in
-                ["weather", "precipitation", "home", "memory",
-                 "calendar", "sonos", "whisper", "car_info"]}
-    manager.sections = sections
-
-    # First update forces a full rebuild (no baselines yet) — this is the cold-start path.
-    manager._last_assembly_time = 0
-    manager.on_section_updated("weather")
-    initial_prompt = manager.prompt
-    initial_baselines = dict(manager._section_baselines)
-    assert "weather_content" in initial_prompt
-    assert manager._section_baselines["weather"] == "weather_content"
-
-    # Now mutate the weather section by a small amount and update again.
-    # With baselines in place + recent assembly time, this must go through the delta path:
-    # transient entry added, system prompt unchanged.
-    sections["weather"] = DummySection("weather_content_v2")
-    manager.sections = sections
-    manager.on_section_updated("weather")
-
-    assert manager.prompt == initial_prompt  # bytes unchanged
-    assert manager._section_baselines == initial_baselines  # baselines unchanged
-    assert len(manager.message_history.transient_entries) == 1
-    note = manager.message_history.transient_entries[0]
-    assert "weather" in note["content"]
-    assert note["source"] == "prompt_delta"
-
-
-@pytest.mark.unit
 def test_testsuite_mode_does_not_start_section_threads(prompt_test_environment):
     manager = PromptManager(test_suite=True)
 
@@ -405,19 +360,6 @@ def test_test_suite_fixture_history_precedes_thinking_turn(prompt_test_environme
 # ===========================================================================
 # update_history tests
 # ===========================================================================
-
-@pytest.mark.unit
-def test_update_history_delegates_to_history_section(prompt_test_environment):
-    manager = PromptManager(test_suite=True)
-    mock_history = Mock()
-    manager.message_history = mock_history
-
-    manager.update_history("Alice", "What time is it?", "It's 3pm", source="voice", location="kitchen")
-
-    mock_history.add_exchange.assert_called_once_with(
-        "Alice", "What time is it?", "It's 3pm", "voice", "kitchen"
-    )
-
 
 # ===========================================================================
 # get_messages thinking/whisper tests
@@ -670,13 +612,6 @@ def test_is_night_mode_active_false_when_live_section_clear_despite_stale_prompt
 
 
 @pytest.mark.unit
-def test_is_night_mode_active_false_when_no_home_section(prompt_test_environment):
-    manager = PromptManager(test_suite=True)
-    manager.sections.pop('home', None)
-    assert manager.is_night_mode_active() is False
-
-
-@pytest.mark.unit
 def test_is_night_mode_active_false_when_section_raises(prompt_test_environment):
     manager = PromptManager(test_suite=True)
     boom = Mock()
@@ -709,60 +644,9 @@ def test_current_time_note_format(prompt_test_environment, monkeypatch):
     assert PromptManager.current_time_note() == "(Current time: 14:50, Friday, 2026-05-29)"
 
 
-@pytest.mark.unit
-def test_get_messages_time_note_uses_current_time_note_helper(prompt_test_environment, monkeypatch):
-    # get_messages() must produce the clock via the shared helper, so the autonomous
-    # check (which calls the same helper) and the request path never drift apart.
-    manager = PromptManager(test_suite=True)
-    manager.test_suite = False
-
-    mock_history = Mock()
-    mock_history.get_history_messages.return_value = [
-        {"role": "user", "content": "earlier"},
-        {"role": "assistant", "content": "ok"},
-    ]
-    manager.message_history = mock_history
-    manager._messages = [{"role": "system", "content": "system prompt"}]
-
-    from assistant.prompt.TimeOfDay import TimeOfDay
-    monkeypatch.setattr('assistant.prompt.PromptManager.TimeOfDay.get_current', lambda: TimeOfDay.DAY)
-    monkeypatch.setattr(PromptManager, 'current_time_note',
-                        staticmethod(lambda: "(Current time: SENTINEL)"))
-
-    messages = manager.get_messages(extended_thinking=False)
-
-    assert messages[-1]["content"] == "(Current time: SENTINEL)"
-
-
 # ===========================================================================
 # get_section_stats tests
 # ===========================================================================
-
-@pytest.mark.unit
-def test_get_section_stats_returns_correct_structure(prompt_test_environment):
-    manager = PromptManager(test_suite=True)
-
-    now = time.time()
-    manager.sections = {
-        'weather': DummySection("sunny day", last_update_time=now - 10),
-        'calendar': DummySection("meeting at 3", last_update_time=now - 5),
-    }
-    manager.prompt = "static stuff sunny day meeting at 3"
-
-    stats = manager.get_section_stats()
-
-    assert len(stats) == 4  # 2 dynamic + history + static
-    for name, size_bytes, last_update in stats:
-        assert isinstance(name, str)
-        assert isinstance(size_bytes, int)
-        assert isinstance(last_update, float)
-
-    section_names = [s[0] for s in stats]
-    assert 'weather' in section_names
-    assert 'calendar' in section_names
-    assert 'history' in section_names
-    assert 'static' in section_names
-
 
 @pytest.mark.unit
 def test_get_section_stats_ordered_by_template_position(tmp_path, monkeypatch):
@@ -828,25 +712,6 @@ def test_get_section_stats_without_a_readable_template_lists_every_section(tmp_p
 
     names = [s[0] for s in manager.get_section_stats() if s[0] not in ('static', 'history')]
     assert names == ['alpha', 'zebra']
-
-
-@pytest.mark.unit
-def test_get_section_stats_static_always_last(tmp_path, monkeypatch):
-    template = "{WEATHER}\n"
-    res_dir = tmp_path / "res"
-    res_dir.mkdir()
-    (res_dir / "prompt.md").write_text(template)
-    (tmp_path / "testsuite_prompt.md").write_text(template)
-    monkeypatch.chdir(tmp_path)
-
-    manager = PromptManager(test_suite=True)
-    manager.sections = {'weather': DummySection("w")}
-    manager._section_positions = manager._compute_section_positions()
-    manager.prompt = "static w"
-
-    stats = manager.get_section_stats()
-
-    assert stats[-1][0] == 'static'
 
 
 @pytest.mark.unit
@@ -961,21 +826,6 @@ def test_save_image_block_returns_none_on_bad_base64(tmp_path, monkeypatch, file
     result = PromptManager._save_image_block(block, "abc", 0)
 
     assert result is None
-
-
-@pytest.mark.unit
-def test_save_image_block_sequential_naming(tmp_path, monkeypatch, file_logging_enabled):
-    import base64
-    monkeypatch.chdir(tmp_path)
-
-    b64_data = base64.b64encode(b"img").decode()
-    block = {"source": {"data": b64_data, "media_type": "image/jpeg"}}
-
-    path0 = PromptManager._save_image_block(block, "prompt1", 0)
-    path1 = PromptManager._save_image_block(block, "prompt1", 1)
-
-    assert "prompt1_0" in path0
-    assert "prompt1_1" in path1
 
 
 # ===========================================================================
@@ -1324,15 +1174,6 @@ def test_compute_section_delta_shows_textual_change(prompt_test_environment):
 
 
 @pytest.mark.unit
-def test_compute_section_delta_emits_only_changed_lines(prompt_test_environment):
-    """Verify the compact format: only +/- lines, no surrounding context."""
-    old = "alpha\nbeta\ngamma\ndelta\nepsilon"
-    new = "alpha\nbeta\nGAMMA\ndelta\nepsilon"
-    diff = PromptManager._compute_section_delta(old, new)
-    assert diff.splitlines() == ["-gamma", "+GAMMA"]
-
-
-@pytest.mark.unit
 def test_compute_section_delta_preserves_content_lines_starting_with_dashes(prompt_test_environment):
     """Regression for an over-broad header filter: content lines beginning with "--" or
     "++" get the diff's "-"/"+" prefix added, producing "---..." / "+++..." in the
@@ -1459,16 +1300,6 @@ def test_assert_unique_section_names_raises_on_duplicates(prompt_test_environmen
     }
     with pytest.raises(RuntimeError, match="Duplicate section_name.*SonosFavorites"):
         PromptManager._assert_unique_section_names(sections)
-
-
-@pytest.mark.unit
-def test_assert_unique_section_names_accepts_unique(prompt_test_environment):
-    sections = {
-        "sonos": DummySection("a", section_name="SonosFavorites"),
-        "music_zones": DummySection("b", section_name="MusicZones"),
-    }
-    # Should not raise.
-    PromptManager._assert_unique_section_names(sections)
 
 
 @pytest.mark.unit

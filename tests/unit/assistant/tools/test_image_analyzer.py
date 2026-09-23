@@ -6,9 +6,7 @@ from unittest.mock import patch, Mock
 import pytest
 from PIL import Image
 
-from assistant.tools.ImageAnalyzer import (
-    ImageAnalyzer, image_analyzer, resize_to_jpeg, convert_via_sips,
-)
+from assistant.tools.ImageAnalyzer import ImageAnalyzer, resize_to_jpeg, convert_via_sips
 
 
 def _png(size=(100, 100), mode="RGB", color="red") -> bytes:
@@ -88,21 +86,6 @@ class TestConvertViaSips:
         for path in created_paths:
             assert not os.path.exists(path), f"Temp file not cleaned up: {path}"
 
-    def test_cleans_up_on_failure(self):
-        with patch('assistant.tools.ImageAnalyzer.subprocess.run', side_effect=Exception("fail")):
-            convert_via_sips(b"test data")
-
-
-@pytest.mark.unit
-class TestFormatDescription:
-    def test_formats_correctly(self):
-        result = ImageAnalyzer.format_description({
-            "short_description": "A sunset",
-            "detailed_description": "Beautiful sunset over the ocean with orange and pink hues."
-        })
-        assert result == "Image description: [A sunset] Beautiful sunset over the ocean with orange and pink hues."
-
-
 @pytest.mark.unit
 class TestParseResponse:
     def test_parses_valid_json(self):
@@ -122,11 +105,6 @@ class TestParseResponse:
     def test_no_json_raises(self):
         with pytest.raises(ValueError):
             ImageAnalyzer._parse_response("No JSON here at all")
-
-    def test_invalid_json_raises(self):
-        with pytest.raises((json.JSONDecodeError, ValueError)):
-            ImageAnalyzer._parse_response("{broken json")
-
 
 @pytest.mark.unit
 class TestAnalyze:
@@ -194,11 +172,6 @@ class TestVisionLlm:
         mock_cls.assert_not_called()
         injected.initialize.assert_not_called()
 
-    def test_image_analyzer_is_process_wide_singleton(self):
-        assert image_analyzer() is image_analyzer()
-        assert isinstance(image_analyzer(), ImageAnalyzer)
-
-
 @pytest.mark.unit
 class TestDescribeBytes:
     def test_full_pipeline_success(self):
@@ -235,9 +208,4 @@ class TestDescribeBytes:
     def test_exception_returns_fallback(self):
         analyzer = ImageAnalyzer(llm=Mock())
         with patch('assistant.tools.ImageAnalyzer.resize_to_jpeg', side_effect=RuntimeError("boom")):
-            assert analyzer.describe_bytes(b"raw", fallback="[Image]") == "[Image]"
-
-    def test_custom_fallback(self):
-        analyzer = ImageAnalyzer(llm=Mock())
-        with patch('assistant.tools.ImageAnalyzer.resize_to_jpeg', return_value=None):
             assert analyzer.describe_bytes(b"raw", fallback="[Image]") == "[Image]"

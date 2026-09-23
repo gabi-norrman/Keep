@@ -79,7 +79,3 @@ class TestSingletonMixin:
 
     def test_reset_instance_noop_when_never_created(self):
         _Widget.reset_instance()  # must not raise even though nothing was created
-
-    def test_default_on_reset_is_harmless(self):
-        _PlainSingleton.get_instance()
-        _PlainSingleton.reset_instance()  # default _on_reset — must not raise

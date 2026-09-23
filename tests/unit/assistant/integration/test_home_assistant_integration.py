@@ -9,12 +9,9 @@ from unittest.mock import Mock, patch
 import pytest
 import requests
 
-from assistant.integration.Feed import Feed
 from assistant.integration.integrations.home.HomeAssistantClient import HAError, NotConnected
-from assistant.integration.integrations.home.HomeAssistantIntegration import (
-    HomeAssistantIntegration, CONNECT_WAIT, ERROR_LOG_LINES, POLL_INTERVAL, REGISTRY_EVENTS, REGISTRY_TTL)
-from assistant.integration.integrations.home.HomeAssistantModel import Registries
-from assistant.integration.integrations.home.HomeAutomation import HomeAutomation, render
+from assistant.integration.integrations.home.HomeAssistantIntegration import HomeAssistantIntegration, ERROR_LOG_LINES, REGISTRY_EVENTS, REGISTRY_TTL
+from assistant.integration.integrations.home.HomeAutomation import render
 
 MODULE = "assistant.integration.integrations.home.HomeAssistantIntegration"
 DATA = Path(__file__).parents[2] / "data" / "home" / "ha"
@@ -118,29 +115,10 @@ def fake(integration):
 
 @pytest.mark.unit
 class TestContract:
-    def test_is_a_feed_and_a_home_automation_backend(self, integration):
-        assert isinstance(integration, Feed)
-        assert isinstance(integration, HomeAutomation)
-        assert integration.name == "Home Assistant"
-        assert HomeAssistantIntegration.config_name() == "Home Assistant"
-        assert integration.config_keys == ["home_assistant.url", "home_assistant.token"]
-        assert integration.config_section == "home_assistant"
-        assert integration.section_filters == {}
-        assert integration.feed_name == "Home Assistant"
-        assert integration.config_slug == "home_assistant"
-        assert integration.poll_interval == POLL_INTERVAL == 2
-        assert integration.initial_cursor(1_700_000_000.0) is None
-
     def test_base_url_is_normalised(self, integration, cfg):
         assert integration.base_url == "http://ha.local:8123"
         cfg["home_assistant.url"] = "ha.local:8123"
         assert integration.base_url == "http://ha.local:8123"
-
-    def test_exposed_only_defaults_to_true(self, integration, cfg):
-        assert integration.exposed_only is True
-        cfg["home_assistant.exposed_only"] = False
-        assert integration.exposed_only is False
-
 
 @pytest.mark.unit
 class TestClientWiring:

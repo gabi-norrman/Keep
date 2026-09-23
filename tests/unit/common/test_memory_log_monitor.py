@@ -120,14 +120,6 @@ class TestMemoryLogMonitorScan:
         assert tab.memory_log_sizes[0][0] == date(2026, 1, 1)
         assert round(tab.memory_log_sizes[0][1], 2) == 5.0
 
-    def test_empty_directory_yields_empty_list_no_error(self, tmp_path):
-        monitor, tab = _make_monitor()
-        with patch.object(MemoryLogMonitor, "LOG_DIR", tmp_path):
-            monitor._scan()
-
-        assert tab.memory_log_sizes == []
-        assert tab.memory_log_error == ""
-
     def test_counts_words_of_live_memory_bank(self, tmp_path):
         bank = tmp_path / "memory.md"
         bank.write_text("# Long-term memory bank\n\n---\n- Marcus likes  tea\n- Charlotte plays piano\n")

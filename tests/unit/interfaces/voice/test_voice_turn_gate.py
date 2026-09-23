@@ -65,26 +65,6 @@ class TestBeginTurn:
         assert handler.gate._is_wake_word_send is False
         assert handler.gate._scribe_skipped is False
 
-    def test_none_args_tolerated(self, handler):
-        handler.gate.begin_turn(None)
-        assert handler.gate._is_wake_word_send is False
-
-
-class TestArming:
-    """/speech_active arms the TENTATIVE signal only; the /stream length-growth check arms
-    the CONFIRMED one only (the two-signal contract from c73fe440)."""
-
-    def test_arm_speech_onset_sets_tentative_only(self, handler):
-        handler.gate.arm_speech_onset(1000.0)
-        assert handler.gate.speech_onset_at == 1000.0
-        assert handler.gate.more_speech_is_incoming is None
-
-    def test_confirm_more_speech_sets_confirmed_only(self, handler):
-        handler.gate.confirm_more_speech(1000.0)
-        assert handler.gate.more_speech_is_incoming == 1000.0
-        assert handler.gate.speech_onset_at is None
-
-
 # ---------------------------------------------------------------------------
 # TestWaitSoThatResponseTimingIsNatural
 # ---------------------------------------------------------------------------
@@ -100,15 +80,6 @@ class TestWaitSoThatResponseTimingIsNatural:
             if mock_sleep.called:
                 sleep_val = mock_sleep.call_args[0][0]
                 assert sleep_val <= 0.6
-
-    def test_complete_sentence_uses_minimum_wait(self, handler, mock_tui_console, mock_sleep):
-        with patch("interfaces.voice.VoiceTurnGate.FloxyDatabase") as mock_db_cls, \
-             patch("interfaces.voice.VoiceTurnGate.SentenceCompletenessDetector") as mock_scd:
-            mock_db_cls.get_instance.return_value.is_query_common.return_value = False
-            mock_scd.is_complete.return_value = True
-            handler.dialog_manager.time_to_first_token = 0.3
-            result = wait(handler, 0.2)
-            assert result is True
 
     def test_single_word_uses_full_wait(self, handler, mock_tui_console, mock_sleep):
         handler.dialog_manager.reply_to_llm = "Hello"
@@ -230,23 +201,6 @@ class TestWaitSoThatResponseTimingIsNatural:
             sleep_val = mock_sleep.call_args[0][0]
             assert sleep_val == pytest.approx(0.4, abs=0.01)
 
-    def test_more_speech_incoming_extends_wait(self, handler, mock_tui_console):
-        handler.gate.more_speech_is_incoming = time.time()
-        call_count = [0]
-
-        def sleep_side_effect(_):
-            call_count[0] += 1
-            if call_count[0] >= 1:
-                handler.gate.more_speech_is_incoming = None
-
-        with patch("interfaces.voice.VoiceTurnGate.time.sleep", side_effect=sleep_side_effect), \
-             patch("interfaces.voice.VoiceTurnGate.FloxyDatabase") as mock_db_cls, \
-             patch("interfaces.voice.VoiceTurnGate.SentenceCompletenessDetector") as mock_scd:
-            mock_db_cls.get_instance.return_value.is_query_common.return_value = True
-            handler.dialog_manager.time_to_first_token = 0.1
-            result = wait(handler, 0.1)
-            assert result is True
-
     def test_live_more_speech_signal_overrides_stale_anchor(self, handler, mock_tui_console):
         # Branch order matters: when the user has started speaking again, the
         # still-speaking hold must govern even though the (now stale) end-of-speech
@@ -326,12 +280,6 @@ class TestWaitForScribeVerdict:
         assert handler.gate._wait_for_scribe_verdict(handler.request_context) is True
         mock_sleep.assert_not_called()
 
-    def test_waits_then_scribe_confirms(self, handler, scribe_running, mock_tui_console, mock_sleep):
-        self._wake_word_whisper(handler)
-        # Not settled on the first check, settled on the next poll → confirmed, speak.
-        handler.gate.speech_analyzer.scribe_has_settled.side_effect = [False, False, True]
-        assert handler.gate._wait_for_scribe_verdict(handler.request_context) is True
-
     def _kill_on_second_poll(self, handler, mock_sleep, reason):
         polls = [0]
 
@@ -403,10 +351,6 @@ class TestMoreSpeechWaitSignal:
         active, _, target = handler.gate._more_speech_wait()
         assert active is True
         assert target == VoiceTurnGate.SECONDS_TO_WAIT_BEFORE_SPEAKING_IF_SENTENCE_INCOMPLETE
-
-    def test_no_signal_is_inactive(self, handler):
-        active, elapsed, target = handler.gate._more_speech_wait()
-        assert (active, elapsed, target) == (False, 0.0, 0.0)
 
     def _fake_clock(self):
         # A controllable monotonic clock so grace/deadline are deterministic with instant

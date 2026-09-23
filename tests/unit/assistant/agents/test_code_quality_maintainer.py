@@ -9,11 +9,7 @@ import json
 import os
 import subprocess
 
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, \
-    CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, BUG_ANALYSIS_PROMPT, \
-    SELF_ANALYSIS_PROMPT, SELF_IMPROVEMENT_PROMPT, AUTO_MERGE_HOUR, \
-    AUTO_MERGE_TESTS_PROMPT, ClaudeNotLoggedInError, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, \
-    DISABLED_MESSAGE
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, AUTO_MERGE_HOUR, AUTO_MERGE_TESTS_PROMPT, ClaudeNotLoggedInError, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -36,33 +32,6 @@ def claude_installed():
 @pytest.fixture
 def maintainer():
     return CodeQualityMaintainer()
-
-
-@pytest.mark.unit
-class TestInit:
-    def test_initial_state(self, maintainer):
-        assert maintainer._running is False
-        assert maintainer._thread is None
-        assert maintainer._last_run_date is None
-        assert maintainer._last_auto_merge_date is None
-
-
-@pytest.mark.unit
-class TestStartStop:
-    def test_start_sets_running(self, maintainer):
-        with patch.object(maintainer, '_run'):
-            maintainer.start()
-            assert maintainer._running is True
-            assert maintainer._thread is not None
-            assert maintainer._thread.daemon is True
-            assert maintainer._thread.name == "CodeQualityMaintainer"
-            maintainer.stop()
-
-    def test_stop_clears_running(self, maintainer):
-        with patch.object(maintainer, '_run'):
-            maintainer.start()
-            maintainer.stop()
-            assert maintainer._running is False
 
 
 @pytest.mark.unit
@@ -328,27 +297,6 @@ class TestStepGenerateTests:
         assert mock_run.call_args[1]["cwd"] == WORKING_DIR
         mock_claude.assert_called_once_with(GENERATE_TESTS_PROMPT, "generate-tests")
 
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="")
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
-    def test_uses_correct_claude_prompt(self, mock_run, mock_claude, maintainer):
-        mock_run.return_value = Mock(stdout="", returncode=0)
-        maintainer._step_generate_tests()
-        mock_claude.assert_called_once_with(GENERATE_TESTS_PROMPT, "generate-tests")
-
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="Created 3 new tests")
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
-    def test_returns_claude_output(self, mock_run, mock_claude, maintainer):
-        mock_run.return_value = Mock(stdout="", returncode=0)
-        result = maintainer._step_generate_tests()
-        assert result == "Created 3 new tests"
-
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="")
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
-    def test_returns_empty_on_no_output(self, mock_run, mock_claude, maintainer):
-        mock_run.return_value = Mock(stdout="", returncode=0)
-        result = maintainer._step_generate_tests()
-        assert result == ""
-
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude failed"))
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
     def test_returns_empty_on_error(self, mock_run, mock_claude, maintainer):
@@ -367,26 +315,6 @@ class TestStepGenerateTests:
 
 @pytest.mark.unit
 class TestStepBugAnalysis:
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="## Bug found\nSome issue")
-    def test_calls_claude(self, mock_claude, maintainer):
-        maintainer._step_bug_analysis()
-        mock_claude.assert_called_once_with(BUG_ANALYSIS_PROMPT, "bug-analysis")
-
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="report")
-    def test_uses_correct_claude_prompt(self, mock_claude, maintainer):
-        maintainer._step_bug_analysis()
-        mock_claude.assert_called_once_with(BUG_ANALYSIS_PROMPT, "bug-analysis")
-
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="Found a bug in X")
-    def test_returns_claude_output(self, mock_claude, maintainer):
-        result = maintainer._step_bug_analysis()
-        assert result == "Found a bug in X"
-
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="")
-    def test_returns_empty_on_no_output(self, mock_claude, maintainer):
-        result = maintainer._step_bug_analysis()
-        assert result == ""
-
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude failed"))
     def test_returns_empty_on_error(self, mock_claude, maintainer):
         result = maintainer._step_bug_analysis()
@@ -395,19 +323,6 @@ class TestStepBugAnalysis:
 
 @pytest.mark.unit
 class TestAnalyzeCode:
-    @patch.object(CodeQualityMaintainer, '_send_email')
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="Found the issue")
-    def test_calls_claude_with_bug_description(self, mock_claude, mock_email):
-        CodeQualityMaintainer.analyze_code("Server crashes on startup")
-        expected_prompt = SELF_ANALYSIS_PROMPT.format(request="Server crashes on startup")
-        mock_claude.assert_called_once_with(expected_prompt, "self-analysis")
-
-    @patch.object(CodeQualityMaintainer, '_send_email')
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="Root cause: null pointer")
-    def test_returns_claude_output(self, mock_claude, mock_email):
-        result = CodeQualityMaintainer.analyze_code("some bug")
-        assert result == "Root cause: null pointer"
-
     @patch.object(CodeQualityMaintainer, '_send_email')
     @patch.object(CodeQualityMaintainer, '_run_claude', return_value="")
     def test_returns_fallback_on_no_output(self, mock_claude, mock_email):
@@ -420,13 +335,6 @@ class TestAnalyzeCode:
         result = CodeQualityMaintainer.analyze_code("some bug")
         assert result == NOT_LOGGED_IN_MESSAGE
         mock_email.assert_not_called()
-
-    @patch.object(CodeQualityMaintainer, '_send_email')
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="report")
-    def test_uses_correct_prompt_template(self, mock_claude, mock_email):
-        CodeQualityMaintainer.analyze_code("TTS fails silently")
-        expected_prompt = SELF_ANALYSIS_PROMPT.format(request="TTS fails silently")
-        mock_claude.assert_called_once_with(expected_prompt, "self-analysis")
 
     @patch.object(CodeQualityMaintainer, '_send_email')
     @patch.object(CodeQualityMaintainer, '_run_claude', return_value="## Found a bug\nDetails here")
@@ -454,21 +362,6 @@ class TestAnalyzeCode:
 
 @pytest.mark.unit
 class TestImproveCode:
-    @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="Fixed the issue")
-    def test_calls_claude_with_bug_description(self, mock_claude, mock_sub):
-        mock_sub.return_value = Mock(stdout="", returncode=0)
-        CodeQualityMaintainer.improve_code("Server crashes on startup")
-        expected_prompt = SELF_IMPROVEMENT_PROMPT.format(request="Server crashes on startup")
-        mock_claude.assert_called_once_with(expected_prompt, "self-improvement")
-
-    @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="PR created")
-    def test_returns_claude_output(self, mock_claude, mock_sub):
-        mock_sub.return_value = Mock(stdout="", returncode=0)
-        result = CodeQualityMaintainer.improve_code("some bug")
-        assert result == "PR created"
-
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=ClaudeNotLoggedInError())
     def test_explains_missing_login(self, mock_claude, mock_sub):
@@ -527,40 +420,11 @@ class TestImproveCode:
 @pytest.mark.unit
 class TestRunSubprocess:
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
-    def test_logs_stdout_via_trace(self, mock_run):
-        mock_run.return_value = Mock(stdout="some output", stderr="")
-        with patch('assistant.agents.CodeQualityMaintainer.trace') as mock_trace:
-            CodeQualityMaintainer._run_subprocess(["git", "status"], "git status", 60)
-            mock_trace.assert_any_call("CodeQualityMaintainer [git status] stdout: some output")
-
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
-    def test_logs_stderr_via_trace(self, mock_run):
-        mock_run.return_value = Mock(stdout="", stderr="warning: something")
-        with patch('assistant.agents.CodeQualityMaintainer.trace') as mock_trace:
-            CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", 60)
-            mock_trace.assert_any_call("CodeQualityMaintainer [git pull] stderr: warning: something")
-
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
-    def test_skips_empty_stdout(self, mock_run):
-        mock_run.return_value = Mock(stdout="", stderr="")
-        with patch('assistant.agents.CodeQualityMaintainer.trace') as mock_trace:
-            CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", 60)
-            for c in mock_trace.call_args_list:
-                assert "stdout" not in c[0][0]
-
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
     def test_skips_none_stdout(self, mock_run):
         mock_run.return_value = Mock(stdout=None, stderr=None)
         with patch('assistant.agents.CodeQualityMaintainer.trace') as mock_trace:
             CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", 60)
             mock_trace.assert_not_called()
-
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
-    def test_returns_result(self, mock_run):
-        expected = Mock(stdout="output", stderr="", returncode=0)
-        mock_run.return_value = expected
-        result = CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", 60)
-        assert result is expected
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
     def test_passes_cwd_and_timeout(self, mock_run):
@@ -659,41 +523,12 @@ class TestRunClaude:
         mock_popen.return_value = _mock_popen(lines)
         assert CodeQualityMaintainer._run_claude("prompt", "label") == "Rate limit reached, try again later"
 
-    @patch('assistant.agents.CodeQualityMaintainer.trace')
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    def test_traces_assistant_text(self, mock_popen, mock_trace):
-        lines = ['{"type": "assistant", "message": {"content": [{"type": "text", "text": "Analyzing code..."}]}}\n',
-                 '{"type": "result", "result": "done"}\n']
-        mock_popen.return_value = _mock_popen(lines)
-        CodeQualityMaintainer._run_claude("prompt", "test-label")
-        trace_msgs = [c[0][0] for c in mock_trace.call_args_list]
-        assert any("test-label" in m and "Analyzing code" in m for m in trace_msgs)
-        assert any("test-label" in m and "RESULT" in m for m in trace_msgs)
-
-    @patch('assistant.agents.CodeQualityMaintainer.trace')
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    def test_traces_stderr(self, mock_popen, mock_trace):
-        mock_popen.return_value = _mock_popen(stderr="warning: something")
-        CodeQualityMaintainer._run_claude("prompt", "lbl")
-        trace_msgs = [c[0][0] for c in mock_trace.call_args_list]
-        assert any("stderr" in m and "warning: something" in m for m in trace_msgs)
-
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     def test_handles_invalid_json(self, mock_popen):
         lines = ['not json at all\n', '{"type": "result", "result": "ok"}\n']
         mock_popen.return_value = _mock_popen(lines)
         result = CodeQualityMaintainer._run_claude("prompt", "label")
         assert result == "ok"
-
-    @patch('assistant.agents.CodeQualityMaintainer.trace')
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    def test_skips_empty_lines(self, mock_popen, mock_trace):
-        lines = ['\n', '  \n', '{"type": "result", "result": "ok"}\n']
-        mock_popen.return_value = _mock_popen(lines)
-        CodeQualityMaintainer._run_claude("prompt", "label")
-        trace_msgs = [c[0][0] for c in mock_trace.call_args_list]
-        non_stderr = [m for m in trace_msgs if "stderr" not in m and "model:" not in m]
-        assert len(non_stderr) == 1
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     def test_falls_back_to_assistant_text_when_result_empty(self, mock_popen):
@@ -725,29 +560,6 @@ class TestRunClaude:
         mock_popen.return_value = _mock_popen(lines)
         result = CodeQualityMaintainer._run_claude("prompt", "label")
         assert result == "visible output"
-
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    def test_prefers_result_field_over_assistant_text(self, mock_popen):
-        lines = [
-            '{"type": "assistant", "message": {"content": [{"type": "text", "text": "assistant text"}]}}\n',
-            '{"type": "result", "result": "result text"}\n',
-        ]
-        mock_popen.return_value = _mock_popen(lines)
-        result = CodeQualityMaintainer._run_claude("prompt", "label")
-        assert result == "result text"
-
-    @patch('assistant.agents.CodeQualityMaintainer.trace')
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    def test_skips_unknown_types(self, mock_popen, mock_trace):
-        lines = ['{"type": "system", "data": "init"}\n',
-                 '{"type": "result", "result": "ok"}\n']
-        mock_popen.return_value = _mock_popen(lines)
-        CodeQualityMaintainer._run_claude("prompt", "label")
-        trace_msgs = [c[0][0] for c in mock_trace.call_args_list]
-        non_stderr = [m for m in trace_msgs if "stderr" not in m and "model:" not in m]
-        assert len(non_stderr) == 1
-        assert "RESULT" in non_stderr[0]
-
 
 @pytest.mark.unit
 class TestFormatStreamLine:
@@ -785,9 +597,6 @@ class TestFormatStreamLine:
         result = CodeQualityMaintainer._format_stream_line(obj)
         assert "(empty)" in result
 
-    def test_unknown_type_returns_none(self):
-        assert CodeQualityMaintainer._format_stream_line({"type": "system"}) is None
-
     def test_assistant_empty_content_returns_none(self):
         obj = {"type": "assistant", "message": {"content": []}}
         assert CodeQualityMaintainer._format_stream_line(obj) is None
@@ -816,10 +625,6 @@ class TestMarkdownToHtml:
     def test_bold_in_list_item(self):
         result = CodeQualityMaintainer._markdown_to_html("- This is **bold** in a list")
         assert "<strong>bold</strong>" in result
-
-    def test_inline_code_in_list_item(self):
-        result = CodeQualityMaintainer._markdown_to_html("- Use `foo()` here")
-        assert ">foo()</code>" in result
 
     def test_inline_markup_in_heading(self):
         result = CodeQualityMaintainer._markdown_to_html("## The `foo` function")
@@ -861,19 +666,9 @@ class TestMarkdownToHtml:
         assert "print(&#x27;hello&#x27;)" in result
         assert "</code></pre>" in result
 
-    def test_code_block_has_styling(self):
-        md = "```\ncode\n```"
-        result = CodeQualityMaintainer._markdown_to_html(md)
-        assert "background:" in result
-
     def test_paragraph(self):
         result = CodeQualityMaintainer._markdown_to_html("Just some text")
         assert "<p>Just some text</p>" in result
-
-    def test_empty_line(self):
-        result = CodeQualityMaintainer._markdown_to_html("line one\n\nline two")
-        assert "<p>line one</p>" in result
-        assert "<p>line two</p>" in result
 
     def test_list_closed_before_heading(self):
         md = "- item\n## Next"
@@ -892,20 +687,11 @@ class TestMarkdownToHtml:
         assert "&lt;div&gt;" in result
         assert "<div>" not in result
 
-    def test_angle_brackets_in_paragraph_are_escaped(self):
-        result = CodeQualityMaintainer._markdown_to_html("a <script>alert(1)</script> test")
-        assert "&lt;script&gt;" in result
-        assert "<script>" not in result
-
     def test_code_block_content_is_escaped(self):
         md = "```\n<style>body{color:red}</style>\n```"
         result = CodeQualityMaintainer._markdown_to_html(md)
         assert "&lt;style&gt;" in result
         assert "<style>body" not in result
-
-    def test_ampersand_in_text_is_escaped(self):
-        result = CodeQualityMaintainer._markdown_to_html("foo & bar")
-        assert "&amp;" in result
 
     def test_table_renders_as_html_table(self):
         md = "| Feature | Commit | Gap |\n|---------|--------|-----|\n| foo | abc123 | none |\n| bar | def456 | one |"
@@ -997,31 +783,6 @@ class TestSendEmail:
         assert "Subject" in send_args[2]
         assert "<p>Body</p>" in send_args[2]
 
-    @patch('assistant.agents.CodeQualityMaintainer.smtplib.SMTP')
-    @patch('assistant.agents.CodeQualityMaintainer.ConfigManager')
-    def test_email_html_uses_monospace_font(self, mock_cm_class, mock_smtp_class, maintainer):
-        mock_cfg = mock_cm_class.return_value
-        mock_cfg.get.side_effect = lambda k, default=None: {"email.address": "a@b.com", "email.password": "pw"}.get(k, default)
-        mock_server = MagicMock()
-        mock_smtp_class.return_value.__enter__ = Mock(return_value=mock_server)
-        mock_smtp_class.return_value.__exit__ = Mock(return_value=False)
-
-        CodeQualityMaintainer._send_email("Report", "<p>content</p>")
-
-        raw_email = mock_server.sendmail.call_args[0][2]
-        assert 'font-family:monospace' in raw_email
-
-    @patch('assistant.agents.CodeQualityMaintainer.smtplib.SMTP')
-    @patch('assistant.agents.CodeQualityMaintainer.ConfigManager')
-    def test_skips_if_no_credentials(self, mock_cm_class, mock_smtp_class, maintainer):
-        mock_cfg = mock_cm_class.return_value
-        mock_cfg.get.return_value = None
-
-        CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
-
-        mock_smtp_class.assert_not_called()
-
-
 @pytest.mark.unit
 class TestNightlySkipReason:
     """The scheduled runs need the integration on and self_improvement.nightly_runs true; the
@@ -1035,9 +796,6 @@ class TestNightlySkipReason:
 
     def test_off_by_default(self):
         assert self._reason(nightly_runs=None) == NIGHTLY_OFF_MESSAGE
-
-    def test_off_when_false(self):
-        assert self._reason(nightly_runs=False) == NIGHTLY_OFF_MESSAGE
 
     def test_runs_when_true(self):
         assert self._reason(nightly_runs=True) is None

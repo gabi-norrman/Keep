@@ -59,10 +59,6 @@ class TestFrameLabel:
     def test_trailing_slash_stripped(self):
         assert WebAccess._frame_label('https://example.com/') == 'example.com'
 
-    def test_bare_host(self):
-        assert WebAccess._frame_label('https://example.com') == 'example.com'
-
-
 @pytest.mark.unit
 class TestAttachFrameSession:
 
@@ -85,14 +81,6 @@ class TestEvalInFrameTarget:
     """Retry contract: only ProtocolException (dead session — command never ran)
     triggers one re-attach; JS errors propagate immediately so non-idempotent
     actions like clicks are never re-sent after a successful run."""
-
-    def test_success_first_try(self):
-        wa = make_wa()
-        with patch.object(WebAccess, '_async_attach_frame_session',
-                          new=AsyncMock(return_value='s1')) as attach, \
-                patch.object(WebAccess, '_evaluate_in_frame', new=AsyncMock(return_value=42)):
-            assert run(wa._async_eval_in_frame_target('t1', '1+1')) == 42
-        assert attach.await_count == 1
 
     def test_stale_session_reattaches_once(self):
         wa = make_wa(frame_sessions={'t1': 'stale'})
@@ -193,10 +181,6 @@ class TestListFrameTargets:
         )
         run(wa._async_list_frame_targets())
         assert wa._browse_frame_sessions == {'live': 's1'}
-
-    def test_no_browser_returns_empty(self):
-        wa = make_wa(browser=None)
-        assert run(wa._async_list_frame_targets()) == []
 
     def test_update_targets_failure_returns_empty(self):
         wa = make_wa(browser=FakeBrowser([], update_error=RuntimeError('closed')))
@@ -538,15 +522,6 @@ class TestBrowseSnapshotCommand:
         wa._tab = SimpleNamespace()
         return wa
 
-    def test_requires_a_session(self):
-        wa = self._wa(session=None)
-        assert run(wa._async_browse_snapshot()).startswith('ERROR: no browse session')
-
-    def test_refuses_pdf_sessions(self):
-        wa = self._wa()
-        wa._browse_pdf_text = 'pdf text'
-        assert 'PDF' in run(wa._async_browse_snapshot())
-
     def test_waits_for_the_page_then_snapshots_without_acting(self):
         wa = self._wa()
         with patch.object(WebAccess, '_async_browse_ready_midsession', new=AsyncMock(return_value=None)), \
@@ -573,10 +548,6 @@ class TestBrowseClickAt:
         wa._browse_pdf_text = None
         wa._tab = SimpleNamespace(send=AsyncMock(return_value=None))
         return wa
-
-    def test_bad_spec_is_an_error(self):
-        wa = self._wa()
-        assert run(wa._async_browse_click_at('nope')).startswith('ERROR: browse_click_at needs')
 
     def test_nothing_under_the_point_clicks_nothing(self):
         wa = self._wa()

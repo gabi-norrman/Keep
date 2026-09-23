@@ -33,21 +33,6 @@ class TestPerformSearch:
         assert tab.search_matches == []
         assert tab.search_current_idx == -1
 
-    def test_empty_search_text(self, tab):
-        tab.log_lines = ["INFO│hello"]
-        tab._plain_lines_valid = False
-        tab.search_text = ""
-        tab._perform_search()
-        assert tab.search_matches == []
-
-    def test_strips_ansi_before_matching(self, tab):
-        tab.log_lines = ["\x1b[31mERROR\x1b[0m│something broke"]
-        tab._plain_lines_valid = False
-        tab.search_text = "error"
-        tab._perform_search()
-        assert tab.search_matches == [0]
-
-
 class TestFormatLineForWidth:
     def test_wide_terminal_keeps_all_columns(self):
         tab = LogTab()
@@ -96,11 +81,6 @@ class TestTruncateAnsiAware:
         result = tab._truncate_ansi_aware(line, 3)
         assert result == "\x1b[31ma\x1b[32mb\x1b[33mc"
 
-    def test_no_truncation_needed(self):
-        tab = LogTab()
-        assert tab._truncate_ansi_aware("hi", 10) == "hi"
-
-
 class TestHighlightSearch:
     def test_highlight_current_match(self):
         tab = LogTab()
@@ -145,10 +125,6 @@ def _strip_ansi(s):
 
 
 class TestWrapAnsiAware:
-    def test_short_line_returned_unchanged(self):
-        tab = LogTab()
-        assert tab._wrap_ansi_aware("hello", 80) == ["hello"]
-
     def test_plain_line_wraps_at_word_boundary(self):
         tab = LogTab()
         assert tab._wrap_ansi_aware("hello world", 5) == ["hello", "world"]

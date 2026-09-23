@@ -350,16 +350,6 @@ class TestResume:
         runner._load_cursor()
         assert runner.status()["remaining"] == 2
 
-    def test_items_arrived_during_downtime_are_in_the_total(self, floxy_db):
-        floxy_db.save_feed("Scripted", cursor="1", horizon=HORIZON)
-        seed_rows(floxy_db, 1)
-        feed = ScriptedFeed([[HORIZON + 1], [HORIZON + 2], [HORIZON + 3], [HORIZON + 4]])
-        runner = FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db)
-        runner._load_cursor()
-        status = runner.status()
-        assert (status["stored"], status["remaining"], status["total"]) == (1, 3, 4)
-        assert status["progress"] == pytest.approx(0.25)
-
     def test_horizon_moved_further_back_restarts_from_the_new_horizon(self, floxy_db):
         floxy_db.save_feed("Scripted", cursor="2", horizon=HORIZON)
         feed = ScriptedFeed([[HORIZON + 1], [HORIZON + 2]])
@@ -766,15 +756,6 @@ class TestPause:
         assert not runner._thread.is_alive()
         assert runner.state == FeedState.STOPPED
 
-    def test_status_phrase_says_paused(self):
-        from assistant.integration.FeedRunner import describe_feed_status
-        base = {"state": "catching_up", "progress": 0.43, "remaining": 12, "last_error": None}
-        assert describe_feed_status(base) == "catching up 43%, 12 left"
-        assert describe_feed_status({**base, "paused": True}) == "paused, catching up 43%, 12 left"
-        assert describe_feed_status({"state": "live", "paused": True, "progress": None, "remaining": 0,
-                                     "last_error": None}) == "paused, live"
-
-
 @pytest.mark.unit
 class TestFeedsRegistry:
     @pytest.fixture(autouse=True)
@@ -832,10 +813,6 @@ class TestFeedsRegistry:
         assert feeds.find("icloud photos") is runner
         assert feeds.find("Photos ") is runner
         assert feeds.find("imessage") is None
-
-    def test_under_test_nothing_starts(self):
-        assert Feeds.get_instance().start(ScriptedFeed([]), RecordingHistory()) is None
-
 
 @pytest.mark.unit
 class TestDatabase:

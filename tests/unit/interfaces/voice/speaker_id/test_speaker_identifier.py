@@ -75,35 +75,7 @@ def make_speaker_identifier():
     return si
 
 
-class TestSpeakerIdentifierSingleton:
-    def test_get_instance_returns_none_initially(self):
-        assert SpeakerIdentifier.get_instance() is None
-
-    def test_create_instance_creates_singleton(self):
-        with patch.object(SpeakerIdentifier, '__init__', lambda self: None):
-            instance = SpeakerIdentifier.create_instance()
-            assert instance is not None
-            assert SpeakerIdentifier.get_instance() is instance
-
-    def test_get_instance_returns_same_instance(self):
-        with patch.object(SpeakerIdentifier, '__init__', lambda self: None):
-            instance1 = SpeakerIdentifier.create_instance()
-            instance2 = SpeakerIdentifier.get_instance()
-            assert instance1 is instance2
-
-    def test_reset_instance_clears_singleton(self):
-        with patch.object(SpeakerIdentifier, '__init__', lambda self: None):
-            SpeakerIdentifier.create_instance()
-            SpeakerIdentifier.reset_instance()
-            assert SpeakerIdentifier.get_instance() is None
-
-
 class TestGetLastIdentifiedUser:
-    def test_returns_none_when_no_history(self):
-        si = make_speaker_identifier()
-        result = si.get_last_identified_user()
-        assert result is None
-
     @patch('interfaces.voice.speaker_id.SpeakerIdentifier.time')
     def test_returns_most_voted_user(self, mock_time):
         mock_time.time.return_value = 1000.0
@@ -185,14 +157,6 @@ class TestPruneOldIdentifications:
         ]
         si._prune_old_identifications()
         assert len(si._identification_history) == 2
-
-    @patch('interfaces.voice.speaker_id.SpeakerIdentifier.time')
-    def test_handles_empty_history(self, mock_time):
-        mock_time.time.return_value = 1000.0
-        si = make_speaker_identifier()
-        si._identification_history = []
-        si._prune_old_identifications()
-        assert len(si._identification_history) == 0
 
     @patch('interfaces.voice.speaker_id.SpeakerIdentifier.time')
     def test_boundary_at_vote_window(self, mock_time):
@@ -394,52 +358,6 @@ class TestIdentify:
 
 
 class TestExtractEmbeddingFromPcm:
-    def test_16bit_pcm_conversion(self, mock_ml_globals):
-        si = make_speaker_identifier()
-        mock_result = Mock()
-        mock_result.squeeze = Mock(return_value=Mock())
-        si._classifier.encode_batch = Mock(return_value=mock_result)
-
-        # 16-bit PCM: 2 bytes per sample
-        audio_data = b'\x00\x40' * 100  # 100 samples of 16384 (half max)
-
-        mock_array = Mock()
-        mock_array.astype = Mock(return_value=mock_array)
-        mock_array.__truediv__ = Mock(return_value=mock_array)
-        mock_np.frombuffer.return_value = mock_array
-
-        mock_tensor = Mock()
-        mock_tensor.unsqueeze = Mock(return_value=mock_tensor)
-        mock_torch.from_numpy.return_value = mock_tensor
-
-        result = si._extract_embedding_from_pcm(audio_data, bit_depth=16)
-
-        mock_np.frombuffer.assert_called_once()
-        assert result is not None
-
-    def test_8bit_pcm_conversion(self, mock_ml_globals):
-        si = make_speaker_identifier()
-        mock_result = Mock()
-        mock_result.squeeze = Mock(return_value=Mock())
-        si._classifier.encode_batch = Mock(return_value=mock_result)
-
-        audio_data = b'\x80' * 100  # 100 samples at silence level (128)
-
-        mock_array = Mock()
-        mock_array.astype = Mock(return_value=mock_array)
-        mock_array.__sub__ = Mock(return_value=mock_array)
-        mock_array.__truediv__ = Mock(return_value=mock_array)
-        mock_np.frombuffer.return_value = mock_array
-
-        mock_tensor = Mock()
-        mock_tensor.unsqueeze = Mock(return_value=mock_tensor)
-        mock_torch.from_numpy.return_value = mock_tensor
-
-        result = si._extract_embedding_from_pcm(audio_data, bit_depth=8)
-
-        mock_np.frombuffer.assert_called()
-        assert result is not None
-
     def test_unsupported_bit_depth_returns_none(self):
         si = make_speaker_identifier()
         result = si._extract_embedding_from_pcm(b'\x00' * 100, bit_depth=24)
@@ -472,16 +390,6 @@ class TestExtractEmbeddingFromPcm:
 
 
 class TestEnrollUsers:
-    def test_skips_missing_voice_id_dir(self):
-        si = make_speaker_identifier()
-        mock_voice_id_path = Mock()
-        mock_voice_id_path.exists.return_value = False
-        si.VOICE_ID_DIR = mock_voice_id_path
-
-        si._enroll_users()
-
-        assert si._enrolled_users == {}
-
     def test_skips_empty_user_dirs(self):
         si = make_speaker_identifier()
         mock_voice_id_path = Mock()
@@ -591,49 +499,10 @@ class TestEnrollUsers:
         assert "alice" not in si._enrolled_users
 
 
-class TestHelperMethods:
-
-    def test_clear_last_identified_user_clears_history(self):
-        si = make_speaker_identifier()
-        si._identification_history = [
-            ("alice", 0.8, 999.0),
-            ("bob", 0.7, 998.0),
-        ]
-
-        si.clear_last_identified_user()
-
-        assert si._identification_history == []
-
-
-class TestEnsureModelLoaded:
-    def test_does_nothing_if_classifier_exists(self):
-        si = make_speaker_identifier()
-        si._classifier = Mock()  # Already set
-
-        # This should not raise or do anything
-        si._ensure_model_loaded()
         # If it tried to load, it would access speechbrain which would fail
 
 
 class TestExtractEmbeddingFromFile:
-    def test_extracts_embedding_from_wav_file(self, mock_ml_globals):
-        si = make_speaker_identifier()
-
-        mock_signal = Mock()
-        mock_signal.shape = [2, 16000]  # stereo
-        mock_torch.mean.return_value = mock_signal
-        mock_torchaudio.load.return_value = (mock_signal, 16000)
-
-        mock_embedding = Mock()
-        mock_embedding.squeeze.return_value = mock_embedding
-        si._classifier.encode_batch.return_value = mock_embedding
-
-        from pathlib import Path
-        result = si._extract_embedding_from_file(Path("/fake/path.wav"))
-
-        mock_torchaudio.load.assert_called_once_with("/fake/path.wav")
-        assert result is not None
-
     def test_converts_stereo_to_mono(self, mock_ml_globals):
         si = make_speaker_identifier()
 

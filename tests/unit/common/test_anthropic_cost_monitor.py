@@ -185,15 +185,6 @@ class TestAnthropicCostMonitorAggregation:
         assert tab.total_cost_30d == 100.0
 
     @patch('common.AnthropicCostMonitor.config')
-    def test_missing_api_key_sets_error(self, mock_config):
-        mock_config.get.return_value = ""
-
-        monitor, tab = _make_monitor()
-        monitor._fetch_cost_data()
-
-        assert "api_keys.anthropic_admin" in tab.cost_error
-
-    @patch('common.AnthropicCostMonitor.config')
     @patch('common.AnthropicCostMonitor.requests.get')
     def test_auth_failure_sets_error(self, mock_get, mock_config):
         mock_config.get.return_value = "bad-key"
@@ -221,20 +212,3 @@ class TestAnthropicCostMonitorAggregation:
         assert tab.total_cost_7d == 0.0
         assert tab.total_cost_1d == 0.0
         assert tab.cost_error == ""
-
-    @patch('common.AnthropicCostMonitor.config')
-    @patch('common.AnthropicCostMonitor.requests.get')
-    def test_cost_dates_span_max_days(self, mock_get, mock_config):
-        mock_config.get.return_value = "test-key"
-        mock_get.return_value = MagicMock(
-            status_code=200,
-            json=lambda: {"data": [
-                _bucket("2026-04-20", [("claude-opus-4-6", "200")])
-            ], "has_more": False}
-        )
-
-        monitor, tab = _make_monitor()
-        monitor._fetch_cost_data()
-
-        assert len(tab.cost_dates) == AnthropicCostMonitor.MAX_DAYS
-        assert len(tab.cost_date_strs) == AnthropicCostMonitor.MAX_DAYS

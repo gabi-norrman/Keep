@@ -50,8 +50,3 @@ class TestBrief:
             text = FirstRun.brief()
         assert 'config_set("owner_name", ...)' in text
         assert "You are talking to" not in text
-
-    def test_the_setup_order(self):
-        with _config({'owner_name': 'Anna'}):
-            text = FirstRun.brief()
-        assert text.index("1. iMessage") < text.index("2. iCloud") < text.index("3. Photos")

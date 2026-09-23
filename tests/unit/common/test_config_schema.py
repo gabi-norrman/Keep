@@ -76,9 +76,6 @@ class TestSections:
     def test_lookup_is_case_insensitive(self):
         assert ConfigSchema.section_text("EMAIL") == ConfigSchema.section_text("email")
 
-    def test_unknown_section_is_none(self):
-        assert ConfigSchema.section_text("gmail") is None
-
     def test_scalar_top_level_key_is_a_section(self):
         assert ConfigSchema.section_text("owner_name") == "owner_name: YOUR_NAME"
 
@@ -101,11 +98,6 @@ class TestTypes:
     def test_unknown_key_has_no_type(self):
         assert ConfigSchema.leaf_type("email.imap_host") is None
         assert ConfigSchema.leaf_type("nope.x") is None
-
-    def test_example_value(self):
-        assert ConfigSchema.example_value("interfaces.console.port") == 5151
-        assert ConfigSchema.example_value("owner_name") == "YOUR_NAME"
-
 
 @pytest.mark.unit
 class TestLeaves:

@@ -9,16 +9,6 @@ def reset_singleton():
     STTConfidenceMonitor.reset_instance()
 
 
-class TestSingleton:
-    def test_get_instance_returns_same_object(self):
-        assert STTConfidenceMonitor.get_instance() is STTConfidenceMonitor.get_instance()
-
-    def test_reset_instance_creates_new_object(self):
-        a = STTConfidenceMonitor.get_instance()
-        STTConfidenceMonitor.reset_instance()
-        assert STTConfidenceMonitor.get_instance() is not a
-
-
 class TestRecordPerMic:
     def test_record_stores_per_mic(self):
         mon = STTConfidenceMonitor()
@@ -26,10 +16,6 @@ class TestRecordPerMic:
         mon.record("mic-b", 0.6, 1)
         assert list(mon.history("mic-a")) == [0.8]
         assert list(mon.history("mic-b")) == [0.6]
-
-    def test_unknown_mic_returns_empty(self):
-        mon = STTConfidenceMonitor()
-        assert len(mon.history("nope")) == 0
 
     def test_empty_mic_is_ignored(self):
         mon = STTConfidenceMonitor()

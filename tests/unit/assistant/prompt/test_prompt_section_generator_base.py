@@ -23,10 +23,6 @@ class ConcreteSection(PromptSectionGenerator):
 
 
 class TestPromptSectionGeneratorBase:
-    def test_get_content_empty_initially(self):
-        section = ConcreteSection()
-        assert section.get_content() == ""
-
     @patch('assistant.prompt.PromptSectionGenerator.time.sleep')
     def test_update_content_sets_content_and_timestamp(self, mock_sleep):
         section = ConcreteSection(fetch_result="new content")
@@ -114,16 +110,6 @@ class TestPromptSectionGeneratorBase:
         content = section.get_content()
         assert content.startswith("ERROR")
         assert "second outage" in content
-
-    def test_stop_sets_event(self):
-        section = ConcreteSection()
-        section.stop()
-        assert section._stop_event.is_set()
-
-    def test_notify_update_with_none_manager_safe(self):
-        section = ConcreteSection(prompt_manager=None)
-        section.notify_update()  # should not raise
-
 
 class SlowPollSection(ConcreteSection):
     """Uses the base class's polling loop, with an interval no test can wait out."""

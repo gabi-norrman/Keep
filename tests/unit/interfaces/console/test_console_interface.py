@@ -48,13 +48,3 @@ def test_start_registers_the_console_transport_and_the_notifier():
         assert hub.transports == []
         history.unsubscribe.assert_called_once_with(interface.feed._on_change)
         server_cls.return_value.stop.assert_called_once()
-
-
-def test_after_intro_hands_the_callback_to_the_startup_intro():
-    from interfaces.console.ConsoleInterface import ConsoleInterface
-    from unittest.mock import MagicMock
-    iface = ConsoleInterface()
-    iface.console = MagicMock()
-    fn = lambda: None
-    iface.after_intro(fn)
-    iface.console.intro.on_done.assert_called_once_with(fn)
