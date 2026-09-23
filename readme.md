@@ -9,9 +9,7 @@ Refined over two years of daily use in a real home: it's robust and <b><i>just w
 
 <p align="center">Real chat transcripts</p>
 
-<p align="center">
-  <img src="docs/images/example_2.png" width="32%" align="top" alt="Keep identifies a chair from a photo and finds the order and price in the mail">
-</p>
+<img src="docs/images/video.gif">
 
 ## Requirements
 
