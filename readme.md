@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/images/video.gif"></p>
+<p align="center"><img src="docs/images/video.gif" width="340"></p>
 <p align="center">Real chat transcripts</p>
 
 # Keep — personal AI done right
