@@ -463,7 +463,7 @@ class CodeQualityMaintainer:
             raise ClaudeNotInstalledError()
         _, model = parse_llm_config('code_quality')  # only the model matters; the runner is always the `claude` CLI
         trace(f"CodeQualityMaintainer [{label}] using Claude Code model: {model}")
-        cmd = [path, "--dangerously-skip-permissions", "-p", prompt,
+        cmd = [path, "--permission-mode", "auto", "-p", prompt,
                "--output-format", "stream-json", "--verbose", "--model", model]
         process = subprocess.Popen(
             cmd, cwd=WORKING_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

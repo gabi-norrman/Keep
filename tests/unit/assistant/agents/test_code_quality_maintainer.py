@@ -587,7 +587,7 @@ class TestRunClaude:
         mock_popen.return_value = _mock_popen()
         CodeQualityMaintainer._run_claude("test prompt", "label")
         cmd = mock_popen.call_args[0][0]
-        assert cmd == [CLAUDE_PATH, "--dangerously-skip-permissions", "-p", "test prompt",
+        assert cmd == [CLAUDE_PATH, "--permission-mode", "auto", "-p", "test prompt",
                        "--output-format", "stream-json", "--verbose",
                        "--model", "claude-fable-5-1"]
         assert mock_popen.call_args[1]["cwd"] == WORKING_DIR
