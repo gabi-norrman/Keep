@@ -84,7 +84,7 @@ class Title:
     frame from the landing on, the Home tab included, so the trail fades wherever the
     hand-over happens."""
 
-    TEXT = f"Keep {Version.version()}"
+    TEXT = Version.label()
     CPS = 25          # slow enough to read the typing
     GAP = 3           # cells between the logo's right edge and the text
     LIFT = 0          # rows above the logo's middle row

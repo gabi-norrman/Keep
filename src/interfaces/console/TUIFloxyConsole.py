@@ -144,7 +144,7 @@ class TUIFloxyConsole(AssistantObserver):
         TabBar.draw_tab_bar(screen, 2, [t.name for t in nav.tabs], nav.index, not nav.sub_focused, style,
                             hint="Tab or Shift-arrows to navigate tabs ",
                             hint_bright=not nav.navigated,
-                            center=f"Keep {Version.version()}")
+                            center=Version.label())
 
     # --- AssistantObserver -------------------------------------------------------------
     def on_first_token(self, seconds: float, from_cache: bool):

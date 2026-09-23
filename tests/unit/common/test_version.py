@@ -7,11 +7,14 @@ from common import Version
 
 @pytest.fixture(autouse=True)
 def fresh_cache():
-    Version.version.cache_clear()
-    Version.detail.cache_clear()
+    clear()
     yield
-    Version.version.cache_clear()
-    Version.detail.cache_clear()
+    clear()
+
+
+def clear():
+    for f in (Version.version, Version.branch, Version.label, Version.detail):
+        f.cache_clear()
 
 
 def fake_git(answers):
@@ -33,7 +36,7 @@ def test_version_is_the_commit_month_and_the_commit_count():
 def test_detail_adds_the_hash_the_branch_and_flags_local_edits():
     with fake_git({"log": "2026.09", "rev-list": "3868", "rev-parse": "1b6c9ce7", BRANCH: "release", "status": " M file.py"}):
         assert Version.detail() == "v2026.09.3868 (1b6c9ce7, release, dirty)"
-    Version.detail.cache_clear()
+    clear()
     with fake_git({"log": "2026.09", "rev-list": "3868", "rev-parse": "1b6c9ce7", BRANCH: "master", "status": ""}):
         assert Version.detail() == "v2026.09.3868 (1b6c9ce7, master)"
 
@@ -54,3 +57,19 @@ def test_outside_a_git_checkout_the_version_is_unknown():
 def test_a_missing_git_binary_is_logged_not_raised():
     with patch.object(Version.subprocess, "run", side_effect=FileNotFoundError("git")):
         assert Version.version() == Version.UNKNOWN
+
+
+@pytest.mark.unit
+def test_label_is_bare_on_release_and_badged_elsewhere():
+    base = {"log": "2026.09", "rev-list": "3868"}
+    with fake_git({**base, BRANCH: "release"}):
+        assert Version.label() == "Keep v2026.09.3868"
+    clear()
+    with fake_git({**base, BRANCH: "master"}):
+        assert Version.label() == "Keep v2026.09.3868 dev"
+    clear()
+    with fake_git({**base, BRANCH: "fix/tab-bar"}):
+        assert Version.label() == "Keep v2026.09.3868 fix/tab-bar"
+    clear()
+    with fake_git({**base, BRANCH: "HEAD"}):
+        assert Version.label() == "Keep v2026.09.3868"

@@ -39,16 +39,33 @@ def version() -> str:
 
 
 @lru_cache(maxsize=None)
+def branch() -> Optional[str]:
+    """The branch the checkout follows, None when detached or not a checkout."""
+    name = _git("rev-parse", "--abbrev-ref", "HEAD")
+    return name if name and name != "HEAD" else None
+
+
+@lru_cache(maxsize=None)
+def label() -> str:
+    """What the TUI shows: `Keep v2026.09.64` on a release install, `Keep v2026.09.64 dev` on
+    master, the branch's own name on any other — a release needs no badge, running something
+    else should be visible."""
+    name = branch()
+    if name is None or name == "release":
+        return f"Keep {version()}"
+    return f"Keep {version()} {'dev' if name == 'master' else name}"
+
+
+@lru_cache(maxsize=None)
 def detail() -> str:
     """`v2026.09.3868 (1b6c9ce7, release, dirty)` — for the log and /health. The branch is
     left out of a detached checkout."""
     commit = _git("rev-parse", "--short=8", "HEAD")
     if version() == UNKNOWN or not commit:
         return version()
-    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
     parts = [commit]
-    if branch and branch != "HEAD":
-        parts.append(branch)
+    if branch():
+        parts.append(branch())
     if _git("status", "--porcelain"):
         parts.append("dirty")
     return f"{version()} ({', '.join(parts)})"
