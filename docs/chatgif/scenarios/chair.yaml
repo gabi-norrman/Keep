@@ -132,4 +132,14 @@ messages:
       
       Put the bin out at its usual spot tonight, lid closed, so it's there whichever day they roll by.
 
+  - from: user
+    time: "18:05"
+    text: Please remind me to take the bin out tonight
+
+  - from: assistant
+    time: "18:06"
+    thinking: 0.2
+    text: |-
+      Got it - will remind you tonight.
+
   - transition

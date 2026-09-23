@@ -31,9 +31,9 @@
   .msg { display: flex; gap: 20px; margin-top: 22px; }
   .msg:first-child { margin-top: 6px; }
   .msg.cont { margin-top: 12px; }                 /* a follow-up from the same sender: no avatar, tighter */
-  .msg.cont .avatar { visibility: hidden; }
+  .msg.cont .avatar { visibility: hidden; height: 0; }   /* keep the width for alignment, not the height */
   .msg.cont .head { display: none; }
-  .avatar { flex: none; width: 36px; height: 36px; border-radius: 50%; margin-top: -2px; }
+  .avatar { flex: none; width: 54px; height: 54px; border-radius: 50%; margin-top: -2px; }
   .body { flex: 1; min-width: 0; }
   .head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
   .who { font-size: 19px; font-weight: 600; }
@@ -97,7 +97,7 @@ document.documentElement.style.setProperty('--h', D.height + 'px');
 
 // --- timeline: every message gets absolute times, so a frame is a pure function of t ---------
 // A `transition` marker between messages ends a chapter: the finished chat holds for `transition`
-// seconds, clears, and the next chapter starts after `lead` on a blank chat like the first one.
+// seconds, clears, and the next chapter starts right away on a blank chat (`lead` is loop start only).
 // A trailing marker replaces `tail`: the loop restarts right after the hold.
 const isMarker = m => m === 'transition' || (m && m.transition !== undefined);
 const T = [], clears = [];
@@ -106,7 +106,7 @@ for (const m of D.messages) {
   if (isMarker(m)) {
     const at = cursor - lastAfter + (typeof m.transition === 'number' ? m.transition : D.transition);
     clears.push(at);
-    cursor = at + D.lead; lastAfter = 0; chapter++;
+    cursor = at; lastAfter = 0; chapter++;
     continue;
   }
   const len = Math.max(1, (m.text || '').length);
@@ -194,7 +194,7 @@ function commandLine(text, cont) {    // a command echo: the assistant's name, n
   const p = P.assistant;
   return `<div class="msg cmd${cont ? ' cont' : ''}"><img class="avatar" src="${p.avatar}">
     <div class="body"><div class="head"><span class="who" style="color:${p.color}">${esc(p.name)}</span></div>
-    <div class="text">${linkify(text)}</div></div></div>`;
+    <div class="text">${linkify(text)}…</div></div></div>`;
 }
 
 // With snap_scroll the chat jumps straight to the bottom. Otherwise it glides there: an exponential
