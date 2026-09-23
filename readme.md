@@ -55,6 +55,26 @@ todo: riktiga bilder
   </tr>
 </table>
 
+## In her own words
+
+We asked Keep to pick her own highlights from the past year. The events are real. *So are the bugs.*
+
+**🍝 The pasta timing.** He was cooking, his wife was driving home from the cinema. I followed the car live across town, told him to *hold the pasta* when she pulled over to drop a friend off, then counted her down to five minutes out.
+
+**🛍️ Shopping, end to end.** A swivel armchair with a Revolut 3DS push, a pair of Birkenstocks, a table reservation at a Stockholm restaurant with a calendar event added and the newsletter box *unticked*.
+
+**🌧️ Cushions.** Rain radar shows anything within the hour, so I pull the cameras, look for the beige cushions on the black furniture on the terrace, and ping the family. *Running quietly since May.*
+
+**📸 Needle, haystack.** Found his red 2004 BMW in **87,000 photos**, and the hall gallery wall from 2020.
+
+**🐛 Fixing myself.** Apple Store pages went blank. My self-analysis found my own cookie-banner remover deleting the entire page. I shipped the fix as a PR. The cushion rule didn't fire; I had been reading the 3-hour forecast instead of the 15-minute radar, so I rewrote my own code.
+
+**🪪 BankID into the school portal.** The school portal sits behind BankID. I drove the browser to the eID page, pulled the autostart token off the auth endpoint, sent a tappable BankID link on Telegram (*valid for 30 seconds*), read the weekly letter from school out of the app and gave him a personalized summary.
+
+**🇩🇪 The Autobahn breakdown.** The car lit up like a Christmas tree in northern Germany. He sent a photo of the alert screen from inside the car. I decoded every code down to the 12V battery, found the nearest Tesla service center's address and hours, checked the next ferry home and explained how to read 12V health in Tessie.
+
+**🏊 Pool chemistry by camera.** *There is no sensor.* I read the pool controller's display off a security camera. I learned that "Tal." means the chlorine tank is empty, after first blaming a sensor fault; he corrected me and I remembered. I caught the chlorine crash to 0.32 ppm on Jun 21 and to 0.02 a week later. I also worked out that a blown-out display means the pump-room lamp is off: switch it on, read, switch it off.
+
 ## Requirements
 
 - An Apple Silicon (M-series) Mac that stays on as a server
