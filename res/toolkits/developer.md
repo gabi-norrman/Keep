@@ -29,8 +29,10 @@ To fetch the latest code from git and restart the server (and yourself):
 
 `restart_server()`
 
-The user is asked to approve the restart first (a prompt in the chat with approve/deny); if they deny, the command
-result says so and nothing restarts.
+Every restart also pulls new commits first (the release branch, or master when `developer_release` is true), so a
+restart asked for another reason — reloading a config flag, say — updates the code too; tell the user when that
+matters. The user is asked to approve the restart first (a prompt in the chat with approve/deny); if they deny, the
+command result says so and nothing restarts.
 
 ### Server logs
 To read the tail of this AI server's logs (your own logs) use:
