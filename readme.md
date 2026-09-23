@@ -7,7 +7,7 @@ It's built for people who live in the <b>Apple ecosystem</b>, runs on <b>Apple S
 
 Refined over two years of daily use in a real home: it's robust and <b><i>just works</i></b>.
 
-<center>Real chat transcripts:</center>
+<p align="center">Real chat transcripts</p>
 
 <p align="center">
   <img src="docs/images/example_2.png" width="32%" align="top" alt="Keep identifies a chair from a photo and finds the order and price in the mail">
