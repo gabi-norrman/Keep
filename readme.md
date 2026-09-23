@@ -21,19 +21,13 @@ Apple Silicon Mac connected to your iCloud that can stay on as a server.
 Everything else — email, smart home, cameras, car — is optional, and Keep walks you through setting it up.
 
 ## Try it out!
-Since this is a closed beta you need to:
-1. Accept collaborator invite on GitHub
-2. Make sure you're logged in with GitHub (<code>brew install gh</code> if you do not have gh) :
+Since this is a closed beta you need to first accept collaborator invite on GitHub. Then:
 ```bash
-gh auth login
+gh auth login && gh api -H "Accept: application/vnd.github.raw" repos/maciekd/Keep/contents/install.sh | bash
 ```
-3. Install Keep:
-```bash
-gh api -H "Accept: application/vnd.github.raw" repos/maciekd/Keep/contents/install.sh | bash
-```
+(<code>brew install gh</code> if you do not have gh)
 
-The installer checks your Mac, finds or installs Python 3.12 (self-contained, it won't touch anything else on your Mac),
-clones Keep into `~/Keep`, installs the Python packages and starts Keep. That's it!
+The installer is self-contained, it won't touch anything else on your Mac. 
 
 ## Features
 
@@ -98,4 +92,4 @@ nightmare. Here is where Keep stands today.
   only ever sees placeholders. It is a system for hiding secrets from the cloud, not for anonymizing everything you say.
 - **The end game is 100% local.** Keep already runs on local models and once the SOTA local models are good enough, we'll move to <i>local only</i>.
 
-Right now Fable from Anthropic is still needed for a no-compromise solution.
+Right now Fable from Anthropic is needed for a no-compromise solution.
