@@ -235,6 +235,12 @@ reminders:
 # sender identity of their own (TUI chat, Telegram messages without a sender name).
 owner_name: YOUR_NAME
 
+# Which line of the code restart_server follows. false: the `release` branch, what ./release.sh
+# last published. true: `master`, the development line — every commit, straight away. The
+# restart checks that branch out before pulling, so flipping this and restarting switches the
+# install; the assistant may set it itself (config_set).
+developer_release: false
+
 # Home automation extras, for either backend. Optional.
 # home:
 #   night_variable: Night     # the variable / input_boolean that is true while the house sleeps (default "Night")

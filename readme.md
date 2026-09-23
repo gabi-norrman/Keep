@@ -16,7 +16,7 @@ Everything else — email, smart home, cameras, car — is optional, and Keep wa
 
 ## Try it out!
 ```bash
-gh auth login && gh api -H "Accept: application/vnd.github.raw" repos/maciekd/Keep/contents/install.sh | bash
+gh auth login && gh api -H "Accept: application/vnd.github.raw" "repos/maciekd/Keep/contents/install.sh?ref=release" | bash
 ```
 (<code>brew install gh</code> if you do not have <code>gh</code>)
 

@@ -52,6 +52,9 @@ DISABLED_MESSAGE = (
     'on the server machine — config_help("self_improvement") has the steps.'
 )
 NIGHTLY_RUNS_KEY = "self_improvement.nightly_runs"
+DEVELOPER_RELEASE_KEY = "developer_release"
+RELEASE_BRANCH = "release"
+DEVELOPER_BRANCH = "master"
 NIGHTLY_OFF_MESSAGE = f"{NIGHTLY_RUNS_KEY} is off"
 
 
@@ -405,6 +408,7 @@ class CodeQualityMaintainer:
         if not candidates:
             info("CodeQualityMaintainer: no open PRs from trusted authors, skipping auto-merge run.")
             return
+        branch = self._current_branch()
         try:
             report = self._run_claude(self._auto_merge_prompt(candidates), "auto-merge-tests")
             if report:
@@ -415,7 +419,7 @@ class CodeQualityMaintainer:
         except Exception as e:
             error(f"CodeQualityMaintainer: auto-merge run failed: {e}")
         finally:
-            self._run_subprocess(["git", "checkout", "master"], "git checkout", GIT_TIMEOUT)
+            self._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
         info("CodeQualityMaintainer: auto-merge run complete.")
 
     @staticmethod
@@ -515,6 +519,7 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def _step_generate_tests() -> str:
+        branch = CodeQualityMaintainer._current_branch()
         try:
             info("CodeQualityMaintainer: generating missing tests for recent commits...")
             trace("Starting Claude Code in the background...")
@@ -525,9 +530,7 @@ class CodeQualityMaintainer:
             error(f"CodeQualityMaintainer: test generation failed: {e}")
             return ""
         finally:
-            CodeQualityMaintainer._run_subprocess(
-                ["git", "checkout", "master"], "git checkout", GIT_TIMEOUT
-            )
+            CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
 
     @staticmethod
     def _step_bug_analysis() -> str:
@@ -562,6 +565,7 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def improve_code(request: str) -> str:
+        branch = CodeQualityMaintainer._current_branch()
         try:
             info("CodeQualityMaintainer: starting self-improvement...")
             CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
@@ -575,13 +579,46 @@ class CodeQualityMaintainer:
             error(f"CodeQualityMaintainer: self-improvement failed: {e}")
             return f"Self-improvement failed: {e}"
         finally:
-            CodeQualityMaintainer._run_subprocess(
-                ["git", "checkout", "master"], "git checkout", GIT_TIMEOUT
-            )
+            CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+
+    @staticmethod
+    def _current_branch() -> str:
+        """The branch this checkout follows — `release` on an install, `master` on the
+        development machine. A Claude Code run may leave the tree on its work branch, so the
+        runs restore this one afterwards; a hard-coded master would move an install onto the
+        development branch."""
+        try:
+            result = CodeQualityMaintainer._run_subprocess(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                                                           "git rev-parse", GIT_TIMEOUT)
+            branch = (result.stdout or "").strip()
+        except Exception as e:
+            error(f"CodeQualityMaintainer: could not read the current branch: {e}")
+            branch = ""
+        if not branch or branch == "HEAD":
+            info(f"CodeQualityMaintainer: no branch checked out ({branch or 'no output'}), assuming master")
+            return "master"
+        return branch
+
+    @staticmethod
+    def target_branch() -> str:
+        """The branch restart_server pulls: master with `developer_release: true`, else release."""
+        developer = bool(ConfigManager().get(DEVELOPER_RELEASE_KEY, False))
+        return DEVELOPER_BRANCH if developer else RELEASE_BRANCH
 
     @staticmethod
     def pull_and_restart() -> str:
-        info("CodeQualityMaintainer: pulling latest code and restarting...")
+        target = CodeQualityMaintainer.target_branch()
+        current = CodeQualityMaintainer._current_branch()
+        if current != target:
+            info(f"CodeQualityMaintainer: on {current}, {DEVELOPER_RELEASE_KEY} asks for {target} — switching before the pull")
+            for cmd, label in ((["git", "fetch", "origin", target], "git fetch"),
+                               (["git", "checkout", target], "git checkout")):
+                result = CodeQualityMaintainer._run_subprocess(cmd, label, GIT_TIMEOUT)
+                if result.returncode != 0:
+                    error(f"CodeQualityMaintainer: {label} {target} failed: {result.stderr}")
+                    return (f"Could not switch to {target}: {(result.stderr or '').strip()} — "
+                            f"still on {current}, the server was not restarted.")
+        info(f"CodeQualityMaintainer: pulling latest code on {target} and restarting...")
         result = CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
         output = (result.stdout or "").strip()
 

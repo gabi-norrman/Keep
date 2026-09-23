@@ -2,7 +2,7 @@
 #
 # Keep installer. From the readme:
 #
-#   gh api -H "Accept: application/vnd.github.raw" repos/maciekd/Keep/contents/install.sh | bash
+#   gh api -H "Accept: application/vnd.github.raw" "repos/maciekd/Keep/contents/install.sh?ref=release" | bash
 #
 # The repository is private during the closed beta, so the installer needs the GitHub CLI
 # (gh) logged in to an account with access: that is what the readme's `gh auth login` is
@@ -19,7 +19,8 @@
 #   ANTHROPIC_API_KEY  skips the API key prompt
 #   KEEP_NO_START=1    stop after installing instead of launching start.sh
 #   KEEP_REPO          repository URL              (default: https://github.com/maciekd/Keep.git)
-#   KEEP_BRANCH        branch to install           (default: master)
+#   KEEP_BRANCH        branch to install           (default: release — what release.sh publishes;
+#                      an existing checkout keeps the branch it is on unless this is set)
 #
 # Written for the bash 3.2 that ships with macOS: no associative arrays, mapfile or ${var,,}.
 # Everything sits inside main() so a truncated download runs nothing at all.
@@ -28,7 +29,7 @@ set -eEuo pipefail
 
 main() {
   REPO_URL="${KEEP_REPO:-https://github.com/maciekd/Keep.git}"
-  BRANCH="${KEEP_BRANCH:-master}"
+  BRANCH="${KEEP_BRANCH:-release}"
   KEEP_DIR="${KEEP_DIR:-$HOME/Keep}"
   MIN_MACOS=14         # mlx needs Sonoma or newer
   MIN_FREE_GB=10       # the voice stack (torch, spacy, mlx) is close to 3 GB installed
@@ -440,7 +441,17 @@ ensure_repo() {
     if [ -n "$(git -C "$KEEP_DIR" status --porcelain 2>/dev/null)" ]; then
       warn "Local changes in $KEEP_DIR are kept; only a fast-forward update is applied."
     fi
-    run "git pull --ff-only" git -C "$KEEP_DIR" pull --ff-only origin "$BRANCH"
+    # An install follows the branch it was made from (release, or master on a development
+    # checkout); only an explicit KEEP_BRANCH moves it.
+    local current
+    current=$(git -C "$KEEP_DIR" symbolic-ref --short -q HEAD 2>/dev/null || true)
+    if [ -z "${KEEP_BRANCH:-}" ] && [ -n "$current" ]; then
+      BRANCH="$current"
+    elif [ "$current" != "$BRANCH" ]; then
+      run "git fetch $BRANCH" git -C "$KEEP_DIR" fetch origin "$BRANCH"
+      run "git checkout $BRANCH" git -C "$KEEP_DIR" checkout "$BRANCH"
+    fi
+    run "git pull --ff-only ($BRANCH)" git -C "$KEEP_DIR" pull --ff-only origin "$BRANCH"
   elif [ -e "$KEEP_DIR" ] && ! holds_only_our_log "$KEEP_DIR"; then
     fail "$KEEP_DIR exists and is not empty, and it is not a Keep checkout." \
       "Move it away, or install elsewhere: gh api ... | KEEP_DIR=~/somewhere bash"
@@ -588,6 +599,8 @@ write_config() {
 # every setting; the assistant sets up the optional integrations itself once it runs.
 api_keys:
   anthropic: $API_KEY
+$(if [ "$BRANCH" = master ]; then echo "developer_release: true   # installed from master, the development line; restart_server keeps following it"
+   else echo "developer_release: false  # restart_server follows the release branch; true: master, the development line"; fi)
 vault:
   # Encrypts vault.bin, the secrets the assistant stores for you. Lose it and the vault is
   # lost; change it and the existing vault.bin can no longer be opened.

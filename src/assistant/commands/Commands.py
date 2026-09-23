@@ -75,7 +75,8 @@ class Commands:
     # What the approval prompt shows under the title when the command has no parameters
     # to preview — the user should know what saying yes does before the screen goes blank.
     APPROVAL_NOTES = {
-        "restart_server": "Pulls the latest code from git and relaunches the server. "
+        "restart_server": "Pulls the latest code from git (the release branch, or master when "
+                          "developer_release is true) and relaunches the server. "
                           "The console goes blank for a moment and reconnects by itself.",
     }
     # Commands whose handler accepts multiple positional arguments. The dispatcher
@@ -1251,9 +1252,13 @@ class Commands:
     MODEL_KEY_HINT = ("Model-provider key. Photo indexing, video descriptions and any integration enabled "
                       "from now on use it straight away — setup needs no restart.")
     MODEL_PROVIDER_KEYS = frozenset({"openai", "anthropic", "gemini", "grok", "openrouter"})
+    DEVELOPER_RELEASE_HINT = ("Takes effect at the next restart_server, which checks out master (true) or "
+                              "release (false) before pulling — offer the restart if the user wants to switch now.")
 
     @classmethod
     def _restart_hint(cls, key: str) -> str:
+        if key == "developer_release":
+            return cls.DEVELOPER_RELEASE_HINT
         if key.startswith("interfaces."):
             return cls.SERVER_RESTART_HINT
         if key.startswith("telegram_bot."):

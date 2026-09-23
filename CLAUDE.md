@@ -18,6 +18,18 @@ send the stream back to the client for playback.
 - **Only commit when explicitly asked** — never commit automatically after completing work.
 - **Always use the `/commit` command** when committing changes. Never commit manually.
 
+## Releases
+
+Development happens on `master`; installs track the `release` branch. `./release.sh` fast-forwards
+`origin/release` to `origin/master` and tags the commit with its version (`vYYYY.MM.N`, see
+`src/common/Version.py`) — that is the whole release. The readme's install command fetches
+`install.sh` from `release` and the installer clones it. `restart_server` checks out the branch the
+`developer_release` config key names (false → `release`, true → `master`; the assistant may flip it with
+`config_set`) and pulls it, so an install picks a release up on its next restart and a machine switches
+line by flipping the key and restarting. The development machine's `config.yaml` has it true. Never
+hard-code `master` in a git command — `CodeQualityMaintainer._current_branch()` is the branch to come
+back to after a Claude Code run, `target_branch()` the one to pull.
+
 ## Code Style
 
 - Keep code concise and readable

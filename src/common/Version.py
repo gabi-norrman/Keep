@@ -1,7 +1,11 @@
 """The running system's version, read from git: `vYYYY.MM.N` — the month of the last commit
 and the number of commits behind HEAD, which only grows along master so it names one commit
-(`git rev-list --reverse master | sed -n <N>p`). `detail()` adds what the short form cannot
-tell: the hash (two side branches can share a count) and whether the tree has local edits."""
+(`git rev-list --reverse master | sed -n <N>p`). A release is a master commit that release.sh
+moved the `release` branch to and tagged with this very string, so an install on `release`
+reports the same version as master did at that commit. `detail()` adds what the short form
+cannot tell: the hash (two side branches can share a count), the branch the checkout follows
+(release on an install, master on the development machine) and whether the tree has local
+edits."""
 import subprocess
 from functools import lru_cache
 from typing import Optional
@@ -36,9 +40,15 @@ def version() -> str:
 
 @lru_cache(maxsize=None)
 def detail() -> str:
-    """`v2026.09.3868 (1b6c9ce7, dirty)` — for the log and /health."""
+    """`v2026.09.3868 (1b6c9ce7, release, dirty)` — for the log and /health. The branch is
+    left out of a detached checkout."""
     commit = _git("rev-parse", "--short=8", "HEAD")
     if version() == UNKNOWN or not commit:
         return version()
-    dirty = ", dirty" if _git("status", "--porcelain") else ""
-    return f"{version()} ({commit}{dirty})"
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    parts = [commit]
+    if branch and branch != "HEAD":
+        parts.append(branch)
+    if _git("status", "--porcelain"):
+        parts.append("dirty")
+    return f"{version()} ({', '.join(parts)})"

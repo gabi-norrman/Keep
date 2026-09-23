@@ -211,6 +211,11 @@ def commit(path: Path, message: str) -> str:
                           capture_output=True, text=True, check=True).stdout.strip()
 
 
+def branch_of(path: Path) -> str:
+    return subprocess.run(['git', 'symbolic-ref', '--short', 'HEAD'], cwd=path,
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
 class TestEnsureRepo:
     ENSURE = 'open_log; ensure_repo; printf "%s" "$LOG"'
 
@@ -237,6 +242,32 @@ class TestEnsureRepo:
         assert f'At {newer}' in result.stdout
         assert (harness.keep_dir / 'readme.md').read_text() == 'Keep, updated\n'
         assert 'Local changes' not in result.stdout, "the installer's own log counted as a local change"
+
+    def test_rerun_keeps_the_branch_an_existing_checkout_is_on(self, harness):
+        """The default branch became `release`, but a checkout made from master (the
+        development machine, an early install) must not be moved by a re-run."""
+        origin = harness.dir / 'origin'
+        make_origin(origin)
+        assert harness.run(self.ENSURE, repo_url=str(origin)).returncode == 0
+        subprocess.run(['git', 'branch', 'release'], cwd=origin, check=True)
+        (origin / 'readme.md').write_text('Keep, master moved on\n')
+        newer = commit(origin, 'feat: second')
+        result = harness.run('BRANCH=release; ' + self.ENSURE, repo_url=str(origin))
+        assert result.returncode == 0, result.stdout
+        assert f'At {newer}' in result.stdout
+        assert branch_of(harness.keep_dir) == 'master'
+
+    def test_explicit_keep_branch_moves_an_existing_checkout(self, harness):
+        origin = harness.dir / 'origin'
+        make_origin(origin)
+        assert harness.run(self.ENSURE, repo_url=str(origin)).returncode == 0
+        subprocess.run(['git', 'branch', 'release'], cwd=origin, check=True)
+        (origin / 'readme.md').write_text('Keep, master moved on\n')
+        commit(origin, 'feat: second')
+        result = harness.run('BRANCH=release; ' + self.ENSURE, repo_url=str(origin), KEEP_BRANCH='release')
+        assert result.returncode == 0, result.stdout
+        assert branch_of(harness.keep_dir) == 'release'
+        assert (harness.keep_dir / 'readme.md').read_text() == 'Keep\n'
 
     def test_checkout_of_another_repository_is_refused(self, harness):
         origin = harness.dir / 'origin'

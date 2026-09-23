@@ -3015,6 +3015,12 @@ class TestCmdConfigSet:
             reply = commands_instance._run_config_set("api_keys.serper", "x")
         assert reply == "api_keys.serper saved. " + Commands.RESTART_HINT
 
+    def test_developer_release_points_at_the_server_restart_that_switches_branch(self, commands_instance):
+        with patch.object(ConfigStore, "set_value", return_value="developer_release saved"):
+            reply = commands_instance._run_config_set("developer_release", "true")
+        assert reply == "developer_release saved. " + Commands.DEVELOPER_RELEASE_HINT
+        assert ConfigStore.coerce("developer_release", "true") is True
+
     def test_a_telegram_key_points_at_the_bot_restart(self, commands_instance):
         with patch.object(ConfigStore, "set_value", return_value="telegram_bot.link_previews saved"):
             reply = commands_instance._run_config_set("telegram_bot.link_previews", "true")

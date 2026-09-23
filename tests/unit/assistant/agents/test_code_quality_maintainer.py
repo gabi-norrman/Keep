@@ -3,6 +3,8 @@ from unittest.mock import patch, Mock, MagicMock, call
 
 import pytest
 
+from common.ConfigManager import ConfigManager
+
 import json
 import os
 import subprocess
@@ -296,31 +298,33 @@ class TestExecuteAutoMergeRun:
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude crashed"))
-    def test_checkout_master_in_finally(self, mock_claude, mock_count, mock_sub, maintainer):
+    def test_restores_the_starting_branch_in_finally(self, mock_claude, mock_count, mock_sub, maintainer):
+        mock_sub.return_value = Mock(stdout="release\n", returncode=0)
         maintainer._execute_auto_merge_run()
-        checkout_calls = [c for c in mock_sub.call_args_list if c[0][0] == ["git", "checkout", "master"]]
-        assert len(checkout_calls) == 1
+        checkout_calls = [c for c in mock_sub.call_args_list if c[0][0][:2] == ["git", "checkout"]]
+        assert checkout_calls == [call(["git", "checkout", "release"], "git checkout", GIT_TIMEOUT)]
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
     @patch.object(CodeQualityMaintainer, '_run_claude', return_value="report")
     @patch.object(CodeQualityMaintainer, '_send_email')
-    def test_checkout_master_after_success(self, mock_email, mock_claude, mock_count, mock_sub, maintainer):
+    def test_restores_the_starting_branch_after_success(self, mock_email, mock_claude, mock_count, mock_sub, maintainer):
+        mock_sub.return_value = Mock(stdout="master\n", returncode=0)
         maintainer._execute_auto_merge_run()
-        checkout_calls = [c for c in mock_sub.call_args_list if c[0][0] == ["git", "checkout", "master"]]
-        assert len(checkout_calls) == 1
+        checkout_calls = [c for c in mock_sub.call_args_list if c[0][0][:2] == ["git", "checkout"]]
+        assert checkout_calls == [call(["git", "checkout", "master"], "git checkout", GIT_TIMEOUT)]
 
 
 @pytest.mark.unit
 class TestStepGenerateTests:
     @patch.object(CodeQualityMaintainer, '_run_claude', return_value="")
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
-    def test_calls_claude_then_checkout(self, mock_run, mock_claude, maintainer):
-        mock_run.return_value = Mock(stdout="", returncode=0)
+    def test_reads_the_branch_then_claude_then_checks_it_out_again(self, mock_run, mock_claude, maintainer):
+        mock_run.return_value = Mock(stdout="release\n", returncode=0)
         maintainer._step_generate_tests()
 
-        mock_run.assert_called_once()
-        assert mock_run.call_args[0][0] == ["git", "checkout", "master"]
+        assert [c[0][0] for c in mock_run.call_args_list] == [
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], ["git", "checkout", "release"]]
         assert mock_run.call_args[1]["cwd"] == WORKING_DIR
         mock_claude.assert_called_once_with(GENERATE_TESTS_PROMPT, "generate-tests")
 
@@ -481,13 +485,20 @@ class TestImproveCode:
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_run_claude', return_value="done")
-    def test_git_pull_then_claude_then_checkout(self, mock_claude, mock_sub):
-        mock_sub.return_value = Mock(stdout="", returncode=0)
+    def test_git_pull_then_claude_then_checkout_of_the_starting_branch(self, mock_claude, mock_sub):
+        mock_sub.return_value = Mock(stdout="release\n", returncode=0)
         CodeQualityMaintainer.improve_code("bug")
-        assert mock_sub.call_count == 2
-        calls = mock_sub.call_args_list
-        assert calls[0] == call(["git", "pull"], "git pull", GIT_TIMEOUT)
-        assert calls[1] == call(["git", "checkout", "master"], "git checkout", GIT_TIMEOUT)
+        assert mock_sub.call_args_list == [
+            call(["git", "rev-parse", "--abbrev-ref", "HEAD"], "git rev-parse", GIT_TIMEOUT),
+            call(["git", "pull"], "git pull", GIT_TIMEOUT),
+            call(["git", "checkout", "release"], "git checkout", GIT_TIMEOUT)]
+
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_detached_head_falls_back_to_master(self, mock_sub):
+        mock_sub.return_value = Mock(stdout="HEAD\n", returncode=0)
+        assert CodeQualityMaintainer._current_branch() == "master"
+        mock_sub.side_effect = Exception("no git")
+        assert CodeQualityMaintainer._current_branch() == "master"
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude crashed"))
@@ -1136,6 +1147,13 @@ class TestExecuteNightlyRun:
                 mock_sub.assert_called_once_with(["git", "pull"], "git pull", GIT_TIMEOUT)
 
 
+def developer_release(value: bool):
+    """Pins the `developer_release` key: the developer's own config.yaml has it true, a test
+    must not inherit that."""
+    return patch.object(ConfigManager, 'get',
+                        side_effect=lambda key, default=None: value if key == "developer_release" else default)
+
+
 @pytest.mark.unit
 class TestPullAndRestart:
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
@@ -1159,12 +1177,56 @@ class TestPullAndRestart:
         mock_popen.assert_called_once()
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="release")
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_git_pull_failure_does_not_restart(self, mock_sub, mock_popen):
+    def test_git_pull_failure_does_not_restart(self, mock_sub, mock_branch, mock_popen):
         mock_sub.return_value = Mock(stdout="", stderr="fatal: not a git repository", returncode=128)
-        result = CodeQualityMaintainer.pull_and_restart()
+        with developer_release(False):
+            result = CodeQualityMaintainer.pull_and_restart()
         assert "Git pull failed" in result
         mock_popen.assert_not_called()
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="release")
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_pulls_in_place_when_already_on_the_target_branch(self, mock_sub, mock_branch, mock_popen):
+        mock_sub.return_value = Mock(stdout="Already up to date.", stderr="", returncode=0)
+        with developer_release(False):
+            CodeQualityMaintainer.pull_and_restart()
+        assert [c[0][0] for c in mock_sub.call_args_list] == [["git", "pull"]]
+        mock_popen.assert_called_once()
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="release")
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_developer_release_switches_to_master_before_pulling(self, mock_sub, mock_branch, mock_popen):
+        mock_sub.return_value = Mock(stdout="Already up to date.", stderr="", returncode=0)
+        with developer_release(True):
+            CodeQualityMaintainer.pull_and_restart()
+        assert [c[0][0] for c in mock_sub.call_args_list] == [
+            ["git", "fetch", "origin", "master"], ["git", "checkout", "master"], ["git", "pull"]]
+        mock_popen.assert_called_once()
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="master")
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_failed_switch_leaves_the_branch_and_does_not_restart(self, mock_sub, mock_branch, mock_popen):
+        def git(cmd, label, timeout):
+            if cmd[:2] == ["git", "checkout"]:
+                return Mock(stdout="", stderr="error: your local changes would be overwritten", returncode=1)
+            return Mock(stdout="", stderr="", returncode=0)
+        mock_sub.side_effect = git
+        with developer_release(False):
+            result = CodeQualityMaintainer.pull_and_restart()
+        assert "Could not switch to release" in result and "still on master" in result
+        assert ["git", "pull"] not in [c[0][0] for c in mock_sub.call_args_list]
+        mock_popen.assert_not_called()
+
+    def test_target_branch_follows_the_config_key(self):
+        with developer_release(False):
+            assert CodeQualityMaintainer.target_branch() == "release"
+        with developer_release(True):
+            assert CodeQualityMaintainer.target_branch() == "master"
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
