@@ -14,6 +14,27 @@ Refined over two years of daily use in a real home: it's robust and <b><i>just w
 </p>
 todo: riktiga bilder
 
+## Requirements
+
+Apple Silicon Mac connected to your iCloud that can stay on as a server.
+
+Everything else — email, smart home, cameras, car — is optional, and Keep walks you through setting it up.
+
+## Try it out!
+Since this is a closed beta you need to:
+1. Accept collaborator invite on GitHub
+2. Make sure you're logged in with GitHub (<code>brew install gh</code> if you do not have gh) :
+```bash
+gh auth login
+```
+3. Install Keep:
+```bash
+gh api -H "Accept: application/vnd.github.raw" repos/maciekd/Keep/contents/install.sh | bash
+```
+
+The installer checks your Mac, finds or installs Python 3.12 (self-contained, it won't touch anything else on your Mac),
+clones Keep into `~/Keep`, installs the Python packages and starts Keep. That's it!
+
 ## Features
 
 We asked my assistant to pick her own highlights from the past year. **All events are real.**
@@ -47,26 +68,23 @@ Text chat in a Claude Code-style **terminal UI**, or over **Telegram** with imag
 
 A highly optimized **voice-to-voice** interface for talking to your home. It is tuned for speed and best suited for dimming lights, putting on music and the like. Use text for the complex questions.
 
-## Requirements
+## Integrations
 
-Apple Silicon Mac connected to your iCloud that can stay on as a server.
+Every integration is off until you turn it on, and Keep walks you through the setup of each one.
 
-Everything else — email, smart home, cameras, car — is optional, and Keep walks you through setting it up.
+- **Apple:** iCloud (Find My for the family's phones), Photos library, iMessage, Reminders, iCloud Mail and CalDAV calendars
+- **Email:** Gmail and iCloud Mail; Keep also uses your inbox to handle 2FA codes on its own
+- **Home:** Home Assistant and Indigo for lights, switches, locks, sensors and scenes
+- **Cameras:** Arlo and Ring
+- **Car:** Tesla, through tessie.com
+- **Music:** Sonos and Spotify
+- **Weather:** YR forecasts and rain radar
+- **Web:** search, page reading, a real headless browser for sites that need clicking, and X
+- **Chat:** Telegram, with a feed of the family's group chats
+- **Voice:** fusion of local Whisper transcription and ElevenLabs, for <i>low latency</i> combined with <i>high accuracy</i>
+- **Self Improvement:** Keep reads its own logs and code through Claude Code, finds bugs and sends you the pull request
 
-## Try it out!
-Since this is a closed beta you need to:
-1. Accept collaborator invite on GitHub
-2. Make sure you're logged in with GitHub (<code>brew install gh</code> if you do not have gh) :
-```bash
-gh auth login
-```
-3. Install Keep:
-```bash
-gh api -H "Accept: application/vnd.github.raw" repos/maciekd/Keep/contents/install.sh | bash
-```
-
-The installer checks your Mac, finds or installs Python 3.12 (self-contained, it won't touch anything else on your Mac),
-clones Keep into `~/Keep`, installs the Python packages and starts Keep. That's it!
+Missing something? Ask Keep to write the integration itself: it analyses the code, builds it and opens the pull request for you to review.
 
 ## Privacy
 
