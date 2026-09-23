@@ -1,15 +1,12 @@
-# UTKAST
-# Keep — personal AI done right
+<p align="center">Real chat transcripts</p>
+<p align="center"><img src="docs/images/video.gif"></p>
 
+# Keep — personal AI done right
 Keep is a self-hosted AI assistant that runs on a Mac in your home and truly knows you.
 
 It's built for people who live in the <b>Apple ecosystem</b>, runs on <b>Apple Silicon Macs</b> and is powered by <b>Fable from Anthropic</b> 
 
 Refined over two years of daily use in a real home: it's robust and <b><i>just works</i></b>.
-
-<p align="center">Real chat transcripts</p>
-
-<img src="docs/images/video.gif">
 
 ## Requirements
 
