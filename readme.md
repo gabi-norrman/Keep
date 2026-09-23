@@ -7,12 +7,11 @@ It's built for people who live in the <b>Apple ecosystem</b>, runs on <b>Apple S
 
 Refined over two years of daily use in a real home: it's robust and <b><i>just works</i></b>.
 
+<center>Real chat transcripts:</center>
+
 <p align="center">
   <img src="docs/images/example_2.png" width="32%" align="top" alt="Keep identifies a chair from a photo and finds the order and price in the mail">
-  <img src="docs/images/example_3.png" width="32%" align="top" alt="Keep finds photos of a room in the photo library">
-  <img src="docs/images/example_1.png" width="32%" align="top" alt="Keep completes an online order and summarizes the delivery">
 </p>
-todo: riktiga bilder
 
 ## Requirements
 
