@@ -12,6 +12,7 @@ A command returns a human-readable string that is relayed back as the reply.
     //FP            - last conversations were False Positives -> copy their audio to false-positive/
     //TP            - last conversations were True Positives  -> copy their audio to en/
     //wipe confirm  - back up and wipe the user state, then stop the server (FTUE testing)
+    //restart       - pull the target branch and restart the server, as the restart_server command does (fallback when the LLM is unusable)
     //feed <pause|resume> <all|name> - hold / carry on filling the history from a feed; bare //feed lists them
     //memory_curate <start> [end]    - curate the long-term memory over a span of days (YYYYMMDD, end inclusive), in 4-day chunks
     //first_run [stage <name>|reset] - the first-run pipeline's state; force a stage or delete the state (FTUE testing)
@@ -103,6 +104,19 @@ def _stop_server():
     main() stops every interface. Nothing starts it again — that is the user's move."""
     info("//wipe: stopping the server")
     os.kill(os.getpid(), signal.SIGTERM)
+
+
+def _pull_and_restart():
+    """//restart's tail, run once the reply is out: exactly what the restart_server command
+    does — pull the target branch, relaunch through start.sh, note the outcome in the dialog."""
+    from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
+    from assistant.SystemNote import system_note
+    try:
+        result = CodeQualityMaintainer.pull_and_restart()
+        info(f"//restart: {result}")
+        system_note("server", f"Server restart (//restart): {result}")
+    except Exception as e:
+        error(f"//restart failed: {e}")
 
 
 def _close_browser():
@@ -375,6 +389,17 @@ class DebugCommands:
             runner = Feeds.get_instance().runner(name)
             lines.append(f"{name}: {describe_feed_status(runner.status() if runner else None)}")
         return "\n".join(lines)
+
+    # --- //restart ------------------------------------------------------------------------
+
+    def cmd_RESTART(self, args: str) -> str:
+        """Pull the target branch and restart the server, exactly as the restart_server command does; the fallback when the LLM is unusable."""
+        from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
+        target = CodeQualityMaintainer.target_branch()
+        threading.Timer(STOP_DELAY_SECONDS, _pull_and_restart).start()
+        info(f"//restart: pulling {target} and restarting in {STOP_DELAY_SECONDS:g}s")
+        return (f"Pulling {target} and restarting the server in {STOP_DELAY_SECONDS:g}s. "
+                f"The outcome lands in the log and as a system note.")
 
     # --- //wipe ---------------------------------------------------------------------------
 

@@ -189,6 +189,28 @@ def _wait_for_stop(stops):
     assert stops == [True]
 
 
+def test_restart_replies_first_then_pulls_and_restarts(monkeypatch):
+    """The reply must be out before start.sh kills the process, so the pull and restart
+    run on a timer; the outcome goes to the dialog as a system note, like restart_server."""
+    from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
+    import assistant.SystemNote as sn_mod
+    calls, notes = [], []
+    monkeypatch.setattr(CodeQualityMaintainer, "target_branch", staticmethod(lambda: "release"))
+    monkeypatch.setattr(CodeQualityMaintainer, "pull_and_restart",
+                        staticmethod(lambda: calls.append(True) or "Update initiated (no new changes). Server is restarting..."))
+    monkeypatch.setattr(sn_mod, "system_note", lambda source, text: notes.append((source, text)))
+    monkeypatch.setattr(dc_mod, "STOP_DELAY_SECONDS", 0.0)
+
+    text = DebugCommands().handle("//restart")
+
+    assert "Pulling release and restarting the server" in text
+    deadline = time.time() + 3
+    while not notes and time.time() < deadline:
+        time.sleep(0.01)
+    assert calls == [True]
+    assert notes == [("server", "Server restart (//restart): Update initiated (no new changes). Server is restarting...")]
+
+
 def test_wipe_without_confirm_only_shows_the_plan(wipe_env):
     root, stops = wipe_env
     text = DebugCommands().handle("//wipe")
