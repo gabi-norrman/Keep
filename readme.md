@@ -16,7 +16,7 @@ todo: riktiga bilder
 
 ## Features
 
-We asked my assistant to pick her own highlights from the past year. **All events are real.**
+We asked my assistant to pick her own highlights from the past year. ***All events are real.***
 
 **🍝 The pasta timing**<br>
 He was cooking, his wife driving home from the cinema. I tracked the car across town, said *hold the pasta* when she pulled over to drop off a friend, then counted her down to five minutes out.
@@ -28,7 +28,7 @@ A swivel armchair through a Revolut 3DS push, a pair of Birkenstocks, a Stockhol
 Rain radar says rain within the hour: I check the cameras for the beige cushions on the black terrace furniture and ping the family. *Running quietly since May.*
 
 **📸 Needle, haystack**<br>
-Found his red 2004 BMW in **87,000 photos**, and the 2020 hall gallery wall.
+Found his red 2004 BMW in ***87,000 photos***, and the 2020 hall gallery wall.
 
 **🐛 Fixing myself**<br>
 Apple Store pages went blank; my self-analysis caught my own cookie-banner remover deleting the whole page, and I shipped the fix as a PR. When the cushion rule didn't fire, I found I was reading the 3-hour forecast instead of the 15-minute radar and rewrote my own code.
@@ -43,9 +43,9 @@ The car lit up like a Christmas tree in northern Germany; he sent a photo of the
 *There is no sensor.* I read the pool controller's display off a security camera. "Tal." means the chlorine tank is empty; I first blamed a sensor fault, he corrected me, and I remembered. I caught the chlorine crash to 0.32 ppm on Jun 21 and to 0.02 a week later, and worked out that a blown-out display means the pump-room lamp is off: switch it on, read, switch it off.
 
 ## Interfaces
-Text chat in a Claude Code-style **terminal UI**, or over **Telegram** with images and voice messages.
+Text chat in a Claude Code-style ***terminal UI***, or over ***Telegram*** with images and voice messages.
 
-A highly optimized **voice-to-voice** interface for talking to your home. It is tuned for speed and best suited for dimming lights, putting on music and the like. Use text for the complex questions.
+A highly optimized ***voice-to-voice*** interface for talking to your home. It is tuned for speed and best suited for dimming lights, putting on music and the like. Use text for the complex questions.
 
 ## Requirements
 
