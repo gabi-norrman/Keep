@@ -30,6 +30,10 @@ USER_INTERACTION_STALE_COUNTER_SECONDS = 10 * 60
 PERIODIC_CHECK_INTERVAL_SECONDS = 55 * 60  # 55 minutes — stays under the 1h cache TTL
 PERIODIC_CHECK_INTERVAL_MINUTES = PERIODIC_CHECK_INTERVAL_SECONDS / 60
 
+# caffeinate(): how often the tight loop checks, and for how long when the LLM gives no duration.
+CAFFEINE_INTERVAL_MINUTES = 3
+CAFFEINE_DEFAULT_DURATION_MINUTES = 60
+
 # The response-format paragraph for a model without thinking of its own. A model that handles
 # thinking internally (AbstractLLM.handles_thinking_internally) must not see it: Claude refuses
 # the request as reasoning extraction.
@@ -119,6 +123,12 @@ class AutonomousActionManager:
         self._user_interaction_lock = threading.Lock()
         self._user_requests_in_flight = 0
         self.last_user_interaction_at: float = 0.0
+        # One caffeine loop at most: a repeated caffeinate() moves the deadline, it never
+        # starts a second loop (67 of them once ran side by side, each checking every 3 min).
+        self._caffeine_lock = threading.Lock()
+        self._caffeine_until: float = 0.0
+        self._caffeine_interval_minutes: float = CAFFEINE_INTERVAL_MINUTES
+        self._caffeine_thread: Optional[threading.Thread] = None
         self.thread = threading.Thread(target=self._run_periodic_check, daemon=True)
         if not test_mode:
             self.thread.start()
@@ -519,23 +529,37 @@ class AutonomousActionManager:
             info(f"Restoring scheduled wakeup in {remaining:.1f} minutes")
             self._start_wakeup_thread(wake_at)
 
-    def caffeinate(self, interval_minutes: float = 3, duration_minutes: float = 60):
-        info(f"Caffeinating: waking every {interval_minutes} minutes for {duration_minutes} minutes...")
-        num_wakeups = int(duration_minutes / interval_minutes)
+    def caffeinate(self, duration_minutes: float = CAFFEINE_DEFAULT_DURATION_MINUTES,
+                   interval_minutes: float = CAFFEINE_INTERVAL_MINUTES):
+        """Check every *interval_minutes* until *duration_minutes* from now. Idempotent: a call
+        while caffeinated only moves the deadline of the one running loop."""
+        with self._caffeine_lock:
+            self._caffeine_until = time.time() + duration_minutes * 60
+            self._caffeine_interval_minutes = interval_minutes
+            until = time.strftime("%H:%M", time.localtime(self._caffeine_until))
+            if self._caffeine_thread is not None and self._caffeine_thread.is_alive():
+                info(f"Already caffeinated — deadline moved to {until} (every {interval_minutes:g} min).")
+                return
+            info(f"Caffeinating: waking every {interval_minutes:g} minutes until {until}...")
+            self._caffeine_thread = threading.Thread(target=self._caffeine_loop, daemon=True)
+            self._caffeine_thread.start()
 
-        def _caffeinate_loop():
-            for i in range(num_wakeups):
-                time.sleep(interval_minutes * 60)
-                if not self.running:
-                    break
-                info(f"Caffeinate wakeup {i + 1}/{num_wakeups}")
-                if self.is_user_interaction_active():
-                    info("Skipping caffeinate wakeup — user interaction active or recent.")
-                    continue
-                self.activity_check()
-
-        thread = threading.Thread(target=_caffeinate_loop, daemon=True)
-        thread.start()
+    def _caffeine_loop(self):
+        wakeups = 0
+        while self.running:
+            time.sleep(self._caffeine_interval_minutes * 60)
+            if not self.running:
+                break
+            remaining = self._caffeine_until - time.time()
+            if remaining <= 0:
+                break
+            wakeups += 1
+            info(f"Caffeine wakeup #{wakeups}, {remaining / 60:.0f} min left")
+            if self.is_user_interaction_active():
+                info("Skipping caffeine wakeup — user interaction active or recent.")
+                continue
+            self.activity_check()
+        info(f"Caffeine wore off after {wakeups} wakeup(s).")
 
     def _run_memory_curation(self, period_start=None, period_end=None):
         """Curate the memory bank — nightly over the default lookback, or over an explicit period.

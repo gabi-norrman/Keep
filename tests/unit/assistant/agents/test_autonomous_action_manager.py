@@ -514,29 +514,23 @@ class TestAutonomousActionManager:
 
     @patch('assistant.agents.AutonomousActionManager.time.sleep')
     @patch('assistant.agents.AutonomousActionManager.create_llm')
-    def test_caffeinate_calls_activity_check_repeatedly(self, mock_claude, mock_sleep):
+    def test_caffeinate_calls_activity_check_until_the_deadline(self, mock_claude, mock_sleep):
         mock_llm = Mock()
         mock_llm.think.return_value = "NO"
         mock_claude.return_value = mock_llm
         pm = make_mock_prompt_manager()
         mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
 
-        import threading
-        call_count = [0]
-        all_done = threading.Event()
+        calls = []
+        with patch.object(mgr, 'activity_check', side_effect=lambda **kw: calls.append(1) or "NO"):
+            # Each sleep "passes" its seconds by pulling the deadline closer instead of
+            # touching the wall clock: 2.5 min at 1-min ticks gives wakeups at 1.5 and
+            # 0.5 min left, then the third tick finds the deadline passed.
+            mock_sleep.side_effect = lambda seconds: setattr(mgr, '_caffeine_until', mgr._caffeine_until - seconds)
+            mgr.caffeinate(duration_minutes=2.5, interval_minutes=1)
+            mgr._caffeine_thread.join(timeout=2)
 
-        def patched_activity_check(**kwargs):
-            call_count[0] += 1
-            if call_count[0] >= 3:
-                all_done.set()
-            return "NO"
-
-        with patch.object(mgr, 'activity_check', side_effect=patched_activity_check):
-            mock_sleep.side_effect = lambda _: None
-            mgr.caffeinate(interval_minutes=1, duration_minutes=3)
-            all_done.wait(timeout=2)
-
-        assert call_count[0] == 3
+        assert len(calls) == 2
 
     @patch('assistant.agents.AutonomousActionManager.time.sleep')
     @patch('assistant.agents.AutonomousActionManager.create_llm')
@@ -546,33 +540,43 @@ class TestAutonomousActionManager:
         pm = make_mock_prompt_manager()
         mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
 
-        import threading
-        call_count = [0]
-        done = threading.Event()
-
-        def patched_activity_check(**kwargs):
-            call_count[0] += 1
-            return "NO"
+        calls = []
 
         def sleep_and_stop(seconds):
             mgr.running = False
 
-        created = []
-        real_thread_cls = threading.Thread
+        with patch.object(mgr, 'activity_check', side_effect=lambda **kw: calls.append(1) or "NO"):
+            mock_sleep.side_effect = sleep_and_stop
+            mgr.caffeinate(duration_minutes=10, interval_minutes=1)
+            mgr._caffeine_thread.join(timeout=2.0)
 
-        def capture_thread(*args, **kwargs):
-            t = real_thread_cls(*args, **kwargs)
-            created.append(t)
+        assert calls == []
+        mgr.running = True  # restore
+
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_caffeinate_again_moves_the_deadline_instead_of_starting_a_second_loop(self, mock_claude):
+        # Regression for 2026-09-23: every autonomous wakeup re-issued caffeinate() and
+        # each call spawned its own loop — 67 of them ran side by side, one check every
+        # 3 seconds for two hours. A repeat call must only extend the single loop.
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(), test_mode=True)
+        threads = []
+
+        def fake_thread(target, daemon):
+            t = Mock()
+            t.is_alive.return_value = True
+            threads.append(t)
             return t
 
-        with patch.object(mgr, 'activity_check', side_effect=patched_activity_check), \
-             patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
-            mock_sleep.side_effect = sleep_and_stop
-            mgr.caffeinate(interval_minutes=1, duration_minutes=10)
-            created[0].join(timeout=2.0)
+        with patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=fake_thread):
+            mgr.caffeinate(duration_minutes=10)
+            first_deadline = mgr._caffeine_until
+            mgr.caffeinate(duration_minutes=60)
+            mgr.caffeinate()
 
-        assert call_count[0] == 0
-        mgr.running = True  # restore
+        assert len(threads) == 1
+        threads[0].start.assert_called_once()
+        assert mgr._caffeine_until > first_deadline
 
     @patch('assistant.agents.AutonomousActionManager.create_llm')
     def test_run_periodic_check_skips_at_night(self, mock_claude):
@@ -1027,8 +1031,11 @@ class TestUserInteractionGating:
         mgr, _ = make_manager()
         mgr.notify_user_interaction_started()  # active throughout
 
+        def pass_time(seconds):
+            mgr._caffeine_until -= seconds
+
         with patch.object(mgr, 'activity_check') as mock_check, \
-                patch('assistant.agents.AutonomousActionManager.time.sleep'), \
+                patch('assistant.agents.AutonomousActionManager.time.sleep', side_effect=pass_time), \
                 patch('assistant.agents.AutonomousActionManager.threading.Thread') as mock_thread:
             captured = {}
 
@@ -1039,7 +1046,7 @@ class TestUserInteractionGating:
                 return t
 
             mock_thread.side_effect = capture
-            mgr.caffeinate(interval_minutes=0.001, duration_minutes=0.001)
+            mgr.caffeinate(duration_minutes=1.5, interval_minutes=1)
             captured['target']()  # run the loop body synchronously
 
         mock_check.assert_not_called()
@@ -1048,8 +1055,11 @@ class TestUserInteractionGating:
         mgr, _ = make_manager()
         # No notify_user_interaction_started -> inactive
 
+        def pass_time(seconds):
+            mgr._caffeine_until -= seconds
+
         with patch.object(mgr, 'activity_check') as mock_check, \
-                patch('assistant.agents.AutonomousActionManager.time.sleep'), \
+                patch('assistant.agents.AutonomousActionManager.time.sleep', side_effect=pass_time), \
                 patch('assistant.agents.AutonomousActionManager.threading.Thread') as mock_thread:
             captured = {}
 
@@ -1060,7 +1070,7 @@ class TestUserInteractionGating:
                 return t
 
             mock_thread.side_effect = capture
-            mgr.caffeinate(interval_minutes=0.001, duration_minutes=0.001)
+            mgr.caffeinate(duration_minutes=1.5, interval_minutes=1)
             captured['target']()
 
         mock_check.assert_called_once()
