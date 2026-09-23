@@ -257,3 +257,67 @@ class TestEnsureRepo:
         parked = re.search(r'Log: (\S+)', result.stdout).group(1)
         assert not parked.startswith(str(harness.keep_dir))
         Path(parked).unlink()
+
+    def test_run_that_failed_before_the_clone_resumes_into_the_same_log(self, harness):
+        """The first run creates log/install.log before it can fail (no network, an
+        interrupted CLT wait); the re-run used to die in git clone on the non-empty dir."""
+        origin = harness.dir / 'origin'
+        make_origin(origin)
+        first = harness.run('open_log; log "network failed"; printf "%s" "$LOG"')
+        assert first.stdout.endswith(str(harness.keep_dir / 'log' / 'install.log'))
+        result = harness.run(self.ENSURE, repo_url=str(origin))
+        assert result.returncode == 0, result.stdout
+        final_log = (harness.keep_dir / 'log' / 'install.log').read_text()
+        assert 'network failed' in final_log and 'git clone' in final_log
+        assert not list(harness.dir.glob('keep-install*'))
+
+    def test_foreign_file_in_the_log_directory_still_refuses(self, harness):
+        (harness.keep_dir / 'log').mkdir(parents=True)
+        (harness.keep_dir / 'log' / 'install.log').write_text('earlier run\n')
+        (harness.keep_dir / 'log' / 'floxy.out').write_text('not ours\n')
+        result = harness.run(self.ENSURE, repo_url=str(harness.dir / 'origin'))
+        assert result.returncode == 1
+        assert 'is not a Keep checkout' in result.stdout
+        assert (harness.keep_dir / 'log' / 'floxy.out').read_text() == 'not ours\n'
+
+
+class TestEnsureGithubAuth:
+    """The clone is plain git with prompts disabled, so before it the gh login has to be
+    wired into git; `gh` is a bash function recording its calls, never the real CLI."""
+
+    def stub(self, harness, status_ok: bool) -> str:
+        calls = harness.dir / 'gh_calls'
+        return (f'gh() {{ echo "$*" >> "{calls}"; case "$1 $2" in '
+                f'"auth status") {"true" if status_ok else "false"};; '
+                f'"api user") echo marcus;; esac; }}\n')
+
+    def calls(self, harness) -> list[str]:
+        return (harness.dir / 'gh_calls').read_text().splitlines()
+
+    def test_logged_in_user_gets_the_helper_written_and_never_a_prompt(self, harness):
+        result = harness.run(self.stub(harness, True) + 'ensure_github_auth',
+                             repo_url='https://github.com/maciekd/Keep.git')
+        assert result.returncode == 0, result.stdout
+        assert self.calls(harness) == ['auth status --hostname github.com',
+                                       'auth setup-git --hostname github.com',
+                                       'api user --jq .login']
+        assert 'logged in as marcus' in result.stdout
+
+    def test_not_logged_in_without_a_terminal_fails_with_the_command_to_run(self, harness):
+        result = harness.run(self.stub(harness, False) + 'ensure_github_auth',
+                             repo_url='https://github.com/maciekd/Keep.git')
+        assert result.returncode == 1
+        assert 'gh auth login' in result.stdout
+        assert 'setup-git' not in ''.join(self.calls(harness))
+
+    def test_missing_gh_fails_with_the_install_hint(self, harness):
+        result = harness.run('gh() { false; }; unset -f gh; PATH=/nonexistent; ensure_github_auth',
+                             repo_url='https://github.com/maciekd/Keep.git')
+        assert result.returncode == 1
+        assert 'brew install gh' in result.stdout
+
+    def test_other_hosts_are_left_alone(self, harness):
+        result = harness.run(self.stub(harness, True) + 'ensure_github_auth',
+                             repo_url='git@github.com:maciekd/Keep.git')
+        assert result.returncode == 0, result.stdout
+        assert not (harness.dir / 'gh_calls').exists()
