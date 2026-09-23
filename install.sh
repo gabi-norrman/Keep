@@ -101,7 +101,7 @@ init_ui() {
 # directory the clone will refuse anyway (non-empty, not a Keep checkout) gets a temp log
 # instead, so nothing is left behind in it.
 open_log() {
-  if [ ! -e "$KEEP_DIR" ] || [ -d "$KEEP_DIR/.git" ] || [ -z "$(ls -A "$KEEP_DIR" 2>/dev/null)" ]; then
+  if [ ! -e "$KEEP_DIR" ] || [ -d "$KEEP_DIR/.git" ] || holds_only_our_log "$KEEP_DIR"; then
     mkdir -p "$KEEP_DIR/log"
     LOG="$KEEP_DIR/log/install.log"
   else
@@ -109,6 +109,14 @@ open_log() {
   fi
   log ""
   log "Keep installer started $(date '+%Y-%m-%d %H:%M:%S') by $(id -un)"
+}
+
+# A directory that holds nothing but log/install.log is one an earlier run created and then
+# failed in before the clone (no network, interrupted Command Line Tools wait, ...). It
+# counts as empty: the re-run appends to that log and clones over it.
+holds_only_our_log() {
+  [ -z "$(ls -A "$1" 2>/dev/null | grep -v '^log$' || true)" ] &&
+    [ -z "$(ls -A "$1/log" 2>/dev/null | grep -v '^install\.log$' || true)" ]
 }
 
 step() {
@@ -399,18 +407,19 @@ ensure_repo() {
       warn "Local changes in $KEEP_DIR are kept; only a fast-forward update is applied."
     fi
     run "git pull --ff-only" git -C "$KEEP_DIR" pull --ff-only origin "$BRANCH"
-  elif [ -e "$KEEP_DIR" ] && [ -n "$(ls -A "$KEEP_DIR" 2>/dev/null | grep -v '^log$' || true)" ]; then
+  elif [ -e "$KEEP_DIR" ] && ! holds_only_our_log "$KEEP_DIR"; then
     fail "$KEEP_DIR exists and is not empty, and it is not a Keep checkout." \
       "Move it away, or install elsewhere: KEEP_DIR=~/somewhere bash -c \"\$(curl ...)\""
   else
     # git clone insists on an empty directory and the log already lives in it, so the log
     # is parked outside for the clone and moved back into the fresh checkout afterwards.
+    # Anything else in log/ would make the clone fail, which holds_only_our_log rules out.
     # A full clone, not a shallow one: the assistant's self-improvement agent works with
     # branches and history in this very checkout.
     local final="$KEEP_DIR/log/install.log" parked
     parked=$(/usr/bin/mktemp -t keep-install)
     mv "$LOG" "$parked"
-    rmdir "$KEEP_DIR/log" 2>/dev/null || true
+    rmdir "$KEEP_DIR/log"
     LOG="$parked"
     run "git clone ($BRANCH)" git clone --branch "$BRANCH" "$REPO_URL" "$KEEP_DIR"
     mkdir -p "$KEEP_DIR/log"
