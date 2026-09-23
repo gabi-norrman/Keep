@@ -21,11 +21,13 @@ Apple Silicon Mac connected to your iCloud that can stay on as a server.
 Everything else — email, smart home, cameras, car — is optional, and Keep walks you through setting it up.
 
 ## Try it out!
-Since this is a closed beta you need to first accept collaborator invite on GitHub. Then:
+Since this is a closed beta you need to first accept collaborator invite on GitHub.
+
+Then:
 ```bash
 gh auth login && gh api -H "Accept: application/vnd.github.raw" repos/maciekd/Keep/contents/install.sh | bash
 ```
-(<code>brew install gh</code> if you do not have gh)
+(<code>brew install gh</code> if you do not have <code>gh</code>)
 
 The installer is self-contained, it won't touch anything else on your Mac. 
 
