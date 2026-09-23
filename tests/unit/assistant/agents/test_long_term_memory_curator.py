@@ -5,7 +5,7 @@ from unittest.mock import Mock, call, patch
 import pytest
 
 from assistant import MemoryFile
-from assistant.agents.LongTermMemoryCurator import HISTORY_SOURCE, LongTermMemoryCurator
+from assistant.agents.LongTermMemoryCurator import HISTORY_SOURCE, MEMORY_WORD_LIMIT, LongTermMemoryCurator
 from common.FloxyDatabase import NO_INTERACTIONS
 
 
@@ -256,6 +256,34 @@ class TestCurationPeriod:
         prompt = curator.llm.think.call_args.kwargs['system_message']
         assert "{PERIOD}" not in prompt
         assert "the recent interactions below" in prompt
+
+
+class TestMemoryWordCount:
+    """The LLM cannot count the words of a 40 KB bank, so the prompt states the measured count."""
+
+    def _curator(self):
+        llm = Mock()
+        llm.think.return_value = "# Memory\nUpdated bank with enough words to pass the shrink check"
+        return LongTermMemoryCurator(llm=llm, test_mode=True)
+
+    def test_prompt_states_measured_word_count_and_limit(self):
+        curator = self._curator()
+        memory = "# Memory\n" + " ".join(["word"] * 499)
+        curator.curate_memory_with_data("history", "", memory)
+        prompt = curator.llm.think.call_args.kwargs['system_message']
+        assert "The current memory bank is 501 words" in prompt
+        assert f"no more than {MEMORY_WORD_LIMIT} words" in prompt
+        assert "{MEMORY_SIZE}" not in prompt and "{WORD_LIMIT}" not in prompt
+
+    def test_under_limit_reports_headroom(self):
+        note = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT - 900)
+        assert "900 words of headroom" in note
+        assert "OVER" not in note
+
+    def test_over_limit_demands_a_cut_of_the_excess(self):
+        note = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT + 2162)
+        assert "OVER the limit by 2162 words" in note
+        assert "at least 2162 words shorter" in note
 
 
 class TestRun:

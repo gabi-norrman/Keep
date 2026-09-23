@@ -17,6 +17,9 @@ HISTORY_SOURCE = "memory_curation"   # the `source` of the system row a finished
 # A span longer than this is curated in chunks of this many days, one after another, each
 # reading the bank the previous one wrote (`run_span`).
 CURATION_CHUNK_DAYS = 4
+# The size the curator is told to keep the bank under. The LLM cannot count words in a 40 KB
+# document, so the prompt also states the measured count ({MEMORY_SIZE}) rather than trusting it to.
+MEMORY_WORD_LIMIT = 4000
 
 PROMPT = """
 You are a long-term memory curator for a state of the art home automation AI system serving a family. Your role is to maintain a
@@ -34,16 +37,18 @@ update the long-term memory. This run covers {PERIOD}.
 ## Current memory bank:
 {CURRENT_MEMORY}
 
+{MEMORY_SIZE}
+
 ## Your task:
 Update the memory bank based on new information. You may add, modify, remove and restructure information as needed.
-Keep the memory bank concise - no more than 4000 words. Condense or remove outdated/less important information as needed.
+Keep the memory bank concise - no more than {WORD_LIMIT} words. Condense or remove outdated/less important information as needed.
 
 Rules:
 - Do NOT include command names or action IDs (the AI knows what commands it can run)
 - Do NOT include command syntax or how to interpret commands (the AI already understands natural language and has extensive knowledge of available commands)
 - Do NOT include song/playlist/favorite IDs
 - Focus on personal preferences, patterns, and facts about the family that help personalization
-- Make sure to keep the entire memory under 4000 words
+- Make sure to keep the entire memory under {WORD_LIMIT} words
 - When a user corrects a misheard command (e.g. by saying "No, I said X" right after), the original action was based on a MISHEARD phrase. Record the STT correction, but do NOT add anything from the misinterpreted action as a genuine preference
 - Be very mindful of making assumptions - errors sneak easily into the memory bank and can propagate over time - so only enter things you are sure of in the memory
 - Remove a fact only when it of extremely low value or recent interactions give positive evidence against it: contradicted, superseded, explicitly retracted, or expired. Not being mentioned in this period's logs is not necessarily staleness
@@ -310,6 +315,22 @@ class LongTermMemoryCurator:
                                       period=(period_start, period_end))
 
     @staticmethod
+    def word_count(text: str) -> int:
+        return len(text.split())
+
+    @staticmethod
+    def memory_size_note(word_count: int) -> str:
+        """The measured size of the bank, stated so the LLM does not have to estimate it."""
+        note = f"The current memory bank is {word_count} words (the limit is {MEMORY_WORD_LIMIT} words)."
+        if word_count > MEMORY_WORD_LIMIT:
+            excess = word_count - MEMORY_WORD_LIMIT
+            note += (f" It is OVER the limit by {excess} words: the updated bank you output must be at least "
+                     f"{excess} words shorter than the current one, on top of any additions you make.")
+        else:
+            note += f" You have {MEMORY_WORD_LIMIT - word_count} words of headroom for additions."
+        return note
+
+    @staticmethod
     def _as_datetime(value: datetime | date) -> datetime:
         if isinstance(value, datetime):
             return value
@@ -361,9 +382,13 @@ class LongTermMemoryCurator:
         voice_enabled = bool(ConfigManager.get_instance().get('interfaces.voice.enabled', False))
         trace(f"Memory curation prompt: STT note {'included' if voice_enabled else 'skipped'} "
               f"(interfaces.voice.enabled={voice_enabled})")
+        word_count = self.word_count(current_memory)
+        info(f"Rem: current memory bank is {word_count} words (limit {MEMORY_WORD_LIMIT})")
         full_prompt = PROMPT.replace("{INTERACTION_HISTORY}", interaction_history) \
             .replace("{CALENDAR}", calendar_data) \
             .replace("{CURRENT_MEMORY}", current_memory) \
+            .replace("{MEMORY_SIZE}", self.memory_size_note(word_count)) \
+            .replace("{WORD_LIMIT}", str(MEMORY_WORD_LIMIT)) \
             .replace("{PERIOD}", period_text) \
             .replace("{STT_NOTE}", STT_NOTE if voice_enabled else "")
 
@@ -379,6 +404,9 @@ class LongTermMemoryCurator:
         trace(f"Rem: woke after {llm_duration:.1f}s of dreaming")
 
         new_memory = self._extract_memory_content(response)
+        new_words = self.word_count(new_memory)
+        info(f"Rem: the AI returned a {new_words}-word memory bank (was {word_count}, limit {MEMORY_WORD_LIMIT})"
+             + (" — still over the limit" if new_words > MEMORY_WORD_LIMIT else ""))
 
         # A reply cut off at the output cap is a bank missing its tail: saving it would
         # forget every section past the cut, and the next run could never bring them back.
