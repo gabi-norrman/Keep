@@ -137,6 +137,8 @@ Look over the commits from the last two days.
 Has something been added without adding proper unit tests (tests that will actually ADD VALUE and not bloat)?
 If you find missing tests that will ADD VALUE, create them. 
 Test data is fictional (see "Test data" in CLAUDE.md): use the standing cast, never values from logs, config or the database.
+Follow "Tests not to write" in CLAUDE.md: no pinned constants, stored-argument checks, mock-in-mock-out or byte-for-byte
+string tests — every assertion must be a derived expectation.
 Then create a pull request and push it (check rules for commits in the /commit skill).
 
 IMPORTANT: The user will only see your final message so keep the entire analysis in your last message.
