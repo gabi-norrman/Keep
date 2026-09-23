@@ -2,7 +2,11 @@
 #
 # Keep installer. From the readme:
 #
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/maciekd/Keep/master/install.sh)"
+#   gh api -H "Accept: application/vnd.github.raw" repos/maciekd/Keep/contents/install.sh | bash
+#
+# The repository is private during the closed beta, so the installer needs the GitHub CLI
+# (gh) logged in to an account with access: that is what the readme's `gh auth login` is
+# for, and the clone reuses that login through gh's git credential helper.
 #
 # Checks the Mac, finds or installs Python 3.12 without touching anything else on the
 # machine, clones the repository, builds the venv, asks for the Anthropic API key, writes
@@ -10,7 +14,8 @@
 # command to resume after a failure or to upgrade an existing install.
 #
 # Environment overrides (all optional):
-#   KEEP_DIR           where to install            (default: ~/Keep)
+#   KEEP_DIR           where to install            (default: ~/Keep); the variable must
+#                      reach bash, not gh:  gh api ... | KEEP_DIR=~/somewhere bash
 #   ANTHROPIC_API_KEY  skips the API key prompt
 #   KEEP_NO_START=1    stop after installing instead of launching start.sh
 #   KEEP_REPO          repository URL              (default: https://github.com/maciekd/Keep.git)
@@ -93,7 +98,7 @@ init_ui() {
     C_BOLD=""; C_DIM=""; C_RESET=""; C_GREEN=""; C_RED=""; C_YELLOW=""; C_CYAN=""
   fi
   # Prompts go through the terminal directly: stdin may be a pipe when the script is
-  # fed to bash by curl, and that pipe must never be what `read` waits on.
+  # fed to bash by gh, and that pipe must never be what `read` waits on.
   if [ -r /dev/tty ] && [ -w /dev/tty ]; then TTY=/dev/tty; else TTY=""; fi
 }
 
@@ -393,14 +398,43 @@ ensure_python() {
 
 # --------------------------------------------------------- 4. the source ----
 
+# The clone and every later pull are plain git over HTTPS with terminal prompts disabled, so
+# git must be able to get the token from gh. `gh auth login` writes that credential helper
+# only when git is already on the PATH, which a fresh Mac's is not until the Command Line
+# Tools step above, so the helper is (re)written here, after that step and before the clone.
+ensure_github_auth() {
+  case "$REPO_URL" in
+    https://github.com/*) ;;
+    *) dim "Repository is not on github.com over HTTPS; leaving git authentication alone."; return ;;
+  esac
+  command -v gh >/dev/null 2>&1 || fail "The GitHub CLI (gh) is not installed." \
+    "Keep is a closed beta on a private repository; the clone needs gh's GitHub login." \
+    "Install it (brew install gh), run: gh auth login, then re-run the installer."
+  if ! gh auth status --hostname github.com >>"$LOG" 2>&1; then
+    [ -n "$TTY" ] || fail "Not logged in to GitHub and no terminal to log in on." \
+      "Run: gh auth login, then re-run the installer."
+    warn "Not logged in to GitHub yet. gh opens its login flow now (a browser window)."
+    log "--- gh auth login"
+    gh auth login --hostname github.com --git-protocol https --web <"$TTY" >"$TTY" 2>&1 \
+      || fail "GitHub login did not complete." "Run: gh auth login, then re-run the installer."
+  fi
+  log "--- gh auth setup-git"
+  gh auth setup-git --hostname github.com >>"$LOG" 2>&1 \
+    || fail "Could not point git at gh's GitHub login (gh auth setup-git failed)." "See the log for details."
+  local user
+  user=$(gh api user --jq .login 2>>"$LOG" || echo "?")
+  ok "GitHub: logged in as $user, git uses that login"
+}
+
 ensure_repo() {
   export GIT_TERMINAL_PROMPT=0
+  ensure_github_auth
   if [ -d "$KEEP_DIR/.git" ]; then
     local origin
     origin=$(git -C "$KEEP_DIR" remote get-url origin 2>/dev/null || true)
     if [ "${origin%.git}" != "${REPO_URL%.git}" ]; then
       fail "$KEEP_DIR is a git checkout of '$origin', not of $REPO_URL." \
-        "Choose another directory: KEEP_DIR=~/somewhere bash -c \"\$(curl ...)\""
+        "Choose another directory: gh api ... | KEEP_DIR=~/somewhere bash"
     fi
     dim "Existing checkout found, updating it."
     if [ -n "$(git -C "$KEEP_DIR" status --porcelain 2>/dev/null)" ]; then
@@ -409,7 +443,7 @@ ensure_repo() {
     run "git pull --ff-only" git -C "$KEEP_DIR" pull --ff-only origin "$BRANCH"
   elif [ -e "$KEEP_DIR" ] && ! holds_only_our_log "$KEEP_DIR"; then
     fail "$KEEP_DIR exists and is not empty, and it is not a Keep checkout." \
-      "Move it away, or install elsewhere: KEEP_DIR=~/somewhere bash -c \"\$(curl ...)\""
+      "Move it away, or install elsewhere: gh api ... | KEEP_DIR=~/somewhere bash"
   else
     # git clone insists on an empty directory and the log already lives in it, so the log
     # is parked outside for the clone and moved back into the fresh checkout afterwards.
