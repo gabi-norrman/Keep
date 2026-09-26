@@ -66,6 +66,19 @@ the page. Payment-provider fields inside cross-origin iframes ARE listed and fil
 `[in js.stripe.com/v3/…]` suffix — so re-snapshot rather than concluding they are unreachable. Note that page
 JavaScript (`browse_eval` reading `contentDocument`) can never see inside a cross-origin iframe; the snapshot can.
 
+`browse_wait(pattern, seconds)` — wait for a handoff (BankID, OAuth login, 3-D Secure) to finish: polls the
+page's URL, title and visible text once a second, following popups that open or close, until the
+case-insensitive regex matches, then returns a snapshot prefixed `MATCHED …`. `seconds` defaults to 30, max
+60; on expiry you get `TIMEOUT: …` plus the page as it is now — call again if the user is still signing.
+Example: `browse_wait("bekraftelse|Tack för din|callback", 60)`. Never sleep inside `browse_eval` for this —
+the eval itself times out after 10 s.
+
+`browse_network(url_filter)` — the session's XHR/fetch/document traffic so far (every tab, popups included),
+oldest first: time, tab, method, status, URL, MIME, an excerpt of the request body (`>`) and of JSON/text
+response bodies (`<`). `url_filter` is an optional URL regex. Read-only, no snapshot. This is how you learn
+what a page that "just keeps waiting" is told by its backend — a poll answering `pending`, `complete`,
+`failed` or a 4xx settles what a screenshot cannot.
+
 `browse_click_at(x, y)` — last resort: one REAL mouse click at viewport coordinates (CSS pixels, exactly what
 `getBoundingClientRect()` reports) for something no snapshot lists. Get the iframe's rect with `browse_eval`,
 add the offset of the field inside it, scroll it into view first if needed. Returns what was hit plus a fresh
@@ -106,4 +119,4 @@ You: `browse_close()`
 Then answer the user.
 
 ### Stop-and-wait
-`browse_open()`, `browse_act()`, `browse_key()`, `browse_inspect()`, `browse_snapshot()`, `browse_click_at()`, `browse_eval()`, `browse_extract()`, `browse_screenshot()`, `send_screenshot()` return data: emit them and stop generating; the result arrives in the next round.
+`browse_open()`, `browse_act()`, `browse_key()`, `browse_inspect()`, `browse_snapshot()`, `browse_wait()`, `browse_network()`, `browse_click_at()`, `browse_eval()`, `browse_extract()`, `browse_screenshot()`, `send_screenshot()` return data: emit them and stop generating; the result arrives in the next round.

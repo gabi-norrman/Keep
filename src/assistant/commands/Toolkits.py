@@ -49,7 +49,8 @@ TOOLKITS: tuple[Toolkit, ...] = (
     Toolkit("browser", "drive a real browser when a page needs clicking, typing or a date picker before it "
                        "shows the answer; send a screenshot of it",
             ("browse_open", "browse_act", "browse_key", "browse_eval", "browse_inspect", "browse_snapshot",
-             "browse_click_at", "browse_extract", "browse_screenshot", "browse_close", "send_screenshot")),
+             "browse_wait", "browse_network", "browse_click_at", "browse_extract", "browse_screenshot",
+             "browse_close", "send_screenshot")),
     Toolkit("x", "search X (Twitter) posts and read a specific post", ("search_x",)),
     Toolkit("email", "list, search, read and move the user's mail; send an email",
             ("latest_email", "search_email", "read_email", "move_email", "list_folders", "send_email")),

@@ -190,6 +190,29 @@ class WebAccess(Integration):
     _POPUP_BLANK_POLL = 0.25
     _POPUP_PENDING_EXPIRY = 10.0
 
+    # Network capture (browse_network): the XHR/fetch/document traffic of the base
+    # tab and every adopted popup, kept per browse session. Bodies are read only
+    # for text-like XHR/fetch responses and only right after loading finishes —
+    # Chrome evicts them soon after. Without this, the 2026-09-26 Klarna BankID
+    # flow gave nothing to tell "signed but rejected" from "never completed".
+    _NETWORK_LOG_MAX = 80
+    _NETWORK_CAPTURE_TYPES = frozenset({'XHR', 'Fetch', 'Document', 'EventSource'})
+    _NETWORK_BODY_TYPES = frozenset({'XHR', 'Fetch', 'EventSource'})
+    _NETWORK_BODY_MIME_RE = re.compile(r'json|text/|javascript|xml|x-www-form-urlencoded', re.I)
+    _NETWORK_BODY_MAX = 1500          # chars of a body kept for browse_network
+    _NETWORK_BODY_TRACE_MAX = 400     # chars of a body written to the log
+    _NETWORK_BODY_FETCH_TIMEOUT = 3.0
+    _NETWORK_REPORT_DEFAULT = 40      # entries browse_network returns without a filter
+    _NETWORK_REPORT_MAX_CHARS = 14000
+
+    # browse_wait: poll the page (URL, title, visible text) for a pattern. Capped so
+    # the wait plus its closing snapshot stays inside the command watchdog.
+    _WAIT_DEFAULT_S = 30.0
+    _WAIT_MAX_S = 60.0
+    _WAIT_POLL_S = 1.0
+    _WAIT_PROBE_JS = ("(function(){ return {url: location.href, title: document.title || '', "
+                      "text: document.body ? (document.body.innerText || '') : ''}; })()")
+
     # Page-readiness caps. ALL of these are SOFT: expiry logs and proceeds with
     # whatever the page has rendered — never raises, never window.stop(), never
     # a driver reinit because a page is slow. See _async_wait_for_page_ready.
@@ -323,6 +346,10 @@ class WebAccess(Integration):
         # Fresh page targets still on about:blank, tid -> first-seen timestamp;
         # adopted only once they navigate to a real URL.
         self._pending_popup_targets: dict[str, float] = {}
+        # Network capture, oldest first; the dict maps an in-flight CDP request id
+        # to its entry so the response / body / failure events find it.
+        self._network_log: list[dict] = []
+        self._network_requests: dict[str, dict] = {}
         self._browse_pdf_text: Optional[str] = None  # cached extracted text when session is a PDF
         self._last_screenshot_bytes: Optional[bytes] = None
         self._last_screenshot_path: Optional[str] = None
@@ -791,6 +818,7 @@ class WebAccess(Integration):
             except Exception as e:
                 trace(f"page.enable() failed: {e}")
             self._install_dialog_handler(self._tab)
+            self._install_network_capture(self._tab)
             await self._async_apply_anti_bot_tweaks(self._tab)
             await self._async_setup_network_monitor(self._tab)
             info("nodriver initialized with anti-bot tweaks")
@@ -1007,6 +1035,167 @@ class WebAccess(Integration):
             await tab.send(cdp.page.add_script_to_evaluate_on_new_document(source=self._DOM_MONITOR_JS))
         except Exception as e:
             trace(f"DOM mutation monitor setup failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Network capture
+    # ------------------------------------------------------------------
+
+    def _install_network_capture(self, tab: 'nodriver.Tab') -> None:
+        """Record the tab's XHR/fetch/document traffic for browse_network().
+
+        nodriver enables the Network domain on the tab as soon as a handler for
+        one of its events is registered, so this is all it takes. Installed on
+        the base tab and on every adopted popup — a payment popup's own polling
+        (Klarna asking "is the BankID order complete?") is what tells a rejected
+        signing from one that never happened."""
+        try:
+            tab.add_handler(cdp.network.RequestWillBeSent, self._on_network_request)
+            tab.add_handler(cdp.network.ResponseReceived, self._on_network_response)
+            tab.add_handler(cdp.network.LoadingFinished, self._on_network_finished)
+            tab.add_handler(cdp.network.LoadingFailed, self._on_network_failed)
+        except Exception as e:
+            trace(f"network capture registration failed: {type(e).__name__}: {e}")
+
+    @staticmethod
+    def _network_type(event) -> str:
+        kind = getattr(event, 'type_', None)
+        return str(getattr(kind, 'value', kind) or '')
+
+    @staticmethod
+    def _network_tab_id(connection) -> str:
+        try:
+            return str(connection.target.target_id)[:8]
+        except Exception:
+            return '?'
+
+    def _network_add(self, entry: dict) -> None:
+        self._network_log.append(entry)
+        self._network_requests[entry['rid']] = entry
+        while len(self._network_log) > self._NETWORK_LOG_MAX:
+            old = self._network_log.pop(0)
+            if self._network_requests.get(old['rid']) is old:
+                del self._network_requests[old['rid']]
+
+    def _on_network_request(self, event: 'cdp.network.RequestWillBeSent', connection=None) -> None:
+        kind = self._network_type(event)
+        if kind not in self._NETWORK_CAPTURE_TYPES:
+            return
+        rid = str(event.request_id)
+        redirect = getattr(event, 'redirect_response', None)
+        if redirect is not None and (prev := self._network_requests.get(rid)):
+            # Same request id continues on the new URL: close the hop it came from.
+            prev['status'] = getattr(redirect, 'status', None)
+            prev['mime'] = getattr(redirect, 'mime_type', '') or ''
+            prev['note'] = f"redirected to {event.request.url}"
+            prev['done'] = True
+        post = getattr(event.request, 'post_data', None) or ''
+        entry = {
+            'rid': rid, 'ts': time.time(), 'tab': self._network_tab_id(connection), 'type': kind,
+            'method': event.request.method, 'url': event.request.url,
+            'post': post[:self._NETWORK_BODY_MAX], 'status': None, 'mime': '', 'size': None,
+            'body': None, 'note': '', 'done': False,
+        }
+        self._network_add(entry)
+        trace(f"network[{entry['tab']}]: → {kind} {entry['method']} {entry['url']}"
+              + (f" body {post[:self._NETWORK_BODY_TRACE_MAX]!r}" if post else ''))
+
+    def _on_network_response(self, event: 'cdp.network.ResponseReceived', connection=None) -> None:
+        entry = self._network_requests.get(str(event.request_id))
+        if entry is None:
+            return
+        entry['status'] = event.response.status
+        entry['mime'] = event.response.mime_type or ''
+        trace(f"network[{entry['tab']}]: ← {entry['type']} {entry['status']} {entry['method']} "
+              f"{entry['url']} ({entry['mime']})")
+
+    async def _on_network_finished(self, event: 'cdp.network.LoadingFinished', connection=None) -> None:
+        entry = self._network_requests.get(str(event.request_id))
+        if entry is None:
+            return
+        entry['done'] = True
+        entry['size'] = int(getattr(event, 'encoded_data_length', 0) or 0)
+        if entry['type'] not in self._NETWORK_BODY_TYPES or not self._NETWORK_BODY_MIME_RE.search(entry['mime']):
+            return
+        if connection is None:
+            return
+        try:
+            body, b64 = await self._cdp_wait_for(
+                connection.send(cdp.network.get_response_body(request_id=event.request_id)),
+                self._NETWORK_BODY_FETCH_TIMEOUT)
+        except Exception as e:
+            trace(f"network[{entry['tab']}]: body of {entry['url']} unavailable: {self._describe_error(e)}")
+            return
+        if b64:
+            try:
+                body = base64.b64decode(body).decode('utf-8', 'replace')
+            except Exception:
+                body = '<binary>'
+        entry['body'] = (body or '')[:self._NETWORK_BODY_MAX]
+        trace(f"network[{entry['tab']}]: {entry['status']} {entry['url']} body: "
+              f"{(body or '')[:self._NETWORK_BODY_TRACE_MAX]!r}")
+
+    def _on_network_failed(self, event: 'cdp.network.LoadingFailed', connection=None) -> None:
+        entry = self._network_requests.get(str(event.request_id))
+        if entry is None:
+            return
+        entry['done'] = True
+        entry['note'] = 'canceled' if getattr(event, 'canceled', False) else f"failed: {event.error_text}"
+        trace(f"network[{entry['tab']}]: ✗ {entry['method']} {entry['url']} — {entry['note']}")
+
+    def _clear_network_log(self) -> None:
+        # getattr: partially-constructed instances (tests use WebAccess.__new__) reach here too.
+        if getattr(self, '_network_log', None):
+            trace(f"network: dropping {len(self._network_log)} captured entries of the previous session")
+        self._network_log = []
+        self._network_requests = {}
+
+    def _format_network_entry(self, i: int, e: dict) -> str:
+        stamp = time.strftime('%H:%M:%S', time.localtime(e['ts']))
+        status = e['status'] if e['status'] is not None else ('…' if not e['done'] else '-')
+        size = f", {e['size']} B" if e['size'] else ''
+        line = f"[{i}] {stamp} tab {e['tab']} {e['type']} {e['method']} {status} {e['url']} ({e['mime'] or '?'}{size})"
+        if e['note']:
+            line += f" — {e['note']}"
+        if e['post']:
+            line += f"\n    > {' '.join(e['post'].split())}"
+        if e['body']:
+            line += f"\n    < {' '.join(e['body'].split())}"
+        return line
+
+    async def _async_browse_network(self, url_filter: str) -> str:
+        if not self._browse_session_url:
+            return "ERROR: no browse session. Call browse_open(url) first."
+        entries = list(enumerate(self._network_log))
+        url_filter = (url_filter or '').strip()
+        if url_filter:
+            try:
+                rx = re.compile(url_filter, re.I)
+            except re.error:
+                rx = re.compile(re.escape(url_filter), re.I)
+            entries = [(i, e) for i, e in entries if rx.search(e['url'])]
+        total = len(self._network_log)
+        if not entries:
+            info(f"browse_network: nothing captured{' matching ' + url_filter if url_filter else ''} "
+                 f"({total} entries in the session)")
+            return (f"No XHR/fetch/document traffic captured"
+                    + (f" matching {url_filter!r} ({total} entries total)" if url_filter else '')
+                    + " since browse_open.")
+        shown = entries[-self._NETWORK_REPORT_DEFAULT:]
+        lines = [self._format_network_entry(i, e) for i, e in shown]
+        out = "\n".join(lines)
+        if len(out) > self._NETWORK_REPORT_MAX_CHARS:
+            out = "… (older entries cut)\n" + out[-self._NETWORK_REPORT_MAX_CHARS:]
+        info(f"browse_network: {len(shown)} of {len(entries)} matching entries ({total} captured)")
+        head = (f"Network log — {len(shown)} of {len(entries)} matching entries ({total} captured this "
+                f"session), oldest first; `>` = request body, `<` = response body (excerpted):\n")
+        return head + out
+
+    def browse_network(self, url_filter: str = '') -> str:
+        """Recent XHR/fetch/document responses of the browse session (all tabs), optionally
+        filtered by a URL regex. Read-only: no snapshot, no page interaction."""
+        info(f"browse_network{'(' + url_filter.strip() + ')' if url_filter and url_filter.strip() else ''}")
+        return self._run_browse_op("browse_network", self._async_browse_network(url_filter),
+                                   "ERROR: network log unavailable.")
 
     # ------------------------------------------------------------------
     # Cookie banner removal & navigation helpers
@@ -2093,6 +2282,7 @@ class WebAccess(Integration):
         except Exception as e:
             trace(f"popup: page.enable() failed for {tid[:8]}…: {e}")
         self._install_dialog_handler(tab)
+        self._install_network_capture(tab)
         info(f"popup: new window/tab target {tid[:8]}… ({url}) — making it the active browse target")
         await self._async_wait_for_page_ready(tab)
         self._pending_target_notes.append(
@@ -3661,6 +3851,7 @@ class WebAccess(Integration):
 
         # Drop any prior PDF-session state when switching to a real page
         self._browse_pdf_text = None
+        self._clear_network_log()
 
         tab = self._tab
         try:
@@ -3725,25 +3916,26 @@ class WebAccess(Integration):
             note("watchdog reset: browser is dead — attempting restart")
             await self._async_ensure_browser()
 
-    def _run_browse_op(self, op: str, coro, error_result: str):
+    def _run_browse_op(self, op: str, coro, error_result: str, timeout: Optional[float] = None):
         """Run one browse command under the session lock with the watchdog applied.
 
         On watchdog expiry the coroutine is cancelled (see _LoopThread.submit), the
         session state is reset, and the LLM gets an error that names the timeout and
         tells it how to resume — the 2026-08-31 checkout hang surfaced as a blank
         'submit failed: ' and a 2-minute silence the model then explained with fiction.
+        `timeout` overrides the watchdog for a command that legitimately waits longer
+        (browse_wait).
         """
+        watchdog = timeout or self._BROWSE_OP_TIMEOUT
         try:
-            return self._loop_thread.submit(self._with_browse_lock(coro),
-                                            timeout=self._BROWSE_OP_TIMEOUT)
+            return self._loop_thread.submit(self._with_browse_lock(coro), timeout=watchdog)
         except BrowseWatchdogTimeout:
-            note(f"{op}: cancelled by the {self._BROWSE_OP_TIMEOUT:.0f}s watchdog — "
-                 "resetting browse session state")
+            note(f"{op}: cancelled by the {watchdog:.0f}s watchdog — resetting browse session state")
             try:
                 self._loop_thread.submit(self._async_watchdog_reset(), timeout=15)
             except Exception as e:
                 note(f"{op}: post-watchdog reset failed: {type(e).__name__}: {e}")
-            return (f"ERROR: {op} was cancelled after {self._BROWSE_OP_TIMEOUT:.0f}s — the page or "
+            return (f"ERROR: {op} was cancelled after {watchdog:.0f}s — the page or "
                     "an embedded frame stopped responding. The browse session state was reset; "
                     "call browse_open(url) for a fresh snapshot before acting again.")
         except Exception as e:
@@ -4107,6 +4299,88 @@ class WebAccess(Integration):
         info("browse_snapshot")
         return self._run_browse_op("browse_snapshot", self._async_browse_snapshot(),
                                    "ERROR: snapshot failed.")
+
+    _WAIT_SPEC_RE = re.compile(r'^(.*?)(?:\s*,\s*(\d+(?:\.\d+)?)\s*)?$', re.S)
+
+    @classmethod
+    def _parse_wait_spec(cls, spec: str) -> tuple[str, float]:
+        """'pattern' or 'pattern, seconds' → (pattern, timeout). The pattern keeps any
+        comma of its own; only a trailing numeric segment is the timeout."""
+        m = cls._WAIT_SPEC_RE.match((spec or '').strip())
+        pattern = (m.group(1) if m else spec or '').strip().strip('"\'')
+        timeout = float(m.group(2)) if m and m.group(2) else cls._WAIT_DEFAULT_S
+        return pattern, timeout
+
+    async def _async_browse_wait(self, pattern: str, timeout_s: float) -> str:
+        if not self._browse_session_url:
+            return "ERROR: no browse session. Call browse_open(url) first."
+        if err := self._pdf_session_error("nothing to wait for"):
+            return err
+        if not pattern:
+            return "ERROR: browse_wait needs a text or URL pattern (regex) to wait for."
+        try:
+            rx = re.compile(pattern, re.I | re.S)
+        except re.error as e:
+            trace(f"browse_wait: {pattern!r} is not a valid regex ({e}) — matching it literally")
+            rx = re.compile(re.escape(pattern), re.I)
+        timeout_s = max(1.0, min(timeout_s, self._WAIT_MAX_S))
+        if gate := await self._async_browse_ready_midsession():
+            return gate
+
+        info(f"browse_wait: for /{pattern}/ up to {timeout_s:.0f}s")
+        started = time.time()
+        deadline = started + timeout_s
+        polls = 0
+        last_url = ''
+        while True:
+            # The handoff being waited for is often a popup closing or opening —
+            # follow it so the probe reads the page the user would be looking at.
+            await self._async_sync_popup_targets()
+            tab = self._tab
+            if tab is None:
+                return "ERROR: browser not available."
+            state = None
+            try:
+                state = await self._cdp_wait_for(self._evaluate(tab, self._WAIT_PROBE_JS),
+                                                 self._PAGE_READY_EVAL_TIMEOUT)
+            except Exception as e:
+                trace(f"browse_wait: page probe failed ({self._describe_error(e)}) — retrying")
+            polls += 1
+            if isinstance(state, dict):
+                url = state.get('url') or ''
+                if url != last_url:
+                    trace(f"browse_wait: page is at {url}")
+                    last_url = url
+                m = (rx.search(url) or rx.search(state.get('title') or '')
+                     or rx.search(state.get('text') or ''))
+                if m:
+                    elapsed = time.time() - started
+                    info(f"browse_wait: matched {m.group(0)[:80]!r} after {elapsed:.1f}s "
+                         f"({polls} polls) on {url}")
+                    await self._async_wait_for_page_ready(tab)
+                    await self._async_wait_for_settle(tab)
+                    snapshot = await self._async_take_snapshot()
+                    return (self._take_dialog_notes()
+                            + f"MATCHED {m.group(0)[:80]!r} after {elapsed:.1f}s.\n\n" + snapshot)
+            if time.time() >= deadline:
+                break
+            await asyncio.sleep(self._WAIT_POLL_S)
+
+        note(f"browse_wait: no match for /{pattern}/ within {timeout_s:.0f}s ({polls} polls) — "
+             f"page still at {last_url}")
+        snapshot = await self._async_take_snapshot()
+        return (self._take_dialog_notes()
+                + f"TIMEOUT: nothing matching {pattern!r} appeared within {timeout_s:.0f}s — below is "
+                  "the page as it is now. browse_network() shows what the page has been polling "
+                  "meanwhile, which usually says why.\n\n" + snapshot)
+
+    def browse_wait(self, spec: str) -> str:
+        """Wait for a text/URL pattern to appear in the browse session. spec: "<regex>" or
+        "<regex>, <seconds>" (default 30 s, at most 60 s). Returns a fresh snapshot either way."""
+        pattern, timeout_s = self._parse_wait_spec(spec)
+        timeout_s = max(1.0, min(timeout_s, self._WAIT_MAX_S))
+        return self._run_browse_op(f"browse_wait({pattern})", self._async_browse_wait(pattern, timeout_s),
+                                   "ERROR: wait failed.", timeout=timeout_s + self._BROWSE_OP_TIMEOUT / 3)
 
     _CLICK_AT_SPEC_RE = re.compile(r'^\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$')
 
@@ -4545,6 +4819,7 @@ class WebAccess(Integration):
         """Clear session state and the circuit breaker after the browser is gone."""
         self._browse_session_url = None
         self._browse_pdf_text = None
+        self._clear_network_log()
         self._browse_fail_streak = 0
         self._browser_hard_down = False
         self._browser_closed_by_user = True

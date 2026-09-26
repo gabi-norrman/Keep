@@ -89,7 +89,7 @@ class Commands:
         "send_imessage", "send_email", "dim", "play_music",
         "sonos_enqueue_and_play", "show_photo",
         "search_photos", "search_history", "show_history",
-        "create_event", "browse_inspect", "browse_click_at", "move_email", "latest_email", "vault_add",
+        "create_event", "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
         "vault_request", "config_set", "load_toolkit",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
@@ -251,6 +251,15 @@ class Commands:
         # "412, 583" arrives as two positional args — re-join so WebAccess parses one spec.
         spec = ",".join(a.strip() for a in args)
         self.background_command(self.web_access.browse_click_at, spec, lane=self.BROWSER_LANE)
+
+    def cmd_browse_wait(self, *args: str):
+        # `browse_wait("Continue|callback", 45)` arrives as two positional args — re-join so
+        # WebAccess parses one "<pattern>, <seconds>" spec (a comma inside the pattern survives).
+        spec = ", ".join(a.strip() for a in args)
+        self.background_command(self.web_access.browse_wait, spec, lane=self.BROWSER_LANE)
+
+    def cmd_browse_network(self, parameter_string: str):
+        self.background_command(self.web_access.browse_network, parameter_string, lane=self.BROWSER_LANE)
 
     def cmd_browse_extract(self, parameter_string: str):
         self.background_command(self.web_access.browse_extract, parameter_string, lane=self.BROWSER_LANE)
@@ -1771,6 +1780,10 @@ class Commands:
     def describe_browse_snapshot(self, p):        return "Re-reading the page"
     def describe_browse_click_at(self, p):        return f"Clicking at {p.strip()}" if p.strip() else "Clicking"
     def describe_browse_extract(self, p):         return "Extracting page text"
+    def describe_browse_network(self, p):         return "Reading the page's network traffic"
+    def describe_browse_wait(self, p):
+        pattern, timeout = WebAccess._parse_wait_spec(p)
+        return f"Waiting up to {timeout:.0f}s for '{pattern}'" if pattern else "Waiting for the page"
     def describe_browse_screenshot(self, p):      return "Taking a screenshot"
     def describe_send_screenshot(self, p):        return "Sending screenshot"
     def describe_browse_close(self, p):           return "Closing browser"
