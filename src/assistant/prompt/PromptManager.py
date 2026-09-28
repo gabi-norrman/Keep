@@ -446,8 +446,8 @@ class PromptManager:
             return False
 
     @staticmethod
-    def current_time_note() -> str:
-        """The "(Current time: HH:MM, Weekday, YYYY-MM-DD)" clock note.
+    def current_time_note(at: float | None = None) -> str:
+        """The "(Current time: HH:MM, Weekday, YYYY-MM-DD)" clock note, for now or for `at`.
 
         Single source of truth for the format. Appended to the trailing user turn so
         the LLM always has a clock without rewriting the cached system prompt bytes.
@@ -455,7 +455,7 @@ class PromptManager:
         message list and must inject the same clock — AUTONOMOUS_ACTION_PROMPT asks the
         model to compare elapsed time against the current time.
         """
-        now = datetime.now()
+        now = datetime.fromtimestamp(at) if at is not None else datetime.now()
         return (
             f"(Current time: {now.strftime('%H:%M')}, "
             f"{now.strftime('%A')}, {now.strftime('%Y-%m-%d')})"
@@ -621,8 +621,10 @@ class PromptManager:
         with self._prompt_lock:
             return [key for key in toolkit.sections if key in self.sections and key not in self._section_current]
 
-    def get_messages(self, extended_thinking: bool = False) -> list[dict]:
-        """Get the current messages (for LLM)."""
+    def get_messages(self, extended_thinking: bool = False, time_note: str | None = None) -> list[dict]:
+        """Get the current messages (for LLM). `time_note` replaces the clock note computed
+        here: a byte-prefix request passes the one it will persist with the exchange, so the
+        note the LLM saw and the row the next request renders are the same bytes."""
         with self._prompt_lock:
             # Shared byte prefix (system prompt + live history) — same bytes the
             # pre-heat callbacks warm, so the KV cache prefix is fully reusable.
@@ -642,7 +644,7 @@ class PromptManager:
             # merges the incoming query into this same turn) costs zero cache hits.
             # Skipped in test_suite so unit tests don't depend on wall-clock time.
             if not self.test_suite:
-                MessageHistory.append_user_turn(messages, self.current_time_note())
+                MessageHistory.append_user_turn(messages, time_note or self.current_time_note())
 
             # Append the thinking instruction as a user message. This keeps the
             # system message identical to the pre-heat, so the KV cache prefix is
@@ -707,15 +709,18 @@ class PromptManager:
         info(f"Loaded {len(self._test_history_messages)} test-suite history turns from {path}")
 
     def update_history(self, user_name: str, user_query: str, assistant_reply: str,
-                       source: str = None, location: str = None, pre_heat: bool = True):
+                       source: str = None, location: str = None, pre_heat: bool = True,
+                       timestamp: float | None = None, time_note: str | None = None):
         """Update conversation history with a user-assistant exchange.
 
         pre_heat=False for mid-request bookkeeping (command follow-up rounds):
         the follow-up inference starts immediately after and would race the
         pre-heat on the single-slot Ollama server — and the follow-up itself
         warms the same prefix anyway. The request's terminal exchange passes
-        True."""
-        self.message_history.add_exchange(user_name, user_query, assistant_reply, source, location)
+        True. `timestamp` and `time_note` come from a byte-prefix request
+        (MessageHistory.add_exchange)."""
+        self.message_history.add_exchange(user_name, user_query, assistant_reply, source, location,
+                                          timestamp=timestamp, note=time_note)
 
         # The rendered exchange extends the request prefix (the assistant's own
         # generated tokens are NOT reusable — history is re-rendered with turn

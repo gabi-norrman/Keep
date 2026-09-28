@@ -898,7 +898,7 @@ def test_update_history_fires_pre_heat_with_the_new_exchange(prompt_test_environ
     manager.update_history("Alice", "What time is it?", "It's 3pm", source="voice")
 
     manager.message_history.add_exchange.assert_called_once_with(
-        "Alice", "What time is it?", "It's 3pm", "voice", None)
+        "Alice", "What time is it?", "It's 3pm", "voice", None, timestamp=None, note=None)
     assert len(received) == 1
     assert received[0][0]["role"] == "system"
     assert received[0][1:] == [rendered_turn], "pre-heat payload must include the rendered exchange"
@@ -920,7 +920,7 @@ def test_update_history_pre_heat_false_records_exchange_without_pre_heating(prom
                                pre_heat=False)
 
     manager.message_history.add_exchange.assert_called_once_with(
-        "Alice", "Turn on the lights", "On it", "voice", None)
+        "Alice", "Turn on the lights", "On it", "voice", None, timestamp=None, note=None)
     assert received == [], "mid-request history update must not fire the pre-heat"
     mock_build.assert_not_called()
 

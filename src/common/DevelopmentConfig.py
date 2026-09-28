@@ -35,6 +35,15 @@ def _prepend_user_query_override():
 
 PREPEND_USER_QUERY_OVERRIDE = _prepend_user_query_override()
 
+# Ollama's MLX runner restores its KV cache only at the restore point taken just before the
+# previous reply (and at 8k-token multiples), so a request only hits when the previous one is
+# a byte prefix of it. An LLM that says so (AbstractLLM.prefers_byte_prefix_tail) gets its
+# trailing turn sent exactly as the history renders it afterwards: the clock note as its own
+# row, the query header timestamped, and none of the per-request extras the next turn drops
+# (<thinking> instruction, language and brevity directives). FLOXY_BYTE_PREFIX_TAIL=0 turns
+# it off for an A/B run.
+BYTE_PREFIX_TAIL = os.environ.get("FLOXY_BYTE_PREFIX_TAIL", "1") != "0"
+
 # TTL of the Anthropic prompt-cache system blocks (one per <<<CACHE_BREAKPOINT>>> marker,
 # ordered stable → volatile; see ClaudeLLM._build_cached_system).
 # A cache read refreshes the TTL, so a block only expires after an idle gap longer than its TTL.

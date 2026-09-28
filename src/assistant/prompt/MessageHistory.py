@@ -33,6 +33,9 @@ class MessageHistory:
     # would cut a list_integrations table in half.
     ROLE_COMMAND = "command"
     COMMAND_RESULT_CHARS = 6000
+    # The clock note a byte-prefix request put in front of its query (PromptManager.get_messages),
+    # persisted as its own verbatim row so the next request renders the same bytes.
+    ROLE_NOTE = "note"
     # Hysteresis watermarks for the LLM history window: the rendered window grows
     # to HIGH, is then cut back to LOW, and the head stays frozen until HIGH is
     # hit again. A plain per-render budget evicted the oldest entry on nearly
@@ -385,10 +388,10 @@ class MessageHistory:
             # would crash Claude's cache breakpoint (no cache_control on empty text).
             return None
 
-        if role == MessageHistory.ROLE_COMMAND:
-            # Byte-identical to the follow-up round's `result:` turn (DialogManager appends
-            # reply_to_llm on the user side), so the persisted history re-renders the same
-            # prefix the request already sent. Capped at store time, never cut here.
+        if role in (MessageHistory.ROLE_COMMAND, MessageHistory.ROLE_NOTE):
+            # Byte-identical to what the request sent on the user side (a follow-up round's
+            # `result:` turn, a byte-prefix request's clock note), so the persisted history
+            # re-renders the same prefix. Capped at store time, never cut here.
             return ("user", content)
 
         if len(content) > max_render_chars:
@@ -423,7 +426,10 @@ class MessageHistory:
         coalesced: list[dict] = []
         for msg_role, msg_content in turns:
             if coalesced and coalesced[-1]["role"] == msg_role:
-                coalesced[-1]["content"] += "\n" + msg_content
+                # The same separator append_user_turn and DialogManager.stream_llm_response
+                # put between a trailing user turn and what they fold onto it, so a rendered
+                # history turn is byte-identical to the request that sent its parts.
+                coalesced[-1]["content"] += "\n\n" + msg_content
             else:
                 coalesced.append({"role": msg_role, "content": msg_content})
 
@@ -520,6 +526,8 @@ class MessageHistory:
                 header = f"System ({MessageFormatter.format_timestamp(timestamp)})"
             elif role == self.ROLE_COMMAND:
                 header = f"Command result ({MessageFormatter.format_timestamp(timestamp)})"
+            elif role == self.ROLE_NOTE:
+                header = f"Note ({MessageFormatter.format_timestamp(timestamp)})"
             else:
                 header = MessageFormatter.format_header(
                     role.capitalize(), timestamp, entry.get("source"), entry.get("location"))
@@ -628,12 +636,26 @@ class MessageHistory:
         self._notify_changed()
 
     def add_exchange(self, user: str | None, user_query: str | None, assistant_reply: str | None,
-                     source: str | None = None, location: str | None = None):
-        """Add a user-assistant exchange to the history."""
+                     source: str | None = None, location: str | None = None,
+                     timestamp: float | None = None, note: str | None = None):
+        """Add a user-assistant exchange to the history.
+
+        `timestamp` dates the user row to when the request sent it (its header carried that
+        time, so the row must render the same) and `note` is the clock note sent in front of
+        the query, stored as its own verbatim row just before it — both from a byte-prefix
+        request (RequestProcessor._prepare_llm_context). Without them the row is dated now."""
         current_time = time.time()
 
         if user_query is not None:
-            self._save_history_entry(user, user_query, current_time, source, location)
+            query_time = timestamp if timestamp is not None else current_time
+            if query_time < self._trim_cutoff:
+                # The window head moved past the request's start while it ran (a trim during a
+                # long prefill); dated at its start the row would fall outside the window.
+                trace(f"MessageHistory: request-time {query_time:.3f} predates the trim cutoff — dating the user row now")
+                query_time = current_time
+            if note:
+                self._save_history_entry(self.ROLE_NOTE, note, query_time - 0.001)
+            self._save_history_entry(user, user_query, query_time, source, location)
 
         if assistant_reply is not None:
             self._save_history_entry("assistant", assistant_reply, current_time + 0.001)

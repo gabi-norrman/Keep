@@ -25,6 +25,10 @@ if TYPE_CHECKING:
 
 
 class DialogManager:
+    # Set per request by RequestProcessor._prepare_llm_context: a byte-prefix request sends
+    # nothing the next turn's history rendering would drop, so no trailing directives.
+    byte_prefix_tail = False
+
     """Runs one LLM round: picks the model and voice, streams the reply and hands commands off.
 
     Owns the fast/smart/vision LLM clients (cached outside test-suite mode) and the per-round
@@ -218,6 +222,9 @@ class DialogManager:
         accumulates in history. Folds into the existing user turn (text, or a text block for
         image/content-block messages) rather than appending a new message, so it can't create
         the consecutive same-role turns Claude/Gemini reject."""
+        if self.byte_prefix_tail:
+            trace("Byte-prefix tail: no trailing directives folded into the request")
+            return messages
         directives = self._trailing_directives()
         if not directives or not messages:
             return messages

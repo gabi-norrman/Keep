@@ -193,6 +193,13 @@ class OllamaLLM(AbstractLLM):
     def prefers_prepended_user_query(self) -> bool:
         return False
 
+    def prefers_byte_prefix_tail(self) -> bool:
+        # The MLX runner restores only at snapshots (8k-token multiples and the point just
+        # before the previous reply). A tail the next turn re-renders differently sits before
+        # that snapshot, so the runner falls back to the previous one and re-prefills the whole
+        # tail (the runner log's "cache hit" line: matched= far above cached=).
+        return True
+
     def name(self) -> str:
         return "Ollama"
 

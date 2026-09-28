@@ -48,6 +48,7 @@ from interfaces.console.widgets.ChatPane import (KIND_ASSISTANT, KIND_DIFF, KIND
 ROLE_ASSISTANT = "assistant"
 ROLE_SYSTEM = "system"
 ROLE_COMMAND = "command"               # a command round's result, kept for the LLM's next turn
+ROLE_NOTE = "note"                     # the clock note a byte-prefix request sent before its query
 SOURCE_PROMPT_DELTA = "prompt_delta"   # PromptManager's section-change notes, a -/+ listing
 SOURCE_TOOLKIT_EVICTED = "toolkit_evicted"   # MessageHistory's stub where a trimmed toolkit row was
 SHOW_PROMPT_DELTAS = False             # show the prompt-delta notes in the chat history
@@ -189,6 +190,9 @@ class HistoryFeed(AssistantObserver):
 
     def _route(self, entry: dict):
         role = entry["role"]
+        if role == ROLE_NOTE:
+            trace("HistoryFeed: hiding a clock note row")
+            return
         if role == ROLE_COMMAND:
             if not SHOW_COMMAND_RESULTS:
                 trace("HistoryFeed: hiding a command result row (SHOW_COMMAND_RESULTS is off)")

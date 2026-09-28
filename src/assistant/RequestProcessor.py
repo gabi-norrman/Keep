@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Callable, Generator, Iterator, Optional
 
 from colorama import Fore
 
-from common.DevelopmentConfig import PREPEND_USER_QUERY_OVERRIDE
+from common.DevelopmentConfig import BYTE_PREFIX_TAIL, PREPEND_USER_QUERY_OVERRIDE
 from assistant.DialogManager import DialogManager
 from assistant.AssistantRequest import RequestContext
 from common.RequestKilledException import RequestKilledException
@@ -117,6 +117,12 @@ __all__ = ["RequestProcessor", "RequestData", "RequestKilledException"]
 
 
 class RequestProcessor:
+    # Set by _prepare_llm_context for a byte-prefix request: when the query was sent (its
+    # header carries the time) and the clock note sent in front of it, both persisted with the
+    # exchange so the next request renders the same bytes. None otherwise.
+    turn_timestamp: float | None = None
+    time_note: str | None = None
+
     """Runs one request end to end and yields the AssistantEvents the interface renders.
 
     The pipeline is prompt → LLM → commands → history. Single-use: Assistant pools fresh
@@ -497,8 +503,16 @@ class RequestProcessor:
         # model that handles thinking internally must never see it: Claude refuses the whole
         # request as reasoning extraction (AbstractLLM.handles_thinking_internally).
         ai = self.dialog_manager.ai
-        use_prompt_hack = not ai.handles_thinking_internally()
-        if use_prompt_hack:
+        # A byte-prefix tail (DevelopmentConfig.BYTE_PREFIX_TAIL): the trailing turn is sent
+        # exactly as the history will render it afterwards — clock note as its own row, query
+        # header timestamped — and carries nothing the next turn drops, so the previous
+        # request's KV-cache restore point stays inside this one's prefix.
+        byte_prefix_tail = BYTE_PREFIX_TAIL and ai.prefers_byte_prefix_tail()
+        self.dialog_manager.byte_prefix_tail = byte_prefix_tail
+        use_prompt_hack = not ai.handles_thinking_internally() and not byte_prefix_tail
+        if byte_prefix_tail:
+            trace(f"{ai.name()} gets a byte-prefix tail — no <thinking> tag instruction, no trailing directives")
+        elif use_prompt_hack:
             trace(f"{ai.name()} gets the <thinking> tag instruction")
         else:
             trace(f"{ai.name()} thinks on its own — no <thinking> tag instruction")
@@ -510,12 +524,17 @@ class RequestProcessor:
         # A speculative partial-transcript request is usually killed by its successor within
         # milliseconds; nothing after this point is worth doing for one.
         self._check_killed()
-        self.dialog_manager.messages = prompt_manager.get_messages(extended_thinking=use_prompt_hack).copy()
+        if byte_prefix_tail:
+            self.turn_timestamp = time.time()
+            self.time_note = prompt_manager.current_time_note(self.turn_timestamp)
+        self.dialog_manager.messages = prompt_manager.get_messages(extended_thinking=use_prompt_hack,
+                                                                   time_note=self.time_note).copy()
         self.dialog_manager.thinking = use_native_thinking
 
         source = self.ctx.source
         location = self.ctx.location
-        user_input_sent_to_ai = MessageFormatter.format_message(self.ctx.display_name, None, source, location, user_input)
+        user_input_sent_to_ai = MessageFormatter.format_message(self.ctx.display_name, self.turn_timestamp,
+                                                                source, location, user_input)
         fine("Will send to LLM: " + user_input_sent_to_ai)
 
         should_prepend = (PREPEND_USER_QUERY_OVERRIDE
@@ -595,7 +614,8 @@ class RequestProcessor:
         location = self.ctx.location
         if not self.is_killed:
             if already_reported != self.ctx.user_input:
-                prompt_manager.update_history(self.ctx.display_name, self.ctx.user_input, response_text, source, location)
+                prompt_manager.update_history(self.ctx.display_name, self.ctx.user_input, response_text, source, location,
+                                              timestamp=self.turn_timestamp, time_note=self.time_note)
             else:
                 prompt_manager.update_history(None, None, response_text)
         trace("")
@@ -680,7 +700,8 @@ class RequestProcessor:
             # _update_history after the loop fires the pre-heat instead.
             if user_input_already_reported_on != self.ctx.user_input:
                 prompt_manager.update_history(self.ctx.display_name, self.ctx.user_input, response_text,
-                                              self.ctx.source, self.ctx.location, pre_heat=False)
+                                              self.ctx.source, self.ctx.location, pre_heat=False,
+                                              timestamp=self.turn_timestamp, time_note=self.time_note)
                 user_input_already_reported_on = self.ctx.user_input
             else:
                 trace("User query already recorded for this request — appending assistant command turn only.")

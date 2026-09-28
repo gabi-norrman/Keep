@@ -135,6 +135,9 @@ class CachedLLM(AbstractLLM):
     def handles_thinking_internally(self) -> bool:
         return self.llm.handles_thinking_internally()
 
+    def prefers_byte_prefix_tail(self) -> bool:
+        return self.llm.prefers_byte_prefix_tail()
+
     def pre_heat_cache(self, messages: list[dict]):
         self.llm.pre_heat_cache(messages)
 

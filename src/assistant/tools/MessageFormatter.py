@@ -42,7 +42,10 @@ class MessageFormatter:
             'User (14:38, VoiceToVoice)'
             'User'
         """
-        name = user or "User"
+        # One casing whatever the caller has: the request formats the speaker as the client
+        # spells it, the history renders the lowercase the database stores — and the two
+        # must be the same bytes for the persisted turn to re-render the request's prefix.
+        name = (user or "User").title()
 
         parts = []
         if timestamp is not None:

@@ -102,6 +102,13 @@ class AbstractLLM(ABC):
         Opus 5 alike, so the fallback cannot help. Override in subclasses."""
         return False
 
+    def prefers_byte_prefix_tail(self) -> bool:
+        """True when the backend's cache restores only at the end of the previous request, so
+        every request must be a byte prefix of the next one: the trailing turn is sent exactly
+        as the history will render it and carries no per-request extras (see
+        DevelopmentConfig.BYTE_PREFIX_TAIL). Override in subclasses."""
+        return False
+
     def pre_heat_cache(self, messages: list[dict]):
         """Pre-heat the LLM's cache with the given messages. Default: no-op.
         Override in subclasses that benefit from cache warming (e.g., local LLMs)."""

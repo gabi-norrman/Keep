@@ -10,6 +10,8 @@ from anthropic import BadRequestError
 from assistant.AssistantRequest import RequestContext
 from assistant.RequestProcessor import RequestProcessor, RequestKilledException, RequestData
 from assistant.AssistantEvents import AudioChunk, CommandRan, Done, Notice, RoundEnd, Thinking, Token
+from assistant.prompt.PromptManager import PromptManager
+from assistant.tools.MessageFormatter import MessageFormatter
 
 
 # ---------------------------------------------------------------------------
@@ -678,6 +680,7 @@ def full_handler():
     h.dialog_manager.ai = Mock()
     h.dialog_manager.ai.name.return_value = "TestAI"
     h.dialog_manager.ai.supports_native_thinking.return_value = False
+    h.dialog_manager.ai.prefers_byte_prefix_tail.return_value = False
     h.request_data = RequestData("GET", "/api", {"query": "hello"}, {"User-Agent": "test"})
     return h
 
@@ -1073,7 +1076,7 @@ class TestPrepareContext:
                 mock_mf.format_message.return_value = f"User: {text}"
                 full_handler.request_context.user_input = text
                 full_handler._prepare_llm_context(prompt_manager)
-            prompt_manager.get_messages.assert_called_once_with(extended_thinking=True)
+            prompt_manager.get_messages.assert_called_once_with(extended_thinking=True, time_note=None)
             assert full_handler.dialog_manager.thinking is False
 
     def test_no_thinking_tag_instruction_for_a_model_that_thinks_on_its_own(self, full_handler):
@@ -1089,7 +1092,7 @@ class TestPrepareContext:
             full_handler.request_context.user_input = "tell me about the weather today please"
             full_handler._prepare_llm_context(prompt_manager)
 
-        prompt_manager.get_messages.assert_called_once_with(extended_thinking=False)
+        prompt_manager.get_messages.assert_called_once_with(extended_thinking=False, time_note=None)
         assert full_handler.dialog_manager.thinking is False
 
     @pytest.mark.parametrize("picked_thinks_internally", [True, False])
@@ -1101,6 +1104,7 @@ class TestPrepareContext:
         dm.ai.handles_thinking_internally.return_value = not picked_thinks_internally
         picked = Mock()
         picked.handles_thinking_internally.return_value = picked_thinks_internally
+        picked.prefers_byte_prefix_tail.return_value = False
         dm.select_ai.side_effect = lambda ctx: setattr(dm, "ai", picked)
         prompt_manager = Mock()
         prompt_manager.get_messages.return_value = []
@@ -1109,7 +1113,36 @@ class TestPrepareContext:
             mock_mf.format_message.return_value = "User: hello"
             full_handler._prepare_llm_context(prompt_manager)
 
-        prompt_manager.get_messages.assert_called_once_with(extended_thinking=not picked_thinks_internally)
+        prompt_manager.get_messages.assert_called_once_with(extended_thinking=not picked_thinks_internally,
+                                                            time_note=None)
+
+    def test_byte_prefix_tail_sends_the_turn_as_the_history_will_render_it(self, full_handler):
+        """An LLM whose cache restores only at the previous request's end (Ollama's MLX
+        runner) gets no <thinking> instruction, a query header dated like the history row
+        the next request renders, and the clock note it saw persisted with the exchange."""
+        full_handler.dialog_manager.ai.handles_thinking_internally.return_value = False
+        full_handler.dialog_manager.ai.prefers_byte_prefix_tail.return_value = True
+        prompt_manager = Mock()
+        prompt_manager.get_messages.return_value = []
+        prompt_manager.current_time_note.side_effect = PromptManager.current_time_note
+        full_handler.request_context.user_input = "what's the plan for today?"
+
+        sent = full_handler._prepare_llm_context(prompt_manager)
+
+        assert full_handler.dialog_manager.byte_prefix_tail is True
+        assert isinstance(full_handler.turn_timestamp, float)
+        prompt_manager.get_messages.assert_called_once_with(extended_thinking=False,
+                                                            time_note=full_handler.time_note)
+        assert full_handler.time_note == PromptManager.current_time_note(full_handler.turn_timestamp)
+        assert sent == MessageFormatter.format_message("TestUser", full_handler.turn_timestamp,
+                                                       "VoiceToVoice", "Kitchen", "what's the plan for today?")
+        assert MessageFormatter.format_timestamp(full_handler.turn_timestamp) in sent
+
+        full_handler.dialog_manager.llm_response_raw = "Nothing booked."
+        full_handler._update_history(prompt_manager, None)
+        prompt_manager.update_history.assert_called_once_with(
+            "TestUser", "what's the plan for today?", "Nothing booked.", "VoiceToVoice", "Kitchen",
+            timestamp=full_handler.turn_timestamp, time_note=full_handler.time_note)
 
     def test_formats_message_with_context(self, full_handler):
         prompt_manager = Mock()
@@ -1259,7 +1292,8 @@ class TestUpdateHistory:
         prompt_manager = Mock()
 
         full_handler._update_history(prompt_manager, None)
-        prompt_manager.update_history.assert_called_once_with("TestUser", "hello", "response", "VoiceToVoice", "Kitchen")
+        prompt_manager.update_history.assert_called_once_with("TestUser", "hello", "response", "VoiceToVoice", "Kitchen",
+                                                              timestamp=None, time_note=None)
 
     def test_calls_update_history_none_when_already_reported(self, full_handler):
         full_handler.dialog_manager.llm_response_raw = "response"
