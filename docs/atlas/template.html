@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Keep Atlas</title>
+<meta name="description" content="A zoomable map of the Keep server’s architecture, with one sentence on every package, module and class.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#EDF0F5; --surface:#FFFFFF; --surface-2:#F5F7FA; --ink:#141A2B; --muted:#5A6378; --faint:#8A93A8; --line:#D6DBE5;
+  --amber:#B36C05; --teal:#0F7F79; --violet:#5B4BD6; --rose:#BC3F5B; --slate:#5F6E86;
+  --accent:var(--amber); --halo:rgba(237,240,245,.92);
+  --display:"Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --sans:"IBM Plex Sans", "Helvetica Neue", Arial, system-ui, sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --ground:#0B101B; --surface:#121929; --surface-2:#0F1523; --ink:#E6E9F2; --muted:#8E97AE; --faint:#5E6780; --line:#222B3F;
+    --amber:#F3B541; --teal:#4CC6BD; --violet:#A395FF; --rose:#EE869C; --slate:#98A6BD; --halo:rgba(11,16,27,.9);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#0B101B; --surface:#121929; --surface-2:#0F1523; --ink:#E6E9F2; --muted:#8E97AE; --faint:#5E6780; --line:#222B3F;
+  --amber:#F3B541; --teal:#4CC6BD; --violet:#A395FF; --rose:#EE869C; --slate:#98A6BD; --halo:rgba(11,16,27,.9);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font:15px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+.app{max-width:1440px;margin:0 auto;padding-inline:20px;padding-block:0 32px}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+
+/* header */
+.top{position:relative;display:grid;grid-template-columns:1fr auto;gap:24px;align-items:end;padding-block:28px 18px}
+#wave{position:absolute;inset:0 -20px;width:calc(100% + 40px);height:100%;pointer-events:none;opacity:.9}
+@media (max-width:900px){#wave{display:none}}
+.brand{position:relative}
+.eyebrow{font:500 11px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+h1{font:800 clamp(38px,6vw,64px)/.95 var(--display);letter-spacing:-.035em;margin:10px 0 10px;text-wrap:balance}
+h1 em{font-style:normal;font-weight:400;color:var(--accent)}
+.lede{margin:0;max-width:58ch;color:var(--muted);text-wrap:pretty}
+.stats{position:relative;display:grid;grid-template-columns:repeat(3,auto);gap:10px 26px}
+.stat b{display:block;font:700 26px/1 var(--display);letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.stat span{font:500 10.5px/1.3 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+
+/* toolbar */
+.toolbar{display:flex;flex-wrap:wrap;gap:12px 16px;align-items:center;justify-content:space-between;padding-block:12px;border-top:1px solid var(--line)}
+.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:2px;font:500 13px var(--mono);min-width:0}
+.crumbs button{background:none;border:0;padding:4px 6px;border-radius:6px;cursor:pointer;color:var(--muted)}
+.crumbs button:hover{background:var(--surface);color:var(--ink)}
+.crumbs button[aria-current]{color:var(--ink)}
+.crumbs .sep{color:var(--faint)}
+.tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.search{position:relative}
+.search input{width:min(300px,70vw);padding:9px 34px 9px 12px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:14px var(--sans)}
+.search input::placeholder{color:var(--faint)}
+.search kbd{position:absolute;right:10px;top:50%;transform:translateY(-50%);font:11px var(--mono);color:var(--faint);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+.results{position:absolute;right:0;top:calc(100% + 6px);width:min(420px,90vw);max-height:60vh;overflow:auto;margin:0;padding:6px;list-style:none;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 50px -20px rgba(0,0,0,.45);z-index:20}
+.results li{padding:8px 10px;border-radius:8px;cursor:pointer;display:grid;gap:2px}
+.results li[aria-selected="true"],.results li:hover{background:var(--surface-2)}
+.results .rn{font:500 13px var(--mono);display:flex;gap:8px;align-items:center}
+.results .rd{font-size:12.5px;color:var(--muted);line-height:1.35}
+.results .empty{color:var(--muted);cursor:default}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border-radius:999px;border:1px solid transparent;background:var(--ink);color:var(--ground);font:600 13.5px var(--sans);cursor:pointer;transition:transform .15s}
+.btn:hover{transform:translateY(-1px)}
+.btn svg{width:12px;height:12px}
+.btn.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+
+/* stage */
+.stage{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:24px;align-items:start}
+.chart-wrap{position:relative;min-width:0}
+#chart{display:block;width:100%;height:auto;aspect-ratio:1;max-height:calc(100vh - 120px);margin-inline:auto;cursor:zoom-out;touch-action:manipulation}
+#chart circle{transition:stroke-width .2s, stroke .2s}
+#chart .n{cursor:pointer}
+#chart .n.hover>circle{stroke:var(--ink);stroke-width:1.6px}
+#chart .n.sel>circle{stroke:var(--ink);stroke-width:2.4px}
+#chart text{font-family:var(--mono);fill:var(--ink);paint-order:stroke;stroke:var(--halo);stroke-width:3px;stroke-linejoin:round;pointer-events:none;text-anchor:middle;dominant-baseline:central;transition:opacity .35s}
+#chart text.pkg{font-family:var(--display);font-weight:700;letter-spacing:.01em}
+#chart text.dim{fill:var(--muted)}
+#chart .labels.fading text{opacity:0;transition:opacity .12s}
+.pulse circle{fill:none;stroke:var(--accent);stroke-width:2.5px;transform-box:fill-box;transform-origin:center;animation:ping 1.6s cubic-bezier(.2,.7,.3,1) infinite}
+.pulse circle+circle{animation-delay:.8s}
+@keyframes ping{from{transform:scale(1);opacity:.9}to{transform:scale(1.45);opacity:0}}
+.legend{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:10px}
+.legend button{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:var(--surface);font:500 12.5px var(--mono);cursor:pointer}
+.legend button:hover{border-color:var(--h)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--h);flex:none}
+.hint{text-align:center;font:12px var(--mono);color:var(--faint);margin-top:8px}
+
+/* panel */
+.panel{position:sticky;top:calc(env(safe-area-inset-top,0px) + 12px);background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px;max-height:calc(100vh - 24px);overflow:auto;display:grid;gap:14px}
+.card-in{animation:cardin .45s cubic-bezier(.2,.8,.2,1)}
+@keyframes cardin{from{opacity:.0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.kind{display:inline-flex;align-items:center;gap:7px;font:500 11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--h)}
+.panel h2{font:750 clamp(24px,2.6vw,32px)/1.05 var(--display);letter-spacing:-.025em;margin:8px 0 6px;overflow-wrap:anywhere;text-wrap:balance}
+.path{font:12.5px var(--mono);color:var(--muted);overflow-wrap:anywhere}
+.desc{font:400 18px/1.45 var(--sans);margin:0;text-wrap:pretty}
+.meta{display:flex;flex-wrap:wrap;gap:8px}
+.meta span{font:12px var(--mono);padding:4px 9px;border-radius:6px;background:var(--surface-2);border:1px solid var(--line);color:var(--muted)}
+.meta b{color:var(--ink);font-weight:500}
+.cmds{display:flex;flex-wrap:wrap;gap:5px}
+.cmds code{font:12px var(--mono);padding:3px 7px;border-radius:5px;background:color-mix(in oklab,var(--h) 14%,transparent);color:var(--ink)}
+.panel h3{font:500 11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:6px 0 0;display:flex;justify-content:space-between}
+.kids{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+.kids button{width:100%;text-align:left;background:none;border:0;border-radius:8px;padding:8px 8px;cursor:pointer;display:grid;grid-template-columns:auto 1fr auto;gap:2px 9px;align-items:center}
+.kids button:hover{background:var(--surface-2)}
+.kids .nm{font:500 13px var(--mono);overflow-wrap:anywhere}
+.kids .ln{font:11.5px var(--mono);color:var(--faint);font-variant-numeric:tabular-nums}
+.kids .ds{grid-column:2/4;font-size:12.5px;line-height:1.4;color:var(--muted)}
+.kids .dot{margin-top:1px}
+.kids .bar{grid-column:2/4;height:2px;border-radius:2px;background:var(--line);overflow:hidden}
+.kids .bar i{display:block;height:100%;background:var(--h);opacity:.7}
+code.i{font:.9em var(--mono);padding:1px 4px;border-radius:4px;background:var(--surface-2)}
+
+/* tour */
+.tour{border:1px solid color-mix(in oklab,var(--accent) 45%,var(--line));background:color-mix(in oklab,var(--accent) 8%,var(--surface));border-radius:12px;padding:14px;display:grid;gap:10px}
+.tour-head{display:flex;justify-content:space-between;align-items:center;font:500 11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.tour p{margin:0;font-size:14.5px;line-height:1.5;text-wrap:pretty}
+.rail{display:flex;gap:4px}
+.rail button{flex:1;height:5px;border:0;border-radius:3px;padding:0;background:var(--line);cursor:pointer;position:relative;overflow:hidden}
+.rail button.done{background:color-mix(in oklab,var(--accent) 55%,var(--line))}
+.rail button.cur{background:var(--line)}
+.rail button.cur i{position:absolute;inset:0;background:var(--accent);transform-origin:left;animation:fill var(--dur,6s) linear forwards}
+.rail.paused button.cur i{animation:none;transform:scaleX(1)}
+@keyframes fill{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+.tour-ctl{display:flex;gap:6px}
+.tour-ctl button{padding:6px 11px;border-radius:999px;border:1px solid var(--line);background:var(--surface);font:500 12.5px var(--sans);cursor:pointer}
+.tour-ctl button:hover{border-color:var(--accent)}
+.tour-ctl .x{margin-left:auto}
+
+.tip{position:fixed;z-index:30;pointer-events:none;max-width:320px;padding:10px 12px;border-radius:10px;background:var(--ink);color:var(--ground);font-size:13px;line-height:1.4;box-shadow:0 12px 30px -12px rgba(0,0,0,.5)}
+.tip b{display:block;font:500 12.5px var(--mono);margin-bottom:3px}
+
+@media (max-width:980px){
+  .stage{grid-template-columns:1fr}
+  .panel{position:static;max-height:none}
+  #chart{max-height:none}
+}
+@media (max-width:640px){
+  .app{padding-inline:16px}
+  .top{grid-template-columns:1fr}
+  .stats{grid-template-columns:repeat(3,1fr)}
+  .hint{display:none}
+}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <canvas id="wave" aria-hidden="true"></canvas>
+    <div class="brand">
+      <div class="eyebrow">Architecture map · Keep</div>
+      <h1>Keep <em>Atlas</em></h1>
+      <p class="lede">Every subsystem, module and class of the Keep server (Floxy in the code), nested the way the source tree nests them. Circle size follows lines of code. Click to zoom in, or follow one spoken request through the whole system.</p>
+    </div>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <div class="toolbar">
+    <nav class="crumbs" id="crumbs" aria-label="Location"></nav>
+    <div class="tools">
+      <div class="search">
+        <input id="q" type="search" placeholder="Search modules and classes" autocomplete="off" aria-label="Search modules and classes" aria-controls="results">
+        <kbd>/</kbd>
+        <ul class="results" id="results" role="listbox" hidden></ul>
+      </div>
+      <button class="btn" id="tourBtn"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 1l9 5-9 5z" fill="currentColor"/></svg>Follow a request</button>
+    </div>
+  </div>
+
+  <main class="stage">
+    <div class="chart-wrap">
+      <svg id="chart" viewBox="-500 -500 1000 1000" role="img" aria-label="Zoomable map of the Keep source tree"></svg>
+      <div class="legend" id="legend"></div>
+      <div class="hint">Click a circle to zoom · click outside or Esc to go up · ← → walk siblings · / to search</div>
+    </div>
+    <aside class="panel" id="panel" aria-live="polite"></aside>
+  </main>
+  <div class="tip" id="tip" hidden></div>
+</div>
+
+<script id="atlas-data" type="application/json">__DATA__</script>
+<script id="atlas-tour" type="application/json">__TOUR__</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+(() => {
+const DATA = JSON.parse(document.getElementById('atlas-data').textContent);
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const S = 1000;
+const HUE = {'launcher':'--slate','src/interfaces':'--teal','src/assistant':'--amber','src/common':'--violet','res':'--rose'};
+const KIND = {system:'System',package:'Package',module:'Module',class:'Class',script:'Script',resource:'Resource'};
+
+const root = d3.hierarchy(DATA)
+  .sum(d => d.children ? 0 : Math.pow(Math.max(d.lines || 8, 8), 0.62))
+  .sort((a, b) => b.value - a.value);
+d3.pack().size([S, S]).padding(d => d.depth === 0 ? 16 : d.depth === 1 ? 9 : 4)(root);
+root.each(d => { d.x -= S / 2; d.y -= S / 2; });
+
+const byId = new Map();
+root.each(d => {
+  byId.set(d.data.id, d);
+  const top = d.ancestors().find(a => a.depth === 1);
+  d.hue = top ? `var(${HUE[top.data.id]})` : 'var(--accent)';
+  d.fileCount = 0; d.loc = 0;
+});
+root.eachAfter(d => {
+  const k = d.data.kind;
+  if (k === 'module' || k === 'script' || k === 'resource') { d.fileCount = 1; d.loc = d.data.lines || 0; }
+  if (k === 'package' || k === 'system') for (const c of d.children || []) { d.fileCount += c.fileCount; d.loc += c.loc; }
+});
+
+// ---------- header stats ----------
+const all = root.descendants();
+const py = all.filter(d => d.data.kind === 'module');
+const under = (p, re) => py.filter(d => d.data.id.startsWith(p) && re.test(d.data.name)).length;
+const stats = [
+  [py.length, 'Python modules'],
+  [d3.format(',')(d3.sum(py, d => d.data.lines)), 'Lines of Python'],
+  [all.filter(d => d.data.kind === 'package').length, 'Packages'],
+  [py.filter(d => d.data.id.includes('/integrations/')).length, 'Integration modules'],
+  [under('src/assistant/llm/', /LLM\.py$/) - 3, 'LLM backends'],
+  [under('src/interfaces/voice/tts/', /VoiceSynthesizer\.py$/) - 3, 'TTS engines'],
+];
+document.getElementById('stats').innerHTML = stats.map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('');
+
+// ---------- svg ----------
+const svg = d3.select('#chart');
+const gNodes = svg.append('g');
+const gPulse = svg.append('g').attr('class', 'pulse').style('display', 'none');
+gPulse.append('circle'); gPulse.append('circle');
+const gLabels = svg.append('g').attr('class', 'labels');
+
+const fillPct = d => d.children ? [0, 9, 14, 18, 22, 26][Math.min(d.depth, 5)] : (d.data.kind === 'class' ? 52 : 40);
+const node = gNodes.selectAll('g').data(all.slice(1)).join('g')
+  .attr('class', 'n');
+const circle = node.append('circle')
+  .attr('r', 0)
+  .style('fill', d => `color-mix(in oklab, ${d.hue} ${fillPct(d)}%, var(--ground))`)
+  .style('stroke', d => `color-mix(in oklab, ${d.hue} ${d.children ? 45 : 30}%, transparent)`)
+  .style('stroke-width', d => d.children ? '1px' : '.6px');
+const label = gLabels.selectAll('text').data(all.slice(1)).join('text')
+  .attr('class', d => d.children ? 'pkg' : '')
+  .style('opacity', 0);
+
+let focus = root, view = frame(root), selected = null, hovered = null;
+const px = () => S / (svg.node().getBoundingClientRect().width || S);
+
+function place(v) {
+  const k = S / v[2]; view = v;
+  node.attr('transform', d => `translate(${(d.x - v[0]) * k},${(d.y - v[1]) * k})`);
+  circle.attr('r', d => d.r * k);
+  if (selected && selected !== root) {
+    gPulse.attr('transform', `translate(${(selected.x - v[0]) * k},${(selected.y - v[1]) * k})`)
+      .selectAll('circle').attr('r', Math.max(selected.r * k, 6));
+  }
+}
+
+function layoutLabels() {
+  const k = S / view[2], u = px();
+  label.each(function (d) {
+    const el = d3.select(this);
+    const vis = d.parent === focus || (d === focus && focus !== root && false);
+    const rs = d.r * k / u; // on-screen radius in px
+    const fs = d.children ? Math.min(15, Math.max(11, rs / 7)) : 11.5;
+    let name = d.children ? d.data.name : d.data.name.replace(/\.py$/, '');
+    const maxChars = Math.floor((rs * 2 * (d.children ? 0.78 : 0.9)) / (fs * 0.62));
+    if (!vis || maxChars < 4 || rs < 14) { el.style('opacity', 0).text(''); return; }
+    if (name.length > maxChars) name = name.slice(0, maxChars - 1) + '…';
+    const x = (d.x - view[0]) * k, y = (d.y - view[1]) * k;
+    const ty = d.children ? y - d.r * k + fs * u * 1.35 : y;
+    el.text(name).attr('x', x).attr('y', ty).style('font-size', `${fs * u}px`).style('opacity', 1)
+      .classed('dim', !!d.children && false);
+  });
+}
+
+function frame(d) {
+  if (d !== root) return [d.x, d.y, d.r * 2.08];
+  const x0 = d3.min(d.children, c => c.x - c.r), x1 = d3.max(d.children, c => c.x + c.r);
+  const y0 = d3.min(d.children, c => c.y - c.r), y1 = d3.max(d.children, c => c.y + c.r);
+  return [(x0 + x1) / 2, (y0 + y1) / 2, Math.max(x1 - x0, y1 - y0) * 1.04];
+}
+function zoom(d, dur) {
+  if (!d.children) d = d.parent;
+  if (d === focus && dur !== 0) { layoutLabels(); return; }
+  focus = d;
+  const target = frame(focus);
+  renderCrumbs();
+  if (reduce || dur === 0) { place(target); layoutLabels(); return; }
+  gLabels.classed('fading', true);
+  const i = d3.interpolateZoom(view, target);
+  svg.transition('zoom').duration(Math.max(550, Math.min(1100, i.duration * 0.9))).ease(d3.easeCubicInOut)
+    .tween('zoom', () => t => place(i(t)))
+    .on('end', () => { gLabels.classed('fading', false); layoutLabels(); });
+}
+
+// click target: the child of the focus that contains d
+function reachable(d) {
+  if (d === focus) return focus;
+  if (!d.ancestors().includes(focus)) return d; // outside: jump
+  let t = d; while (t.parent && t.parent !== focus) t = t.parent;
+  return t;
+}
+
+node.on('click', (e, d) => {
+  e.stopPropagation();
+  stopTour();
+  go(reachable(d));
+});
+svg.on('click', () => { stopTour(); if (focus.parent) { select(focus.parent); zoom(focus.parent); } else select(root); });
+
+function go(d) {
+  select(d);
+  if (d.children) zoom(d); else if (d.parent !== focus) zoom(d.parent);
+}
+
+// ---------- tooltip / hover ----------
+const tip = document.getElementById('tip');
+node.on('pointermove', (e, d) => {
+  const t = reachable(d);
+  if (hovered !== t) {
+    node.classed('hover', n => n === t); hovered = t;
+    tip.innerHTML = `<b>${esc(t.data.name)}</b>${fmt(t.data.desc)}`;
+  }
+  if (e.pointerType === 'mouse') {
+    tip.hidden = false;
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    let x = e.clientX + 16, y = e.clientY + 16;
+    if (x + w > innerWidth - 8) x = e.clientX - w - 12;
+    if (y + h > innerHeight - 8) y = e.clientY - h - 12;
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  }
+}).on('pointerleave', () => { tip.hidden = true; node.classed('hover', false); hovered = null; });
+svg.on('pointerleave', () => { tip.hidden = true; });
+
+// ---------- panel ----------
+const panel = document.getElementById('panel');
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt = s => esc(s).replace(/`([^`]+)`/g, '<code class="i">$1</code>');
+const nf = d3.format(',');
+
+function kidRow(c, max) {
+  const lines = c.children && c.data.kind !== 'module' ? c.loc : (c.data.lines || 0);
+  return `<li><button data-id="${esc(c.data.id)}" style="--h:${c.hue}">
+    <span class="dot"></span><span class="nm">${esc(c.data.name)}</span><span class="ln">${lines ? nf(lines) : ''}</span>
+    <span class="ds">${fmt(c.data.desc)}</span>
+    <span class="bar"><i style="width:${Math.max(3, 100 * lines / max)}%"></i></span></button></li>`;
+}
+
+function renderPanel() {
+  const d = selected || root, x = d.data;
+  const isGroup = x.kind === 'package' || x.kind === 'system';
+  const meta = [];
+  if (isGroup) meta.push(`<b>${d.fileCount}</b> files`, `<b>${nf(d.loc)}</b> lines`);
+  else if (x.lines) meta.push(`<b>${nf(x.lines)}</b> lines`);
+  if (x.kind === 'module' && d.children) meta.push(`<b>${d.children.length}</b> classes`);
+  if (x.bases && x.bases.length) meta.push(`extends <b>${x.bases.map(esc).join(', ')}</b>`);
+  const kids = d.children ? [...d.children].sort((a, b) => (b.children ? 1 : 0) - (a.children ? 1 : 0) || a.data.name.localeCompare(b.data.name)) : null;
+  const sibs = !kids && d.parent ? d.parent.children.filter(s => s !== d).sort((a, b) => a.data.name.localeCompare(b.data.name)) : null;
+  const list = kids || sibs || [];
+  const max = d3.max(list, c => c.children && c.data.kind !== 'module' ? c.loc : (c.data.lines || 0)) || 1;
+  const listTitle = kids ? (x.kind === 'module' ? 'Classes' : 'Contains') : `Also in ${esc(d.parent ? d.parent.data.name : '')}`;
+  panel.innerHTML = `${tourCard()}
+    <div class="card-in" style="--h:${d.hue};display:grid;gap:14px">
+      <div>
+        <div class="kind"><span class="dot"></span>${KIND[x.kind]}</div>
+        <h2>${esc(x.name)}</h2>
+        ${x.path ? `<div class="path">${esc(x.path)}</div>` : ''}
+      </div>
+      <p class="desc">${fmt(x.desc)}</p>
+      ${meta.length ? `<div class="meta">${meta.map(m => `<span>${m}</span>`).join('')}</div>` : ''}
+      ${x.commands ? `<div><h3>Commands</h3><div class="cmds" style="margin-top:8px">${x.commands.map(c => `<code>${esc(c)}</code>`).join('')}</div></div>` : ''}
+      ${list.length ? `<div><h3><span>${listTitle}</span><span>${list.length}</span></h3><ul class="kids" style="margin-top:6px">${list.map(c => kidRow(c, max)).join('')}</ul></div>` : ''}
+    </div>`;
+  bindTour();
+}
+panel.addEventListener('click', e => {
+  const b = e.target.closest('button[data-id]');
+  if (b) { stopTour(); go(byId.get(b.dataset.id)); }
+});
+
+function select(d) {
+  selected = d;
+  node.classed('sel', n => n === d);
+  gPulse.style('display', d && d !== root ? null : 'none');
+  place(view);
+  renderPanel();
+  renderCrumbs();
+  speak();
+}
+
+// ---------- crumbs ----------
+const crumbs = document.getElementById('crumbs');
+function renderCrumbs() {
+  const path = (selected && selected.ancestors().includes(focus) ? selected : focus).ancestors().reverse();
+  crumbs.innerHTML = path.map((d, i) =>
+    `${i ? '<span class="sep">/</span>' : ''}<button data-id="${esc(d.data.id)}" ${i === path.length - 1 ? 'aria-current="true"' : ''}>${esc(i ? d.data.name : 'keep')}</button>`).join('');
+}
+crumbs.addEventListener('click', e => { const b = e.target.closest('button'); if (b) { stopTour(); go(byId.get(b.dataset.id)); } });
+
+// ---------- legend ----------
+document.getElementById('legend').innerHTML = root.children.map(d =>
+  `<button data-id="${esc(d.data.id)}" style="--h:${d.hue}"><span class="dot"></span>${esc(d.data.name)}</button>`).join('');
+document.getElementById('legend').addEventListener('click', e => { const b = e.target.closest('button'); if (b) { stopTour(); go(byId.get(b.dataset.id)); } });
+
+// ---------- search ----------
+const q = document.getElementById('q'), results = document.getElementById('results');
+let hits = [], hi = 0;
+function runSearch() {
+  const s = q.value.trim().toLowerCase();
+  if (!s) { results.hidden = true; return; }
+  const scored = [];
+  for (const d of all) {
+    if (d === root) continue;
+    const n = d.data.name.toLowerCase(), p = (d.data.path || '').toLowerCase(), ds = d.data.desc.toLowerCase();
+    let sc = n === s || n === s + '.py' ? 100 : n.startsWith(s) ? 60 : n.includes(s) ? 40 : p.includes(s) ? 20 : ds.includes(s) ? 8 : 0;
+    if (sc) scored.push([sc - d.depth * .1, d]);
+  }
+  hits = scored.sort((a, b) => b[0] - a[0]).slice(0, 10).map(x => x[1]); hi = 0;
+  results.innerHTML = hits.length ? hits.map((d, i) => `<li role="option" data-i="${i}" aria-selected="${i === hi}" style="--h:${d.hue}">
+    <span class="rn"><span class="dot"></span>${esc(d.data.name)}</span><span class="rd">${fmt(d.data.desc)}</span></li>`).join('')
+    : `<li class="empty">Nothing matches “${esc(q.value)}”.</li>`;
+  results.hidden = false;
+}
+function pick(i) { const d = hits[i]; if (!d) return; stopTour(); results.hidden = true; q.value = ''; q.blur(); go(d); }
+q.addEventListener('input', runSearch);
+q.addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault(); if (!hits.length) return;
+    hi = (hi + (e.key === 'ArrowDown' ? 1 : -1) + hits.length) % hits.length;
+    results.querySelectorAll('li').forEach((li, i) => li.setAttribute('aria-selected', i === hi));
+    results.children[hi]?.scrollIntoView({block: 'nearest'});
+  } else if (e.key === 'Enter') { e.preventDefault(); pick(hi); }
+  else if (e.key === 'Escape') { q.value = ''; results.hidden = true; q.blur(); e.stopPropagation(); }
+});
+results.addEventListener('pointerdown', e => { const li = e.target.closest('li[data-i]'); if (li) { e.preventDefault(); pick(+li.dataset.i); } });
+q.addEventListener('blur', () => setTimeout(() => results.hidden = true, 120));
+
+// ---------- keyboard ----------
+document.addEventListener('keydown', e => {
+  if (e.target === q) return;
+  if (e.key === '/') { e.preventDefault(); q.focus(); return; }
+  if (tour.on) {
+    if (e.key === 'ArrowRight') { e.preventDefault(); tourStep(tour.i + 1); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); tourStep(tour.i - 1); }
+    else if (e.key === 'Escape') stopTour();
+    return;
+  }
+  if (e.key === 'Escape' && focus.parent) { select(focus.parent); zoom(focus.parent); }
+  if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && selected && selected.parent) {
+    if (e.target.closest && e.target.closest('input')) return;
+    e.preventDefault();
+    const sib = [...selected.parent.children].sort((a, b) => a.data.name.localeCompare(b.data.name));
+    const i = sib.indexOf(selected), n = sib[(i + (e.key === 'ArrowRight' ? 1 : -1) + sib.length) % sib.length];
+    select(n);
+  }
+  if (e.key === 'Enter' && selected && selected.children && document.activeElement === document.body) zoom(selected);
+});
+
+// ---------- tour ----------
+const TOUR = JSON.parse(document.getElementById('atlas-tour').textContent);
+const STEP_MS = 6500;
+const tour = {on: false, i: 0, playing: true, timer: null};
+function tourCard() {
+  if (!tour.on) return '';
+  const [, text] = TOUR[tour.i];
+  return `<div class="tour">
+    <div class="tour-head"><span>Follow a request</span><span>${tour.i + 1} / ${TOUR.length}</span></div>
+    <div class="rail ${tour.playing ? '' : 'paused'}" style="--dur:${STEP_MS}ms">${TOUR.map((_, i) => `<button data-step="${i}" class="${i < tour.i ? 'done' : i === tour.i ? 'cur' : ''}" aria-label="Step ${i + 1}">${i === tour.i ? '<i></i>' : ''}</button>`).join('')}</div>
+    <p>${fmt(text)}</p>
+    <div class="tour-ctl">
+      <button data-t="prev" ${tour.i === 0 ? 'disabled' : ''}>Back</button>
+      <button data-t="play">${tour.playing ? 'Pause' : 'Play'}</button>
+      <button data-t="next">${tour.i === TOUR.length - 1 ? 'Finish' : 'Next'}</button>
+      <button data-t="stop" class="x">Exit</button>
+    </div></div>`;
+}
+function bindTour() {
+  const c = panel.querySelector('.tour'); if (!c) return;
+  c.addEventListener('click', e => {
+    e.stopPropagation();
+    const s = e.target.closest('[data-step]'); if (s) return tourStep(+s.dataset.step);
+    const t = e.target.closest('[data-t]')?.dataset.t;
+    if (t === 'prev') tourStep(tour.i - 1);
+    if (t === 'next') tour.i === TOUR.length - 1 ? stopTour() : tourStep(tour.i + 1);
+    if (t === 'stop') stopTour();
+    if (t === 'play') { tour.playing = !tour.playing; schedule(); renderPanel(); }
+  });
+}
+function schedule() {
+  clearTimeout(tour.timer);
+  if (tour.on && tour.playing && !reduce) tour.timer = setTimeout(() => tour.i < TOUR.length - 1 ? tourStep(tour.i + 1) : (tour.playing = false, renderPanel()), STEP_MS);
+}
+function tourStep(i) {
+  if (i < 0 || i >= TOUR.length) return;
+  tour.i = i;
+  const d = byId.get(TOUR[i][0]);
+  select(d);
+  zoom(d.children ? d : d.parent);
+  schedule();
+  if (innerWidth <= 980) panel.scrollIntoView({behavior: reduce ? 'auto' : 'smooth', block: 'nearest'});
+}
+function startTour() { tour.on = true; tour.playing = !reduce; tourStep(0); }
+function stopTour() { if (!tour.on) return; tour.on = false; clearTimeout(tour.timer); renderPanel(); }
+document.getElementById('tourBtn').addEventListener('click', e => { e.stopPropagation(); tour.on ? stopTour() : startTour(); });
+
+// ---------- waveform ----------
+const cv = document.getElementById('wave'), cx = cv.getContext('2d');
+let energy = 0.35, target = 0.35;
+function speak() { energy = 1.25; }
+function colorOf(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+let cols = null;
+function drawWave(t) {
+  const dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+  cx.setTransform(dpr, 0, 0, dpr, 0, 0); cx.clearRect(0, 0, w, h);
+  if (!cols || t % 2000 < 20) cols = [colorOf('--amber'), colorOf('--teal'), colorOf('--violet')];
+  energy += (target - energy) * 0.025;
+  const mid = h * 0.5, x0 = w * 0.4, x1 = w * 0.7;
+  [[1, 0.9, 0, .55], [1.7, 0.55, 1.3, .35], [2.6, 0.35, 2.4, .25]].forEach(([f, a, ph, al], j) => {
+    cx.beginPath();
+    for (let x = x0; x <= x1; x += 3) {
+      const u = (x - x0) / (x1 - x0);
+      const env = Math.sin(Math.PI * u) ** 1.6;
+      const y = mid + Math.sin(u * 14 * f + t / (620 - j * 90) + ph) * Math.sin(u * 5.3 + t / 1500) * env * h * 0.36 * a * energy;
+      x === x0 ? cx.moveTo(x, y) : cx.lineTo(x, y);
+    }
+    cx.strokeStyle = cols[j]; cx.globalAlpha = al; cx.lineWidth = 1.6 - j * .3; cx.stroke();
+  });
+  cx.globalAlpha = 1;
+  if (!reduce) requestAnimationFrame(drawWave);
+}
+requestAnimationFrame(drawWave);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => cols = null);
+new MutationObserver(() => cols = null).observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+
+// ---------- boot ----------
+place(view);
+select(root);
+renderCrumbs();
+if (reduce) { circle.attr('r', d => d.r); layoutLabels(); }
+else {
+  circle.attr('r', 0).transition().duration(700).delay(d => d.depth * 140 + (d.x + d.y + S) * 0.18).ease(d3.easeBackOut.overshoot(1.1)).attr('r', d => d.r)
+    .end().catch(() => {}).then(layoutLabels);
+  setTimeout(layoutLabels, 1400);
+}
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(layoutLabels, 120); });
+})();
+</script>
+</body>
+</html>

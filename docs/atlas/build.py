@@ -1,0 +1,190 @@
+"""Builds the Keep Atlas: docs/atlas/out/index.html, a zoomable map of the source tree with one sentence per package,
+module and class. Standard library only, so CI runs it without the venv.
+
+    python3 docs/atlas/build.py [--out PATH]
+
+A description is the first sentence of the module's docstring (its main class's, when it has one), unless
+descriptions.py overrides it. Exits 1 when descriptions.py names something that no longer exists or a module has no
+description at all; `problems()` is the same check for the unit test."""
+import argparse
+import ast
+import json
+import re
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[1]
+sys.path.insert(0, str(HERE))
+
+from descriptions import CLASSES, GROUPS, MODULES, PROMPT_DESCRIPTION, SCRIPTS, TOUR  # noqa: E402
+
+TOP_ORDER = ["launcher", "src/interfaces", "src/assistant", "src/common", "res"]
+MAX_SENTENCE = 230
+
+
+def first_sentence(text: str) -> str:
+    text = re.sub(r"\s*\((?:see )?plans/[^)]*\)", "", text)
+    text = re.sub(r"\s*\([A-Z_]+_PLAN[^)]*\)", "", text)
+    text = " ".join(text.split())
+    m = re.search(r"(?<=[^\s.])\.(\s+(?=[A-Z`(])|$)", text)
+    if m and not text[:m.start()].endswith(("e.g", "i.e", "etc")):
+        text = text[:m.start() + 1]
+    if len(text) > MAX_SENTENCE:
+        cut = text[:MAX_SENTENCE]
+        for sep in (" — ", "; ", ", "):
+            i = cut.rfind(sep)
+            if i > 80:
+                text = cut[:i] + "."
+                break
+        else:
+            text = cut.rstrip() + "…"
+    if text and not text.endswith((".", "…", "?")):
+        text += "."
+    return text
+
+
+def _line_count(path: Path) -> int:
+    return len(path.read_text(encoding="utf-8").splitlines())
+
+
+def _is_exception(cls: ast.ClassDef) -> bool:
+    bases = [ast.unparse(b) for b in cls.bases]
+    return cls.name.endswith(("Error", "Exception")) or any("Error" in b or "Exception" in b for b in bases)
+
+
+def _module(path: Path) -> dict:
+    rel = path.relative_to(REPO).as_posix()
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    classes = []
+    for n in tree.body:
+        doc = isinstance(n, ast.ClassDef) and ast.get_docstring(n)
+        if doc and not n.name.startswith("_") and not _is_exception(n):
+            cid = f"{rel}::{n.name}"
+            classes.append({"id": cid, "name": n.name, "kind": "class", "path": rel,
+                            "lines": max(n.end_lineno - n.lineno + 1, 5),
+                            "desc": CLASSES.get(cid) or first_sentence(doc),
+                            "bases": [ast.unparse(b) for b in n.bases]})
+    main = next((c for c in classes if c["name"] == path.stem), None)
+    desc = (MODULES.get(rel) or (main and main["desc"]) or first_sentence(ast.get_docstring(tree) or "")
+            or (classes[0]["desc"] if classes else ""))
+    name = path.name if path.name != "__init__.py" else f"{path.parent.name}/__init__.py"
+    node = {"id": rel, "name": name, "kind": "module", "path": rel, "lines": len(source.splitlines()), "desc": desc}
+    if main:
+        node["bases"] = main["bases"]
+    if len(classes) >= 2:
+        node["children"] = classes
+    return node
+
+
+def _group(key: str) -> dict:
+    name, desc = GROUPS.get(key, (Path(key).name, ""))
+    return {"id": key, "name": name, "kind": "package", "path": key + "/", "desc": desc, "children": []}
+
+
+def _toolkits() -> list[tuple[str, str, list[str]]]:
+    """(name, summary, commands) per Toolkit(...) in Toolkits.py, read without importing the assistant."""
+    tree = ast.parse((REPO / "src/assistant/commands/Toolkits.py").read_text(encoding="utf-8"))
+    out = []
+    for call in ast.walk(tree):
+        if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "Toolkit" and len(call.args) >= 3:
+            name, summary, commands = (ast.literal_eval(a) for a in call.args[:3])
+            out.append((name, summary, list(commands)))
+    return out
+
+
+def build_tree() -> dict:
+    root = _group("root")
+    root.update(kind="system", path="")
+    groups: dict[str, dict] = {}
+
+    def group_for(directory: str) -> dict:
+        if directory not in groups:
+            groups[directory] = _group(directory)
+            parent = str(Path(directory).parent)
+            (root if parent == "src" else group_for(parent))["children"].append(groups[directory])
+        return groups[directory]
+
+    for path in sorted((REPO / "src").rglob("*.py")):
+        rel = path.relative_to(REPO).as_posix()
+        if "__pycache__" in rel or (path.name == "__init__.py" and rel not in MODULES):
+            continue
+        group_for(Path(rel).parent.as_posix())["children"].append(_module(path))
+
+    launcher = _group("launcher")
+    launcher["path"] = "./"
+    for name, desc in SCRIPTS.items():
+        launcher["children"].append({"id": name, "name": name, "kind": "script", "path": name,
+                                     "lines": _line_count(REPO / name), "desc": desc})
+    res = _group("res")
+    res["children"].append({"id": "res/prompt.md", "name": "prompt.md", "kind": "resource", "path": "res/prompt.md",
+                            "lines": _line_count(REPO / "res/prompt.md"), "desc": PROMPT_DESCRIPTION})
+    toolkits = _group("res/toolkits")
+    res["children"].append(toolkits)
+    for name, summary, commands in _toolkits():
+        rel = f"res/toolkits/{name}.md"
+        toolkits["children"].append({"id": rel, "name": f"{name}.md", "kind": "resource", "path": rel,
+                                     "lines": _line_count(REPO / rel), "desc": first_sentence(summary[0].upper() + summary[1:]),
+                                     "commands": commands})
+    root["children"] += [launcher, res]
+    root["children"].sort(key=lambda g: TOP_ORDER.index(g["id"]))
+
+    def sort(node):
+        if node["kind"] in ("package", "system"):
+            node["children"].sort(key=lambda c: (c["kind"] != "package", c["name"].lower()))
+            for c in node["children"]:
+                sort(c)
+    sort(root)
+    return root
+
+
+def _nodes(node: dict):
+    yield node
+    for c in node.get("children", []):
+        yield from _nodes(c)
+
+
+def problems(tree: dict) -> list[str]:
+    """What makes the atlas wrong: descriptions.py naming what no longer exists, a module with nothing to say."""
+    nodes = {n["id"]: n for n in _nodes(tree)}
+    dirs = {Path(n["id"]).parent.as_posix() for n in nodes.values() if n["kind"] == "module"}
+    found = []
+    for table, keys in (("MODULES", MODULES), ("CLASSES", CLASSES), ("SCRIPTS", SCRIPTS)):
+        found += [f"descriptions.{table} names {k}, which no longer exists" for k in keys if k not in nodes]
+    found += [f"descriptions.GROUPS names {k}, which holds no modules" for k in GROUPS
+              if k.startswith("src/") and not any(d == k or d.startswith(k + "/") for d in dirs)]
+    found += [f"descriptions.TOUR step {i + 1} names {k}, which no longer exists" for i, (k, _) in enumerate(TOUR)
+              if k not in nodes]
+    found += [f"{n['id']} has no description: add a descriptions.GROUPS entry" if n["kind"] == "package" else
+              f"{n['id']} has no description: give it a docstring or a descriptions.MODULES entry"
+              for n in nodes.values() if not n["desc"]]
+    return found
+
+
+def render(tree: dict) -> str:
+    def embed(value) -> str:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    template = (HERE / "template.html").read_text(encoding="utf-8")
+    return template.replace("__DATA__", embed(tree)).replace("__TOUR__", embed(TOUR))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--out", type=Path, default=HERE / "out" / "index.html")
+    args = parser.parse_args()
+    tree = build_tree()
+    found = problems(tree)
+    for p in found:
+        print(f"atlas: {p}", file=sys.stderr)
+    if found:
+        return 1
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(render(tree), encoding="utf-8")
+    count = sum(1 for n in _nodes(tree) if n["kind"] == "module")
+    print(f"atlas: {count} modules → {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

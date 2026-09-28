@@ -73,6 +73,12 @@ Every integration is off until you turn it on, and Keep walks you through the se
 
 Missing something? Ask Keep to write the integration itself: it analyses the code, builds it and opens the pull request for you to review.
 
+## Architecture
+
+Curious how it fits together? The **[Keep Atlas](https://maciekd.github.io/Keep/)** is a zoomable map of the whole
+server: every package, module and class with a one-line description, and a walk through one spoken request from the
+microphone to the speaker.
+
 ## Privacy
 
 Let's be honest: an assistant that reads your mail, sees your photos and listens in your kitchen is a bit of a privacy

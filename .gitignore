@@ -50,3 +50,6 @@ CLAUDE.local.md
 
 # rendered chat animations (docs/chatgif/render.py)
 docs/chatgif/out/
+
+# built Keep Atlas (docs/atlas/build.py)
+docs/atlas/out/

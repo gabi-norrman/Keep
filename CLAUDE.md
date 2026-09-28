@@ -149,6 +149,16 @@ source .venv/bin/activate && python -m pytest tests/ --override-ini="log_cli=fal
 - `res/prompt.md` - The prompt template send to the AI; the command references live in `res/toolkits/<name>.md` (shared by both prompts), only the core commands are in the template
 - `testsuite_prompt.md` - (private, present only when linked) the prompt the prompt test suite runs against. When it is present, MIRROR any change you make to prompt.md into it (its `# COMMAND SYSTEM` block must match byte for byte — `tests/unit/private/test_testsuite_prompt_mirror.py` checks)
 
+## Architecture Atlas
+
+`docs/atlas/` builds the Keep Atlas, the zoomable architecture map the readme links to: `python3 docs/atlas/build.py`
+(stdlib only) writes `docs/atlas/out/index.html`, and `.github/workflows/atlas.yml` publishes it to GitHub Pages on every
+push to master. A module's description is the first sentence of its docstring (its main class's when it has one), so a
+new module needs a docstring that opens with one plain sentence. `docs/atlas/descriptions.py` holds the package blurbs,
+overrides for missing or overlong docstrings, and the "Follow a request" tour; **add a package blurb to `GROUPS` when you
+create a package, and update `TOUR` when a module it names moves**. `tests/unit/test_architecture_atlas.py` fails on
+either omission.
+
 ## Dependencies
 
 ### Python
