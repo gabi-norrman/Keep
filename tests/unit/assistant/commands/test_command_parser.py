@@ -637,7 +637,8 @@ class TestKeepBracketsCommands:
 
     @pytest.fixture
     def parser(self):
-        return CommandParser(["config_set", "config_help", "config_request", "turn_on"])
+        return CommandParser(["config_set", "config_help", "config_request", "turn_on",
+                              "browse_wait", "browse_network"])
 
     def test_config_set_keeps_single_quoted_index(self, parser):
         result, remainder = parser.extract_command_and_params(
@@ -663,6 +664,16 @@ class TestKeepBracketsCommands:
         commands = parser.extract_all_commands(text)
         assert commands == [("config_set", ["icloud.devices[0].id", "A"]),
                             ("config_set", ["icloud.devices[0].display_name", "Kitchen iPad"])]
+
+    def test_browse_regex_arguments_keep_their_character_classes(self, parser):
+        # The toolkit documents both arguments as regexes: a normalized "[Cc]omplete"
+        # would become "(Cc)omplete" and silently never match.
+        result, _ = parser.extract_command_and_params('browse_wait("[Cc]omplete|klar", 5)')
+        assert result == ("browse_wait", ["[Cc]omplete|klar", "5"])
+        result, _ = parser.extract_command_and_params('browse_network("/orders/[0-9]+")')
+        assert result == ("browse_network", ["/orders/[0-9]+"])
+        result, _ = parser.extract_command_and_params("browse_network(api/poll/[a-f0-9-]{36})")
+        assert result == ("browse_network", ["api/poll/[a-f0-9-]{36}"])
 
     def test_other_commands_still_normalize_brackets(self, parser):
         result, _ = parser.extract_command_and_params("turn_on(Takspots [Gästhus])")

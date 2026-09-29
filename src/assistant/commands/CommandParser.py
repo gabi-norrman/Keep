@@ -11,10 +11,11 @@ class CommandParser:
     # and mangle name: prefixes that are valid syntax in the payload.
     RAW_PARAM_COMMANDS = {"browse_eval"}
 
-    # Commands whose arguments are setting keys, where "[N]" is a list index
-    # (icloud.devices[0].id) and must not be normalized to parens like the
-    # home automation names every other command carries.
-    KEEP_BRACKETS_COMMANDS = {"config_set", "config_help", "config_request"}
+    # Commands whose arguments carry square brackets as syntax — a setting key's
+    # list index (icloud.devices[0].id) or a regex character class ([Cc]omplete,
+    # /orders/[0-9]+) — and must not be normalized to parens like the home
+    # automation names every other command carries.
+    KEEP_BRACKETS_COMMANDS = {"config_set", "config_help", "config_request", "browse_wait", "browse_network"}
 
     def __init__(self, possible_commands: list[str]):
         self.possible_commands = possible_commands

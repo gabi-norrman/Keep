@@ -1792,6 +1792,7 @@ class Commands:
     def describe_browse_network(self, p):         return "Reading the page's network traffic"
     def describe_browse_wait(self, p):
         pattern, timeout = WebAccess._parse_wait_spec(p)
+        timeout = max(1.0, min(timeout, WebAccess._WAIT_MAX_S))
         return f"Waiting up to {timeout:.0f}s for '{pattern}'" if pattern else "Waiting for the page"
     def describe_browse_screenshot(self, p):      return "Taking a screenshot"
     def describe_send_screenshot(self, p):        return "Sending screenshot"

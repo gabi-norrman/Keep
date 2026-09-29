@@ -78,6 +78,46 @@ class TestCapture:
         assert [e['rid'] for e in wa._network_log] == ['api', 'doc']
         assert conn.send.await_count == 0
 
+    def test_form_post_body_is_url_decoded_so_the_vault_redactor_can_match_it(self):
+        # The vault matches a password literally: percent-encoded it would slip past both the
+        # log masker and the LLM-bound redaction, so the stored body is the decoded form.
+        wa = bare_wa()
+        with patch('assistant.tools.WebAccess.trace') as tr:
+            wa._on_network_request(request_event(
+                'login', 'https://shop.example/login', method='POST', kind=cdp.network.ResourceType.DOCUMENT,
+                post_data='user=marcus%40example.com&answer=r%C3%A4tt+svar%26mer&remember=1'), connection())
+        stored = entry(wa, 'login')['post']
+        assert 'marcus@example.com' in stored and 'rätt svar&mer' in stored and 'remember=1' in stored
+        assert '%40' not in stored
+        traced = ' '.join(str(c.args[0]) for c in tr.call_args_list)
+        assert '%40' not in traced and 'rätt svar' in traced
+
+    @pytest.mark.parametrize("post, leaked, kept", [
+        ('username=marcus&password=p%40ss+w0rd&otp=123456', ['p@ss w0rd', 'p%40ss', '123456'], ['marcus']),
+        ('{"user":"marcus","password":"h\\u00e4mlig","card":{"cardNumber":"4111","pin":"9876"},'
+         '"shipping":"home"}', ['hämlig', 'u00e4', '4111', '9876'], ['marcus', 'home']),
+    ])
+    def test_credential_fields_are_masked_by_name_before_the_body_is_stored_or_traced(self, post, leaked, kept):
+        wa = bare_wa()
+        with patch('assistant.tools.WebAccess.trace') as tr:
+            wa._on_network_request(request_event('login', 'https://shop.example/api/login', method='POST',
+                                                 post_data=post), connection())
+        stored = entry(wa, 'login')['post']
+        traced = ' '.join(str(c.args[0]) for c in tr.call_args_list)
+        for value in leaked:
+            assert value not in stored and value not in traced
+        for value in kept:
+            assert value in stored
+        report = run(wa._async_browse_network(''))
+        for value in leaked:
+            assert value not in report
+
+    def test_bodies_that_are_neither_form_nor_json_are_kept_verbatim(self):
+        wa = bare_wa()
+        wa._on_network_request(request_event('q', 'https://shop.example/graphql', method='POST',
+                                             post_data='query { order(id: "KEP47L") { status } }'), connection())
+        assert entry(wa, 'q')['post'] == 'query { order(id: "KEP47L") { status } }'
+
     def test_json_xhr_body_is_read_once_loading_finishes(self):
         wa = bare_wa()
         conn = connection()
@@ -322,7 +362,6 @@ class TestSessionLifecycle:
         popup = SimpleNamespace(add_handler=Mock(), send=AsyncMock())
         with patch.object(WebAccess, '_registry_target', return_value=object()), \
                 patch.object(WebAccess, '_as_tab', return_value=popup), \
-                patch.object(WebAccess, '_async_apply_anti_bot_tweaks', new=AsyncMock()), \
                 patch.object(WebAccess, '_async_wait_for_page_ready', new=AsyncMock()):
             run(wa._async_adopt_popup_target('popup-target-0001', 'https://pay.example/bankid'))
         listened = {call.args[0] for call in popup.add_handler.call_args_list}

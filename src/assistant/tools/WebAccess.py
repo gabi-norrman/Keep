@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 import requests
 from typing import Optional, ClassVar, List
-from urllib.parse import urljoin, urlparse, parse_qs
+from urllib.parse import urljoin, urlparse, parse_qs, parse_qsl
 
 from . import PdfExtractor
 
@@ -201,6 +201,13 @@ class WebAccess(Integration):
     _NETWORK_BODY_TYPES = frozenset({'XHR', 'Fetch', 'EventSource'})
     _NETWORK_BODY_MIME_RE = re.compile(r'json|text/|javascript|xml|x-www-form-urlencoded', re.I)
     _NETWORK_BODY_MAX = 1500          # chars of a body kept for browse_network
+    # Request fields whose value is a credential by name: masked before the body is stored,
+    # traced or shown, whatever the vault knows. Short names are bounded so "shipping" is not a pin.
+    _NETWORK_SECRET_KEY_RE = re.compile(
+        r'pass(?:word|wd|phrase|code)?|pwd|secret|token|credential|api[_-]?key|private|personnummer|'
+        r'social[_-]?security|card[_-]?(?:number|num|no)|(?<![a-z])(?:pin|otp|cvv|cvc|ssn|tan)(?![a-z])', re.I)
+    _NETWORK_SECRET_MASK = '•••'
+    _NETWORK_FORM_BODY_RE = re.compile(r'^[\w.%+\-\[\]]+=[^&\s]*(?:&[\w.%+\-\[\]]*=?[^&\s]*)*$')
     _NETWORK_BODY_TRACE_MAX = 400     # chars of a body written to the log
     _NETWORK_BODY_FETCH_TIMEOUT = 3.0
     _NETWORK_REPORT_DEFAULT = 40      # entries browse_network returns without a filter
@@ -1080,6 +1087,43 @@ class WebAccess(Integration):
             if self._network_requests.get(old['rid']) is old:
                 del self._network_requests[old['rid']]
 
+    @classmethod
+    def _scrub_request_body(cls, post: str) -> str:
+        """A request body safe to keep, trace and hand to the LLM.
+
+        Credential-looking fields (password, otp, card number…) are masked by name, and the
+        body is decoded into the form the vault redactor matches on: a form POST arrives
+        percent-encoded (`p%40ss+w0rd`) and a JSON one may carry `\\u00e5` escapes, neither of
+        which the literal-match redactor recognises as the stored `p@ss w0rd`. A body that is
+        neither is kept as it came."""
+        body = post.strip()
+        if not body:
+            return ''
+        if body[0] in '{[':
+            try:
+                data = json.loads(body)
+            except ValueError:
+                return post
+            scrubbed = cls._scrub_json(data)
+            if scrubbed == data and '\\u' not in body:
+                return post
+            return json.dumps(scrubbed, ensure_ascii=False, separators=(',', ':'))
+        if cls._NETWORK_FORM_BODY_RE.match(body):
+            pairs = parse_qsl(body, keep_blank_values=True, errors='replace')
+            if pairs:
+                return '&'.join(f"{k}={cls._NETWORK_SECRET_MASK if cls._NETWORK_SECRET_KEY_RE.search(k) else v}"
+                                for k, v in pairs)
+        return post
+
+    @classmethod
+    def _scrub_json(cls, data):
+        if isinstance(data, dict):
+            return {k: cls._NETWORK_SECRET_MASK if isinstance(k, str) and cls._NETWORK_SECRET_KEY_RE.search(k)
+                    else cls._scrub_json(v) for k, v in data.items()}
+        if isinstance(data, list):
+            return [cls._scrub_json(v) for v in data]
+        return data
+
     def _on_network_request(self, event: 'cdp.network.RequestWillBeSent', connection=None) -> None:
         kind = self._network_type(event)
         if kind not in self._NETWORK_CAPTURE_TYPES:
@@ -1092,7 +1136,7 @@ class WebAccess(Integration):
             prev['mime'] = getattr(redirect, 'mime_type', '') or ''
             prev['note'] = f"redirected to {event.request.url}"
             prev['done'] = True
-        post = getattr(event.request, 'post_data', None) or ''
+        post = self._scrub_request_body(getattr(event.request, 'post_data', None) or '')
         entry = {
             'rid': rid, 'ts': time.time(), 'tab': self._network_tab_id(connection), 'type': kind,
             'method': event.request.method, 'url': event.request.url,
@@ -4434,8 +4478,10 @@ class WebAccess(Integration):
         "<regex>, <seconds>" (default 30 s, at most 60 s). Returns a fresh snapshot either way."""
         pattern, timeout_s = self._parse_wait_spec(spec)
         timeout_s = max(1.0, min(timeout_s, self._WAIT_MAX_S))
+        # The wait overshoots its deadline by up to a poll, then page-ready, settle and the
+        # snapshot follow: the watchdog leaves them the room they may take on a slow page.
         return self._run_browse_op(f"browse_wait({pattern})", self._async_browse_wait(pattern, timeout_s),
-                                   "ERROR: wait failed.", timeout=timeout_s + self._BROWSE_OP_TIMEOUT / 3)
+                                   "ERROR: wait failed.", timeout=timeout_s + self._BROWSE_OP_TIMEOUT / 2)
 
     _CLICK_AT_SPEC_RE = re.compile(r'^\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$')
 

@@ -103,9 +103,15 @@ class TestWatchdogBudget:
         coro = op.call_args.args[1]
         coro.close()
         watchdog = op.call_args.kwargs['timeout']
-        # A wait far past the cap is clamped, not honoured, and the watchdog still
-        # leaves room for the closing snapshot without growing past the default budget.
-        assert WebAccess._WAIT_MAX_S < watchdog <= WebAccess._WAIT_MAX_S + WebAccess._BROWSE_OP_TIMEOUT
+        # A wait far past the cap is clamped, not honoured. After the deadline the loop can
+        # overshoot by a poll and still has page-ready, settle and the snapshot ahead of it —
+        # on a slow page those stages take their full caps, and the watchdog must outlast them
+        # or it resets the popup bookkeeping mid-handoff.
+        closing_stages = (WebAccess._WAIT_POLL_S + WebAccess._PAGE_READY_EVAL_TIMEOUT
+                          + WebAccess._PAGE_READY_TIMEOUT + WebAccess._SETTLE_TIMEOUT
+                          + WebAccess._OOPIF_SETTLE_TIMEOUT + WebAccess._PAGE_READY_TIMEOUT)
+        assert watchdog > WebAccess._WAIT_MAX_S + closing_stages
+        assert watchdog <= WebAccess._WAIT_MAX_S + WebAccess._BROWSE_OP_TIMEOUT
 
 
 @pytest.mark.unit
