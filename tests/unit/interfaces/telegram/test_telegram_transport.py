@@ -768,7 +768,7 @@ class TestTelegramDraft:
     def test_prefill_label_carries_the_percentage(self):
         t, d = self._draft()
         d.show_progress(Progress(PHASE_PREFILL, prefill=42.6))
-        assert t.texts[0].startswith("Thinking (43%)…\n")
+        assert t.texts[0].startswith("Prefilling (43%)…\n")
 
     def test_running_command_label(self):
         t, d = self._draft()

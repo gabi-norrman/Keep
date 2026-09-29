@@ -113,7 +113,7 @@ class TelegramDraft:
         if progress.phase == PHASE_THINKING:
             display = f"{self._thinking_label(progress.output_tokens)} {frame}"
         elif progress.phase == PHASE_PREFILL:
-            display = f"Thinking ({progress.prefill:.0f}%)…\n {frame}"
+            display = f"Prefilling ({progress.prefill:.0f}%)…\n {frame}"
         elif progress.phase == PHASE_COMMANDS:
             display = f"{self.COMMANDS_PREFIX if progress.commands > 1 else self.COMMAND_PREFIX} {frame}"
         else:

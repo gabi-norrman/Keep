@@ -603,9 +603,9 @@ class ChatPane:
         return BULLET, [spans]
 
     def _working_spans(self) -> List[StyledSpan]:
-        """What is being waited for — the LLM ("Thinking…", with a prefill bar while a local
-        model is still on the prompt) or a command ("Running command…") — in the working
-        colour, the detail in parentheses dim."""
+        """What is being waited for — the LLM ("Thinking…", or "Prefilling…" with a bar while
+        a local model is still on the prompt) or a command ("Running command…") — in the
+        working colour, the detail in parentheses dim."""
         p = self._working
         parts = []
         if p.phase == PHASE_THINKING and p.output_tokens:
@@ -617,6 +617,8 @@ class ChatPane:
             parts.append(describe_duration(p.elapsed))
         if p.phase == PHASE_COMMANDS:
             label = "Running commands…" if p.commands > 1 else "Running command…"
+        elif p.phase == PHASE_PREFILL:
+            label = "Prefilling…"
         else:
             label = "Thinking…"
         spans = [StyledSpan(text=label, bold=True)]

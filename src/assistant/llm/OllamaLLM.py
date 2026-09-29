@@ -84,7 +84,8 @@ class OllamaLLM(AbstractLLM):
     """Runs a local model through Ollama's native API, with KV-cache pre-heating and prefill diagnostics.
 
     Cache-slot metrics and prefill progress are read from Ollama's debug log (over ssh when
-    base_url is remote). Prefill state is class-level because Ollama serves one request at a time.
+    base_url is remote). Prefill state is class-level because Ollama serves one request at a time;
+    an owner token keeps a pre-heat that overlaps a user request from touching the request's state.
     """
     _ollama_log_path = str(LOG_DIR / 'ollama.log')
     _ssh_log: _SshRemoteLog | None = None  # set when base_url points at a remote host
@@ -108,8 +109,15 @@ class OllamaLLM(AbstractLLM):
     # We estimate completion from elapsed time against a measured prefill rate,
     # pinned below 100% until the first token confirms prefill has actually
     # finished. State is class-level: Ollama runs at most one request at a time.
+    # Requests can still overlap on our side (a pre-heat fired at the end of one
+    # turn is often still prefilling when the next user request goes out), so
+    # _begin_prefill hands out an owner token and only the owner may end the
+    # state or mark its first token — a stale pre-heat exit must not blank the
+    # bar of the user request that took over.
     _prefill_lock = threading.Lock()
     _prefill_active = False
+    _prefill_owner = 0                  # token of the request the state belongs to
+    _prefill_interactive = False        # the owner is a user request, not a pre-heat / background call
     _prefill_start_ts = 0.0
     _prefill_first_token = False
     _prefill_cache_metrics: tuple[int, int] | None = None  # (used, remaining) once parsed
@@ -355,7 +363,7 @@ class OllamaLLM(AbstractLLM):
         truncated = rendered[:idx]
         if not refresh:
             self._interactive_begin()
-        self._begin_prefill()
+        token = self._begin_prefill(interactive=False)
         try:
             resp = requests.post(f"{self.base_url}/api/generate", json={
                 "model": self.model, "prompt": truncated, "raw": True,
@@ -363,7 +371,7 @@ class OllamaLLM(AbstractLLM):
             }, timeout=self._PRE_HEAT_TIMEOUT)
             resp.raise_for_status()
         finally:
-            self._end_prefill()
+            self._end_prefill(token)
             if not refresh:
                 self._interactive_end()
         trace(f"Pre-heat: raw prefill of {len(truncated)} chars "
@@ -589,8 +597,11 @@ class OllamaLLM(AbstractLLM):
             return rendered_prompt, None
 
     @classmethod
-    def _begin_prefill(cls):
-        """Mark the start of a request's prompt prefill. Resets per-request state."""
+    def _begin_prefill(cls, interactive: bool = True) -> int | None:
+        """Mark the start of a request's prompt prefill and hand back its owner token.
+        Resets per-request state. A user request always takes the state over; a pre-heat or
+        background request that starts while a user request is prefilling leaves it alone and
+        gets None — its progress is not what the user is waiting for."""
         # Anchor the cache-slot scan at the current log EOF so we only match
         # THIS request's line — prior requests and preheats sit below the
         # anchor and are excluded. The scan stays non-destructive from here.
@@ -601,7 +612,14 @@ class OllamaLLM(AbstractLLM):
         if anchor is None:
             trace("Ollama prefill: log unreachable — cache metrics disabled for this request.")
         with cls._prefill_lock:
+            if not interactive and cls._prefill_active and cls._prefill_interactive:
+                trace(f"Ollama prefill: a user request (#{cls._prefill_owner}) is prefilling — "
+                      "this background prefill is not tracked.")
+                return None
+            cls._prefill_owner += 1
+            token = cls._prefill_owner
             cls._prefill_active = True
+            cls._prefill_interactive = interactive
             cls._prefill_start_ts = time.monotonic()
             cls._prefill_first_token = False
             cls._prefill_cache_metrics = None
@@ -609,20 +627,30 @@ class OllamaLLM(AbstractLLM):
             cls._prefill_progress_state = None
             cls._prefill_progress_read_ts = 0.0
             cls._prefill_metrics_read_ts = 0.0
-        trace("Ollama prefill: started.")
+        trace(f"Ollama prefill: started (#{token}, {'user request' if interactive else 'background'}).")
+        return token
 
     @classmethod
-    def _mark_first_token(cls):
-        """First generated token means prefill is complete — pin progress to 100%."""
+    def _mark_first_token(cls, token: int | None):
+        """First generated token means prefill is complete — pin progress to 100%.
+        Ignored unless `token` still owns the state."""
         with cls._prefill_lock:
+            if token is None or token != cls._prefill_owner:
+                return
             if cls._prefill_active and not cls._prefill_first_token:
                 cls._prefill_first_token = True
-                trace("Ollama prefill: first token received (prefill complete).")
+                trace(f"Ollama prefill: first token received (prefill #{token} complete).")
 
     @classmethod
-    def _end_prefill(cls):
-        """Mark the request finished; prefill_progress() returns None when idle."""
+    def _end_prefill(cls, token: int | None):
+        """Mark the request finished; prefill_progress() returns None when idle.
+        Ignored unless `token` still owns the state — a later request may have taken over."""
         with cls._prefill_lock:
+            if token is None:
+                return
+            if token != cls._prefill_owner:
+                trace(f"Ollama prefill: #{token} ended but #{cls._prefill_owner} owns the state now — leaving it.")
+                return
             cls._prefill_active = False
 
     @classmethod
@@ -819,7 +847,7 @@ class OllamaLLM(AbstractLLM):
         payload_str = self._log_prefix_match(messages)
         rendered_prompt, rendered_prefix_stats = self._log_rendered_prompt_match(messages, num_predict=num_predict)
         self._interactive_begin()
-        self._begin_prefill()
+        token = self._begin_prefill(interactive=not is_pre_heat)
         try:
             resp = requests.post(
                 f"{self.base_url}/api/chat",
@@ -839,14 +867,14 @@ class OllamaLLM(AbstractLLM):
                 message = data.get("message", {})
                 thought = message.get("thinking", "")
                 if thought:
-                    self._mark_first_token()
+                    self._mark_first_token(token)
                     if not in_thinking:
                         in_thinking = True
                         yield "<thinking>"
                     yield thought
                 content = message.get("content", "")
                 if content:
-                    self._mark_first_token()
+                    self._mark_first_token(token)
                     if in_thinking:
                         in_thinking = False
                         yield "</thinking>"
@@ -858,7 +886,7 @@ class OllamaLLM(AbstractLLM):
                     self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats)
                     OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
         finally:
-            self._end_prefill()
+            self._end_prefill(token)
             self._interactive_end()
 
     @staticmethod
@@ -873,7 +901,7 @@ class OllamaLLM(AbstractLLM):
         payload_str = self._log_prefix_match(messages)
         rendered_prompt, rendered_prefix_stats = self._log_rendered_prompt_match(messages)
         self._interactive_begin()
-        self._begin_prefill()
+        token = self._begin_prefill()
         try:
             resp = requests.post(
                 f"{self.base_url}/api/chat",
@@ -886,7 +914,7 @@ class OllamaLLM(AbstractLLM):
             OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
             return self._content_of(data)
         finally:
-            self._end_prefill()
+            self._end_prefill(token)
             self._interactive_end()
 
     def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
@@ -922,7 +950,7 @@ class OllamaLLM(AbstractLLM):
         payload_str = self._log_prefix_match(processed)
         rendered_prompt, rendered_prefix_stats = self._log_rendered_prompt_match(processed)
         self._interactive_begin()
-        self._begin_prefill()
+        token = self._begin_prefill()
         try:
             resp = requests.post(
                 f"{self.base_url}/api/chat",
@@ -935,7 +963,7 @@ class OllamaLLM(AbstractLLM):
             OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
             return self._content_of(data)
         finally:
-            self._end_prefill()
+            self._end_prefill(token)
             self._interactive_end()
 
     def _background_completion(self, messages: list[dict]) -> str:
@@ -945,7 +973,7 @@ class OllamaLLM(AbstractLLM):
         payload must stay what the next chat turn compares against."""
         body = json.dumps(self._build_request(messages, stream=True))
         self._acquire_background()
-        self._begin_prefill()
+        token = self._begin_prefill(interactive=False)
         chunks: list[str] = []
         try:
             conn = self._open_background_connection()
@@ -960,7 +988,7 @@ class OllamaLLM(AbstractLLM):
                 data = json.loads(line)
                 content = data.get("message", {}).get("content", "")
                 if content:
-                    self._mark_first_token()
+                    self._mark_first_token(token)
                     chunks.append(content)
                 if data.get("done"):
                     self._log_metrics(data)
@@ -977,6 +1005,6 @@ class OllamaLLM(AbstractLLM):
                 raise LLMPreempted("interactive request took the Ollama slot") from None
             raise
         finally:
-            self._end_prefill()
+            self._end_prefill(token)
             self._release_background()
         return "".join(chunks)
