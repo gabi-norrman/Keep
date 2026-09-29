@@ -3,6 +3,7 @@ health-check/ensure funnel, circuit breaker, browse_close full shutdown, and
 child-inclusive Chrome kill. No real Chrome — WebAccess.__new__ + AsyncMock."""
 
 import asyncio
+import contextlib
 import signal
 import threading
 import time
@@ -374,7 +375,8 @@ class TestBrowseCloseFullShutdown:
 
         with patch('assistant.tools.WebAccess.os.kill') as mock_kill, \
                 patch.object(WebAccess, '_chrome_child_processes',
-                             staticmethod(lambda pid: [child] if pid == 555 else [])):
+                             staticmethod(lambda pid: [child] if pid == 555 else [])), \
+                patch.object(WebAccess, '_async_wait_for_chrome_exit', new=AsyncMock()):
             result = run(wa._async_browse_close())
 
         assert result == "Browse session closed."
@@ -563,7 +565,8 @@ class TestQuitDriverChildKill:
         child.pid = 301
 
         with patch('assistant.tools.WebAccess.os.kill') as mock_kill, \
-                patch.object(WebAccess, '_chrome_child_processes', staticmethod(lambda pid: [child])):
+                patch.object(WebAccess, '_chrome_child_processes', staticmethod(lambda pid: [child])), \
+                patch.object(WebAccess, '_async_wait_for_chrome_exit', new=AsyncMock()):
             run(wa._async_quit_driver())
 
         browser.stop.assert_called_once()
@@ -571,6 +574,54 @@ class TestQuitDriverChildKill:
         mock_kill.assert_called_once_with(300, signal.SIGKILL)
         assert wa._browser is None
         assert wa._tab is None
+
+
+@pytest.mark.unit
+class TestQuitDriverWaitsForExit:
+    """browse_close immediately followed by browse_open used to launch into the
+    still-dying Chrome tree, fail with 'Failed to connect to browser' and wipe
+    the profile. Quit must wait for the tree it killed — collected before the
+    kill, since killing clears the tracked PIDs."""
+
+    def test_waits_on_the_tree_collected_before_the_kill(self):
+        wa = make_wa()
+        browser = Mock(spec=['stop', '_process', '_process_pid'])
+        proc = Mock()
+        proc.pid = 300
+        browser._process = proc
+        browser._process_pid = 300
+        wa._browser = browser
+        parent, child = Mock(pid=300), Mock(pid=301)
+        order = []
+
+        def fake_kill(*_a, **_k):
+            order.append('kill')
+
+        def fake_wait(procs, timeout):
+            order.append(('wait', list(procs), timeout))
+            return [], []
+
+        with patch('assistant.tools.WebAccess.os.kill', side_effect=fake_kill), \
+                patch('assistant.tools.WebAccess.psutil.Process', return_value=parent), \
+                patch('assistant.tools.WebAccess.psutil.wait_procs', side_effect=fake_wait), \
+                patch.object(WebAccess, '_chrome_child_processes', staticmethod(lambda pid: [child])):
+            run(wa._async_quit_driver())
+
+        assert order[0] == 'kill'
+        assert order[-1] == ('wait', [parent, child], WebAccess._CHROME_EXIT_TIMEOUT)
+        assert wa._chrome_pids == set()
+
+    def test_survivors_do_not_fail_the_quit(self):
+        wa = make_wa()
+        wa._browser = Mock(spec=['stop', '_process', '_process_pid'], _process=Mock(pid=300),
+                           _process_pid=300)
+        survivor = Mock(pid=300)
+        with patch('assistant.tools.WebAccess.os.kill'), \
+                patch('assistant.tools.WebAccess.psutil.Process', return_value=survivor), \
+                patch('assistant.tools.WebAccess.psutil.wait_procs', return_value=([], [survivor])), \
+                patch.object(WebAccess, '_chrome_child_processes', staticmethod(lambda pid: [])):
+            run(wa._async_quit_driver())
+        assert wa._browser is None
 
 
 @pytest.mark.unit
@@ -587,11 +638,19 @@ class TestInitializeDriverContract:
             patch.object(WebAccess, '_kill_orphan_chrome_using_profile'),
             patch.object(WebAccess, '_clear_singleton_locks'),
             patch.object(WebAccess, '_track_chrome_pids'),
-            patch.object(WebAccess, '_async_apply_anti_bot_tweaks', new=AsyncMock()),
+            patch.object(WebAccess, '_launch_user_agent', return_value='Mozilla/5.0 test Chrome/154.0.0.0'),
+            patch.object(WebAccess, '_async_install_stealth_script', new=AsyncMock()),
             patch.object(WebAccess, '_async_setup_network_monitor', new=AsyncMock()),
             patch.object(WebAccess, '_page_targets', return_value=page_targets),
             patch('assistant.tools.WebAccess.nodriver.start', new=start_mock),
         )
+
+    @contextlib.contextmanager
+    def _patched(self, start_mock, page_targets):
+        with contextlib.ExitStack() as stack:
+            for p in self._init_patches(start_mock, page_targets):
+                stack.enter_context(p)
+            yield
 
     def test_successful_init_marks_up_and_seeds_known_targets(self):
         wa = make_wa(_browser=None, _tab=None, _profile_dir='/tmp/floxy-test-profile',
@@ -605,13 +664,20 @@ class TestInitializeDriverContract:
         leftover.target.target_id = 'leftover'
         browser = Mock()
         browser.get = AsyncMock(return_value=base_tab)
-        p1, p2, p3, p4, p5, p6, p7, p8, p9 = self._init_patches(
-            AsyncMock(return_value=browser), [leftover])
-        with p1, p2, p3, p4, p5, p6, p7, p8, p9:
+        start_mock = AsyncMock(return_value=browser)
+        with self._patched(start_mock, [leftover]):
             run(wa._async_initialize_driver())
 
         assert wa._browser is browser
         assert wa._tab is base_tab
+        # The UA goes on Chrome's command line (so Chrome derives real client hints
+        # and popups inherit it) — never through Emulation.setUserAgentOverride,
+        # which DataDome hard-blocks on. And no --disable-gpu: SwiftShader is a tell.
+        args = start_mock.await_args.kwargs['browser_args']
+        assert '--user-agent=Mozilla/5.0 test Chrome/154.0.0.0' in args
+        assert '--disable-gpu' not in args
+        assert not any('setUserAgentOverride' in str(c) or 'setExtraHTTPHeaders' in str(c)
+                       for c in base_tab.send.await_args_list)
         # _mark_browser_up ran: mid-session restart detection needs the bump,
         # and the breaker/latch state must clear on a successful launch
         assert wa._browser_generation == 4
@@ -629,14 +695,53 @@ class TestInitializeDriverContract:
                      _pending_popup_targets={})
         browser = Mock()
         browser.get = AsyncMock(side_effect=ConnectionError("tab open failed"))
-        p1, p2, p3, p4, p5, p6, p7, p8, p9 = self._init_patches(
-            AsyncMock(return_value=browser), [])
-        with p1, p2, p3, p4, p5, p6, p7, p8, p9:
+        with self._patched(AsyncMock(return_value=browser), []):
             run(wa._async_initialize_driver())
 
         browser.stop.assert_called_once()
         assert wa._browser is None
         assert wa._tab is None
+        assert wa._last_init_failure_ts > 0
+
+    def _fresh(self):
+        return make_wa(_browser=None, _tab=None, _profile_dir='/tmp/floxy-test-profile',
+                       _pending_popup_targets={}, _INIT_INTER_RETRY_DELAY=0)
+
+    def _browser(self):
+        tab = Mock()
+        tab.send = AsyncMock()
+        tab.target.target_id = 'base'
+        browser = Mock()
+        browser.get = AsyncMock(return_value=tab)
+        return browser
+
+    def test_first_start_failure_retries_without_wiping_the_profile(self):
+        # The profile holds every login; a start that collides with the previous
+        # Chrome tree still dying (browse_close → browse_open) must not cost it.
+        wa = self._fresh()
+        start_mock = AsyncMock(side_effect=[RuntimeError('Failed to connect to browser'), self._browser()])
+        with self._patched(start_mock, []), patch.object(WebAccess, '_wipe_profile') as wipe:
+            run(wa._async_initialize_driver())
+        assert wa._browser is not None
+        assert start_mock.await_count == 2
+        wipe.assert_not_called()
+
+    def test_profile_is_wiped_only_for_the_last_attempt(self):
+        wa = self._fresh()
+        start_mock = AsyncMock(side_effect=[RuntimeError('1'), RuntimeError('2'), self._browser()])
+        with self._patched(start_mock, []), patch.object(WebAccess, '_wipe_profile') as wipe:
+            run(wa._async_initialize_driver())
+        assert wa._browser is not None
+        assert start_mock.await_count == 3
+        wipe.assert_called_once()
+
+    def test_three_failures_stamp_the_backoff(self):
+        wa = self._fresh()
+        start_mock = AsyncMock(side_effect=RuntimeError('down'))
+        with self._patched(start_mock, []), patch.object(WebAccess, '_wipe_profile'):
+            run(wa._async_initialize_driver())
+        assert wa._browser is None
+        assert start_mock.await_count == 3
         assert wa._last_init_failure_ts > 0
 
 

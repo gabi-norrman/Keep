@@ -321,44 +321,44 @@ class TestAuthUrlConsentSkip:
         remove.assert_not_awaited()
 
 @pytest.mark.unit
-class TestUserAgentFingerprint:
-    """The UA override must scrub the HeadlessChrome bot tell and keep the
-    Sec-Ch-Ua brand versions consistent with the real Chrome version."""
+class TestLaunchUserAgent:
+    """The UA Chrome is launched with must be what a real (non-headless) Chrome of
+    the installed version sends: `Chrome/<major>.0.0.0` (Chrome's own UA
+    reduction), so the client hints Chrome derives from it agree with it."""
 
-    def _tab_reporting(self, ua):
-        tab = Mock()
-        tab.send = AsyncMock(return_value=('1.3', 'HeadlessChrome/151.0.7922.174',
-                                           'rev', ua, 'v8'))
-        return tab
+    def _probe(self, stdout):
+        return patch('assistant.tools.WebAccess.subprocess.run',
+                     return_value=SimpleNamespace(stdout=stdout, returncode=0))
 
-    def test_resolve_ua_strips_headless_and_parses_version(self):
+    def test_uses_the_installed_chrome_major_in_reduced_form(self):
         wa = make_wa(_UA_FALLBACK_MAJOR='151')
         wa._ua_cache = None
-        ua_in = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                 'AppleWebKit/537.36 (KHTML, like Gecko) '
-                 'HeadlessChrome/151.0.7922.174 Safari/537.36')
-        ua, major, full = run(wa._async_resolve_ua(self._tab_reporting(ua_in)))
+        with self._probe("Google Chrome 154.0.8037.58 \n") as probe:
+            ua = wa._launch_user_agent('/fake/chrome')
+        assert 'Chrome/154.0.0.0 Safari/537.36' in ua
+        assert '8037' not in ua
         assert 'HeadlessChrome' not in ua
-        assert 'Chrome/151.0.7922.174' in ua
-        assert (major, full) == ('151', '151.0.7922.174')
+        assert probe.call_args.args[0][0] == '/fake/chrome'
 
-    def test_resolve_ua_caches(self):
+    def test_falls_back_to_the_pinned_major_when_the_probe_fails(self):
         wa = make_wa(_UA_FALLBACK_MAJOR='151')
         wa._ua_cache = None
-        tab = self._tab_reporting('Mozilla/5.0 Chrome/151.0.7922.174 Safari/537.36')
-        run(wa._async_resolve_ua(tab))
-        tab.send.reset_mock()
-        run(wa._async_resolve_ua(tab))
-        assert tab.send.await_count == 0
+        with patch('assistant.tools.WebAccess.subprocess.run', side_effect=OSError('no exec')):
+            ua = wa._launch_user_agent('/fake/chrome')
+        assert 'Chrome/151.0.0.0' in ua
 
-    def test_resolve_ua_falls_back_when_getversion_fails(self):
+    def test_caches_per_launch(self):
         wa = make_wa(_UA_FALLBACK_MAJOR='151')
         wa._ua_cache = None
-        tab = Mock()
-        tab.send = AsyncMock(side_effect=RuntimeError('no transport'))
-        ua, major, full = run(wa._async_resolve_ua(tab))
-        assert 'HeadlessChrome' not in ua
-        assert major == '151'
+        with self._probe("Chromium 154.0.8037.58") as probe:
+            first = wa._launch_user_agent('/fake/chrome')
+            second = wa._launch_user_agent('/fake/chrome')
+        assert first == second
+        assert probe.call_count == 1
+
+
+@pytest.mark.unit
+class TestSnapshotRendering:
 
     def _wa(self):
         return WebAccess.__new__(WebAccess)
