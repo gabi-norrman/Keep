@@ -479,6 +479,10 @@ class ChatSession:
                 buffer += chunk
                 if suppress_no and self._is_no_prefix(buffer):
                     continue
+                repaired = RichText.repair_markdown(buffer)
+                if repaired != buffer:
+                    trace(f"{prefix}: reply used Markdown formatting, converted to HTML")
+                    buffer = repaired
 
                 while max_len and len(buffer) > max_len:
                     # This bubble is full: close it on the part and continue in a new one.
