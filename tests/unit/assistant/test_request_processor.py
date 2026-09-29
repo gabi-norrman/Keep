@@ -1134,9 +1134,14 @@ class TestPrepareContext:
         prompt_manager.get_messages.assert_called_once_with(extended_thinking=False,
                                                             time_note=full_handler.time_note)
         assert full_handler.time_note == PromptManager.current_time_note(full_handler.turn_timestamp)
-        assert sent == MessageFormatter.format_message("TestUser", full_handler.turn_timestamp,
-                                                       "VoiceToVoice", "Kitchen", "what's the plan for today?")
-        assert MessageFormatter.format_timestamp(full_handler.turn_timestamp) in sent
+        assert full_handler.dialog_manager.reply_to_llm == MessageFormatter.format_message(
+            "TestUser", full_handler.turn_timestamp, "VoiceToVoice", "Kitchen", "what's the plan for today?")
+        assert MessageFormatter.format_timestamp(full_handler.turn_timestamp) in full_handler.dialog_manager.reply_to_llm
+        # The cache key and DB row carry no time, or the same utterance a minute later misses.
+        assert sent == full_handler.dialog_manager.cache_query
+        assert MessageFormatter.format_timestamp(full_handler.turn_timestamp) not in sent
+        assert sent == MessageFormatter.format_message("TestUser", None, "VoiceToVoice", "Kitchen",
+                                                       "what's the plan for today?")
 
         full_handler.dialog_manager.llm_response_raw = "Nothing booked."
         full_handler._update_history(prompt_manager, None)

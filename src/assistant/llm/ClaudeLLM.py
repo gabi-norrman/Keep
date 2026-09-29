@@ -448,7 +448,7 @@ class ClaudeLLM(AbstractLLM):
         info("Claude replied with empty message on every retry - returning the empty reply.")
         return text
 
-    def create_completion_with_images(self, messages: list[dict], images: list) -> str:
+    def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
         self._ensure_initialized()
 
         system_message, anthropic_messages = self._convert_messages(messages)

@@ -85,9 +85,12 @@ class CachedLLM(AbstractLLM):
         self.last_response_was_cached = False
         return self.llm.create_completion(messages, thinking=thinking)
 
-    def create_completion_with_images(self, messages: list[dict], images: list) -> str:
+    def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
         self.last_response_was_cached = False
-        return self.llm.create_completion_with_images(messages, images)
+        return self.llm.create_completion_with_images(messages, images, background=background)
+
+    def is_local(self) -> bool:
+        return self.llm.is_local()
 
     def supports_video(self) -> bool:
         return self.llm.supports_video()

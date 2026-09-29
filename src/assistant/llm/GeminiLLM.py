@@ -150,7 +150,7 @@ class GeminiLLM(AbstractLLM):
 
         return response.text
 
-    def create_completion_with_images(self, messages: list[dict], images: list) -> str:
+    def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
         self._ensure_initialized()
 
         system_instruction, gemini_messages = self._convert_messages(messages)

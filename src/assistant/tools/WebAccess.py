@@ -8,12 +8,13 @@ import platform
 import re
 import shutil
 import signal
+import subprocess
 import threading
 import time
 from datetime import datetime
 import requests
 from typing import Optional, ClassVar, List
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, parse_qs
 
 from . import PdfExtractor
 
@@ -764,8 +765,16 @@ class WebAccess(Integration):
 
         trace(f"Using Chrome binary: {chrome_path}")
         trace(f"Using persistent Chrome profile: {self._profile_dir}")
+        # The UA goes on the command line, not through Emulation.setUserAgentOverride:
+        # with the CDP override Chrome emits client-hint headers that no real Chrome
+        # sends (a hand-built brand list, or none at all), and DataDome hard-blocks
+        # on that from the very first request (Etsy, 2026-09-29: t=bv with the
+        # override, a solvable challenge without it). With the flag Chrome derives
+        # the Sec-Ch-Ua headers itself and popups inherit the UA. No --disable-gpu
+        # either: SwiftShader as the WebGL renderer is another headless tell.
+        ua = await asyncio.to_thread(self._launch_user_agent, chrome_path)
         browser_args = [
-            '--disable-gpu',
+            f'--user-agent={ua}',
             '--window-size=1920,1080',
             '--disable-dev-shm-usage',
         ]
@@ -788,7 +797,7 @@ class WebAccess(Integration):
             trace(
                 f"nodriver.start() failed: {e} — sleeping "
                 f"{self._INIT_INTER_RETRY_DELAY:.0f}s for Chrome to release resources, "
-                f"then wiping profile and retrying"
+                f"then retrying"
             )
             self._browser = None
             self._tab = None
@@ -796,17 +805,28 @@ class WebAccess(Integration):
             # used to happen within ~3s of each other, which is too tight on macOS;
             # child renderers and the OS often need 10–15s to fully release.
             await asyncio.sleep(self._INIT_INTER_RETRY_DELAY)
-            self._wipe_profile()
             self._kill_orphan_chrome_using_profile()
             self._clear_singleton_locks()
             try:
                 self._browser = await _start()
             except Exception as e2:
-                note(f"nodriver.start() failed after profile wipe: {e2}")
+                # Only now is the profile a suspect: a start that fails after the
+                # process tree had time to die is not a dying-Chrome collision.
+                # The profile holds every login cookie, so it is the last resort.
+                note(f"nodriver.start() failed again ({e2}) — wiping the profile and retrying once more")
                 self._browser = None
                 self._tab = None
-                self._last_init_failure_ts = time.time()
-                return
+                self._wipe_profile()
+                self._kill_orphan_chrome_using_profile()
+                self._clear_singleton_locks()
+                try:
+                    self._browser = await _start()
+                except Exception as e3:
+                    note(f"nodriver.start() failed after profile wipe: {e3}")
+                    self._browser = None
+                    self._tab = None
+                    self._last_init_failure_ts = time.time()
+                    return
 
         self._track_chrome_pids()
 
@@ -819,9 +839,9 @@ class WebAccess(Integration):
                 trace(f"page.enable() failed: {e}")
             self._install_dialog_handler(self._tab)
             self._install_network_capture(self._tab)
-            await self._async_apply_anti_bot_tweaks(self._tab)
+            await self._async_install_stealth_script(self._tab)
             await self._async_setup_network_monitor(self._tab)
-            info("nodriver initialized with anti-bot tweaks")
+            info(f"nodriver initialized (UA {ua})")
             self._last_init_failure_ts = 0.0
             self._mark_browser_up()
             # Seed the popup bookkeeping with every page already open so the
@@ -841,11 +861,20 @@ class WebAccess(Integration):
             self._tab = None
             self._last_init_failure_ts = time.time()
 
+    # How long _async_quit_driver waits for the killed Chrome tree to actually exit.
+    # Chrome's helpers take seconds to die on macOS; a browse_open right after
+    # browse_close used to launch into that window, fail with "Failed to connect
+    # to browser" and (before the retry was reordered) wipe the profile.
+    _CHROME_EXIT_TIMEOUT = 10.0
+
     async def _async_quit_driver(self):
-        """Close the current browser; force-kill PIDs if stop fails."""
+        """Close the current browser, force-kill its PIDs if stop fails, and wait
+        until the whole process tree has exited so the next launch does not
+        collide with it."""
         if self._browser is None:
             return
         self._track_chrome_pids()
+        procs = self._tracked_chrome_processes()
         try:
             self._browser.stop()
         except Exception:
@@ -853,115 +882,90 @@ class WebAccess(Integration):
         self._browser = None
         self._tab = None
         self._kill_tracked_chrome_pids()
+        await self._async_wait_for_chrome_exit(procs)
 
-    # Fallback Chrome major version for the UA override when browser.getVersion
-    # can't be reached — keep roughly current so the fingerprint isn't obviously
-    # stale. The live value from getVersion is preferred and used when available.
-    _UA_FALLBACK_MAJOR = "151"
+    def _tracked_chrome_processes(self) -> list:
+        """psutil handles for every tracked Chrome PID and its helper children —
+        collected before the kill, since killing clears the tracked set."""
+        procs = []
+        for pid in list(getattr(self, '_chrome_pids', ())):
+            try:
+                procs.append(psutil.Process(pid))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                continue
+            procs.extend(self._chrome_child_processes(pid))
+        return procs
 
-    async def _async_resolve_ua(self, tab: 'nodriver.Tab') -> tuple[str, str, str]:
-        """Return (user_agent, major, full_version) for the running Chrome with the
-        'HeadlessChrome' token scrubbed. Falls back to a plausible desktop UA if
-        browser.getVersion is unreachable. Cached on the instance after first call."""
+    async def _async_wait_for_chrome_exit(self, procs: list) -> None:
+        if not procs:
+            return
+        started = time.time()
+        try:
+            _gone, alive = await asyncio.to_thread(psutil.wait_procs, procs, self._CHROME_EXIT_TIMEOUT)
+        except Exception as e:
+            trace(f"browse: waiting for the Chrome tree to exit failed: {type(e).__name__}: {e}")
+            return
+        if alive:
+            note(f"browse: {len(alive)} of {len(procs)} Chrome process(es) still alive "
+                 f"{self._CHROME_EXIT_TIMEOUT:.0f}s after the kill: {[p.pid for p in alive]}")
+        else:
+            info(f"browse: Chrome process tree ({len(procs)} process(es)) exited in {time.time() - started:.1f}s")
+
+    # Fallback Chrome major version for the launch UA when `chrome --version`
+    # cannot be read — keep roughly current so the fingerprint isn't obviously
+    # stale. The live value is preferred and used when available.
+    _UA_FALLBACK_MAJOR = "154"
+    _CHROME_VERSION_PROBE_TIMEOUT = 5.0
+
+    @staticmethod
+    def _ua_platform_token() -> str:
+        system = platform.system()
+        if system == "Darwin":
+            return "Macintosh; Intel Mac OS X 10_15_7"
+        if system == "Windows":
+            return "Windows NT 10.0; Win64; x64"
+        return "X11; Linux x86_64"
+
+    def _launch_user_agent(self, chrome_path: str) -> str:
+        """The user agent passed to Chrome on its command line: what this Chrome
+        version sends when it is not headless. Chrome reduces the UA to
+        `Chrome/<major>.0.0.0` itself, so the major from `chrome --version` is all
+        it takes. Cached per launch; a Chrome update is picked up on the next one."""
         cached = getattr(self, '_ua_cache', None)
         if cached:
             return cached
-        ua = None
+        major = None
         try:
-            _proto, _product, _rev, ua_str, _js = await tab.send(cdp.browser.get_version())
-            ua = ua_str
+            out = subprocess.run([chrome_path, '--version'], capture_output=True, text=True,
+                                 timeout=self._CHROME_VERSION_PROBE_TIMEOUT).stdout
+            m = re.search(r'\b(\d+)\.\d+\.\d+\.\d+', out or '')
+            major = m.group(1) if m else None
+            if major is None:
+                trace(f"chrome --version gave no version: {out!r} — using fallback major")
         except Exception as e:
-            trace(f"browser.getVersion failed: {e} — using fallback UA")
-        if not ua:
-            ua = (f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                  f"AppleWebKit/537.36 (KHTML, like Gecko) "
-                  f"Chrome/{self._UA_FALLBACK_MAJOR}.0.0.0 Safari/537.36")
-        ua = ua.replace("HeadlessChrome", "Chrome")
-        m = re.search(r'Chrome/(\d+)(\.[\d.]+)?', ua)
-        major = m.group(1) if m else self._UA_FALLBACK_MAJOR
-        full = (m.group(1) + (m.group(2) or ".0.0.0")) if m else f"{self._UA_FALLBACK_MAJOR}.0.0.0"
-        self._ua_cache = (ua, major, full)
+            trace(f"chrome --version failed: {type(e).__name__}: {e} — using fallback major")
+        major = major or self._UA_FALLBACK_MAJOR
+        self._ua_cache = (f"Mozilla/5.0 ({self._ua_platform_token()}) AppleWebKit/537.36 "
+                          f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36")
         return self._ua_cache
 
-    async def _async_apply_anti_bot_tweaks(self, tab: 'nodriver.Tab'):
-        """Slim stealth: de-Headless UA + matching client hints, WebGL fingerprint,
-        permissions API.
-
-        nodriver already removes navigator.webdriver, the chrome.runtime shim, and
-        cdc_* patches at the C++/CDP level — we only need to cover the gaps. The UA
-        override strips the 'HeadlessChrome' token (a blatant bot tell that got
-        x.com to serve the degraded onboarding login and rate-limit us), and the
-        Sec-Ch-Ua brands are derived from the SAME Chrome version so the UA and the
-        client hints agree — a brand/version mismatch is itself an automation flag.
-        """
-        ua, major, full = await self._async_resolve_ua(tab)
-        sec_ch_ua = (f'"Chromium";v="{major}", "Google Chrome";v="{major}", '
-                     f'"Not.A/Brand";v="99"')
-        try:
-            brands = [
-                cdp.emulation.UserAgentBrandVersion(brand="Chromium", version=major),
-                cdp.emulation.UserAgentBrandVersion(brand="Google Chrome", version=major),
-                cdp.emulation.UserAgentBrandVersion(brand="Not.A/Brand", version="99"),
-            ]
-            full_brands = [
-                cdp.emulation.UserAgentBrandVersion(brand="Chromium", version=full),
-                cdp.emulation.UserAgentBrandVersion(brand="Google Chrome", version=full),
-                cdp.emulation.UserAgentBrandVersion(brand="Not.A/Brand", version="99.0.0.0"),
-            ]
-            await tab.send(cdp.emulation.set_user_agent_override(
-                user_agent=ua,
-                accept_language="en-US,en;q=0.9",
-                platform="macOS",
-                user_agent_metadata=cdp.emulation.UserAgentMetadata(
-                    platform="macOS",
-                    platform_version="15.0.0",
-                    architecture="arm",
-                    model="",
-                    mobile=False,
-                    brands=brands,
-                    full_version_list=full_brands,
-                    full_version=full,
-                ),
-            ))
-        except Exception as e:
-            trace(f"setUserAgentOverride failed: {e}")
-
-        try:
-            await tab.send(cdp.network.set_extra_http_headers(
-                headers=cdp.network.Headers({
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Sec-Ch-Ua": sec_ch_ua,
-                    "Sec-Ch-Ua-Mobile": "?0",
-                    "Sec-Ch-Ua-Platform": '"macOS"',
-                })
-            ))
-        except Exception as e:
-            trace(f"setExtraHTTPHeaders failed: {e}")
-
-        stealth_js = """
+    # The only fingerprint patch left. Headless Chrome answers a notifications
+    # permission query with 'denied' while Notification.permission says
+    # 'default' — the mismatch is a classic headless tell. nodriver already
+    # removes navigator.webdriver, the chrome.runtime shim and the cdc_* patches.
+    # No WebGL spoof: the 'Intel Inc. / Intel Iris OpenGL Engine' pair is the
+    # puppeteer-extra-stealth signature every bot vendor fingerprints.
+    _STEALTH_JS = """
         const originalQuery = navigator.permissions.query;
         navigator.permissions.query = (parameters) =>
             parameters.name === 'notifications'
                 ? Promise.resolve({state: Notification.permission})
                 : originalQuery(parameters);
+    """
 
-        const getParameter = WebGLRenderingContext.prototype.getParameter;
-        WebGLRenderingContext.prototype.getParameter = function(param) {
-            if (param === 37445) return 'Intel Inc.';
-            if (param === 37446) return 'Intel Iris OpenGL Engine';
-            return getParameter.call(this, param);
-        };
-        if (typeof WebGL2RenderingContext !== 'undefined') {
-            const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
-            WebGL2RenderingContext.prototype.getParameter = function(param) {
-                if (param === 37445) return 'Intel Inc.';
-                if (param === 37446) return 'Intel Iris OpenGL Engine';
-                return getParameter2.call(this, param);
-            };
-        }
-        """
+    async def _async_install_stealth_script(self, tab: 'nodriver.Tab'):
         try:
-            await tab.send(cdp.page.add_script_to_evaluate_on_new_document(source=stealth_js))
+            await tab.send(cdp.page.add_script_to_evaluate_on_new_document(source=self._STEALTH_JS))
         except Exception as e:
             trace(f"stealth script registration failed: {e}")
 
@@ -2270,13 +2274,6 @@ class WebAccess(Integration):
         self._popup_parents.append(self._tab)
         self._tab = tab
         self._browse_frame_sessions = {}  # sessions were scoped to the old tab's connection
-        # Popups are their own CDP target: the UA override / client hints applied
-        # to the base tab don't carry over. SSO/login windows are exactly where a
-        # HeadlessChrome tell matters, so re-apply the anti-bot tweaks here.
-        try:
-            await self._async_apply_anti_bot_tweaks(tab)
-        except Exception as e:
-            trace(f"popup: anti-bot tweaks failed for {tid[:8]}…: {e}")
         try:
             await tab.send(cdp.page.enable())
         except Exception as e:
@@ -3878,11 +3875,16 @@ class WebAccess(Integration):
 
             await self._async_wait_for_page_ready(tab)
             await self._async_wait_for_settle(tab)
-            await self._async_settle_cookie_banner(tab, url)
+            wall = await self._async_detect_bot_wall(tab, url)
+            if wall is None:
+                await self._async_settle_cookie_banner(tab, url)
             self._browse_session_url = url
             self._browse_session_generation = self._browser_generation
             self._browse_fail_streak = 0
-            return self._take_dialog_notes() + await self._async_take_snapshot(requested_url=url)
+            if wall is not None and wall[0]:
+                return self._take_dialog_notes() + wall[1]
+            prefix = (wall[1] + "\n\n") if wall is not None else ''
+            return self._take_dialog_notes() + prefix + await self._async_take_snapshot(requested_url=url)
         except _BROWSER_DEAD_EXC as e:
             note(f"browse_open: nodriver unhealthy after navigation to {url}: {e} — reinitializing")
             await self._async_initialize_driver()
@@ -3899,6 +3901,59 @@ class WebAccess(Integration):
                 return await self._async_infra_error("browser could not be restarted.")
             trace(f"browse_open failed for {url}: {type(e).__name__}: {e}")
             return "ERROR: failed to open the page."
+
+    # Bot walls: the document itself comes back with an error status and the page
+    # embeds the vendor's challenge frame. DataDome's `t=` says which kind: 'bv'
+    # (blocked visitor) is a dead end holding only a feedback form — nothing to
+    # solve, and every retry lowers the IP's reputation further (Etsy, 2026-09-29:
+    # three attempts in a row). 'fe' and the Cloudflare turnstile are challenges
+    # the snapshot can at least show.
+    _BOT_WALL_HOSTS = {'geo.captcha-delivery.com': 'DataDome',
+                       'challenges.cloudflare.com': 'Cloudflare'}
+    _BOT_WALL_STATUSES = frozenset({403, 429, 503})
+    _BOT_WALL_FRAMES_JS = "Array.from(document.querySelectorAll('iframe')).map(f => f.src || '')"
+
+    def _last_document_status(self, tab: 'nodriver.Tab') -> Optional[int]:
+        """Status of the newest document response the network capture saw on this tab."""
+        tab_id = self._network_tab_id(tab)
+        for e in reversed(getattr(self, '_network_log', None) or []):
+            if e['type'] == 'Document' and e['tab'] == tab_id and e['status'] is not None:
+                return e['status']
+        return None
+
+    async def _async_detect_bot_wall(self, tab: 'nodriver.Tab', url: str) -> Optional[tuple[bool, str]]:
+        """(hard, message) when the page is a bot wall instead of the site: hard means
+        there is nothing to solve and the LLM must not retry. None for a normal page."""
+        status = self._last_document_status(tab)
+        if status not in self._BOT_WALL_STATUSES:
+            return None
+        try:
+            srcs = await self._evaluate(tab, self._BOT_WALL_FRAMES_JS)
+        except Exception as e:
+            trace(f"bot wall: document {status} at {url} but the frame probe failed "
+                  f"({type(e).__name__}: {e})")
+            return None
+        for src in (srcs if isinstance(srcs, list) else []):
+            parsed = urlparse(str(src))
+            vendor = self._BOT_WALL_HOSTS.get((parsed.hostname or '').lower())
+            if not vendor:
+                continue
+            verdict = (parse_qs(parsed.query).get('t') or [''])[0]
+            hard = vendor == 'DataDome' and verdict == 'bv'
+            info(f"browse_open: {vendor} bot wall at {url} — document {status}, t={verdict or '-'}, "
+                 f"{'hard block' if hard else 'challenge'} ({self._frame_label(str(src))})")
+            if hard:
+                return True, (
+                    f"ERROR: {url} is behind a {vendor} bot wall (HTTP {status}, verdict t=bv = "
+                    "'blocked visitor'). This is a hard block with no challenge to solve: the page holds "
+                    "only a feedback form, and every further attempt lowers this server's reputation. "
+                    "Do NOT retry browse_open on this site in this request — tell the user the site "
+                    "blocks automated access.")
+            return False, (
+                f"NOTE: {vendor} bot challenge (HTTP {status}, t={verdict or '-'}) is shown instead of "
+                f"{url}. The snapshot below is the challenge page, not the site.")
+        trace(f"bot wall: document {status} at {url} without a known challenge frame — a normal error page")
+        return None
 
     async def _with_browse_lock(self, coro):
         """Serialize browse-session commands on the shared tab. Cancelled while queued

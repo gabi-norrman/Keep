@@ -89,6 +89,20 @@ def split(text: str, max_length: int = 4096) -> list[str]:
     return chunks
 
 
+_MD_BOLD_RE = re.compile(r'\*\*([^*\n]+?)\*\*')
+_MD_CODE_RE = re.compile(r'`([^`<>\n]{1,80})`')
+
+
+def repair_markdown(text: str) -> str:
+    """Safety net for a reply that slipped into Markdown despite the prompt: completed
+    `**bold**` pairs and `code` spans become the dialect's tags. The text is otherwise
+    already HTML, so nothing is escaped, and an unclosed marker (still streaming, or a
+    literal asterisk) is left alone. Idempotent: applying it to a growing stream converts
+    each pair once, when it closes."""
+    text = _MD_BOLD_RE.sub(r'<b>\1</b>', text)
+    return _MD_CODE_RE.sub(r'<code>\1</code>', text)
+
+
 def markdown_to_html(md: str) -> str:
     """Render markdown (headings, lists, code, bold, inline code) into the dialect. A pipe
     table stays a pipe table, its cells' inline markdown converted: the dialect has no table

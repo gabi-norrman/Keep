@@ -1,7 +1,9 @@
+import http.client
 import json
 import os
 import re
 import shlex
+import socket
 import subprocess
 import threading
 import time
@@ -10,8 +12,8 @@ from urllib.parse import urlparse
 
 import requests
 
-from .AbstractLLM import AbstractLLM, ThinkingNotSupportedError
-from common.logging import info, trace, note
+from .AbstractLLM import AbstractLLM, LLMPreempted
+from common.logging import info, trace, note, fine
 from common.ConfigManager import config
 from common.Paths import LOG_DIR
 
@@ -82,7 +84,8 @@ class OllamaLLM(AbstractLLM):
     """Runs a local model through Ollama's native API, with KV-cache pre-heating and prefill diagnostics.
 
     Cache-slot metrics and prefill progress are read from Ollama's debug log (over ssh when
-    base_url is remote). Prefill state is class-level because Ollama serves one request at a time.
+    base_url is remote). Prefill state is class-level because Ollama serves one request at a time;
+    an owner token keeps a pre-heat that overlaps a user request from touching the request's state.
     """
     _ollama_log_path = str(LOG_DIR / 'ollama.log')
     _ssh_log: _SshRemoteLog | None = None  # set when base_url points at a remote host
@@ -106,8 +109,15 @@ class OllamaLLM(AbstractLLM):
     # We estimate completion from elapsed time against a measured prefill rate,
     # pinned below 100% until the first token confirms prefill has actually
     # finished. State is class-level: Ollama runs at most one request at a time.
+    # Requests can still overlap on our side (a pre-heat fired at the end of one
+    # turn is often still prefilling when the next user request goes out), so
+    # _begin_prefill hands out an owner token and only the owner may end the
+    # state or mark its first token — a stale pre-heat exit must not blank the
+    # bar of the user request that took over.
     _prefill_lock = threading.Lock()
     _prefill_active = False
+    _prefill_owner = 0                  # token of the request the state belongs to
+    _prefill_interactive = False        # the owner is a user request, not a pre-heat / background call
     _prefill_start_ts = 0.0
     _prefill_first_token = False
     _prefill_cache_metrics: tuple[int, int] | None = None  # (used, remaining) once parsed
@@ -118,21 +128,41 @@ class OllamaLLM(AbstractLLM):
     _prefill_metrics_read_ts = 0.0
     _PROGRESS_POLL_INTERVAL_S = 2.0
 
-    # Qwen3.8 ships with its thinking-mode samplers baked into the modelfile
-    # (temp 1.0, top_p 0.95). With thinking disabled Qwen recommends these
-    # instead — the baked-in ones make non-thinking output rambly and repetitive.
-    _QWEN38_NON_THINKING_OPTIONS = {
-        "temperature": 0.7,
-        "top_p": 0.8,
-        "top_k": 20,
-        "presence_penalty": 1.5,
-    }
+    # --- Background requests (photo indexing) --------------------------------
+    # Ollama serves one request at a time (OLLAMA_NUM_PARALLEL=1, and the model fills the
+    # machine), so a background image call competes with the user's next turn for the one
+    # slot. A background request waits until nothing interactive is in flight and the runner
+    # has been idle for `ollama.background_idle_seconds`; an interactive request (or the
+    # pre-heat that follows a turn) arriving mid-image shuts the image request's socket —
+    # Ollama drops a sequence whose client is gone — and takes the slot within a fraction of
+    # a second. The evicted caller gets LLMPreempted and resends when the slot is idle again.
+    _bg_cond = threading.Condition()
+    _bg_active = False                  # a background request holds the slot (acquire → release)
+    _bg_abort = False                   # an interactive request wants the slot: the background one stands down
+    _bg_conn: http.client.HTTPConnection | None = None  # the background request's connection, once opened
+    _interactive_active = 0             # interactive requests and pre-heats in flight or waiting for the slot
+    _interactive_last_end = 0.0         # monotonic; the idle clock a background request waits on
+    _bg_completed = 0                   # background requests finished since the last snapshot refresh
+    _last_pre_heat_messages: list[dict] | None = None   # what the last pre-heat warmed
+    _PREEMPT_UNWIND_TIMEOUT_S = 5.0
+    # A night of image requests each leaves a prefix-cache snapshot behind; every this many the
+    # chat snapshot is re-warmed so the morning's first turn does not pay a cold prefill.
+    _SNAPSHOT_REFRESH_EVERY = 50
+    _DEFAULT_BACKGROUND_IDLE_S = 20
+
+    # Native thinking is always on for a model that has it: a reasoning model denied its
+    # channel invents one (Qwen wrote its plan inside made-up <system> tags, which reached the
+    # user verbatim). The modelfile's samplers are the thinking-mode ones, so no override.
+    # The chat template renders every history turn identically with or without thinking —
+    # only the generation suffix differs — so the KV prefix is unaffected.
+    # (model, base_url) -> whether /api/show lists the "thinking" capability.
+    _thinking_capable: dict[tuple[str, str], bool] = {}
 
     # (model, base_url) pairs already logged — the handler pool constructs dozens of
     # identical instances (25 handlers x 2 tiers), so log each resolved config once.
     _logged_configs: set[tuple[str, str]] = set()
 
-    def __init__(self, model: str = 'gemma4:26b', base_url: str | None = None, think: bool = False):
+    def __init__(self, model: str = 'gemma4:26b', base_url: str | None = None):
         self.model = model
         # Explicit base_url wins; otherwise `ollama.base_url` from config.yaml (e.g. the M4
         # Mac Studio), falling back to localhost.
@@ -140,7 +170,6 @@ class OllamaLLM(AbstractLLM):
         if (model, self.base_url) not in OllamaLLM._logged_configs:
             OllamaLLM._logged_configs.add((model, self.base_url))
             trace(f"OllamaLLM '{model}' using base_url {self.base_url}")
-        self.think = think
         self.client = True  # satisfies _ensure_initialized()
         OllamaLLM._configure_log_access(self.base_url)
 
@@ -246,16 +275,35 @@ class OllamaLLM(AbstractLLM):
             "messages": self._convert_anthropic_content(messages),
             "stream": stream,
             "keep_alive": -1,
-            "think": self.think,
+            "think": self.thinks(),
         }
-        options = {}
-        if not self.think and self.model.startswith("qwen3.8"):
-            options.update(self._QWEN38_NON_THINKING_OPTIONS)
         if num_predict is not None:
-            options["num_predict"] = num_predict
-        if options:
-            req["options"] = options
+            req["options"] = {"num_predict": num_predict}
         return req
+
+    def thinks(self) -> bool:
+        """Whether requests run with native thinking: on unless /api/show says the model has
+        no "thinking" capability (Ollama rejects think=true for such a model with a 400).
+        Probed once per (model, base_url); an unreachable host is assumed capable."""
+        key = (self.model, self.base_url)
+        if key not in OllamaLLM._thinking_capable:
+            capable = True
+            try:
+                resp = requests.post(f"{self.base_url}/api/show", json={"model": self.model},
+                                     timeout=self._RENDER_TIMEOUT)
+                resp.raise_for_status()
+                capable = "thinking" in resp.json().get("capabilities", [])
+                info(f"Ollama '{self.model}' {'thinks natively' if capable else 'has no thinking capability — running without'}")
+            except Exception as e:
+                trace(f"Ollama capability probe for '{self.model}' failed ({e}) — assuming it thinks")
+            OllamaLLM._thinking_capable[key] = capable
+        return OllamaLLM._thinking_capable[key]
+
+    def supports_native_thinking(self) -> bool:
+        return self.thinks()
+
+    def handles_thinking_internally(self) -> bool:
+        return self.thinks()
 
     def _rendered_prompt(self, messages: list[dict], num_predict: int | None = None) -> str | None:
         """Ask Ollama to render the final flat prompt without running inference."""
@@ -273,6 +321,7 @@ class OllamaLLM(AbstractLLM):
         """Pre-heat Ollama's KV cache with in-flight guard.
         At most one request is ever active in Ollama. If a pre-heat is already in flight,
         the latest prompt is stored and fired automatically when the current one completes."""
+        OllamaLLM._last_pre_heat_messages = messages
         with OllamaLLM._pre_heat_lock:
             if OllamaLLM._pre_heat_in_flight:
                 OllamaLLM._pre_heat_pending_messages = messages
@@ -286,9 +335,10 @@ class OllamaLLM(AbstractLLM):
     # turn (qwen/ChatML: "<|im_end|>\n<|im_start|>assistant\n<think>...").
     _GENERATION_SUFFIX_MARK = "<|im_end|>\n<|im_start|>assistant"
 
-    def _pre_heat_raw_truncated(self, messages: list[dict]) -> bool:
+    def _pre_heat_raw_truncated(self, messages: list[dict], refresh: bool = False) -> bool:
         """Prefill via /api/generate raw=true with the rendered prompt cut at the
-        end of the last turn's content.
+        end of the last turn's content. `refresh` is the background snapshot refresh: it
+        already holds the background slot and must not restart the idle clock.
 
         Why not a plain chat request: the MLX runner snapshots the KV cache at
         end-of-prompt minus 4 tokens (pipeline.go, preThinking). A chat pre-heat
@@ -311,7 +361,9 @@ class OllamaLLM(AbstractLLM):
                   "falling back to chat pre-heat.")
             return False
         truncated = rendered[:idx]
-        self._begin_prefill()
+        if not refresh:
+            self._interactive_begin()
+        token = self._begin_prefill(interactive=False)
         try:
             resp = requests.post(f"{self.base_url}/api/generate", json={
                 "model": self.model, "prompt": truncated, "raw": True,
@@ -319,7 +371,9 @@ class OllamaLLM(AbstractLLM):
             }, timeout=self._PRE_HEAT_TIMEOUT)
             resp.raise_for_status()
         finally:
-            self._end_prefill()
+            self._end_prefill(token)
+            if not refresh:
+                self._interactive_end()
         trace(f"Pre-heat: raw prefill of {len(truncated)} chars "
               f"(cut {len(rendered) - idx}-char template suffix).")
         return True
@@ -342,18 +396,140 @@ class OllamaLLM(AbstractLLM):
             except Exception as e:
                 trace(f"Pre-heat failed (non-critical): {e}")
             finally:
-                with OllamaLLM._pre_heat_lock:
-                    pending = OllamaLLM._pre_heat_pending_messages
-                    OllamaLLM._pre_heat_pending_messages = None
-                    if pending is None:
-                        OllamaLLM._pre_heat_in_flight = False
-
-                if pending is not None:
-                    info("Pre-heat: processing deferred prompt.")
-                    self._fire_pre_heat(pending)
+                self._finish_pre_heat()
 
         thread = threading.Thread(target=_do_pre_heat, name="OllamaPreHeat", daemon=True)
         thread.start()
+
+    def _finish_pre_heat(self):
+        """Release the pre-heat guard, or hand the slot straight to the prompt deferred meanwhile."""
+        with OllamaLLM._pre_heat_lock:
+            pending = OllamaLLM._pre_heat_pending_messages
+            OllamaLLM._pre_heat_pending_messages = None
+            if pending is None:
+                OllamaLLM._pre_heat_in_flight = False
+        if pending is not None:
+            info("Pre-heat: processing deferred prompt.")
+            self._fire_pre_heat(pending)
+
+    def is_local(self) -> bool:
+        return True
+
+    @classmethod
+    def background_idle_seconds(cls) -> float:
+        return float(config.get('ollama.background_idle_seconds', cls._DEFAULT_BACKGROUND_IDLE_S))
+
+    @classmethod
+    def _interactive_begin(cls):
+        """An interactive request (or pre-heat) is about to go to Ollama: evict the background
+        request holding the slot, if any, and wait for it to unwind."""
+        with cls._bg_cond:
+            cls._interactive_active += 1
+            if not cls._bg_active:
+                return
+            cls._bg_abort = True
+            if cls._bg_conn is not None:
+                info("Ollama: interactive request arriving — aborting the background image request.")
+                cls._shutdown_connection(cls._bg_conn)
+            else:
+                trace("Ollama: interactive request arriving — the background request stands down before sending.")
+            cls._bg_cond.notify_all()
+            if not cls._bg_cond.wait_for(lambda: not cls._bg_active, timeout=cls._PREEMPT_UNWIND_TIMEOUT_S):
+                info(f"Ollama: background request did not unwind within {cls._PREEMPT_UNWIND_TIMEOUT_S:.0f}s — "
+                     "proceeding; it queues behind us in Ollama.")
+
+    @classmethod
+    def _interactive_end(cls, resets_idle: bool = True):
+        with cls._bg_cond:
+            cls._interactive_active = max(0, cls._interactive_active - 1)
+            if resets_idle:
+                cls._interactive_last_end = time.monotonic()
+            cls._bg_cond.notify_all()
+
+    @classmethod
+    def _acquire_background(cls):
+        """Block until the slot is free and has been idle for background_idle_seconds()."""
+        idle_s = cls.background_idle_seconds()
+        with cls._bg_cond:
+            waited = None
+            while True:
+                if not cls._interactive_active and not cls._bg_active:
+                    remaining = idle_s - (time.monotonic() - cls._interactive_last_end)
+                    if remaining <= 0:
+                        break
+                else:
+                    remaining = None
+                if waited is None:
+                    waited = time.monotonic()
+                    trace(f"Ollama: background request waiting for the slot ({idle_s:.0f}s idle required)")
+                cls._bg_cond.wait(remaining)
+            cls._bg_active = True
+            cls._bg_abort = False
+            cls._bg_conn = None
+        if waited is not None:
+            trace(f"Ollama: background request got the slot after {time.monotonic() - waited:.1f}s")
+
+    @classmethod
+    def _release_background(cls):
+        with cls._bg_cond:
+            cls._bg_active = False
+            cls._bg_conn = None
+            cls._bg_cond.notify_all()
+
+    @staticmethod
+    def _shutdown_connection(conn: http.client.HTTPConnection):
+        """Wake the thread blocked reading this connection: shutdown() interrupts a recv on
+        every platform, where close() alone does not. Ollama sees the FIN and cancels the request."""
+        sock = getattr(conn, "sock", None)
+        if sock is None:
+            return
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def _open_background_connection(self) -> http.client.HTTPConnection:
+        """Connect and register the connection under the gate, so an interactive arrival can
+        shut it even while we are still waiting for Ollama's first byte (the whole image
+        prefill happens before any header is sent)."""
+        url = urlparse(self.base_url)
+        cls = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+        conn = cls(url.hostname, url.port, timeout=None)
+        conn.connect()
+        with OllamaLLM._bg_cond:
+            if OllamaLLM._bg_abort:
+                conn.close()
+                raise LLMPreempted("interactive request arrived before the background request was sent")
+            OllamaLLM._bg_conn = conn
+        return conn
+
+    def _refresh_snapshot_if_due(self):
+        """Every _SNAPSHOT_REFRESH_EVERY background requests, re-warm the last pre-heated chat
+        prompt: a fraction of a second while its snapshot survives, a full (background) prefill
+        once the image snapshots have pushed it out. Runs inside the background slot."""
+        OllamaLLM._bg_completed += 1
+        if OllamaLLM._bg_completed % OllamaLLM._SNAPSHOT_REFRESH_EVERY:
+            return
+        messages = OllamaLLM._last_pre_heat_messages
+        if messages is None:
+            trace("Ollama: snapshot refresh due but nothing has been pre-heated yet — skipping.")
+            return
+        with OllamaLLM._pre_heat_lock:
+            if OllamaLLM._pre_heat_in_flight or OllamaLLM._bg_abort:
+                trace("Ollama: snapshot refresh skipped — a pre-heat is in flight or a user request is arriving.")
+                return
+            OllamaLLM._pre_heat_in_flight = True
+        t0 = time.monotonic()
+        try:
+            if self._pre_heat_raw_truncated(messages, refresh=True):
+                info(f"Ollama: chat snapshot refreshed after {OllamaLLM._bg_completed} background requests "
+                     f"in {time.monotonic() - t0:.1f}s")
+            else:
+                trace("Ollama: snapshot refresh could not render the prompt — skipped.")
+        except Exception as e:
+            trace(f"Ollama: snapshot refresh failed (non-critical): {e}")
+        finally:
+            self._finish_pre_heat()
 
     @classmethod
     def _log_prefix_match(cls, messages: list[dict]) -> str:
@@ -421,8 +597,11 @@ class OllamaLLM(AbstractLLM):
             return rendered_prompt, None
 
     @classmethod
-    def _begin_prefill(cls):
-        """Mark the start of a request's prompt prefill. Resets per-request state."""
+    def _begin_prefill(cls, interactive: bool = True) -> int | None:
+        """Mark the start of a request's prompt prefill and hand back its owner token.
+        Resets per-request state. A user request always takes the state over; a pre-heat or
+        background request that starts while a user request is prefilling leaves it alone and
+        gets None — its progress is not what the user is waiting for."""
         # Anchor the cache-slot scan at the current log EOF so we only match
         # THIS request's line — prior requests and preheats sit below the
         # anchor and are excluded. The scan stays non-destructive from here.
@@ -433,7 +612,14 @@ class OllamaLLM(AbstractLLM):
         if anchor is None:
             trace("Ollama prefill: log unreachable — cache metrics disabled for this request.")
         with cls._prefill_lock:
+            if not interactive and cls._prefill_active and cls._prefill_interactive:
+                trace(f"Ollama prefill: a user request (#{cls._prefill_owner}) is prefilling — "
+                      "this background prefill is not tracked.")
+                return None
+            cls._prefill_owner += 1
+            token = cls._prefill_owner
             cls._prefill_active = True
+            cls._prefill_interactive = interactive
             cls._prefill_start_ts = time.monotonic()
             cls._prefill_first_token = False
             cls._prefill_cache_metrics = None
@@ -441,20 +627,30 @@ class OllamaLLM(AbstractLLM):
             cls._prefill_progress_state = None
             cls._prefill_progress_read_ts = 0.0
             cls._prefill_metrics_read_ts = 0.0
-        trace("Ollama prefill: started.")
+        trace(f"Ollama prefill: started (#{token}, {'user request' if interactive else 'background'}).")
+        return token
 
     @classmethod
-    def _mark_first_token(cls):
-        """First generated token means prefill is complete — pin progress to 100%."""
+    def _mark_first_token(cls, token: int | None):
+        """First generated token means prefill is complete — pin progress to 100%.
+        Ignored unless `token` still owns the state."""
         with cls._prefill_lock:
+            if token is None or token != cls._prefill_owner:
+                return
             if cls._prefill_active and not cls._prefill_first_token:
                 cls._prefill_first_token = True
-                trace("Ollama prefill: first token received (prefill complete).")
+                trace(f"Ollama prefill: first token received (prefill #{token} complete).")
 
     @classmethod
-    def _end_prefill(cls):
-        """Mark the request finished; prefill_progress() returns None when idle."""
+    def _end_prefill(cls, token: int | None):
+        """Mark the request finished; prefill_progress() returns None when idle.
+        Ignored unless `token` still owns the state — a later request may have taken over."""
         with cls._prefill_lock:
+            if token is None:
+                return
+            if token != cls._prefill_owner:
+                trace(f"Ollama prefill: #{token} ended but #{cls._prefill_owner} owns the state now — leaving it.")
+                return
             cls._prefill_active = False
 
     @classmethod
@@ -643,14 +839,15 @@ class OllamaLLM(AbstractLLM):
 
     def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
                                     num_predict: int | None = None) -> Generator[str, None, None]:
-        if thinking:
-            raise ThinkingNotSupportedError(f"{self.name()} does not support native thinking mode")
-
+        """Native thinking (the chunk's `thinking` field) is yielded wrapped in <thinking> tags,
+        so the command processor swallows and times it exactly like a prompted thinking block.
+        `thinking` is ignored: the model thinks whenever it can (see thinks())."""
         is_pre_heat = num_predict is not None
         note(f"Sending {'pre-heat' if is_pre_heat else 'actual'} request to ollama...")
         payload_str = self._log_prefix_match(messages)
         rendered_prompt, rendered_prefix_stats = self._log_rendered_prompt_match(messages, num_predict=num_predict)
-        self._begin_prefill()
+        self._interactive_begin()
+        token = self._begin_prefill(interactive=not is_pre_heat)
         try:
             resp = requests.post(
                 f"{self.base_url}/api/chat",
@@ -662,27 +859,49 @@ class OllamaLLM(AbstractLLM):
             )
             resp.raise_for_status()
 
+            in_thinking = False
             for line in resp.iter_lines():
                 if not line:
                     continue
                 data = json.loads(line)
-                content = data.get("message", {}).get("content", "")
+                message = data.get("message", {})
+                thought = message.get("thinking", "")
+                if thought:
+                    self._mark_first_token(token)
+                    if not in_thinking:
+                        in_thinking = True
+                        yield "<thinking>"
+                    yield thought
+                content = message.get("content", "")
                 if content:
-                    self._mark_first_token()
+                    self._mark_first_token(token)
+                    if in_thinking:
+                        in_thinking = False
+                        yield "</thinking>"
                     yield content
                 if data.get("done"):
+                    if in_thinking:
+                        trace("Ollama stream ended inside the thinking block — closing it")
+                        yield "</thinking>"
                     self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats)
                     OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
         finally:
-            self._end_prefill()
+            self._end_prefill(token)
+            self._interactive_end()
+
+    @staticmethod
+    def _content_of(data: dict) -> str:
+        """The reply text of a non-streaming response; its native thinking is logged."""
+        message = data.get("message", {})
+        if message.get("thinking"):
+            fine(f"Ollama thought:\n{message['thinking'].strip()}")
+        return message.get("content", "")
 
     def create_completion(self, messages: list[dict], thinking: bool = False) -> str:
-        if thinking:
-            raise ThinkingNotSupportedError(f"{self.name()} does not support native thinking mode")
-
         payload_str = self._log_prefix_match(messages)
         rendered_prompt, rendered_prefix_stats = self._log_rendered_prompt_match(messages)
-        self._begin_prefill()
+        self._interactive_begin()
+        token = self._begin_prefill()
         try:
             resp = requests.post(
                 f"{self.base_url}/api/chat",
@@ -693,11 +912,12 @@ class OllamaLLM(AbstractLLM):
             data = resp.json()
             self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats)
             OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
-            return data.get("message", {}).get("content", "")
+            return self._content_of(data)
         finally:
-            self._end_prefill()
+            self._end_prefill(token)
+            self._interactive_end()
 
-    def create_completion_with_images(self, messages: list[dict], images: list) -> str:
+    def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
         import base64
 
         processed = []
@@ -724,9 +944,13 @@ class OllamaLLM(AbstractLLM):
             else:
                 processed.append(msg)
 
+        if background:
+            return self._background_completion(processed)
+
         payload_str = self._log_prefix_match(processed)
         rendered_prompt, rendered_prefix_stats = self._log_rendered_prompt_match(processed)
-        self._begin_prefill()
+        self._interactive_begin()
+        token = self._begin_prefill()
         try:
             resp = requests.post(
                 f"{self.base_url}/api/chat",
@@ -737,6 +961,50 @@ class OllamaLLM(AbstractLLM):
             data = resp.json()
             self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats)
             OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
-            return data.get("message", {}).get("content", "")
+            return self._content_of(data)
         finally:
-            self._end_prefill()
+            self._end_prefill(token)
+            self._interactive_end()
+
+    def _background_completion(self, messages: list[dict]) -> str:
+        """The abortable image request: waits for the idle slot, streams the answer over a
+        connection the gate can shut, and raises LLMPreempted when a user request evicts it.
+        No prefix-match diagnostics — an image payload matches nothing, and the last chat
+        payload must stay what the next chat turn compares against."""
+        body = json.dumps(self._build_request(messages, stream=True))
+        self._acquire_background()
+        token = self._begin_prefill(interactive=False)
+        chunks: list[str] = []
+        try:
+            conn = self._open_background_connection()
+            conn.request("POST", "/api/chat", body=body, headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            if resp.status != 200:
+                raise RuntimeError(f"Ollama /api/chat returned {resp.status}: {resp.read(500)!r}")
+            for raw in iter(resp.readline, b""):
+                line = raw.strip()
+                if not line:
+                    continue
+                data = json.loads(line)
+                content = data.get("message", {}).get("content", "")
+                if content:
+                    self._mark_first_token(token)
+                    chunks.append(content)
+                if data.get("done"):
+                    self._log_metrics(data)
+                    break
+            else:
+                raise RuntimeError("Ollama closed the stream before the response was done")
+            conn.close()
+            self._refresh_snapshot_if_due()
+        except LLMPreempted:
+            raise
+        except Exception:
+            if OllamaLLM._bg_abort:
+                info(f"Ollama: background image request aborted for an interactive one after {len(chunks)} chunk(s).")
+                raise LLMPreempted("interactive request took the Ollama slot") from None
+            raise
+        finally:
+            self._end_prefill(token)
+            self._release_background()
+        return "".join(chunks)

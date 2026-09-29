@@ -20,6 +20,8 @@ POP_KEY_REPORTING = f"{CSI}<u"   # undo the server's kitty keyboard protocol pus
 EXIT_ALT_SCREEN = f"{CSI}?1049l"
 SHOW_CURSOR = f"{CSI}?25h"
 RESET = f"{CSI}0m"
+SET_TITLE = f"\x1b]0;Keep - {HOST}\x07"   # the terminal tab's title while the TUI runs
+CLEAR_TITLE = "\x1b]0;\x07"                # an empty title hands the tab back to the shell's own naming
 PORT = 5151
 BYE = "\nDisconnected from the server — the server keeps running, only the TUI closed. Rerun tui.py to reconnect. Run stop.sh to stop server."
 
@@ -29,11 +31,13 @@ if os.environ.get("TERM_PROGRAM") == "Terminus":
     time.sleep(3)
 
 running = True
+sys.stdout.write(SET_TITLE)
+sys.stdout.flush()
 
 
 def cleanup_terminal():
-    """Reset terminal state - disable mouse tracking, exit alt screen, show cursor"""
-    sys.stdout.write(DISABLE_MOUSE_TRACKING + POP_KEY_REPORTING + EXIT_ALT_SCREEN + SHOW_CURSOR + RESET)
+    """Reset terminal state - disable mouse tracking, exit alt screen, show cursor, drop the title"""
+    sys.stdout.write(DISABLE_MOUSE_TRACKING + POP_KEY_REPORTING + EXIT_ALT_SCREEN + SHOW_CURSOR + RESET + CLEAR_TITLE)
     sys.stdout.flush()
 
 

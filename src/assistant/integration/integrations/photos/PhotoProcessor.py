@@ -17,7 +17,7 @@ from ....llm import create_llm, parse_llm_config
 from ...Feed import FeedEntry
 from common.logging import info, error, trace, fine
 from common.FloxyDatabase import FloxyDatabase, PHOTO_HISTORY_SOURCE
-from ....llm.AbstractLLM import AbstractLLM
+from ....llm.AbstractLLM import AbstractLLM, LLMPreempted
 from ....tools.VideoAnalyzer import short_clip_fps
 from .ICloudPhotoDownloader import (CorruptImageError, NoVideoRenditionError, PhotoNotInCloudError,
                                     VideoTooLargeError)
@@ -31,13 +31,6 @@ ANALYSIS_PROMPT_SYSTEM = """
 You are a photo analyst for a family's personal photo library. Analyze the provided photo and return a JSON object.
 
 """ + _FAMILY_CONTEXT + """
-# Context about this photo
-- Date taken: {date}
-- Location: {location}
-- Albums: {albums}
-- People identified: {persons}
-- Photo type: {photo_type}
-
 # Return ONLY a JSON object with these keys
 - "short_description": A concise 1-sentence description of the photo (max 50 chars)
 - "detailed_description": A RICH description covering subjects, setting, mood, colors, and notable details. Include any visible text, objects, landmarks, or activities. This will be used for search. Be verbose, detail everything in the photo with high accuracy. Around 200 words is good.
@@ -51,21 +44,23 @@ You are a photo analyst for a family's personal photo library. Analyze the provi
 
 """
 
-ANALYSIS_PROMPT_USER = "Analyze this photo and return the JSON object as described."
+# The per-asset fields come last, in the user message: everything before them is identical from
+# photo to photo, so a local model's prefix cache covers the memory and the instructions and each
+# request prefills only the image and these lines.
+ANALYSIS_PROMPT_USER = """# Context about this photo
+- Date taken: {date}
+- Location: {location}
+- Albums: {albums}
+- People identified: {persons}
+- Photo type: {photo_type}
+
+Analyze this photo and return the JSON object as described."""
 
 VIDEO_ANALYSIS_PROMPT_SYSTEM = """
 
 You are a video analyst for a family's personal photo library. Watch the provided video, including its audio track, and return a JSON object.
 
 """ + _FAMILY_CONTEXT + """
-# Context about this video
-- Date taken: {date}
-- Location: {location}
-- Albums: {albums}
-- People identified: {persons}
-- Video type: {video_type}
-- Duration: {duration} seconds
-
 # Return ONLY a JSON object with these keys
 - "short_description": A concise 1-sentence description of the video (max 50 chars)
 - "detailed_description": A RICH description of what happens over the course of the clip: subjects, setting, actions, mood, and notable details. For clips longer than about 30 seconds, follow the timeline ("first ..., then ..., at the end ...") so that moments late in the clip are described too. Include any visible text, landmarks, or activities. This will be used for search.
@@ -80,7 +75,15 @@ You are a video analyst for a family's personal photo library. Watch the provide
 
 """
 
-VIDEO_ANALYSIS_PROMPT_USER = "Analyze this video and return the JSON object as described."
+VIDEO_ANALYSIS_PROMPT_USER = """# Context about this video
+- Date taken: {date}
+- Location: {location}
+- Albums: {albums}
+- People identified: {persons}
+- Video type: {video_type}
+- Duration: {duration} seconds
+
+Analyze this video and return the JSON object as described."""
 
 PHOTOS_SQLITE_PATH = os.path.expanduser(
     "~/Pictures/Photos Library.photoslibrary/database/Photos.sqlite"
@@ -153,6 +156,10 @@ VIDEO_SUBTYPE_LABELS = {
 # threads would saturate the uplink and trip Gemini's rate limits.
 PHOTO_THREADS = 30
 VIDEO_THREADS = 5
+# A local backend (Ollama) serves one request at a time, so a wide fan-out only piles up
+# requests it cannot cancel. Two workers: one image in the model while the other one's
+# iCloud read, HEIC conversion and encoding happen, so the model never waits for a photo.
+LOCAL_PHOTO_THREADS = 2
 
 ASSET_COLUMNS = """a.ZUUID, a.ZFILENAME, a.ZDIRECTORY, a.ZDATECREATED, a.ZLATITUDE, a.ZLONGITUDE,
            a.ZKINDSUBTYPE, a.ZKIND, a.ZDURATION, m.ZCLOUDMASTERGUID, a.ZCLOUDASSETGUID,
@@ -372,6 +379,15 @@ class PhotoProcessor:
                     self._llm = llm
         return self._llm
 
+    def _indexing_backend_is_local(self) -> bool:
+        """Whether the indexing backend serves one request at a time. Decided before the first
+        asset is touched, so it must not initialize a cloud client (that needs the API key) just
+        to pick a worker count: like tier_api_key_name(), it builds the backend uninitialized."""
+        if self._llm is not None:
+            return self._llm.is_local()
+        name, model = parse_llm_config('photo_indexing')
+        return create_llm(name, model).is_local()
+
     def _find_unprocessed(self, album: Optional[str] = None, limit: int = 1) -> tuple[list[dict], str]:
         """Find unprocessed photos. Returns (rows, error_message)."""
         db = FloxyDatabase.get_instance()
@@ -488,7 +504,8 @@ class PhotoProcessor:
         pending set for `_retry_icloud_pending`. Returns (descriptions stored, filenames failed)."""
         t0 = time.time()
         num_videos = sum(1 for row in rows if row.get("kind") == "video")
-        info(f"Photos: processing {len(rows) - num_videos} photo(s) with {PHOTO_THREADS} threads"
+        photo_threads = LOCAL_PHOTO_THREADS if self._indexing_backend_is_local() else PHOTO_THREADS
+        info(f"Photos: processing {len(rows) - num_videos} photo(s) with {photo_threads} threads"
              + (f" and {num_videos} video(s) with {VIDEO_THREADS} threads" if num_videos else ""))
         succeeded: list[str] = []
         failed: list[str] = []
@@ -518,7 +535,7 @@ class PhotoProcessor:
             if on_progress:
                 on_progress(len(succeeded), len(failed), len(rows))
 
-        semaphore = threading.Semaphore(PHOTO_THREADS)
+        semaphore = threading.Semaphore(photo_threads)
         video_semaphore = threading.Semaphore(VIDEO_THREADS)
 
         def throttled_worker(row):
@@ -844,7 +861,8 @@ class PhotoProcessor:
     def _analyze_video_with_llm(self, video_bytes: bytes, mime_type: str, date_str: str, location: str,
                                 albums: str, persons: str, video_type: str, duration: float) -> Optional[dict]:
         system = VIDEO_ANALYSIS_PROMPT_SYSTEM.format(
-            current_memory=self._escape_braces(self._read_memory() or "(no memory available)"),
+            current_memory=self._escape_braces(self._read_memory() or "(no memory available)"))
+        user = VIDEO_ANALYSIS_PROMPT_USER.format(
             date=date_str,
             location=self._escape_braces(location or "unknown"),
             albums=self._escape_braces(albums or "none"),
@@ -861,7 +879,7 @@ class PhotoProcessor:
             try:
                 response = llm.think_with_video(
                     system_message=system,
-                    user_message=VIDEO_ANALYSIS_PROMPT_USER,
+                    user_message=user,
                     video_bytes=video_bytes,
                     mime_type=mime_type,
                     fps=fps,
@@ -1089,7 +1107,8 @@ class PhotoProcessor:
     def _analyze_with_llm(self, jpeg_bytes: bytes, date_str: str, location: str,
                           albums: str, persons: str, photo_type: str) -> Optional[dict]:
         system = ANALYSIS_PROMPT_SYSTEM.format(
-            current_memory=self._escape_braces(self._read_memory() or "(no memory available)"),
+            current_memory=self._escape_braces(self._read_memory() or "(no memory available)"))
+        user = ANALYSIS_PROMPT_USER.format(
             date=date_str,
             location=self._escape_braces(location or "unknown"),
             albums=self._escape_braces(albums or "none"),
@@ -1100,11 +1119,7 @@ class PhotoProcessor:
 
         for attempt in range(2):
             try:
-                response = llm.think(
-                    system_message=system,
-                    user_message=ANALYSIS_PROMPT_USER,
-                    images=[jpeg_bytes],
-                )
+                response = self._think_background(llm, system, user, jpeg_bytes)
                 return self._parse_analysis(response)
             except (json.JSONDecodeError, KeyError, ValueError) as e:
                 if attempt == 0:
@@ -1116,6 +1131,19 @@ class PhotoProcessor:
                 error(f"Photos: LLM call failed: {e}")
                 return None
         return None
+
+    @staticmethod
+    def _think_background(llm: AbstractLLM, system: str, user: str, jpeg_bytes: bytes) -> str:
+        """One image through the LLM as background work. A local backend evicts it when a user
+        request arrives; the asset must not count as failed for that (the cursor has moved past
+        it), so the same image is resent once the backend is idle again."""
+        preempted = 0
+        while True:
+            try:
+                return llm.think(system_message=system, user_message=user, images=[jpeg_bytes], background=True)
+            except LLMPreempted:
+                preempted += 1
+                trace(f"Photos: image analysis preempted by a user request ({preempted}x), resending when idle")
 
     @staticmethod
     def _parse_analysis(response: str) -> dict:

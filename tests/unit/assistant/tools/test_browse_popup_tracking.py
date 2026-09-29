@@ -245,31 +245,3 @@ class TestTargetNotesInSnapshot:
         assert result.startswith('NOTE: the page opened a popup/new window.')
         assert 'URL: https://bank.example/pay' in result
         assert wa._pending_target_notes == []
-
-
-@pytest.mark.unit
-class TestPopupAntiBotTweaks:
-    """A popup is its own CDP target: the base tab's UA override / client hints
-    don't carry over, and SSO/login windows are exactly where a HeadlessChrome
-    tell matters (the x.com login rate-limit incident)."""
-
-    def test_adopted_popup_gets_anti_bot_tweaks(self):
-        base = FakeTab('base', 'https://shop.example')
-        popup = FakeTab('pop1', 'https://accounts.google.com/o/oauth2/v2/auth')
-        wa = make_wa(base, FakeBrowser([base, popup]))
-        tweaks = AsyncMock()
-        with IDLE_PATCH, patch.object(WebAccess, '_async_apply_anti_bot_tweaks', new=tweaks):
-            run(wa._async_sync_popup_targets())
-        assert wa._tab is popup
-        tweaks.assert_awaited_once_with(popup)
-
-    def test_adoption_survives_anti_bot_failure(self):
-        base = FakeTab('base', 'https://shop.example')
-        popup = FakeTab('pop1', 'https://bank.example/pay')
-        wa = make_wa(base, FakeBrowser([base, popup]))
-        tweaks = AsyncMock(side_effect=RuntimeError('no transport'))
-        with IDLE_PATCH, patch.object(WebAccess, '_async_apply_anti_bot_tweaks', new=tweaks):
-            run(wa._async_sync_popup_targets())
-        assert wa._tab is popup
-        assert wa._popup_parents == [base]
-        assert len(wa._pending_target_notes) == 1

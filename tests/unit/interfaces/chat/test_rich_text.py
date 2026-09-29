@@ -124,3 +124,30 @@ class TestCommandLine:
         assert RichText.command_line("Reading x", "done after 4s, received 345 chars") == \
             " • <i>Reading x</i> <i>(done after 4s, received 345 chars)</i>"
         assert RichText.command_line("Reading x", "") == " • <i>Reading x</i>"
+
+
+@pytest.mark.unit
+class TestRepairMarkdown:
+    def test_bold_pair_becomes_the_dialect_tag(self):
+        assert RichText.repair_markdown("First: **who are you?** Tell me") == "First: <b>who are you?</b> Tell me"
+
+    def test_backtick_span_becomes_code(self):
+        assert RichText.repair_markdown("run `ls -la` now") == "run <code>ls -la</code> now"
+
+    def test_existing_html_is_left_untouched(self):
+        text = "a <b>bold</b> &lt;tag&gt; and <code>x</code>"
+        assert RichText.repair_markdown(text) == text
+
+    def test_unclosed_marker_while_streaming_is_left_alone(self):
+        assert RichText.repair_markdown("First: **who am") == "First: **who am"
+        assert RichText.repair_markdown("see `ls") == "see `ls"
+
+    def test_pair_converts_once_it_closes_and_stays_converted(self):
+        first = RichText.repair_markdown("say **hi")
+        second = RichText.repair_markdown(first + "** there")
+        assert second == "say <b>hi</b> there"
+        assert RichText.repair_markdown(second) == second
+
+    def test_backticks_around_a_tag_are_not_touched(self):
+        text = "type `<b>` here"
+        assert RichText.repair_markdown(text) == text

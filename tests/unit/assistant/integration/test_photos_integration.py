@@ -1982,7 +1982,7 @@ class _FakeVideoLLM:
         return "FakeVideoLLM"
 
     def think_with_video(self, system_message, user_message, video_bytes, mime_type, fps=None):
-        self.calls.append((system_message, video_bytes, mime_type))
+        self.calls.append((system_message + user_message, video_bytes, mime_type))
         self.fps_calls.append(fps)
         return self.responses.pop(0)
 
@@ -2315,3 +2315,51 @@ class TestPhotoProcessorIndexingLlm:
         claude.assert_called_once_with(model="claude-opus-5")
         gemini.assert_not_called()
         assert llm.llm is backend
+
+
+@pytest.mark.unit
+class TestLocalBackendIndexing:
+    def test_a_preempted_image_is_resent_not_marked_failed(self):
+        from assistant.llm.AbstractLLM import LLMPreempted
+        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
+        llm = Mock()
+        llm.think.side_effect = [LLMPreempted("evicted"), LLMPreempted("evicted again"),
+                                 '{"short_description":"a","detailed_description":"b","pretty_score":1,"family_importance_score":2}']
+        processor = PhotoProcessor()
+        processor._llm = llm
+        with patch.object(PhotoProcessor, '_read_memory', return_value=""):
+            result = processor._analyze_with_llm(b"jpeg", "2026-01-01", "", "", "", "photo")
+        assert result["pretty_score"] == 1
+        assert llm.think.call_count == 3
+        assert all(call.kwargs["background"] is True for call in llm.think.call_args_list)
+
+    @pytest.mark.parametrize("local, expected", [(True, 2), (False, 30)])
+    def test_worker_count_follows_the_backend(self, local, expected):
+        from assistant.integration.integrations.photos import PhotoProcessor as module
+        processor = module.PhotoProcessor()
+        processor._llm = Mock(is_local=Mock(return_value=local))
+        with patch.object(module.threading, 'Semaphore', wraps=threading.Semaphore) as semaphore:
+            processor.process_rows([])
+        assert semaphore.call_args_list[0].args == (expected,)
+
+    def test_system_prompt_is_identical_across_photos_so_a_prefix_cache_covers_it(self):
+        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
+        reply = '{"short_description":"a","detailed_description":"b","pretty_score":1,"family_importance_score":2}'
+        llm = Mock()
+        llm.think.return_value = reply
+        llm.think_with_video.return_value = reply
+        processor = PhotoProcessor()
+        processor._llm = llm
+        with patch.object(PhotoProcessor, '_read_memory', return_value="Marcus lives at Storgatan 1"):
+            processor._analyze_with_llm(b"jpeg", "2026-01-01 10:00", "Home", "Family", "Charlotte", "photo")
+            processor._analyze_with_llm(b"jpeg", "2026-03-14 18:30", "IKEA, Kållered", "", "", "screenshot")
+            processor._analyze_video_with_llm(b"mp4", "video/mp4", "2026-01-01 10:00", "Home", "", "Frances", "video", 12.0)
+            processor._analyze_video_with_llm(b"mp4", "video/mp4", "2026-05-05 09:00", "Beach", "", "", "slow-motion", 3.0)
+        photo_a, photo_b = (c.kwargs for c in llm.think.call_args_list)
+        assert photo_a["system_message"] == photo_b["system_message"]
+        assert "Marcus lives at Storgatan 1" in photo_a["system_message"]
+        assert "2026-03-14 18:30" in photo_b["user_message"] and "Kållered" in photo_b["user_message"]
+        assert "2026-03-14" not in photo_b["system_message"]
+        video_a, video_b = (c.kwargs for c in llm.think_with_video.call_args_list)
+        assert video_a["system_message"] == video_b["system_message"]
+        assert "Beach" in video_b["user_message"] and "slow-motion" in video_b["user_message"]

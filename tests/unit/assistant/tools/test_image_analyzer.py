@@ -148,22 +148,30 @@ class TestAnalyze:
 
 @pytest.mark.unit
 class TestVisionLlm:
-    def test_creates_from_vision_tier_on_first_use(self):
+    """The analyzer builds its LLM lazily from the `vision` tier, whatever backend that names:
+    the tier is pinned to a fictional one so the developer's config.yaml has no say."""
+
+    @pytest.fixture
+    def vision_tier(self):
+        mock_llm = Mock()
+        with patch('assistant.llm.parse_llm_config', return_value=('ClaudeLLM', 'claude-test-vision')), \
+             patch('assistant.llm.ClaudeLLM.ClaudeLLM', return_value=mock_llm) as mock_cls:
+            yield mock_cls, mock_llm
+
+    def test_creates_from_vision_tier_on_first_use(self, vision_tier):
         # create_llm wraps the backend in a VaultLLM, so the concrete class sits at .llm.llm.
         from assistant.llm.VaultLLM import VaultLLM
-        mock_llm = Mock()
-        with patch('assistant.llm.ClaudeLLM.ClaudeLLM', return_value=mock_llm) as mock_cls:
-            llm = ImageAnalyzer().llm
-            assert isinstance(llm, VaultLLM) and llm.llm is mock_llm
-            from assistant.llm import _TIER_DEFAULTS
-            mock_cls.assert_called_once_with(model=_TIER_DEFAULTS['vision'][1])
-            mock_llm.initialize.assert_called_once()
+        mock_cls, mock_llm = vision_tier
+        llm = ImageAnalyzer().llm
+        assert isinstance(llm, VaultLLM) and llm.llm is mock_llm
+        mock_cls.assert_called_once_with(model='claude-test-vision')
+        mock_llm.initialize.assert_called_once()
 
-    def test_caches_llm_across_calls(self):
-        with patch('assistant.llm.ClaudeLLM.ClaudeLLM', return_value=Mock()) as mock_cls:
-            analyzer = ImageAnalyzer()
-            assert analyzer.llm is analyzer.llm
-            mock_cls.assert_called_once()
+    def test_caches_llm_across_calls(self, vision_tier):
+        mock_cls, _ = vision_tier
+        analyzer = ImageAnalyzer()
+        assert analyzer.llm is analyzer.llm
+        mock_cls.assert_called_once()
 
     def test_injected_llm_is_used_as_is(self):
         injected = Mock()
@@ -209,3 +217,15 @@ class TestDescribeBytes:
         analyzer = ImageAnalyzer(llm=Mock())
         with patch('assistant.tools.ImageAnalyzer.resize_to_jpeg', side_effect=RuntimeError("boom")):
             assert analyzer.describe_bytes(b"raw", fallback="[Image]") == "[Image]"
+
+
+@pytest.mark.unit
+class TestBackgroundAnalysis:
+    def test_analysis_is_background_work_and_resends_after_preemption(self):
+        from assistant.llm.AbstractLLM import LLMPreempted
+        reply = json.dumps({"short_description": "A cat", "detailed_description": "A cat on a chair"})
+        analyzer, llm = _analyzer_with_reply(LLMPreempted("evicted"), reply)
+        result = analyzer.analyze(b"jpeg")
+        assert result["short_description"] == "A cat"
+        assert llm.think.call_count == 2
+        assert all(call.kwargs["background"] is True for call in llm.think.call_args_list)

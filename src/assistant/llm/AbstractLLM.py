@@ -17,6 +17,13 @@ class LLMRefusalError(Exception):
     pass
 
 
+class LLMPreempted(Exception):
+    """A background request (photo indexing) was aborted because an interactive request
+    arrived for the same single-slot backend. Not a failure: the caller resends it once the
+    backend is idle again."""
+    pass
+
+
 def api_error_message(e: Exception) -> str | None:
     """The server's own explanation of a failed API call, for showing to the user —
     "Your credit balance is too low…", "Overloaded" — or None when the failure never
@@ -69,8 +76,8 @@ class AbstractLLM(ABC):
         for attempt in range(max_retries):
             try:
                 return fn()
-            except LLMRefusalError:
-                raise  # deterministic, and the caller may have a fallback model for it
+            except (LLMRefusalError, LLMPreempted):
+                raise  # deterministic / the caller resends when the backend is idle — no retry here
             except Exception as e:
                 if attempt == max_retries - 1:
                     error(f"Failed after {max_retries} attempts")
@@ -121,15 +128,18 @@ class AbstractLLM(ABC):
         that persists a reply verbatim checks this for 'max_tokens' before trusting it."""
         return getattr(self, '_last_stop_reason', None)
 
-    def think(self, system_message: str, user_message: str, images: list | None = None, thinking: bool = False) -> str:
+    def think(self, system_message: str, user_message: str, images: list | None = None, thinking: bool = False,
+              background: bool = False) -> str:
         """
         Sends a request to the LLM, blocks until done, and returns the response.
+        `background` marks bulk work (photo indexing) that a single-slot backend runs only while
+        idle and aborts (LLMPreempted) when a user request arrives; cloud backends ignore it.
         """
         def fn():
             if images:
                 return self.create_completion_with_images(
                     [{'role': 'system', 'content': system_message}, {'role': 'user', 'content': user_message}],
-                    images)
+                    images, background=background)
             else:
                 return self.create_completion(
                     [{'role': 'system', 'content': system_message}, {'role': 'user', 'content': user_message}],
@@ -189,7 +199,7 @@ class AbstractLLM(ABC):
         pass
 
     @abstractmethod
-    def create_completion_with_images(self, messages: list[dict], images: list) -> str:
+    def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
         """
         Create a non-streaming completion with images using OpenAI's API
 
@@ -199,11 +209,17 @@ class AbstractLLM(ABC):
                 - Base64 encoded strings (without data URI prefix)
                 - Raw bytes
                 - File paths (will be converted to base64)
+            background: see think(); only a single-slot backend acts on it
 
         Returns:
             String containing the complete response
         """
         pass
+
+    def is_local(self) -> bool:
+        """True for a backend that serves one request at a time on our own hardware (Ollama):
+        bulk callers then run one or two workers instead of a wide fan-out."""
+        return False
 
     @abstractmethod
     def initialize(self):

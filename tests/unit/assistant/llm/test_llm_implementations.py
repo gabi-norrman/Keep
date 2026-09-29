@@ -32,7 +32,7 @@ class ConcreteTestLLM(AbstractLLM):
         self._ensure_initialized()
         return self._completion_response
 
-    def create_completion_with_images(self, messages, images):
+    def create_completion_with_images(self, messages, images, background=False):
         self._ensure_initialized()
         return self._image_response
 
@@ -1347,9 +1347,19 @@ class TestGeminiLLMVideo:
 # ===========================================================================
 
 class TestOllamaLLM:
+    DONE = {"done": True, "prompt_eval_count": 1, "prompt_eval_duration": 1e9,
+            "eval_count": 1, "eval_duration": 1e9, "total_duration": 2e9}
+
     def _make_llm(self):
         from assistant.llm.OllamaLLM import OllamaLLM
         return OllamaLLM(model='gemma4:26b', base_url='http://localhost:11434')
+
+    @pytest.fixture(autouse=True)
+    def _fresh_thinking_probe(self):
+        from assistant.llm.OllamaLLM import OllamaLLM
+        OllamaLLM._thinking_capable.clear()
+        yield
+        OllamaLLM._thinking_capable.clear()
 
     @patch('assistant.llm.OllamaLLM.config')
     def test_base_url_from_config(self, mock_config):
@@ -1390,7 +1400,8 @@ class TestOllamaLLM:
         finally:
             OllamaLLM._logged_configs = saved
 
-    def test_build_request(self):
+    @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
+    def test_build_request(self, mock_thinks):
         llm = self._make_llm()
         req = llm._build_request([{"role": "user", "content": "hi"}], stream=True)
         assert req == {
@@ -1398,7 +1409,7 @@ class TestOllamaLLM:
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
             "keep_alive": -1,
-            "think": False,
+            "think": True,
         }
 
     def test_build_request_flattens_anthropic_image_blocks(self):
@@ -1464,48 +1475,56 @@ class TestOllamaLLM:
         req = llm._build_request([{"role": "user", "content": "hi"}], stream=True, num_predict=1)
         assert req["options"] == {"num_predict": 1}
 
-    def test_build_request_qwen38_non_thinking_overrides_samplers(self):
-        # Qwen3.8's modelfile bakes in thinking-mode samplers (temp 1.0, top_p 0.95),
-        # which make non-thinking output rambly and repetitive. With think=False the
-        # request must carry Qwen's recommended non-thinking samplers instead.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        llm = OllamaLLM(model='qwen3.8:27b', base_url='http://localhost:11434')
+    @patch('assistant.llm.OllamaLLM.requests.post')
+    def test_a_model_without_the_thinking_capability_runs_without_it(self, mock_post):
+        # Ollama answers think=true with a 400 for such a model, so the probe of /api/show
+        # decides the request flag, and the <thinking>-tag instruction stays available to it.
+        mock_post.return_value.json.return_value = {"capabilities": ["completion", "vision"]}
+        llm = self._make_llm()
         req = llm._build_request([{"role": "user", "content": "hi"}], stream=True)
-        assert req["options"] == {
-            "temperature": 0.7,
-            "top_p": 0.8,
-            "top_k": 20,
-            "presence_penalty": 1.5,
-        }
-
-    def test_build_request_qwen38_thinking_keeps_baked_in_samplers(self):
-        # With thinking enabled the modelfile's own samplers are correct — the
-        # override must NOT fire, so no options key at all.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        llm = OllamaLLM(model='qwen3.8:27b', base_url='http://localhost:11434', think=True)
-        req = llm._build_request([{"role": "user", "content": "hi"}], stream=True)
+        assert req["think"] is False
         assert "options" not in req
+        assert llm.handles_thinking_internally() is False
 
-    def test_build_request_qwen38_pre_heat_merges_num_predict_into_samplers(self):
-        # num_predict used to be assigned as the whole options dict; the qwen
-        # override turned that into a merge. Pin that a qwen3.8 pre-heat carries
-        # BOTH — dropping the samplers or the token cap would each regress silently.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        llm = OllamaLLM(model='qwen3.8:27b', base_url='http://localhost:11434')
-        req = llm._build_request([{"role": "user", "content": "hi"}], stream=True, num_predict=1)
-        assert req["options"] == {
-            "temperature": 0.7,
-            "top_p": 0.8,
-            "top_k": 20,
-            "presence_penalty": 1.5,
-            "num_predict": 1,
-        }
+    @patch('assistant.llm.OllamaLLM.requests.post')
+    def test_thinking_probe_runs_once_per_model(self, mock_post):
+        mock_post.return_value.json.return_value = {"capabilities": ["completion", "thinking"]}
+        assert self._make_llm().thinks() is True
+        assert self._make_llm().handles_thinking_internally() is True
+        assert mock_post.call_count == 1
+        assert mock_post.call_args.args[0].endswith("/api/show")
 
-    # --- pre-heat / render HTTP timeouts --------------------------------
-    # Pre-heats hold _pre_heat_in_flight; a hung socket to a dead remote host
-    # (ollama.base_url on another machine) with no timeout would keep the flag
-    # set forever, silently disabling every future pre-heat. Real requests
-    # deliberately carry NO timeout — a slow generation must never be cut off.
+    @patch('assistant.llm.OllamaLLM.requests.post', side_effect=ConnectionError("down"))
+    def test_an_unreachable_host_is_assumed_to_think(self, mock_post):
+        assert self._make_llm().thinks() is True
+
+    @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
+    @patch('assistant.llm.OllamaLLM.OllamaLLM._rendered_prompt', return_value=None)
+    @patch('assistant.llm.OllamaLLM.requests.post')
+    def test_native_thinking_streams_as_a_thinking_block(self, mock_post, mock_rendered, mock_thinks):
+        # The command processor only knows <thinking> tags, so the chunks' `thinking` field
+        # arrives inside one, closed the moment the first reply token follows.
+        import json
+        mock_post.return_value.iter_lines.return_value = [
+            json.dumps({"message": {"thinking": "plan "}}),
+            json.dumps({"message": {"thinking": "it"}}),
+            json.dumps({"message": {"content": "Hi"}}),
+            json.dumps({"message": {"content": "!"}, **self.DONE}),
+        ]
+        chunks = list(self._make_llm().create_streaming_completion([{"role": "user", "content": "hi"}]))
+        assert "".join(chunks) == "<thinking>plan it</thinking>Hi!"
+
+    @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
+    @patch('assistant.llm.OllamaLLM.OllamaLLM._rendered_prompt', return_value=None)
+    @patch('assistant.llm.OllamaLLM.requests.post')
+    def test_a_stream_cut_off_while_thinking_still_closes_the_block(self, mock_post, mock_rendered, mock_thinks):
+        import json
+        mock_post.return_value.iter_lines.return_value = [
+            json.dumps({"message": {"thinking": "hmm"}}),
+            json.dumps({"message": {"content": ""}, **self.DONE}),
+        ]
+        chunks = list(self._make_llm().create_streaming_completion([{"role": "user", "content": "hi"}]))
+        assert "".join(chunks) == "<thinking>hmm</thinking>"
 
     @patch('assistant.llm.OllamaLLM.requests.post')
     def test_rendered_prompt_post_carries_timeout(self, mock_post):
@@ -1535,9 +1554,10 @@ class TestOllamaLLM:
         list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
         assert mock_post.call_args.kwargs["timeout"] is None
 
+    @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
     @patch('assistant.llm.OllamaLLM.OllamaLLM._rendered_prompt', return_value=None)
     @patch('assistant.llm.OllamaLLM.requests.post')
-    def test_create_completion(self, mock_post, mock_rendered):
+    def test_create_completion(self, mock_post, mock_rendered, mock_thinks):
         llm = self._make_llm()
         mock_resp = Mock()
         mock_resp.json.return_value = {
@@ -1614,22 +1634,18 @@ class TestOllamaLLM:
         sent_images = mock_post.call_args[1]['json']['messages'][0]['images']
         assert sent_images == [b64]
 
+    @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
     @patch('assistant.llm.OllamaLLM.requests.post')
-    def test_create_completion_with_images_routes_through_build_request(self, mock_post):
+    def test_create_completion_with_images_routes_through_build_request(self, mock_post, mock_thinks):
         # ea11de61 replaced the inline payload in create_completion_with_images
         # with self._build_request(...) so vision requests carry the same fields
         # as every other request. The visible behavioural side-effect is that
         # `think` now flows through — a revert to the inline dict would silently
         # drop it, and the existing image tests wouldn't notice. Pin the
         # construction contract on the vision path.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        llm = OllamaLLM(model='gemma4:26b', base_url='http://localhost:11434', think=True)
+        llm = self._make_llm()
         mock_resp = Mock()
-        mock_resp.json.return_value = {
-            "message": {"content": "ok"}, "done": True,
-            "prompt_eval_count": 1, "prompt_eval_duration": 1e9,
-            "eval_count": 1, "eval_duration": 1e9, "total_duration": 2e9,
-        }
+        mock_resp.json.return_value = {"message": {"content": "ok"}, **self.DONE}
         mock_post.return_value = mock_resp
 
         llm.create_completion_with_images(
@@ -1761,13 +1777,13 @@ class TestOllamaLLM:
         original_anchor = OllamaLLM._prefill_log_start
         try:
             OllamaLLM._ollama_log_path = str(log_file)
-            OllamaLLM._begin_prefill()  # anchors at current EOF (past the stale line)
+            token = OllamaLLM._begin_prefill()  # anchors at current EOF (past the stale line)
             assert OllamaLLM._prefill_log_start == log_file.stat().st_size
             with open(log_file, 'a') as f:
                 f.write('msg="loading cache slot" id=0 cache=2 prompt=2 used=5786 remaining=558\n')
             assert OllamaLLM._consume_prefill_metrics() == (5786, 558)
         finally:
-            OllamaLLM._end_prefill()
+            OllamaLLM._end_prefill(token)
             OllamaLLM._ollama_log_path = original_path
             OllamaLLM._prefill_log_start = original_anchor
 
@@ -1779,7 +1795,7 @@ class TestOllamaLLM:
         from assistant.llm.OllamaLLM import OllamaLLM
         with patch.object(OllamaLLM, '_read_cache_metrics',
                           side_effect=[(5786, 558), None, None]) as mock_read:
-            OllamaLLM._begin_prefill()  # resets _prefill_cache_metrics to None
+            token = OllamaLLM._begin_prefill()  # resets _prefill_cache_metrics to None
             try:
                 assert OllamaLLM._consume_prefill_metrics() == (5786, 558)
                 # Subsequent polls return the cached tuple and never re-read the log.
@@ -1787,7 +1803,7 @@ class TestOllamaLLM:
                 assert OllamaLLM._consume_prefill_metrics() == (5786, 558)
                 mock_read.assert_called_once()
             finally:
-                OllamaLLM._end_prefill()
+                OllamaLLM._end_prefill(token)
 
     def test_consume_prefill_metrics_throttles_rereads_until_line_appears(self):
         # Before the cache-slot line lands in the log, every poll used to re-read
@@ -1796,7 +1812,7 @@ class TestOllamaLLM:
         # done-time read in _log_metrics) bypasses the throttle.
         from assistant.llm.OllamaLLM import OllamaLLM
         with patch.object(OllamaLLM, '_read_cache_metrics', return_value=None) as mock_read:
-            OllamaLLM._begin_prefill()
+            token = OllamaLLM._begin_prefill()
             try:
                 assert OllamaLLM._consume_prefill_metrics() is None  # first poll reads
                 assert OllamaLLM._consume_prefill_metrics() is None  # throttled
@@ -1805,7 +1821,7 @@ class TestOllamaLLM:
                 assert OllamaLLM._consume_prefill_metrics(force=True) is None
                 assert mock_read.call_count == 2
             finally:
-                OllamaLLM._end_prefill()
+                OllamaLLM._end_prefill(token)
 
     def test_prefill_log_reads_run_outside_prefill_lock(self):
         # _mark_first_token takes _prefill_lock per streamed token and the TUI
@@ -1827,17 +1843,47 @@ class TestOllamaLLM:
                           side_effect=assert_lock_free_and_return((100, 50))), \
              patch.object(OllamaLLM, '_read_prefill_progress',
                           side_effect=assert_lock_free_and_return((2048, 17531))):
-            OllamaLLM._begin_prefill()
+            token = OllamaLLM._begin_prefill()
             try:
                 assert OllamaLLM._consume_prefill_metrics() == (100, 50)
                 assert OllamaLLM._poll_prefill_progress() == (2048, 17531)
             finally:
-                OllamaLLM._end_prefill()
+                OllamaLLM._end_prefill(token)
 
     def test_prefill_progress_none_when_idle(self):
         from assistant.llm.OllamaLLM import OllamaLLM
-        OllamaLLM._end_prefill()
+        OllamaLLM._end_prefill(OllamaLLM._begin_prefill())
         assert OllamaLLM.prefill_progress() is None
+
+    def test_pre_heat_overlapping_a_user_request_leaves_its_prefill_state_alone(self):
+        # The pre-heat fired at the end of one turn is often still prefilling when the next
+        # user request goes out. Its exit used to blank the user's progress bar and swallow
+        # the first-token mark; a pre-heat starting mid-request used to restart the clock.
+        from assistant.llm.OllamaLLM import OllamaLLM
+        with patch.object(OllamaLLM, '_log_size', return_value=0), \
+             patch.object(OllamaLLM, '_consume_prefill_metrics', return_value=(0, 1000)), \
+             patch.object(OllamaLLM, '_poll_prefill_progress', return_value=None):
+            # pre-heat first, user request takes over, pre-heat exits
+            pre_heat = OllamaLLM._begin_prefill(interactive=False)
+            user = OllamaLLM._begin_prefill()
+            OllamaLLM._end_prefill(pre_heat)
+            assert OllamaLLM.prefill_progress() is not None
+            OllamaLLM._mark_first_token(pre_heat)
+            assert OllamaLLM.prefill_progress() < 100.0
+            OllamaLLM._mark_first_token(user)
+            assert OllamaLLM.prefill_progress() == 100.0
+            # a pre-heat starting mid-request is not tracked and cannot end the user's state
+            late = OllamaLLM._begin_prefill(interactive=False)
+            assert late is None
+            assert OllamaLLM.prefill_progress() == 100.0
+            OllamaLLM._end_prefill(late)
+            assert OllamaLLM.prefill_progress() == 100.0
+            OllamaLLM._end_prefill(user)
+            assert OllamaLLM.prefill_progress() is None
+            # once the user request is over, a pre-heat is tracked again
+            pre_heat = OllamaLLM._begin_prefill(interactive=False)
+            assert pre_heat is not None and OllamaLLM.prefill_progress() is not None
+            OllamaLLM._end_prefill(pre_heat)
 
     def test_prefill_progress_zero_before_cache_line(self, tmp_path):
         from assistant.llm.OllamaLLM import OllamaLLM
@@ -1848,10 +1894,10 @@ class TestOllamaLLM:
             log_file = tmp_path / "ollama.log"
             log_file.write_text("nothing useful here\n")
             OllamaLLM._ollama_log_path = str(log_file)
-            OllamaLLM._begin_prefill()
+            token = OllamaLLM._begin_prefill()
             assert OllamaLLM.prefill_progress() == 0.0
         finally:
-            OllamaLLM._end_prefill()
+            OllamaLLM._end_prefill(token)
             OllamaLLM._ollama_log_path = original_path
             OllamaLLM._prefill_log_start = original_anchor
 
@@ -1862,13 +1908,13 @@ class TestOllamaLLM:
         try:
             log_file = tmp_path / "ollama.log"
             OllamaLLM._ollama_log_path = str(log_file)
-            OllamaLLM._begin_prefill()  # anchors before Ollama logs the line
+            token = OllamaLLM._begin_prefill()  # anchors before Ollama logs the line
             log_file.write_text(
                 'msg="loading cache slot" id=0 cache=100 prompt=100 used=100 remaining=0\n'
             )
             assert OllamaLLM.prefill_progress() == 100.0
         finally:
-            OllamaLLM._end_prefill()
+            OllamaLLM._end_prefill(token)
             OllamaLLM._ollama_log_path = original_path
             OllamaLLM._prefill_log_start = original_anchor
 
@@ -1882,7 +1928,7 @@ class TestOllamaLLM:
             log_file = tmp_path / "ollama.log"
             OllamaLLM._ollama_log_path = str(log_file)
             OllamaLLM._prefill_tps = 1000.0  # 1000 tokens @ 1000 t/s => 1.0s eta
-            OllamaLLM._begin_prefill()
+            token = OllamaLLM._begin_prefill()
             log_file.write_text(
                 'msg="loading cache slot" id=0 cache=0 prompt=1000 used=0 remaining=1000\n'
             )
@@ -1890,7 +1936,7 @@ class TestOllamaLLM:
             pct = OllamaLLM.prefill_progress()
             assert 40.0 < pct < 60.0
         finally:
-            OllamaLLM._end_prefill()
+            OllamaLLM._end_prefill(token)
             OllamaLLM._ollama_log_path = original_path
             OllamaLLM._prefill_log_start = original_anchor
             OllamaLLM._prefill_tps = original_tps
@@ -1903,16 +1949,16 @@ class TestOllamaLLM:
         try:
             log_file = tmp_path / "ollama.log"
             OllamaLLM._ollama_log_path = str(log_file)
-            OllamaLLM._begin_prefill()
+            token = OllamaLLM._begin_prefill()
             log_file.write_text(
                 'msg="loading cache slot" id=0 cache=0 prompt=1000 used=0 remaining=1000\n'
             )
             OllamaLLM._prefill_start_ts = time.monotonic() - 9999  # way past eta
             assert OllamaLLM.prefill_progress() == 99.0
-            OllamaLLM._mark_first_token()
+            OllamaLLM._mark_first_token(token)
             assert OllamaLLM.prefill_progress() == 100.0
         finally:
-            OllamaLLM._end_prefill()
+            OllamaLLM._end_prefill(token)
             OllamaLLM._ollama_log_path = original_path
             OllamaLLM._prefill_log_start = original_anchor
 
@@ -2209,11 +2255,11 @@ class TestOllamaRemoteLog:
         original_anchor = OllamaLLM._prefill_log_start
         try:
             with patch.object(OllamaLLM, '_log_size', return_value=None):
-                OllamaLLM._begin_prefill()
+                token = OllamaLLM._begin_prefill()
             assert OllamaLLM._prefill_log_start is None
             assert OllamaLLM._read_cache_metrics() is None
         finally:
-            OllamaLLM._end_prefill()
+            OllamaLLM._end_prefill(token)
             OllamaLLM._prefill_log_start = original_anchor
 
 
@@ -2279,21 +2325,21 @@ class TestOllamaMlxLogFormat:
     def test_prefill_progress_uses_mlx_progress_lines(self):
         from assistant.llm.OllamaLLM import OllamaLLM
         with patch.object(OllamaLLM, '_log_size', return_value=0):
-            OllamaLLM._begin_prefill()
+            token = OllamaLLM._begin_prefill()
         try:
             with patch.object(OllamaLLM, '_read_cache_metrics', return_value=(0, 17531)), \
                  patch.object(OllamaLLM, '_read_prefill_progress', return_value=(8192, 17531)):
                 progress = OllamaLLM.prefill_progress()
             assert progress == pytest.approx(8192 / 17531 * 100.0)
         finally:
-            OllamaLLM._end_prefill()
+            OllamaLLM._end_prefill(token)
 
     def test_prefill_progress_throttles_progress_log_reads(self):
         # Over ssh every progress read is a round trip; polls inside the
         # throttle window must serve the cached value without re-reading.
         from assistant.llm.OllamaLLM import OllamaLLM
         with patch.object(OllamaLLM, '_log_size', return_value=0):
-            OllamaLLM._begin_prefill()
+            token = OllamaLLM._begin_prefill()
         try:
             with patch.object(OllamaLLM, '_read_cache_metrics', return_value=(0, 17531)), \
                  patch.object(OllamaLLM, '_read_prefill_progress',
@@ -2303,7 +2349,7 @@ class TestOllamaMlxLogFormat:
             assert first == second == pytest.approx(2048 / 17531 * 100.0)
             mock_read.assert_called_once()
         finally:
-            OllamaLLM._end_prefill()
+            OllamaLLM._end_prefill(token)
 
 # ===========================================================================
 # missing_api_key — the question a caller asks before initialize() when it would rather
