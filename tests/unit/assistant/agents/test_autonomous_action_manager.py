@@ -1,5 +1,6 @@
 import json
 import queue
+import threading
 import time
 import pytest
 from unittest.mock import Mock, patch
@@ -604,7 +605,7 @@ class TestAutonomousActionManager:
              patch.object(mgr, '_remove_wakeup'), \
              patch('assistant.agents.AutonomousActionManager.time.sleep'), \
              patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
-            mgr._start_wakeup_thread(time.time() + 0.01)
+            mgr._start_wakeup_thread({"at": time.time() + 0.01, "scheduled_at": time.time(), "reason": ""})
             created[0].join(timeout=2.0)
 
         assert not check_called.is_set(), "activity_check should not be called during Night mode"
@@ -663,7 +664,7 @@ class TestAutonomousActionManager:
              patch.object(mgr, '_remove_wakeup'), \
              patch('assistant.agents.AutonomousActionManager.time.sleep'), \
              patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
-            mgr._start_wakeup_thread(time.time() + 0.01)
+            mgr._start_wakeup_thread({"at": time.time() + 0.01, "scheduled_at": time.time(), "reason": ""})
             created[0].join(timeout=2.0)
 
         assert check_called.is_set(), "wakeup must run when live state is not Night, even with stale prompt text"
@@ -779,87 +780,173 @@ class TestVisionTierRouting:
 
 
 class TestWakeupPersistence:
-    """Tests for scheduled wakeup disk persistence (commit 36377e3)."""
+    """Scheduled wake-ups survive a restart, each with the reason it was scheduled for."""
 
     @pytest.fixture(autouse=True)
     def use_tmp_schedule_file(self, tmp_path, monkeypatch):
         self.schedule_file = str(tmp_path / "scheduled_wakeups.json")
         monkeypatch.setattr('assistant.agents.AutonomousActionManager.SCHEDULE_FILE', self.schedule_file)
 
-    def test_save_wakeup_writes_to_json(self):
-        mgr, _ = make_manager()
-        mgr._save_wakeup(1000.0)
+    @staticmethod
+    def wakeup(at: float, reason: str = "") -> dict:
+        return {"at": at, "scheduled_at": at - 600, "reason": reason}
+
+    def read(self) -> list:
         with open(self.schedule_file) as f:
-            data = json.load(f)
-        assert data == [1000.0]
+            return json.load(f)
 
     def test_save_wakeup_appends_to_existing(self):
         mgr, _ = make_manager()
-        mgr._save_wakeup(1000.0)
-        mgr._save_wakeup(2000.0)
-        with open(self.schedule_file) as f:
-            data = json.load(f)
-        assert data == [1000.0, 2000.0]
+        mgr._save_wakeup(self.wakeup(1000.0, "turn off the TV"))
+        mgr._save_wakeup(self.wakeup(2000.0))
+        assert [(w["at"], w["reason"]) for w in self.read()] == [(1000.0, "turn off the TV"), (2000.0, "")]
 
     def test_load_wakeups_returns_empty_on_missing_file(self):
-        result = AutonomousActionManager._load_wakeups()
-        assert result == []
+        assert AutonomousActionManager._load_wakeups() == []
 
     def test_load_wakeups_returns_empty_on_corrupt_json(self):
         with open(self.schedule_file, "w") as f:
             f.write("{corrupt json!!")
-        result = AutonomousActionManager._load_wakeups()
-        assert result == []
+        assert AutonomousActionManager._load_wakeups() == []
+
+    def test_load_wakeups_reads_the_bare_timestamps_of_the_old_file_shape(self):
+        """A file written before wake-ups carried a reason holds plain timestamps; those
+        still restore, as reason-less wake-ups."""
+        with open(self.schedule_file, "w") as f:
+            json.dump([6000.0, {"at": 7000.0, "scheduled_at": 6500.0, "reason": "ping Marcus"}], f)
+        wakeups = AutonomousActionManager._load_wakeups()
+        assert [(w["at"], w["reason"]) for w in wakeups] == [(6000.0, ""), (7000.0, "ping Marcus")]
 
     def test_remove_wakeup_deletes_specific_entry(self):
         mgr, _ = make_manager()
-        mgr._save_wakeup(1000.0)
-        mgr._save_wakeup(2000.0)
+        mgr._save_wakeup(self.wakeup(1000.0))
+        mgr._save_wakeup(self.wakeup(2000.0))
         mgr._remove_wakeup(1000.0)
-        with open(self.schedule_file) as f:
-            data = json.load(f)
-        assert data == [2000.0]
+        assert [w["at"] for w in self.read()] == [2000.0]
 
     def test_remove_wakeup_noop_when_not_found(self):
         mgr, _ = make_manager()
-        mgr._save_wakeup(1000.0)
+        mgr._save_wakeup(self.wakeup(1000.0))
         mgr._remove_wakeup(9999.0)
-        with open(self.schedule_file) as f:
-            data = json.load(f)
-        assert data == [1000.0]
+        assert [w["at"] for w in self.read()] == [1000.0]
 
     @patch('assistant.agents.AutonomousActionManager.time.time')
     def test_restore_discards_expired_wakeups(self, mock_time):
         mock_time.return_value = 5000.0
         with open(self.schedule_file, "w") as f:
-            json.dump([1000.0, 2000.0, 3000.0], f)
+            json.dump([self.wakeup(1000.0), self.wakeup(2000.0), self.wakeup(3000.0)], f)
 
         mgr, _ = make_manager()
         with patch.object(mgr, '_start_wakeup_thread') as mock_start:
             mgr._restore_scheduled_wakeups()
             mock_start.assert_not_called()
-
-        with open(self.schedule_file) as f:
-            data = json.load(f)
-        assert data == []
+        assert self.read() == []
 
     @patch('assistant.agents.AutonomousActionManager.time.time')
-    def test_restore_reschedules_active_wakeups(self, mock_time):
+    def test_restore_reschedules_active_wakeups_with_their_reason(self, mock_time):
         mock_time.return_value = 5000.0
         with open(self.schedule_file, "w") as f:
-            json.dump([1000.0, 6000.0, 7000.0], f)
+            json.dump([self.wakeup(1000.0), self.wakeup(6000.0, "defrost the car"), self.wakeup(7000.0)], f)
 
         mgr, _ = make_manager()
         with patch.object(mgr, '_start_wakeup_thread') as mock_start:
             mgr._restore_scheduled_wakeups()
-            assert mock_start.call_count == 2
-            called_times = [call.args[0] for call in mock_start.call_args_list]
-            assert 6000.0 in called_times
-            assert 7000.0 in called_times
+            restored = [(c.args[0]["at"], c.args[0]["reason"]) for c in mock_start.call_args_list]
+            assert restored == [(6000.0, "defrost the car"), (7000.0, "")]
+        assert [w["at"] for w in self.read()] == [6000.0, 7000.0]
 
-        with open(self.schedule_file) as f:
-            data = json.load(f)
-        assert data == [6000.0, 7000.0]
+    def test_schedule_persists_the_reason_and_hands_it_to_the_wake(self):
+        mgr, _ = make_manager()
+        with patch.object(mgr, '_start_wakeup_thread') as mock_start:
+            mgr.schedule(5, "message Marcus 30 minutes before the launch")
+        (wakeup,) = mock_start.call_args.args
+        assert wakeup["reason"] == "message Marcus 30 minutes before the launch"
+        assert 290 < wakeup["at"] - wakeup["scheduled_at"] < 310
+        assert self.read()[0]["reason"] == wakeup["reason"]
+
+
+class TestScheduledWakeupReason:
+    """The check a scheduled wake-up triggers is told what it was scheduled for: the exchange
+    that scheduled it may have been trimmed from the history window by the time it fires."""
+
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_wake_thread_passes_its_entry_to_the_check(self, mock_claude):
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(night=False), test_mode=True)
+        wakeup = {"at": time.time() + 0.01, "scheduled_at": time.time(), "reason": "turn off the TV"}
+        seen = {}
+
+        def capture(*args, **kwargs):
+            seen.update(kwargs)
+            return "NO"
+
+        created = []
+        real_thread_cls = threading.Thread
+
+        def capture_thread(*args, **kwargs):
+            t = real_thread_cls(*args, **kwargs)
+            created.append(t)
+            return t
+
+        with patch.object(mgr, 'activity_check', side_effect=capture), \
+             patch.object(mgr, '_remove_wakeup'), \
+             patch('assistant.agents.AutonomousActionManager.time.sleep'), \
+             patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
+            mgr._start_wakeup_thread(wakeup)
+            created[0].join(timeout=2.0)
+        assert seen["wakeup"] is wakeup
+
+    @staticmethod
+    def manager_recording_its_prompt():
+        """A manager whose LLM answers NO and whose saved prompt (what was sent) is captured."""
+        pm = make_mock_prompt_manager()
+        saved = {}
+        pm.save_prompt_to_file.side_effect = lambda msgs: saved.update(m=list(msgs))
+        mgr, mock_llm = make_manager(prompt_manager=pm)
+        mock_llm.handles_thinking_internally.return_value = True
+        mock_llm.think_with_messages.return_value = "NO"
+        return mgr, saved
+
+    @pytest.fixture(autouse=True)
+    def idle_command_processor(self):
+        with patch('assistant.commands.CommandProcessor.CommandProcessor') as mock_cp:
+            inst = Mock()
+            inst.command_queue = queue.Queue()
+            inst.command_being_processed = False
+            inst.command_running_in_background = False
+            inst.command_reply = None
+            inst.flush_buffer.return_value = None
+            inst.process.return_value = None
+            mock_cp.return_value = inst
+            yield
+
+    def test_check_prompt_ends_with_the_reason(self):
+        mgr, saved = self.manager_recording_its_prompt()
+
+        mgr.activity_check(wakeup={"at": time.time(), "scheduled_at": time.time() - 3600,
+                                   "reason": "message Marcus 30 minutes before the launch"})
+
+        last = saved["m"][-1]
+        assert last["role"] == "user"
+        assert "message Marcus 30 minutes before the launch" in last["content"]
+        assert last["content"].index("AUTONOMOUS ACTION CHECK") < last["content"].index("SCHEDULED WAKE-UP")
+
+    def test_check_without_a_wakeup_carries_no_wakeup_note(self):
+        mgr, saved = self.manager_recording_its_prompt()
+
+        mgr.activity_check()
+
+        assert "SCHEDULED WAKE-UP" not in saved["m"][-1]["content"]
+
+    def test_reasonless_wakeup_still_says_it_was_scheduled(self):
+        """A wake-up from the old file shape, or from a model that gave no reason, must
+        still tell the check it is a scheduled one so it looks for the pending timer."""
+        mgr, saved = self.manager_recording_its_prompt()
+
+        mgr.activity_check(wakeup={"at": time.time(), "scheduled_at": time.time() - 60, "reason": ""})
+
+        assert "SCHEDULED WAKE-UP" in saved["m"][-1]["content"]
+
 
 class TestUserInteractionGating:
     """Tests for the user-interaction gate that suppresses double replies

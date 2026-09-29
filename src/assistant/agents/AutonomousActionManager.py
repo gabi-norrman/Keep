@@ -42,6 +42,23 @@ THINKING_TAG_INSTRUCTION = (
     'ALL reasoning must stay inside the <thinking> tag — once you close </thinking> you may only emit '
     'commands or the final Telegram message (or "NO").\n\n')
 
+# Appended after the autonomous instruction when the check is a scheduled wake-up: the
+# exchange that scheduled it may have been trimmed from the history window by then, so the
+# wake carries its own reason (the 30-minutes-before-launch reminder of 2026-09-28 fired twice
+# into a window that no longer mentioned the launch, and the model found nothing to do).
+SCHEDULED_WAKEUP_NOTE = """
+## SCHEDULED WAKE-UP
+
+This check is not the periodic one: you scheduled it yourself at {scheduled_at} with schedule_wakeup, for:
+> {reason}
+
+The conversation that led to it may no longer be in the history above. Act on the reason now — it is why you are awake."""
+
+SCHEDULED_WAKEUP_NOTE_NO_REASON = """
+## SCHEDULED WAKE-UP
+
+This check is not the periodic one: you scheduled it yourself at {scheduled_at} with schedule_wakeup, without recording why. Look for the pending timer, reminder or follow-up in the history above and act on it now."""
+
 AUTONOMOUS_ACTION_PROMPT = """
 # AUTONOMOUS ACTION CHECK
 
@@ -245,17 +262,30 @@ class AutonomousActionManager:
 
             self.activity_check()
 
-    def activity_check(self, prompt: str | None = None) -> str:
+    def activity_check(self, prompt: str | None = None, wakeup: dict | None = None) -> str:
+        """One autonomous check. *wakeup* is the schedule-file entry when the check is a
+        scheduled wake-up: its reason is appended to the instruction (see SCHEDULED_WAKEUP_NOTE)."""
         if not self.activity_check_lock.acquire(timeout=120):
             error("Could not acquire activity_check_lock — another check is stuck")
             return "NO"
         try:
-            return self._activity_check_inner(prompt)
+            return self._activity_check_inner(prompt, wakeup)
         finally:
             self.activity_check_lock.release()
 
-    def _activity_check_inner(self, prompt: str | None) -> str:
-            info("Check for autonomous action...")
+    @staticmethod
+    def _wakeup_note(wakeup: dict) -> str:
+        scheduled_at = time.strftime("%H:%M", time.localtime(wakeup["scheduled_at"]))
+        reason = wakeup.get("reason", "")
+        if reason:
+            return SCHEDULED_WAKEUP_NOTE.format(scheduled_at=scheduled_at, reason=reason)
+        return SCHEDULED_WAKEUP_NOTE_NO_REASON.format(scheduled_at=scheduled_at)
+
+    def _activity_check_inner(self, prompt: str | None, wakeup: dict | None = None) -> str:
+            if wakeup:
+                info(f"Check for autonomous action (scheduled wake-up for: {wakeup.get('reason') or 'no reason recorded'})...")
+            else:
+                info("Check for autonomous action...")
             is_real_run = prompt is None
             history_messages = []
             if is_real_run:
@@ -281,6 +311,8 @@ class AutonomousActionManager:
             if is_real_run:
                 MessageHistory.append_user_turn(messages, self.prompt_manager.current_time_note())
             MessageHistory.append_user_turn(messages, self._action_prompt(self._llm_for(messages)))
+            if wakeup:
+                MessageHistory.append_user_turn(messages, self._wakeup_note(wakeup))
 
             if is_real_run:
                 self.prompt_manager.save_prompt_to_file(messages)
@@ -462,13 +494,19 @@ class AutonomousActionManager:
         if parts:
             self.prompt_manager.update_history(None, None, "\n".join(parts))
 
-    def schedule(self, minutes: float):
+    def schedule(self, minutes: float, reason: str = "") -> None:
+        """Wake in *minutes*; *reason* is what the wake is for, carried into the check's prompt
+        because the conversation that scheduled it may be trimmed away by then."""
         wake_at = time.time() + minutes * 60
-        info(f"Scheduling Autonomous Action Manager to wake in {minutes} minutes...")
-        self._save_wakeup(wake_at)
-        self._start_wakeup_thread(wake_at)
+        info(f"Scheduling Autonomous Action Manager to wake in {minutes} minutes"
+             + (f" for: {reason}" if reason else " (no reason given)") + "...")
+        wakeup = {"at": wake_at, "scheduled_at": time.time(), "reason": reason}
+        self._save_wakeup(wakeup)
+        self._start_wakeup_thread(wakeup)
 
-    def _start_wakeup_thread(self, wake_at: float):
+    def _start_wakeup_thread(self, wakeup: dict):
+        wake_at = wakeup["at"]
+
         def _delayed_check():
             remaining = wake_at - time.time()
             if remaining > 0:
@@ -482,23 +520,19 @@ class AutonomousActionManager:
             while self.running and self.is_user_interaction_active():
                 info("Scheduled wakeup deferred — user interaction active or recent. Retrying shortly.")
                 time.sleep(USER_INTERACTION_QUIET_PERIOD_SECONDS)
-            self.activity_check()
+            self.activity_check(wakeup=wakeup)
 
         thread = threading.Thread(target=_delayed_check, daemon=True)
         thread.start()
 
-    def _save_wakeup(self, wake_at: float):
-        wakeups = self._load_wakeups()
-        wakeups.append(wake_at)
-        try:
-            with open(SCHEDULE_FILE, "w") as f:
-                json.dump(wakeups, f)
-        except Exception as e:
-            error(f"Failed to save scheduled wakeups: {e}")
+    def _save_wakeup(self, wakeup: dict):
+        self._write_wakeups(self._load_wakeups() + [wakeup])
 
     def _remove_wakeup(self, wake_at: float):
-        wakeups = self._load_wakeups()
-        wakeups = [w for w in wakeups if w != wake_at]
+        self._write_wakeups([w for w in self._load_wakeups() if w["at"] != wake_at])
+
+    @staticmethod
+    def _write_wakeups(wakeups: list[dict]):
         try:
             with open(SCHEDULE_FILE, "w") as f:
                 json.dump(wakeups, f)
@@ -506,28 +540,36 @@ class AutonomousActionManager:
             error(f"Failed to save scheduled wakeups: {e}")
 
     @staticmethod
-    def _load_wakeups() -> list[float]:
+    def _load_wakeups() -> list[dict]:
+        """The pending wake-ups on disk. A bare timestamp (the file's shape before wake-ups
+        carried a reason) is read as a wake-up with no reason, scheduled at an unknown time."""
         try:
             with open(SCHEDULE_FILE, "r") as f:
-                return json.load(f)
+                raw = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             return []
+        wakeups = []
+        for entry in raw:
+            if isinstance(entry, dict):
+                wakeups.append({"at": entry["at"], "scheduled_at": entry.get("scheduled_at", entry["at"]),
+                                "reason": entry.get("reason", "")})
+            else:
+                wakeups.append({"at": float(entry), "scheduled_at": float(entry), "reason": ""})
+        return wakeups
 
     def _restore_scheduled_wakeups(self):
         wakeups = self._load_wakeups()
         now = time.time()
-        active = [w for w in wakeups if w > now]
+        active = [w for w in wakeups if w["at"] > now]
         expired = len(wakeups) - len(active)
         if expired:
-            try:
-                with open(SCHEDULE_FILE, "w") as f:
-                    json.dump(active, f)
-            except Exception as e:
-                error(f"Failed to clean expired wakeups: {e}")
-        for wake_at in active:
-            remaining = (wake_at - now) / 60
-            info(f"Restoring scheduled wakeup in {remaining:.1f} minutes")
-            self._start_wakeup_thread(wake_at)
+            info(f"Discarding {expired} scheduled wakeup(s) that expired while the server was down")
+            self._write_wakeups(active)
+        for wakeup in active:
+            remaining = (wakeup["at"] - now) / 60
+            info(f"Restoring scheduled wakeup in {remaining:.1f} minutes"
+                 + (f" for: {wakeup['reason']}" if wakeup["reason"] else ""))
+            self._start_wakeup_thread(wakeup)
 
     def caffeinate(self, duration_minutes: float = CAFFEINE_DEFAULT_DURATION_MINUTES,
                    interval_minutes: float = CAFFEINE_INTERVAL_MINUTES):

@@ -90,7 +90,7 @@ class Commands:
         "sonos_enqueue_and_play", "show_photo",
         "search_photos", "search_history", "show_history",
         "create_event", "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
-        "vault_request", "config_set", "load_toolkit",
+        "vault_request", "config_set", "load_toolkit", "schedule_wakeup",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
@@ -324,8 +324,17 @@ class Commands:
     def cmd_list_folders(self, parameter_string: str):
         self.background_command(self._email_provider.list_folders, parameter_string)
 
-    def cmd_schedule_wakeup(self, parameter_string: str):
-        AutonomousActionManager.get_instance().schedule(float(parameter_string) + 0.1)  # 0.1 because we need to make sure we actually schedule just AFTER the time we want otherwise AI might not trigger
+    def cmd_schedule_wakeup(self, *args: str):
+        """schedule_wakeup(in_minutes, reason): the reason travels with the wake-up so the check
+        it triggers knows what it is for even after the history window has moved on. Unquoted
+        reasons split on their commas; re-joining them keeps the whole sentence."""
+        if not args:
+            return "schedule_wakeup failed: expected 'in_minutes, reason' parameters"
+        minutes = float(args[0]) + 0.1  # just AFTER the wanted time, otherwise the AI may see it as not yet due
+        reason = ", ".join(a for a in args[1:]).strip()
+        if not reason:
+            info("schedule_wakeup: the LLM gave no reason — the wake-up will have to find its purpose in the history")
+        AutonomousActionManager.get_instance().schedule(minutes, reason)
 
     def cmd_caffeinate(self, parameter_string: str):
         AutonomousActionManager.get_instance().caffeinate()
@@ -1827,7 +1836,9 @@ class Commands:
             return f"Moving email '{s}' to {folder}"
         return f"Moving email to {folder}"
     def describe_list_folders(self, p):           return "Listing email folders"
-    def describe_schedule_wakeup(self, p):        return f"Scheduling wakeup in {p.strip()} min"
+    def describe_schedule_wakeup(self, p):
+        minutes, _, reason = p.partition(",")
+        return f"Scheduling wakeup in {minutes.strip()} min" + (f": {reason.strip()}" if reason.strip() else "")
     def describe_caffeinate(self, p):             return "Staying awake"
     def describe_tesla_max_defrost(self, p):      return "Turning on Tesla max defrost"
     def describe_tesla_air_con_on(self, p):       return "Turning on Tesla A/C"

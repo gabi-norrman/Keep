@@ -782,7 +782,25 @@ class TestCmdScheduleAndCaffeinate:
             mock_instance = Mock()
             mock_aam.get_instance.return_value = mock_instance
             commands_instance.cmd_schedule_wakeup("5.5")
-            mock_instance.schedule.assert_called_once_with(5.6)
+            mock_instance.schedule.assert_called_once_with(5.6, "")
+
+    def test_schedule_wakeup_carries_the_reason(self, commands_instance):
+        with patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam:
+            mock_instance = Mock()
+            mock_aam.get_instance.return_value = mock_instance
+            commands_instance.cmd_schedule_wakeup("30", "turn off the TV")
+            mock_instance.schedule.assert_called_once_with(30.1, "turn off the TV")
+
+    def test_schedule_wakeup_rejoins_an_unquoted_reason_split_on_its_commas(self, commands_instance):
+        with patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam:
+            mock_instance = Mock()
+            mock_aam.get_instance.return_value = mock_instance
+            commands_instance.cmd_schedule_wakeup("10", "check the T-0", "then message Marcus")
+            mock_instance.schedule.assert_called_once_with(10.1, "check the T-0, then message Marcus")
+
+    def test_describe_schedule_wakeup_shows_the_reason(self, commands_instance):
+        text = commands_instance.describe("schedule_wakeup", ["20", "turn off the TV"])
+        assert "20" in text and "turn off the TV" in text
 
 # ---------------------------------------------------------------------------
 # TestCmdSelfAnalysis
