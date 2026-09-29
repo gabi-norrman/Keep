@@ -40,7 +40,7 @@ from assistant.ChannelProfile import SOURCE_CONSOLE, SOURCE_VOICE
 from assistant.tools.MessageFormatter import MessageFormatter
 from common.logging import info, trace
 from interfaces.chat import FallbackNotice
-from interfaces.chat.RichText import strip_tags
+from interfaces.chat.RichText import repair_markdown, strip_tags
 from interfaces.console.SystemEvents import markup
 from interfaces.console.widgets.ChatPane import (KIND_ASSISTANT, KIND_DIFF, KIND_NOTICE, KIND_SYSTEM, KIND_USER,
                                                  ChatPane)
@@ -222,7 +222,8 @@ class HistoryFeed(AssistantObserver):
         if not SHOW_COMMAND_ROUNDS and only_commands(entry["content"]):
             trace("HistoryFeed: hiding a command-only assistant row (its commands were shown as notices)")
             return
-        stored = normalize(without_commands(entry["content"]))
+        # The live bubble went through ChatSession's Markdown repair, the stored row did not.
+        stored = normalize(without_commands(repair_markdown(entry["content"])))
         for live in self._pane.entries:
             if live.kind not in (KIND_ASSISTANT, KIND_NOTICE) or live.history:
                 continue
@@ -253,6 +254,7 @@ class HistoryFeed(AssistantObserver):
         elif role == ROLE_ASSISTANT:
             kind = KIND_ASSISTANT
             header = MessageFormatter.format_assistant_header(None)
+            content = repair_markdown(content)
         elif role == ROLE_COMMAND:
             kind = KIND_SYSTEM
             header = "Command result"

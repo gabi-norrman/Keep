@@ -68,6 +68,13 @@ class TestBackfill:
         assert pane.entries == []
 
 
+    def test_a_markdown_assistant_row_is_shown_repaired(self, history, pane):
+        history.history = [entry("assistant", "Parked at **Kyrkogatan**, spot `B4`.", T0)]
+        HistoryFeed(history, pane).start()
+        text = pane.entries[0].body.text
+        assert "**" not in text and "`" not in text and "<b>Kyrkogatan</b>" in text
+
+
 class TestLiveInserts:
     def test_new_rows_are_added_once_in_timestamp_order(self, history, pane, feed):
         land(history, entry("system", "second", T0 + 2))
@@ -147,6 +154,19 @@ class TestAdoption:
         now = time.time()
         land(history, entry("Marcus", "is it there?", now, source="Console"),
              entry("assistant", "Yep, the placeholder `649436` is listed.", now + 0.001))
+        feed.turn_finished()
+        assert pane.entries == [pane.entries[0], bubble]
+
+    def test_a_markdown_row_adopts_the_bubble_the_stream_repaired(self, history, pane, feed):
+        """ChatSession turns the reply's **bold** into <b> as it streams; the stored row keeps
+        the asterisks, so it must still match instead of showing a raw second copy."""
+        pane.add_user("which phones?")
+        feed.user_submitted("which phones?")
+        feed.turn_started()
+        bubble = pane.add_assistant("I'd register the <b>phones</b>:\n- <b>Frances</b> → her iPhone", final=True)
+        now = time.time()
+        land(history, entry("Marcus", "which phones?", now, source="Console"),
+             entry("assistant", "I'd register the **phones**:\n- **Frances** → her iPhone", now + 0.001))
         feed.turn_finished()
         assert pane.entries == [pane.entries[0], bubble]
 
