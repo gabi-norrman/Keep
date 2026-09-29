@@ -90,6 +90,11 @@ class VaultLLM(AbstractLLM):
     def prefers_prepended_user_query(self) -> bool:
         return self.llm.prefers_prepended_user_query()
 
+    def prefers_byte_prefix_tail(self) -> bool:
+        # Explicit like refusal_fallback: the AbstractLLM default (False) wins over
+        # __getattr__, and create_llm wraps every backend in a VaultLLM.
+        return self.llm.prefers_byte_prefix_tail()
+
     def set_prompt_cache(self, enabled: bool):
         self.llm.set_prompt_cache(enabled)
 

@@ -117,17 +117,16 @@ __all__ = ["RequestProcessor", "RequestData", "RequestKilledException"]
 
 
 class RequestProcessor:
-    # Set by _prepare_llm_context for a byte-prefix request: when the query was sent (its
-    # header carries the time) and the clock note sent in front of it, both persisted with the
-    # exchange so the next request renders the same bytes. None otherwise.
-    turn_timestamp: float | None = None
-    time_note: str | None = None
-
     """Runs one request end to end and yields the AssistantEvents the interface renders.
 
     The pipeline is prompt → LLM → commands → history. Single-use: Assistant pools fresh
     instances.
     """
+    # Set by _prepare_llm_context for a byte-prefix request: when the query was sent (its
+    # header carries the time) and the clock note sent in front of it, both persisted with the
+    # exchange so the next request renders the same bytes. None otherwise.
+    turn_timestamp: float | None = None
+    time_note: str | None = None
 
     # Used by _iter_until_killed to poll the kill flag while the TTS producer is blocked.
     KILL_POLL_INTERVAL = 0.5
@@ -486,6 +485,9 @@ class RequestProcessor:
                                  is_killed=lambda: self.is_killed)
 
     def _prepare_llm_context(self, prompt_manager) -> str | None:
+        """Builds the round's messages and returns the key the response cache and the DB row
+        use for this query (the formatted query without the byte-prefix header's time), or
+        None when the request is denied."""
         self.dialog_manager.select_ai(self.ctx)
         self.dialog_manager.select_voice(self.ctx)
 
@@ -535,6 +537,10 @@ class RequestProcessor:
         location = self.ctx.location
         user_input_sent_to_ai = MessageFormatter.format_message(self.ctx.display_name, self.turn_timestamp,
                                                                 source, location, user_input)
+        # The response cache and the DB row are keyed without the byte-prefix header's HH:MM —
+        # the same utterance a minute later must still hit.
+        cache_key = (MessageFormatter.format_message(self.ctx.display_name, None, source, location, user_input)
+                     if self.turn_timestamp is not None else user_input_sent_to_ai)
         fine("Will send to LLM: " + user_input_sent_to_ai)
 
         should_prepend = (PREPEND_USER_QUERY_OVERRIDE
@@ -571,8 +577,8 @@ class RequestProcessor:
             # Key the response cache on the clean utterance — the same string stored as the
             # DB query in _save_to_database — so lookups can actually match. Image turns are
             # left uncached (cache_query stays None).
-            self.dialog_manager.cache_query = user_input_sent_to_ai
-        return user_input_sent_to_ai
+            self.dialog_manager.cache_query = cache_key
+        return cache_key
 
     # Runs on: request thread. Blocks until command worker thread finishes processing queued command.
     def _wait_for_initial_command(self):
@@ -625,14 +631,14 @@ class RequestProcessor:
         if not self.ctx.text_only and self.ctx.server_sound and self.playback:
             self.playback.finish_reply(self.dialog_manager.llm_response)
 
-    def _save_to_database(self, user_input_sent_to_ai: str, response_text: str):
+    def _save_to_database(self, query_key: str, response_text: str):
         if self.LLM_OUTAGE_HISTORY_MARKER.strip() in response_text:
             # A zero-command outage row would block CachedLLM's majority vote for this
             # query forever (any command-less row vetoes caching), so never store one.
             trace("Not storing outage reply in DB.")
             return
         if "false_positive(" not in response_text and not self.ctx.test:
-            FloxyDatabase.get_instance().submit(user_input_sent_to_ai.strip(), "",
+            FloxyDatabase.get_instance().submit(query_key.strip(), "",
                                                 response_text,
                                                 self.dialog_manager.last_response_was_cached,
                                                 source=self.ctx.source,
@@ -712,6 +718,9 @@ class RequestProcessor:
             self.dialog_manager.select_voice(self.ctx)
             self.dialog_manager.messages = old_dialog_manager.messages
             self.dialog_manager.reply_from_role = "user"
+            # The follow-up round is the same byte-prefix request: folding directives onto the
+            # result turn would put the divergence before the runner's restore point.
+            self.dialog_manager.byte_prefix_tail = old_dialog_manager.byte_prefix_tail
             self.dialog_manager.request_id = old_dialog_manager.request_id
             if self.dialog_manager.request_id:
                 trace(f"Carried request_id {self.dialog_manager.request_id} into command follow-up for text streaming")
@@ -765,9 +774,9 @@ class RequestProcessor:
         denial / failure, and a silent end when killed."""
         try:
             try:
-                user_input_sent_to_ai = self._prepare_llm_context(prompt_manager)
+                query_key = self._prepare_llm_context(prompt_manager)
 
-                if user_input_sent_to_ai is None:
+                if query_key is None:
                     yield Notice("Request denied.")
                     return
 
@@ -792,7 +801,7 @@ class RequestProcessor:
                 response_text = self._update_history(prompt_manager, user_input_already_reported_on)
                 self._wait_for_audio_and_notify_outposts()
 
-                self._save_to_database(user_input_sent_to_ai, response_text)
+                self._save_to_database(query_key, response_text)
 
                 if self.ctx.server_sound and self.playback:
                     self.playback.mark_sound_played()

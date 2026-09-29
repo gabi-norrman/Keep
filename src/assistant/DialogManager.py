@@ -25,15 +25,15 @@ if TYPE_CHECKING:
 
 
 class DialogManager:
-    # Set per request by RequestProcessor._prepare_llm_context: a byte-prefix request sends
-    # nothing the next turn's history rendering would drop, so no trailing directives.
-    byte_prefix_tail = False
-
     """Runs one LLM round: picks the model and voice, streams the reply and hands commands off.
 
     Owns the fast/smart/vision LLM clients (cached outside test-suite mode) and the per-round
     CommandProcessor; the processed text is fed to TTS when the request has a voice.
     """
+    # Set per request by RequestProcessor._prepare_llm_context: a byte-prefix request sends
+    # nothing the next turn's history rendering would drop, so no trailing directives.
+    byte_prefix_tail = False
+
     # Rough chars-per-token divisor for the live output-token estimate shown on the
     # Telegram "Thinking…" spinner. The <thinking> block is stripped before any token
     # reaches the client, so there's nothing to count downstream — but the raw stream is
