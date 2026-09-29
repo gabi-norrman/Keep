@@ -10,6 +10,7 @@ from typing import Optional
 from PIL import Image
 
 from common.logging import info, error, trace, fine
+from ..llm.AbstractLLM import LLMPreempted
 
 DESCRIPTION_PROMPT_SYSTEM = """You are an image analyst. Analyze the provided image and return a JSON object with these keys:
 - "short_description": A concise 1-sentence description (max 50 chars)
@@ -143,11 +144,7 @@ class ImageAnalyzer:
 
         for attempt in range(3):
             try:
-                response = self.llm.think(
-                    system_message=system,
-                    user_message=DESCRIPTION_PROMPT_USER,
-                    images=[jpeg_bytes],
-                )
+                response = self._think_background(system, jpeg_bytes)
                 return self._parse_response(response)
             except (json.JSONDecodeError, KeyError, ValueError) as e:
                 if attempt < 2:
@@ -159,6 +156,18 @@ class ImageAnalyzer:
                 error(f"ImageAnalyzer: LLM call failed: {e}")
                 return None
         return None
+
+    def _think_background(self, system: str, jpeg_bytes: bytes) -> str:
+        """Photo descriptions are background work: a local backend runs them while idle and
+        evicts one when a user request arrives — then the same image is simply resent."""
+        preempted = 0
+        while True:
+            try:
+                return self.llm.think(system_message=system, user_message=DESCRIPTION_PROMPT_USER,
+                                      images=[jpeg_bytes], background=True)
+            except LLMPreempted:
+                preempted += 1
+                trace(f"ImageAnalyzer: analysis preempted by a user request ({preempted}x), resending when idle")
 
     @staticmethod
     def format_description(result: dict) -> str:

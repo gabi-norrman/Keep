@@ -32,7 +32,7 @@ class ConcreteTestLLM(AbstractLLM):
         self._ensure_initialized()
         return self._completion_response
 
-    def create_completion_with_images(self, messages, images):
+    def create_completion_with_images(self, messages, images, background=False):
         self._ensure_initialized()
         return self._image_response
 

@@ -40,8 +40,12 @@ class VaultLLM(AbstractLLM):
     def create_completion(self, messages: list[dict], thinking: bool = False) -> str:
         return self._restored(self.llm.create_completion(self.redactor.redact_messages(messages), thinking=thinking))
 
-    def create_completion_with_images(self, messages: list[dict], images: list) -> str:
-        return self._restored(self.llm.create_completion_with_images(self.redactor.redact_messages(messages), images))
+    def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
+        return self._restored(self.llm.create_completion_with_images(
+            self.redactor.redact_messages(messages), images, background=background))
+
+    def is_local(self) -> bool:
+        return self.llm.is_local()
 
     def think_with_video(self, system_message: str, user_message: str, video_bytes: bytes,
                          mime_type: str, fps: float | None = None) -> str:

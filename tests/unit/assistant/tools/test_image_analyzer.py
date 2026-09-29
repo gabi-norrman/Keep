@@ -217,3 +217,15 @@ class TestDescribeBytes:
         analyzer = ImageAnalyzer(llm=Mock())
         with patch('assistant.tools.ImageAnalyzer.resize_to_jpeg', side_effect=RuntimeError("boom")):
             assert analyzer.describe_bytes(b"raw", fallback="[Image]") == "[Image]"
+
+
+@pytest.mark.unit
+class TestBackgroundAnalysis:
+    def test_analysis_is_background_work_and_resends_after_preemption(self):
+        from assistant.llm.AbstractLLM import LLMPreempted
+        reply = json.dumps({"short_description": "A cat", "detailed_description": "A cat on a chair"})
+        analyzer, llm = _analyzer_with_reply(LLMPreempted("evicted"), reply)
+        result = analyzer.analyze(b"jpeg")
+        assert result["short_description"] == "A cat"
+        assert llm.think.call_count == 2
+        assert all(call.kwargs["background"] is True for call in llm.think.call_args_list)
