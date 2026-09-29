@@ -19,9 +19,8 @@ class VoiceSynthesizer(ABC):
     # Whether this synthesizer renders bracket emotion tags ([laughing], [sighing], ...)
     # as audio. When False, such tags are stripped from the text before synthesis so
     # they aren't spoken literally. Subclasses that support them override to True.
-    # NOTE: Emotion tags are currently disabled — the prompt no longer asks the LLM to
-    # emit them because the results were a bit wonky. The strip/passthrough machinery
-    # is kept so stray tags are handled and the feature can be re-enabled via the prompt.
+    # The prompt's EMOTION TAGS section asks the LLM for them; ElevenLabs decides per model
+    # (only the v3/v4 family performs them), so the flag is a property there.
     SUPPORTS_EMOTION_TAGS: bool = False
 
     def __init__(self):

@@ -58,6 +58,12 @@ class TestModelChoice:
             from interfaces.voice.tts.ElevenLabsVoiceSynthesizer import ElevenLabsVoiceSynthesizer
             assert ElevenLabsVoiceSynthesizer().model_id == "eleven_flash_v2_5"
 
+    def test_only_the_dialogue_models_perform_emotion_tags(self, synthesizer):
+        """v4 performs [laughs]; flash would read it out, so the flag follows the model."""
+        assert synthesizer.SUPPORTS_EMOTION_TAGS
+        synthesizer.model_id = "eleven_flash_v2_5"
+        assert not synthesizer.SUPPORTS_EMOTION_TAGS
+
     def test_cache_variant_is_the_model(self, synthesizer):
         synthesizer.model_id = "eleven_flash_v2_5"
         assert synthesizer.cache_variant() == "eleven_flash_v2_5"

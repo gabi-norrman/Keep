@@ -450,8 +450,6 @@ class DialogManager:
         # Emotion tags ([laughing], [sighing], ...) are synthesis directives, not display
         # text, so strip them before publishing to /stream_text or they render literally in
         # the iOS chat overlay. A tag can span chunks, so hold back a trailing unclosed '['.
-        # Emotion tags are currently disabled (removed from the prompt — they were a bit
-        # wonky), but the stripping stays in case the LLM still emits one.
         stream_text_buffer = ""
         reply_time_shown = False
 

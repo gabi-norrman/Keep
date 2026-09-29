@@ -58,6 +58,12 @@ class ElevenLabsVoiceSynthesizer(WebSocketVoiceSynthesizer, Integration):
         return self.model_id
 
     @property
+    def SUPPORTS_EMOTION_TAGS(self) -> bool:  # noqa: N802 - overrides the class flag per model
+        """The v3/v4 family performs audio tags ([laughs], [whispers]); the older models
+        would read them out, so a config flip back to flash strips them again."""
+        return self.uses_dialogue_socket
+
+    @property
     def uses_dialogue_socket(self) -> bool:
         return self.model_id.startswith(self.DIALOGUE_MODEL_PREFIXES)
 
