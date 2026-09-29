@@ -525,6 +525,7 @@ class TestPhotoProcessorUuidDedup:
 
             mock_llm = MagicMock()
             mock_llm.think.return_value = '{"short_description":"test","detailed_description":"test desc","pretty_score":50,"family_importance_score":50}'
+            mock_llm.background_wait_seconds.return_value = 0.0
             processor._llm = mock_llm
 
             processor._process_one(row)
@@ -2325,13 +2326,16 @@ class TestLocalBackendIndexing:
         llm = Mock()
         llm.think.side_effect = [LLMPreempted("evicted"), LLMPreempted("evicted again"),
                                  '{"short_description":"a","detailed_description":"b","pretty_score":1,"family_importance_score":2}']
+        llm.background_wait_seconds.side_effect = [4.0, 6.0, 2.5]
         processor = PhotoProcessor()
         processor._llm = llm
+        PhotoProcessor._worker.queued_s = 0.0
         with patch.object(PhotoProcessor, '_read_memory', return_value=""):
             result = processor._analyze_with_llm(b"jpeg", "2026-01-01", "", "", "", "photo")
         assert result["pretty_score"] == 1
         assert llm.think.call_count == 3
         assert all(call.kwargs["background"] is True for call in llm.think.call_args_list)
+        assert PhotoProcessor._worker.queued_s == 12.5, "the photo's queue time is the sum over every resend"
 
     @pytest.mark.parametrize("local, expected", [(True, 2), (False, 30)])
     def test_worker_count_follows_the_backend(self, local, expected):

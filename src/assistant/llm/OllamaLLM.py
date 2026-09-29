@@ -143,6 +143,7 @@ class OllamaLLM(AbstractLLM):
     _interactive_active = 0             # interactive requests and pre-heats in flight or waiting for the slot
     _interactive_last_end = 0.0         # monotonic; the idle clock a background request waits on
     _bg_completed = 0                   # background requests finished since the last snapshot refresh
+    _bg_thread = threading.local()      # .wait_s: how long this thread's last background request queued
     _last_pre_heat_messages: list[dict] | None = None   # what the last pre-heat warmed
     _PREEMPT_UNWIND_TIMEOUT_S = 5.0
     # A night of image requests each leaves a prefix-cache snapshot behind; every this many the
@@ -446,10 +447,14 @@ class OllamaLLM(AbstractLLM):
                 cls._interactive_last_end = time.monotonic()
             cls._bg_cond.notify_all()
 
+    def background_wait_seconds(self) -> float:
+        return getattr(OllamaLLM._bg_thread, "wait_s", 0.0)
+
     @classmethod
     def _acquire_background(cls):
         """Block until the slot is free and has been idle for background_idle_seconds()."""
         idle_s = cls.background_idle_seconds()
+        cls._bg_thread.wait_s = 0.0
         with cls._bg_cond:
             waited = None
             while True:
@@ -470,7 +475,8 @@ class OllamaLLM(AbstractLLM):
             cls._bg_abort = False
             cls._bg_conn = None
         if waited is not None:
-            trace(f"Ollama: background request got the slot after {time.monotonic() - waited:.1f}s")
+            cls._bg_thread.wait_s = time.monotonic() - waited
+            trace(f"Ollama: background request got the slot after {cls._bg_thread.wait_s:.1f}s")
 
     @classmethod
     def _release_background(cls):

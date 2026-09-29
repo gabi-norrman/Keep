@@ -307,6 +307,8 @@ class PhotoProcessor:
 
     _processing_uuids: set = set()
     _processing_lock = threading.Lock()
+    # .queued_s: how long the photo this worker thread is on spent waiting for the LLM slot.
+    _worker = threading.local()
 
     def __init__(self, entry_sink: Optional[Callable[[FeedEntry], None]] = None):
         self._entry_sink = entry_sink
@@ -743,6 +745,7 @@ class PhotoProcessor:
             return False
 
         date_str = self._home_time(creation_ts)
+        PhotoProcessor._worker.queued_s = 0.0
         result = self._analyze_with_llm(jpeg_bytes, date_str, location_text, albums, persons, photo_type)
         if result is None:
             error(f"Photos: {uuid} permanently failed LLM analysis, skipping")
@@ -761,7 +764,15 @@ class PhotoProcessor:
 
         elapsed = time.time() - t0
         coords = f"[{lat:.5f},{lon:.5f}]" if lat is not None and lon is not None else "no coords"
-        trace(f"photo processed '{result['short_description']}' ({photo_type}, [{persons}], {location_text}, {coords}) in {elapsed:.1f}s ({uuid}).")
+        # A local backend serves one image at a time, so a worker's clock includes the time its
+        # photo queued behind the other worker's — say so, or every photo looks twice as slow.
+        queued = PhotoProcessor._worker.queued_s
+        timing = f"in {elapsed:.1f}s" + (f" ({queued:.1f}s of it queued for the model)" if queued >= 1 else "")
+        line = f"Photo processed '{result['short_description']}' ({photo_type}, [{persons}], {location_text}, {coords}) {timing} ({uuid})."
+        if elapsed > 10:
+            info(line)
+        else:
+            trace(line)
         return False
 
     def _process_video(self, row: dict, db) -> bool:
@@ -1144,6 +1155,9 @@ class PhotoProcessor:
             except LLMPreempted:
                 preempted += 1
                 trace(f"Photos: image analysis preempted by a user request ({preempted}x), resending when idle")
+            finally:
+                queued = getattr(PhotoProcessor._worker, "queued_s", 0.0)
+                PhotoProcessor._worker.queued_s = queued + llm.background_wait_seconds()
 
     @staticmethod
     def _parse_analysis(response: str) -> dict:

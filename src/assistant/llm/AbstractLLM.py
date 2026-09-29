@@ -221,6 +221,11 @@ class AbstractLLM(ABC):
         bulk callers then run one or two workers instead of a wide fan-out."""
         return False
 
+    def background_wait_seconds(self) -> float:
+        """How long the calling thread's last `background=True` request queued before the
+        backend took it — 0 for a backend that serves background requests immediately."""
+        return 0.0
+
     @abstractmethod
     def initialize(self):
         """Initialize the llm client"""

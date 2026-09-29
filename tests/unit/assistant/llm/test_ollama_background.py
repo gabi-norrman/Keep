@@ -181,6 +181,19 @@ class TestIdleGate:
         OllamaLLM._release_background()
         assert acquired.wait(1), "the second worker goes straight in — a background request does not restart the idle clock"
 
+    def test_the_caller_can_read_how_long_its_request_queued(self):
+        OllamaLLM._acquire_background()
+        waits = {}
+        def second():
+            OllamaLLM._acquire_background()
+            waits["s"] = _llm().background_wait_seconds()
+        t = _run(second)
+        time.sleep(0.04)
+        OllamaLLM._release_background()
+        t.join(timeout=1)
+        assert 0.03 <= waits["s"] < 1
+        assert _llm().background_wait_seconds() == 0, "the wait is per thread — this one never queued"
+
     def test_the_post_turn_pre_heat_evicts_a_background_request(self):
         OllamaLLM._bg_active = True
         conn = FakeConn("h", 1)
