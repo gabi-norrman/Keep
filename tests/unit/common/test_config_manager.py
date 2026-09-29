@@ -139,14 +139,15 @@ class TestConfigManagerFileHandling:
         text = path.read_text()
         assert path.exists() and "anthropic:" in text and "vault:" in text
         assert "gemini" not in text   # set up during the first run, not needed for a boot
-        assert cm.missing_required() == ["api_keys.anthropic", "vault.key"]
+        assert cm.missing_required() == ["vault.key"]
+        assert cm.missing_required(("api_keys.anthropic", "vault.key")) == ["api_keys.anthropic", "vault.key"]
         assert cm.get("interfaces.voice.enabled", True) is True   # the skeleton leaves the defaults alone
 
     def test_missing_required_spots_placeholders_and_blanks(self, tmp_path):
         path = tmp_path / 'config.yaml'
         path.write_text("api_keys:\n  anthropic: YOUR_ANTHROPIC_API_KEY_HERE\nvault:\n  key: CHANGE_ME\n")
         with patch.dict(os.environ, {'FLOXY_CONFIG': str(path)}):
-            assert ConfigManager().missing_required() == ["api_keys.anthropic", "vault.key"]
+            assert ConfigManager().missing_required(("api_keys.anthropic", "vault.key")) == ["api_keys.anthropic", "vault.key"]
         ConfigManager.reset_instance()
         path.write_text("api_keys:\n  anthropic: sk-ant-real\nvault:\n  key: hunter2\n")
         with patch.dict(os.environ, {'FLOXY_CONFIG': str(path)}):

@@ -221,6 +221,18 @@ class TestConfigCheck:
         assert any("Please set api_keys.anthropic, api_keys.gemini and vault.key in config.yaml and restart." in l for l in lines)
         assert any("was written at" in l for l in lines)
 
+    def test_a_local_smart_tier_needs_no_cloud_key(self):
+        import floxy_ai_server
+        with patch("assistant.llm.parse_llm_config", return_value=("OllamaLLM", "qwen3.8:27b")), \
+                patch("assistant.llm.tier_api_key_name", return_value=None):
+            assert floxy_ai_server._required_keys() == ("vault.key",)
+
+    def test_a_cloud_smart_tier_requires_its_own_key(self):
+        import floxy_ai_server
+        with patch("assistant.llm.parse_llm_config", return_value=("GeminiLLM", "gemini-3.5-flash")), \
+                patch("assistant.llm.tier_api_key_name", return_value="api_keys.gemini"):
+            assert floxy_ai_server._required_keys() == ("api_keys.gemini", "vault.key")
+
     def test_one_missing_key_is_named_alone(self):
         import floxy_ai_server
         with patch.object(config, "missing_required", return_value=["api_keys.gemini"]), \

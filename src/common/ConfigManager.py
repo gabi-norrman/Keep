@@ -7,12 +7,13 @@ from common.Paths import CONFIG_PATH
 from common.logging import info
 from typing import Optional, Any
 
-# The keys the server cannot start without: the smart/vision tiers default to Claude, and the
-# vault passphrase encrypts every secret the assistant is handed later. The Gemini key (fast,
-# video, photo indexing and the cache auditor default to it) is set up during the first run;
-# without it those tiers report the missing key instead of running. Everything else is an
-# optional integration.
-REQUIRED_KEYS = ("api_keys.anthropic", "vault.key")
+# The keys the server cannot start without, whatever the LLM setup: the vault passphrase
+# encrypts every secret the assistant is handed later. The launcher adds the api_keys entry of
+# the `smart` tier's backend (Claude by default, none at all on a local model — see
+# `_required_keys` in floxy_ai_server.py). The Gemini key (fast, video, photo indexing and the
+# cache auditor default to it) is set up during the first run; without it those tiers report
+# the missing key instead of running. Everything else is an optional integration.
+REQUIRED_KEYS = ("vault.key",)
 # Written when config.yaml is missing (first start, or after //wipe), so the user has a file
 # to put the keys into rather than a traceback.
 SKELETON = """# Keep AI configuration. config.example.yaml documents every setting; the assistant can
@@ -93,10 +94,10 @@ class ConfigManager:
         listed = {integration_key(n) for n in self.enabled_integrations()}
         return integration_key(name) in listed or default
 
-    def missing_required(self) -> list[str]:
-        """The REQUIRED_KEYS that are absent, empty or still an example placeholder."""
+    def missing_required(self, keys: tuple[str, ...] = REQUIRED_KEYS) -> list[str]:
+        """The *keys* (REQUIRED_KEYS by default) that are absent, empty or still an example placeholder."""
         missing = []
-        for key in REQUIRED_KEYS:
+        for key in keys:
             value = self.get(key, "")
             if not isinstance(value, str) or not value.strip() or _PLACEHOLDER_RE.search(value):
                 missing.append(key)

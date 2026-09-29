@@ -20,7 +20,7 @@ import common.DevelopmentConfig as DevelopmentConfig
 from common.DevelopmentConfig import PREPEND_USER_QUERY_OVERRIDE
 from common.logging import error, info, trace, note
 from common import Migrations, Version
-from common.ConfigManager import config
+from common.ConfigManager import config, REQUIRED_KEYS
 from common.RequirementsChecker import RequirementsChecker
 from common.StderrLogger import StderrLogger
 
@@ -312,10 +312,24 @@ def _parse_args():
     return port, running_as_testsuite
 
 
+def _required_keys() -> tuple[str, ...]:
+    """REQUIRED_KEYS plus the api_keys entry the `smart` tier's backend reads — nothing extra
+    when that is a keyless local model, so an Ollama setup boots without any cloud key."""
+    from assistant.llm import parse_llm_config, tier_api_key_name
+    llm_class, _ = parse_llm_config('smart')
+    key = tier_api_key_name('smart')
+    if key is None:
+        trace(f"Config check: smart tier runs on {llm_class}, no API key required")
+        return REQUIRED_KEYS
+    trace(f"Config check: smart tier runs on {llm_class}, requires {key}")
+    return (key,) + REQUIRED_KEYS
+
+
 def _verify_config_or_exit():
-    """A config without the Anthropic API key or the vault passphrase stops the start
-    here, with the fix spelled out, instead of a traceback from the first LLM constructor."""
-    missing = config.missing_required()
+    """A config without the API key of the LLM the smart tier runs on, or without the vault
+    passphrase, stops the start here, with the fix spelled out, instead of a traceback from
+    the first LLM constructor."""
+    missing = config.missing_required(_required_keys())
     if not missing:
         trace("Config check: required keys present")
         return
