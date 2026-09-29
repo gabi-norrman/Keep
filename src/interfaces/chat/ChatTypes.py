@@ -42,16 +42,18 @@ class IncomingMessage:
 @dataclass(frozen=True)
 class Progress:
     """What the assistant is doing while nothing user-visible has been produced yet."""
-    phase: str                  # "waiting" | "thinking" | "commands"
+    phase: str                  # "waiting" | "prefill" | "thinking" | "commands"
     thinking_text: str = ""     # the <thinking> block so far (the TUI shows it; Telegram does not)
     output_tokens: int = 0      # running output-token estimate ("Thinking (↓ 1.2k tokens)…")
     elapsed: float = 0.0        # seconds in the current phase (since the LLM call went out,
                                 # or since the running command started)
     tick: int = 0               # how many progress updates preceded this one
     commands: int = 0           # commands running right now (phase "commands")
+    prefill: float = 0.0        # prompt-prefill completion 0-100 (phase "prefill")
 
 
 PHASE_WAITING = "waiting"       # an LLM call is out and nothing has come back yet
+PHASE_PREFILL = "prefill"       # a local model is still prefilling the prompt (no token yet)
 PHASE_THINKING = "thinking"     # the LLM is in its <thinking> block
 PHASE_COMMANDS = "commands"     # a command the LLM asked for is running
 

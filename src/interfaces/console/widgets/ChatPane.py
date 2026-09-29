@@ -35,7 +35,8 @@ from common.logging import info, trace
 from common.vault.Redactor import Redactor
 from common.vault.Vault import Vault
 from interfaces.chat import FallbackNotice
-from interfaces.chat.ChatTypes import DECISION_APPROVE, DECISION_DENY, PHASE_COMMANDS, PHASE_THINKING, Progress
+from interfaces.chat.ChatTypes import (DECISION_APPROVE, DECISION_DENY, PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING,
+                                       Progress)
 from interfaces.console import Theme
 from interfaces.console.SystemEvents import CLASS_DESCRIPTION
 from interfaces.console.framework.TUIScreen import Color, TUIScreen
@@ -115,6 +116,7 @@ class ChatPane:
     SECRET_NOTE_MIN_FIELD = 16   # cells the field keeps before the note gives way
     MASK = "•"
     SHOW_ELAPSED_AFTER = 2.5   # seconds a request runs before the working line counts them
+    PREFILL_BAR_WIDTH = 12     # cells of the working line's prompt-prefill bar
 
     # One mint (OKLCH hue 164°, the Theme green) and one gold (hue 88°, the Theme yellow); the tones
     # differ in lightness and chroma only, and the grays lean a touch towards the gold.
@@ -601,13 +603,16 @@ class ChatPane:
         return BULLET, [spans]
 
     def _working_spans(self) -> List[StyledSpan]:
-        """What is being waited for — the LLM ("Thinking…") or a command ("Running
-        command…") — in the working colour, the detail in parentheses dim."""
+        """What is being waited for — the LLM ("Thinking…", with a prefill bar while a local
+        model is still on the prompt) or a command ("Running command…") — in the working
+        colour, the detail in parentheses dim."""
         p = self._working
         parts = []
         if p.phase == PHASE_THINKING and p.output_tokens:
             parts.append(f"↓ {p.output_tokens / 1000:.1f}k tokens" if p.output_tokens >= 1000
                          else f"↓ {p.output_tokens} tokens")
+        if p.phase == PHASE_PREFILL:
+            parts.append(f"{p.prefill:.0f}%")
         if p.elapsed >= self.SHOW_ELAPSED_AFTER:
             parts.append(describe_duration(p.elapsed))
         if p.phase == PHASE_COMMANDS:
@@ -615,9 +620,22 @@ class ChatPane:
         else:
             label = "Thinking…"
         spans = [StyledSpan(text=label, bold=True)]
+        if p.phase == PHASE_PREFILL:
+            filled, empty = self._bar(p.prefill / 100.0, self.PREFILL_BAR_WIDTH)
+            spans.append(StyledSpan(text=" " + filled, fg=self.COLOR_WORKING))
+            spans.append(StyledSpan(text=empty, fg=self.COLOR_DIM))
         if parts:
             spans.append(StyledSpan(text=f" ({' · '.join(parts)})", fg=self.COLOR_DIM))
         return spans
+
+    @staticmethod
+    def _bar(fraction: float, width: int) -> tuple[str, str]:
+        """A `width`-cell bar as (filled, empty) text: full blocks plus one eighth-block
+        for the remainder, the rest light shade — the Dashboard's bar glyphs."""
+        eighths = round(max(0.0, min(1.0, fraction)) * width * 8)
+        full, rem = divmod(eighths, 8)
+        filled = "█" * full + (" ▏▎▍▌▋▊▉"[rem] if rem and full < width else "")
+        return filled, "░" * (width - len(filled))
 
     def _span_fg(self, entry: Optional[Entry], span: StyledSpan) -> Color:
         if span.fg is not None:

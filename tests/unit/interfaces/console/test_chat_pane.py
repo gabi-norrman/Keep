@@ -1,7 +1,7 @@
 """ChatPane: the transcript model, the Codex-style rendering and the key handling."""
 import pytest
 
-from interfaces.chat.ChatTypes import PHASE_COMMANDS, PHASE_THINKING, PHASE_WAITING, Progress
+from interfaces.chat.ChatTypes import PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING, PHASE_WAITING, Progress
 from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.widgets.ChatPane import (BULLET, KIND_ASSISTANT, KIND_DIFF, KIND_SECRET, KIND_SYSTEM,
                                                   KIND_USER, PROMPT, ChatPane, shimmer)
@@ -321,6 +321,21 @@ class TestTranscript:
         assert screen.next_frame[2][len(BULLET)].style.bold
         assert not screen.next_frame[2][len(BULLET) + len("Thinking… ")].style.bold
         assert screen.next_frame[2][len(BULLET) + len("Thinking… ")].style.fg == ChatPane.COLOR_DIM
+
+    def test_working_line_draws_the_prefill_bar_and_percentage(self, pane, screen):
+        pane.add_user("hi")
+        pane.set_working(Progress(phase=PHASE_PREFILL, prefill=50.0, elapsed=1.0))
+        line = draw(pane, screen)[2]
+        assert line.startswith(BULLET + "Thinking… ")
+        width = ChatPane.PREFILL_BAR_WIDTH
+        bar = line[len(BULLET + "Thinking… "):][:width]
+        assert bar.count("█") == width // 2 and bar.count("░") == width - width // 2
+        assert line.endswith(" (50%)")
+        bar_x = len(BULLET + "Thinking… ")
+        assert screen.next_frame[2][bar_x].style.fg == ChatPane.COLOR_WORKING
+        assert screen.next_frame[2][bar_x + width - 1].style.fg == ChatPane.COLOR_DIM
+        pane.set_working(Progress(phase=PHASE_PREFILL, prefill=99.0, elapsed=12.0))
+        assert draw(pane, screen)[2].endswith("▉ (99% · 12s)")
 
     def test_working_line_names_the_running_commands(self, pane, screen):
         pane.add_user("hi")

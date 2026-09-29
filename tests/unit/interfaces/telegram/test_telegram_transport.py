@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from interfaces.chat.ChatTypes import (KIND_PHOTO, KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE,
-                                       PHASE_COMMANDS, PHASE_THINKING, PHASE_WAITING, Progress)
+                                       PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING, PHASE_WAITING, Progress)
 
 MODULE = 'interfaces.telegram.TelegramTransport'
 
@@ -764,6 +764,11 @@ class TestTelegramDraft:
         assert t.texts[1].startswith("Thinking (↓ 20.7k tokens)…\n")
         assert t.texts[2].startswith("Thinking…\n")
         assert t.texts[3] in d.SPINNER_FRAMES
+
+    def test_prefill_label_carries_the_percentage(self):
+        t, d = self._draft()
+        d.show_progress(Progress(PHASE_PREFILL, prefill=42.6))
+        assert t.texts[0].startswith("Thinking (43%)…\n")
 
     def test_running_command_label(self):
         t, d = self._draft()

@@ -32,8 +32,8 @@ from common.logging import error, fine, info, trace
 from interfaces.chat import FallbackNotice, RichText
 from interfaces.chat.ChatTransport import ChatTransport
 from interfaces.chat.ChatTypes import (DECISION_APPROVE, DECISION_CANCEL, DECISION_DENY, KIND_PHOTO, KIND_REACTION,
-                                       KIND_TEXT, KIND_VIDEO, KIND_VOICE, PHASE_COMMANDS, PHASE_THINKING, Attachment,
-                                       IncomingMessage, Progress)
+                                       KIND_TEXT, KIND_VIDEO, KIND_VOICE, PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING,
+                                       Attachment, IncomingMessage, Progress)
 
 # Telegram's Bot API refuses to serve files above this size to bots.
 TELEGRAM_BOT_MAX_DOWNLOAD = 20 * 1024 * 1024
@@ -112,6 +112,8 @@ class TelegramDraft:
         self._frame += 1
         if progress.phase == PHASE_THINKING:
             display = f"{self._thinking_label(progress.output_tokens)} {frame}"
+        elif progress.phase == PHASE_PREFILL:
+            display = f"Thinking ({progress.prefill:.0f}%)…\n {frame}"
         elif progress.phase == PHASE_COMMANDS:
             display = f"{self.COMMANDS_PREFIX if progress.commands > 1 else self.COMMAND_PREFIX} {frame}"
         else:
