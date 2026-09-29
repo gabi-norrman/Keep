@@ -18,6 +18,7 @@ from ...Feed import FeedEntry
 from common.logging import info, error, trace, fine
 from common.FloxyDatabase import FloxyDatabase, PHOTO_HISTORY_SOURCE
 from ....llm.AbstractLLM import AbstractLLM, LLMPreempted
+from ....tools.ImageAnalyzer import parse_description_json
 from ....tools.VideoAnalyzer import short_clip_fps
 from .ICloudPhotoDownloader import (CorruptImageError, NoVideoRenditionError, PhotoNotInCloudError,
                                     VideoTooLargeError)
@@ -1161,18 +1162,9 @@ class PhotoProcessor:
 
     @staticmethod
     def _parse_analysis(response: str) -> dict:
-        match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
-        if not match:
-            # Try matching nested braces (LLM may include JSON-like strings in values)
-            match = re.search(r'\{.*\}', response, re.DOTALL)
-            if not match:
-                trace(f"Photos: no JSON found in LLM response ({len(response)} chars): {response[:200]}")
-                raise ValueError("No JSON object found in LLM response")
-        data = json.loads(match.group())
-        required = ["short_description", "detailed_description", "pretty_score", "family_importance_score"]
-        for key in required:
-            if key not in data:
-                raise KeyError(f"Missing required key: {key}")
+        data = parse_description_json(
+            response, ("short_description", "detailed_description", "pretty_score", "family_importance_score"),
+            "Photos")
         data["pretty_score"] = int(data["pretty_score"])
         data["family_importance_score"] = int(data["family_importance_score"])
         if data.get("thinking"):

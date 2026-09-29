@@ -187,12 +187,59 @@ def parse_description_json(response: str, required_keys: tuple[str, ...], tag: s
         if not match:
             trace(f"{tag}: no JSON found in response ({len(response)} chars): {response[:200]}")
             raise ValueError("No JSON object found in LLM response")
-    data = json.loads(match.group())
+    data = loads_description_object(match.group(), tag)
     for key in required_keys:
         if key not in data:
             raise KeyError(f"Missing required key: {key}")
     fine(f"{tag}: '{data['short_description']}'")
     return data
+
+
+def loads_description_object(text: str, tag: str) -> dict:
+    """json.loads for a flat description object, with one repair: a model transcribing visible
+    text ('Width: 140cm (55")', a quoted sign) sometimes drops the backslash on a quote inside a
+    string value, and the parse dies at the next character. Only when the object fails to parse
+    are stray quotes escaped and the parse tried once more; the original error stands if that
+    does not help either."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        repaired = escape_stray_quotes(text)
+        if repaired == text:
+            raise
+        try:
+            data = json.loads(repaired)
+        except json.JSONDecodeError:
+            raise e from None
+        trace(f"{tag}: repaired unescaped quotes inside a string value ({e})")
+        return data
+
+
+# What may follow the quote that ends a string in a flat object: a colon and a value (the string
+# was a key), a closing brace, or a comma and the next key. Any other quote inside a string is
+# stray — including one before a colon and prose ('"CLOSED": both lit').
+_STRING_END = re.compile(r'\s*(?::\s*(?:"|-|\d|true|false|null)|\}|,\s*"[A-Za-z_][A-Za-z0-9_]*"\s*:)')
+
+
+def escape_stray_quotes(text: str) -> str:
+    """Escape the quotes inside a flat JSON object's string values that do not end the string.
+    Backslash escapes are kept as they are. Not for nested objects or arrays of strings."""
+    out, in_string, i = [], False, 0
+    while i < len(text):
+        ch = text[i]
+        if in_string and ch == "\\":
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        if ch == '"':
+            if in_string and not _STRING_END.match(text, i + 1):
+                out.append('\\"')
+                i += 1
+                continue
+            in_string = not in_string
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 _default = ImageAnalyzer()

@@ -106,6 +106,35 @@ class TestParseResponse:
         with pytest.raises(ValueError):
             ImageAnalyzer._parse_response("No JSON here at all")
 
+
+@pytest.mark.unit
+class TestStrayQuoteRepair:
+    """A local model transcribing visible text drops the backslash on a quote inside a string
+    now and then; the parser escapes it instead of failing the whole analysis."""
+
+    def test_inch_mark_inside_a_value_is_escaped(self):
+        response = ('{\n  "short_description": "Fabric label",\n'
+                    '  "detailed_description": "The label reads Width: 140cm (55") on its second line.",\n'
+                    '  "pretty_score": 35\n}')
+        result = ImageAnalyzer._parse_response(response)
+        assert result["detailed_description"] == 'The label reads Width: 140cm (55") on its second line.'
+        assert result["pretty_score"] == 35
+
+    def test_quoted_prose_before_comma_and_colon_stays_inside_the_value(self):
+        response = ('{"short_description": "Sign reading "OPEN", lit", '
+                    '"detailed_description": "A sign says "OPEN" and "CLOSED": both lit."}')
+        result = ImageAnalyzer._parse_response(response)
+        assert result["short_description"] == 'Sign reading "OPEN", lit'
+        assert result["detailed_description"] == 'A sign says "OPEN" and "CLOSED": both lit.'
+
+    def test_properly_escaped_quotes_are_left_alone(self):
+        response = '{"short_description": "A \\"quoted\\" sign", "detailed_description": "Plain."}'
+        assert ImageAnalyzer._parse_response(response)["short_description"] == 'A "quoted" sign'
+
+    def test_unrepairable_object_raises_the_original_error(self):
+        with pytest.raises(json.JSONDecodeError):
+            ImageAnalyzer._parse_response('{"short_description": "A cat", "detailed_description": }')
+
 @pytest.mark.unit
 class TestAnalyze:
     def test_successful_analysis(self):
