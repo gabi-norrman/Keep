@@ -1347,9 +1347,19 @@ class TestGeminiLLMVideo:
 # ===========================================================================
 
 class TestOllamaLLM:
+    DONE = {"done": True, "prompt_eval_count": 1, "prompt_eval_duration": 1e9,
+            "eval_count": 1, "eval_duration": 1e9, "total_duration": 2e9}
+
     def _make_llm(self):
         from assistant.llm.OllamaLLM import OllamaLLM
         return OllamaLLM(model='gemma4:26b', base_url='http://localhost:11434')
+
+    @pytest.fixture(autouse=True)
+    def _fresh_thinking_probe(self):
+        from assistant.llm.OllamaLLM import OllamaLLM
+        OllamaLLM._thinking_capable.clear()
+        yield
+        OllamaLLM._thinking_capable.clear()
 
     @patch('assistant.llm.OllamaLLM.config')
     def test_base_url_from_config(self, mock_config):
@@ -1390,7 +1400,8 @@ class TestOllamaLLM:
         finally:
             OllamaLLM._logged_configs = saved
 
-    def test_build_request(self):
+    @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
+    def test_build_request(self, mock_thinks):
         llm = self._make_llm()
         req = llm._build_request([{"role": "user", "content": "hi"}], stream=True)
         assert req == {
@@ -1398,7 +1409,7 @@ class TestOllamaLLM:
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
             "keep_alive": -1,
-            "think": False,
+            "think": True,
         }
 
     def test_build_request_flattens_anthropic_image_blocks(self):
@@ -1464,48 +1475,56 @@ class TestOllamaLLM:
         req = llm._build_request([{"role": "user", "content": "hi"}], stream=True, num_predict=1)
         assert req["options"] == {"num_predict": 1}
 
-    def test_build_request_qwen38_non_thinking_overrides_samplers(self):
-        # Qwen3.8's modelfile bakes in thinking-mode samplers (temp 1.0, top_p 0.95),
-        # which make non-thinking output rambly and repetitive. With think=False the
-        # request must carry Qwen's recommended non-thinking samplers instead.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        llm = OllamaLLM(model='qwen3.8:27b', base_url='http://localhost:11434')
+    @patch('assistant.llm.OllamaLLM.requests.post')
+    def test_a_model_without_the_thinking_capability_runs_without_it(self, mock_post):
+        # Ollama answers think=true with a 400 for such a model, so the probe of /api/show
+        # decides the request flag, and the <thinking>-tag instruction stays available to it.
+        mock_post.return_value.json.return_value = {"capabilities": ["completion", "vision"]}
+        llm = self._make_llm()
         req = llm._build_request([{"role": "user", "content": "hi"}], stream=True)
-        assert req["options"] == {
-            "temperature": 0.7,
-            "top_p": 0.8,
-            "top_k": 20,
-            "presence_penalty": 1.5,
-        }
-
-    def test_build_request_qwen38_thinking_keeps_baked_in_samplers(self):
-        # With thinking enabled the modelfile's own samplers are correct — the
-        # override must NOT fire, so no options key at all.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        llm = OllamaLLM(model='qwen3.8:27b', base_url='http://localhost:11434', think=True)
-        req = llm._build_request([{"role": "user", "content": "hi"}], stream=True)
+        assert req["think"] is False
         assert "options" not in req
+        assert llm.handles_thinking_internally() is False
 
-    def test_build_request_qwen38_pre_heat_merges_num_predict_into_samplers(self):
-        # num_predict used to be assigned as the whole options dict; the qwen
-        # override turned that into a merge. Pin that a qwen3.8 pre-heat carries
-        # BOTH — dropping the samplers or the token cap would each regress silently.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        llm = OllamaLLM(model='qwen3.8:27b', base_url='http://localhost:11434')
-        req = llm._build_request([{"role": "user", "content": "hi"}], stream=True, num_predict=1)
-        assert req["options"] == {
-            "temperature": 0.7,
-            "top_p": 0.8,
-            "top_k": 20,
-            "presence_penalty": 1.5,
-            "num_predict": 1,
-        }
+    @patch('assistant.llm.OllamaLLM.requests.post')
+    def test_thinking_probe_runs_once_per_model(self, mock_post):
+        mock_post.return_value.json.return_value = {"capabilities": ["completion", "thinking"]}
+        assert self._make_llm().thinks() is True
+        assert self._make_llm().handles_thinking_internally() is True
+        assert mock_post.call_count == 1
+        assert mock_post.call_args.args[0].endswith("/api/show")
 
-    # --- pre-heat / render HTTP timeouts --------------------------------
-    # Pre-heats hold _pre_heat_in_flight; a hung socket to a dead remote host
-    # (ollama.base_url on another machine) with no timeout would keep the flag
-    # set forever, silently disabling every future pre-heat. Real requests
-    # deliberately carry NO timeout — a slow generation must never be cut off.
+    @patch('assistant.llm.OllamaLLM.requests.post', side_effect=ConnectionError("down"))
+    def test_an_unreachable_host_is_assumed_to_think(self, mock_post):
+        assert self._make_llm().thinks() is True
+
+    @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
+    @patch('assistant.llm.OllamaLLM.OllamaLLM._rendered_prompt', return_value=None)
+    @patch('assistant.llm.OllamaLLM.requests.post')
+    def test_native_thinking_streams_as_a_thinking_block(self, mock_post, mock_rendered, mock_thinks):
+        # The command processor only knows <thinking> tags, so the chunks' `thinking` field
+        # arrives inside one, closed the moment the first reply token follows.
+        import json
+        mock_post.return_value.iter_lines.return_value = [
+            json.dumps({"message": {"thinking": "plan "}}),
+            json.dumps({"message": {"thinking": "it"}}),
+            json.dumps({"message": {"content": "Hi"}}),
+            json.dumps({"message": {"content": "!"}, **self.DONE}),
+        ]
+        chunks = list(self._make_llm().create_streaming_completion([{"role": "user", "content": "hi"}]))
+        assert "".join(chunks) == "<thinking>plan it</thinking>Hi!"
+
+    @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
+    @patch('assistant.llm.OllamaLLM.OllamaLLM._rendered_prompt', return_value=None)
+    @patch('assistant.llm.OllamaLLM.requests.post')
+    def test_a_stream_cut_off_while_thinking_still_closes_the_block(self, mock_post, mock_rendered, mock_thinks):
+        import json
+        mock_post.return_value.iter_lines.return_value = [
+            json.dumps({"message": {"thinking": "hmm"}}),
+            json.dumps({"message": {"content": ""}, **self.DONE}),
+        ]
+        chunks = list(self._make_llm().create_streaming_completion([{"role": "user", "content": "hi"}]))
+        assert "".join(chunks) == "<thinking>hmm</thinking>"
 
     @patch('assistant.llm.OllamaLLM.requests.post')
     def test_rendered_prompt_post_carries_timeout(self, mock_post):
@@ -1535,9 +1554,10 @@ class TestOllamaLLM:
         list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
         assert mock_post.call_args.kwargs["timeout"] is None
 
+    @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
     @patch('assistant.llm.OllamaLLM.OllamaLLM._rendered_prompt', return_value=None)
     @patch('assistant.llm.OllamaLLM.requests.post')
-    def test_create_completion(self, mock_post, mock_rendered):
+    def test_create_completion(self, mock_post, mock_rendered, mock_thinks):
         llm = self._make_llm()
         mock_resp = Mock()
         mock_resp.json.return_value = {
@@ -1614,22 +1634,18 @@ class TestOllamaLLM:
         sent_images = mock_post.call_args[1]['json']['messages'][0]['images']
         assert sent_images == [b64]
 
+    @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
     @patch('assistant.llm.OllamaLLM.requests.post')
-    def test_create_completion_with_images_routes_through_build_request(self, mock_post):
+    def test_create_completion_with_images_routes_through_build_request(self, mock_post, mock_thinks):
         # ea11de61 replaced the inline payload in create_completion_with_images
         # with self._build_request(...) so vision requests carry the same fields
         # as every other request. The visible behavioural side-effect is that
         # `think` now flows through — a revert to the inline dict would silently
         # drop it, and the existing image tests wouldn't notice. Pin the
         # construction contract on the vision path.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        llm = OllamaLLM(model='gemma4:26b', base_url='http://localhost:11434', think=True)
+        llm = self._make_llm()
         mock_resp = Mock()
-        mock_resp.json.return_value = {
-            "message": {"content": "ok"}, "done": True,
-            "prompt_eval_count": 1, "prompt_eval_duration": 1e9,
-            "eval_count": 1, "eval_duration": 1e9, "total_duration": 2e9,
-        }
+        mock_resp.json.return_value = {"message": {"content": "ok"}, **self.DONE}
         mock_post.return_value = mock_resp
 
         llm.create_completion_with_images(

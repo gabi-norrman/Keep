@@ -10,8 +10,8 @@ from urllib.parse import urlparse
 
 import requests
 
-from .AbstractLLM import AbstractLLM, ThinkingNotSupportedError
-from common.logging import info, trace, note
+from .AbstractLLM import AbstractLLM
+from common.logging import info, trace, note, fine
 from common.ConfigManager import config
 from common.Paths import LOG_DIR
 
@@ -118,21 +118,19 @@ class OllamaLLM(AbstractLLM):
     _prefill_metrics_read_ts = 0.0
     _PROGRESS_POLL_INTERVAL_S = 2.0
 
-    # Qwen3.8 ships with its thinking-mode samplers baked into the modelfile
-    # (temp 1.0, top_p 0.95). With thinking disabled Qwen recommends these
-    # instead — the baked-in ones make non-thinking output rambly and repetitive.
-    _QWEN38_NON_THINKING_OPTIONS = {
-        "temperature": 0.7,
-        "top_p": 0.8,
-        "top_k": 20,
-        "presence_penalty": 1.5,
-    }
+    # Native thinking is always on for a model that has it: a reasoning model denied its
+    # channel invents one (Qwen wrote its plan inside made-up <system> tags, which reached the
+    # user verbatim). The modelfile's samplers are the thinking-mode ones, so no override.
+    # The chat template renders every history turn identically with or without thinking —
+    # only the generation suffix differs — so the KV prefix is unaffected.
+    # (model, base_url) -> whether /api/show lists the "thinking" capability.
+    _thinking_capable: dict[tuple[str, str], bool] = {}
 
     # (model, base_url) pairs already logged — the handler pool constructs dozens of
     # identical instances (25 handlers x 2 tiers), so log each resolved config once.
     _logged_configs: set[tuple[str, str]] = set()
 
-    def __init__(self, model: str = 'gemma4:26b', base_url: str | None = None, think: bool = False):
+    def __init__(self, model: str = 'gemma4:26b', base_url: str | None = None):
         self.model = model
         # Explicit base_url wins; otherwise `ollama.base_url` from config.yaml (e.g. the M4
         # Mac Studio), falling back to localhost.
@@ -140,7 +138,6 @@ class OllamaLLM(AbstractLLM):
         if (model, self.base_url) not in OllamaLLM._logged_configs:
             OllamaLLM._logged_configs.add((model, self.base_url))
             trace(f"OllamaLLM '{model}' using base_url {self.base_url}")
-        self.think = think
         self.client = True  # satisfies _ensure_initialized()
         OllamaLLM._configure_log_access(self.base_url)
 
@@ -246,16 +243,35 @@ class OllamaLLM(AbstractLLM):
             "messages": self._convert_anthropic_content(messages),
             "stream": stream,
             "keep_alive": -1,
-            "think": self.think,
+            "think": self.thinks(),
         }
-        options = {}
-        if not self.think and self.model.startswith("qwen3.8"):
-            options.update(self._QWEN38_NON_THINKING_OPTIONS)
         if num_predict is not None:
-            options["num_predict"] = num_predict
-        if options:
-            req["options"] = options
+            req["options"] = {"num_predict": num_predict}
         return req
+
+    def thinks(self) -> bool:
+        """Whether requests run with native thinking: on unless /api/show says the model has
+        no "thinking" capability (Ollama rejects think=true for such a model with a 400).
+        Probed once per (model, base_url); an unreachable host is assumed capable."""
+        key = (self.model, self.base_url)
+        if key not in OllamaLLM._thinking_capable:
+            capable = True
+            try:
+                resp = requests.post(f"{self.base_url}/api/show", json={"model": self.model},
+                                     timeout=self._RENDER_TIMEOUT)
+                resp.raise_for_status()
+                capable = "thinking" in resp.json().get("capabilities", [])
+                info(f"Ollama '{self.model}' {'thinks natively' if capable else 'has no thinking capability — running without'}")
+            except Exception as e:
+                trace(f"Ollama capability probe for '{self.model}' failed ({e}) — assuming it thinks")
+            OllamaLLM._thinking_capable[key] = capable
+        return OllamaLLM._thinking_capable[key]
+
+    def supports_native_thinking(self) -> bool:
+        return self.thinks()
+
+    def handles_thinking_internally(self) -> bool:
+        return self.thinks()
 
     def _rendered_prompt(self, messages: list[dict], num_predict: int | None = None) -> str | None:
         """Ask Ollama to render the final flat prompt without running inference."""
@@ -643,9 +659,9 @@ class OllamaLLM(AbstractLLM):
 
     def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
                                     num_predict: int | None = None) -> Generator[str, None, None]:
-        if thinking:
-            raise ThinkingNotSupportedError(f"{self.name()} does not support native thinking mode")
-
+        """Native thinking (the chunk's `thinking` field) is yielded wrapped in <thinking> tags,
+        so the command processor swallows and times it exactly like a prompted thinking block.
+        `thinking` is ignored: the model thinks whenever it can (see thinks())."""
         is_pre_heat = num_predict is not None
         note(f"Sending {'pre-heat' if is_pre_heat else 'actual'} request to ollama...")
         payload_str = self._log_prefix_match(messages)
@@ -662,24 +678,44 @@ class OllamaLLM(AbstractLLM):
             )
             resp.raise_for_status()
 
+            in_thinking = False
             for line in resp.iter_lines():
                 if not line:
                     continue
                 data = json.loads(line)
-                content = data.get("message", {}).get("content", "")
+                message = data.get("message", {})
+                thought = message.get("thinking", "")
+                if thought:
+                    self._mark_first_token()
+                    if not in_thinking:
+                        in_thinking = True
+                        yield "<thinking>"
+                    yield thought
+                content = message.get("content", "")
                 if content:
                     self._mark_first_token()
+                    if in_thinking:
+                        in_thinking = False
+                        yield "</thinking>"
                     yield content
                 if data.get("done"):
+                    if in_thinking:
+                        trace("Ollama stream ended inside the thinking block — closing it")
+                        yield "</thinking>"
                     self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats)
                     OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
         finally:
             self._end_prefill()
 
-    def create_completion(self, messages: list[dict], thinking: bool = False) -> str:
-        if thinking:
-            raise ThinkingNotSupportedError(f"{self.name()} does not support native thinking mode")
+    @staticmethod
+    def _content_of(data: dict) -> str:
+        """The reply text of a non-streaming response; its native thinking is logged."""
+        message = data.get("message", {})
+        if message.get("thinking"):
+            fine(f"Ollama thought:\n{message['thinking'].strip()}")
+        return message.get("content", "")
 
+    def create_completion(self, messages: list[dict], thinking: bool = False) -> str:
         payload_str = self._log_prefix_match(messages)
         rendered_prompt, rendered_prefix_stats = self._log_rendered_prompt_match(messages)
         self._begin_prefill()
@@ -693,7 +729,7 @@ class OllamaLLM(AbstractLLM):
             data = resp.json()
             self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats)
             OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
-            return data.get("message", {}).get("content", "")
+            return self._content_of(data)
         finally:
             self._end_prefill()
 
@@ -737,6 +773,6 @@ class OllamaLLM(AbstractLLM):
             data = resp.json()
             self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats)
             OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
-            return data.get("message", {}).get("content", "")
+            return self._content_of(data)
         finally:
             self._end_prefill()
