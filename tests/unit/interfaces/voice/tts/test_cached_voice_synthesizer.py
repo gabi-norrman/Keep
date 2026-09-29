@@ -30,6 +30,7 @@ class TestCachedVoiceSynthesizer:
     def mock_impl(self):
         """Create mock voice synthesizer implementation"""
         impl = Mock(spec=VoiceSynthesizer)
+        impl.cache_variant.return_value = ""
         impl.voice_id.return_value = "test_voice_id"
         return impl
 
@@ -62,8 +63,10 @@ class TestCachedVoiceSynthesizer:
     def test_get_cache_filename_differs_by_impl(self, temp_cache_dir):
         """Different implementations should produce different cache filenames"""
         impl_a = Mock(spec=VoiceSynthesizer)
+        impl_a.cache_variant.return_value = ""
         impl_a.voice_id.return_value = "same_voice"
         impl_b = Mock(spec=VoiceSynthesizer)
+        impl_b.cache_variant.return_value = ""
         impl_b.voice_id.return_value = "same_voice"
         type(impl_a).__name__ = "ElevenLabsVoiceSynthesizer"
         type(impl_b).__name__ = "GrokVoiceSynthesizer"
@@ -76,6 +79,14 @@ class TestCachedVoiceSynthesizer:
         file_a = synth_a._get_cache_filename("hello")
         file_b = synth_b._get_cache_filename("hello")
         assert file_a != file_b
+
+    def test_get_cache_filename_differs_by_engine_model(self, synth, mock_impl):
+        """An engine that reports a model variant gets one recording per model, so a
+        phrase recorded on an old model is not served for a new one."""
+        mock_impl.cache_variant.return_value = "eleven_flash_v2_5"
+        old_model = synth._get_cache_filename("hello")
+        mock_impl.cache_variant.return_value = "eleven_v4_turbo"
+        assert synth._get_cache_filename("hello") != old_model
 
     def test_get_cache_filename_case_insensitive(self, synth):
         """Should be case insensitive"""
@@ -336,6 +347,7 @@ class TestCachedVoiceSynthesizer:
         websocket the server closed, and the reply just ended with nothing in the log."""
         from unittest.mock import patch
         impl = Mock(spec=_CloudEngine)
+        impl.cache_variant.return_value = ""
         impl.voice_id.return_value = "v"
         impl.impl_name.return_value = "ElevenLabsVoiceSynthesizer"
         impl.missing_config_keys.return_value = ["api_keys.elevenlabs"]
@@ -351,6 +363,7 @@ class TestCachedVoiceSynthesizer:
 
     def test_start_with_configured_credentials_speaks(self, synth, mock_impl):
         impl = Mock(spec=_CloudEngine)
+        impl.cache_variant.return_value = ""
         impl.voice_id.return_value = "v"
         impl.missing_config_keys.return_value = []
         impl.start.return_value = iter([b"audio"])

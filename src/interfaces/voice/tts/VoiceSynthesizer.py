@@ -55,6 +55,11 @@ class VoiceSynthesizer(ABC):
         Decorators (e.g. caching) override to report the wrapped impl."""
         return type(self).__name__
 
+    def cache_variant(self) -> str:
+        """What besides engine and voice changes the sound of a phrase (a model), so the WAV
+        cache keeps one recording per variant. Empty for an engine with only one."""
+        return ""
+
     def set_request_language(self, lang: Optional[str]):
         """Set the locale for the current request. Synthesizers that emit a
         language to the TTS backend should read it via effective_language()

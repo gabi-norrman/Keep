@@ -340,6 +340,7 @@ tts:
   #   voice: 829ccd10-f8b3-43cd-b8a0-4aeaa81f3b30   # every engine takes `voice`: elevenlabs, cartesia, grok, gemini, chirp3
   #   name_pronunciations: { siobhan: "<<ʃ|ɪ|v|ɔ|n>>" }
   # elevenlabs:
+  #   model: eleven_v4_turbo            # v3/v4 models stream over the text-to-dialogue socket; eleven_flash_v2_5 and older over stream-input
   #   voice: QtY3JBOUKEB5xzrRfOKc         # daytime voice
   #   night_voice: geVuXdUpU0lgUukWJCUE   # the whispering voice of night, morning and late evening
   fish:

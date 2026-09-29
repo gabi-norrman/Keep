@@ -49,7 +49,9 @@ class CachedVoiceSynthesizer(VoiceSynthesizer):
         impl_name = type(self.impl).__name__.lower()
         voice_id = self.impl.voice_id()
         clean_voice_id = re.sub(r'[^a-z0-9]', '_', voice_id.lower())
-        return os.path.join(self.cache_dir, f"{impl_name}_{clean_text}_{clean_voice_id}.wav")
+        variant = re.sub(r'[^a-z0-9]', '_', self.impl.cache_variant().lower())
+        suffix = f"_{variant}" if variant else ""
+        return os.path.join(self.cache_dir, f"{impl_name}_{clean_text}_{clean_voice_id}{suffix}.wav")
 
     def start(self, llm_text_stream: Iterator[str]) -> Iterator[bytes]:
         full_text = ""
