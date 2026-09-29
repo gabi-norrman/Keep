@@ -2,6 +2,7 @@ import importlib
 import inspect
 
 from common.ConfigManager import config
+from common.logging import info
 
 
 def create_llm(llm_class_name: str, model: str | None = None, prompt_cache: bool | None = None):
@@ -57,8 +58,36 @@ def messages_contain_images(messages: list[dict]) -> bool:
     return any(content_blocks_contain_images(m.get("content")) for m in messages)
 
 
+# Tiers `ollama.local_only` leaves alone: code_quality is the `claude` CLI, not an API backend.
+_LOCAL_ONLY_EXEMPT = {'code_quality'}
+_local_only_logged: set[str] = set()
+
+
+def local_only_mode() -> bool:
+    """True when `ollama.local_only` routes every tier to the Ollama server (`ollama.base_url`)."""
+    return bool(config.get('ollama.local_only', False))
+
+
 def parse_llm_config(tier: str) -> tuple[str, str | None]:
-    """Parse config for an LLM tier (e.g. 'fast', 'smart', 'cache_auditor'). Returns (class_name, model_or_None)."""
+    """Parse config for an LLM tier (e.g. 'fast', 'smart', 'cache_auditor'). Returns (class_name, model_or_None).
+
+    With `ollama.local_only: true` every tier (except code_quality) runs on OllamaLLM regardless of
+    its `ai.<tier>` block or cloud default: a tier already on OllamaLLM keeps its configured model,
+    any other tier falls back to OllamaLLM's default model — a cloud model name means nothing there."""
+    llm, model = _configured_llm(tier)
+    if tier not in _LOCAL_ONLY_EXEMPT and local_only_mode():
+        if llm != 'OllamaLLM':
+            if tier not in _local_only_logged:
+                _local_only_logged.add(tier)
+                info(f"ollama.local_only: tier '{tier}' runs on OllamaLLM instead of {llm}"
+                     f"{f' ({model})' if model else ''}")
+            return 'OllamaLLM', None
+        return llm, model
+    return llm, model
+
+
+def _configured_llm(tier: str) -> tuple[str, str | None]:
+    """The (class, model) the `ai.<tier>` block names, or the tier's cloud default."""
     default_class, default_model = _TIER_DEFAULTS.get(tier, ('OllamaLLM', None))
     try:
         cfg = config.get(f'ai.{tier}')

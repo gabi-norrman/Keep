@@ -283,7 +283,12 @@ wake_word_near_misses: [mission, missions, we shall]
 # An explicit base_url passed to OllamaLLM's constructor still wins over this.
 # When base_url points at a remote host, the KV-cache diagnostics (which parse
 # Ollama's debug log) are read over ssh — set up key-based ssh access to that host.
+# local_only is the one-line switch between cloud and local AI: true routes every `ai:` tier
+# (except code_quality, the Claude Code CLI) to this server on OllamaLLM's default model,
+# qwen3.8:27b-mlx, whatever the `ai:` block says; a tier that already names OllamaLLM keeps its
+# `model:`. Videos are then left undescribed (Ollama has no video input). Takes effect on restart.
 #ollama:
+#  local_only: false
 #  base_url: http://192.168.1.50:11434
 #  ssh_host: user@192.168.1.50    # Optional ssh target for remote log reads; defaults to the base_url hostname
 #  remote_log_path: /Users/user/Documents/Keep/log/ollama.log  # Optional; defaults to this repo layout
@@ -297,14 +302,15 @@ wake_word_near_misses: [mission, missions, we shall]
 #  true_positive_dir: ~/stt-corpus/en
 
 # LLM backend selection. Optional — if omitted entirely, defaults to the cloud setup
-# Uncomment / edit to override, e.g. to run everything on a local Ollama:
+# (ollama.local_only above flips the whole block to Ollama without editing it).
+# Uncomment / edit to override per tier, e.g. to run everything on a local Ollama:
 #ai:
 #  fast:
 #    llm: OllamaLLM          # Class name from assistant/llm/ (OllamaLLM, ClaudeLLM, GeminiLLM, ChatGPTLLM, GrokLLM, OpenRouterLLM)
-#    # model: gemma4:26b      # Optional: override the LLM's default model
+#    # model: qwen3.8:27b-mlx   # Optional: override the LLM's default model
 #  smart:
 #    llm: OllamaLLM
-#    # model: gemma4:26b
+#    # model: qwen3.8:27b-mlx
 #  video:                   # describes video clips from iMessage / Telegram / email. Needs an LLM with native
 #    llm: GeminiLLM         # video input — Gemini is the only backend that has one; Claude/ChatGPT/Ollama
 #    # model: gemini-3.8-flash   # cannot take video and videos are then left undescribed ("[Video]")

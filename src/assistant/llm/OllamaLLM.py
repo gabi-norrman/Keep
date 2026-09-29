@@ -163,7 +163,9 @@ class OllamaLLM(AbstractLLM):
     # identical instances (25 handlers x 2 tiers), so log each resolved config once.
     _logged_configs: set[tuple[str, str]] = set()
 
-    def __init__(self, model: str = 'gemma4:26b', base_url: str | None = None):
+    DEFAULT_MODEL = 'qwen3.8:27b-mlx'  # the model the household's Ollama server serves
+
+    def __init__(self, model: str = DEFAULT_MODEL, base_url: str | None = None):
         self.model = model
         # Explicit base_url wins; otherwise `ollama.base_url` from config.yaml (e.g. the M4
         # Mac Studio), falling back to localhost.
