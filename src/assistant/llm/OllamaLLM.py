@@ -453,15 +453,18 @@ class OllamaLLM(AbstractLLM):
         with cls._bg_cond:
             waited = None
             while True:
-                if not cls._interactive_active and not cls._bg_active:
+                if cls._interactive_active:
+                    remaining, why = None, "an interactive request is in flight"
+                elif cls._bg_active:
+                    remaining, why = None, "another background request holds it"
+                else:
                     remaining = idle_s - (time.monotonic() - cls._interactive_last_end)
                     if remaining <= 0:
                         break
-                else:
-                    remaining = None
+                    why = f"it must idle {remaining:.0f}s more after the last interactive request"
                 if waited is None:
                     waited = time.monotonic()
-                    trace(f"Ollama: background request waiting for the slot ({idle_s:.0f}s idle required)")
+                    trace(f"Ollama: background request waiting for the slot: {why}.")
                 cls._bg_cond.wait(remaining)
             cls._bg_active = True
             cls._bg_abort = False
