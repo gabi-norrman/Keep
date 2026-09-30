@@ -463,7 +463,7 @@ class CommandParser:
                 # the command is not complete yet.
                 end = content.find(self._BLOCK_QUOTE, i + 3)
                 if end < 0:
-                    return -1
+                    return False
                 i = end + 3
                 continue
             if ch == '"' and not in_single_quote:

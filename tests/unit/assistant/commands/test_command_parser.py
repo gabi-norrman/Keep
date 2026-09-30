@@ -817,6 +817,13 @@ class TestTripleQuotedArguments:
         content = 'save_procedure("a", "b", """step one) and then'
         assert parser.extract_command_and_params(content, streaming=streaming) == (None, None)
 
+    @pytest.mark.parametrize("streaming", [True, False])
+    def test_streaming_completeness_check_waits_for_the_closing_triple_quote(self, parser, streaming):
+        # The streaming path returns a bool; an unclosed block must not come back as a truthy sentinel.
+        content = 'save_procedure("a", "b", """step one) and then'
+        assert parser.find_complete_command(content, streaming=streaming) is False
+        assert parser.find_complete_command(content + ' done""")', streaming=streaming) is True
+
     def test_a_block_can_be_followed_by_another_argument(self, parser):
         (_, params), _ = parser.extract_command_and_params('watch("""Parcel (big), fragile""", "ordered", 2026-03-12)')
         assert params == ["Parcel (big), fragile", "ordered", "2026-03-12"]
