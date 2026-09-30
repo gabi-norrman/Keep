@@ -526,16 +526,17 @@ class ChatPane:
 
     def _entry_lines(self, entry: Entry, width: int) -> List[Line]:
         """An entry's display lines, cached on the entry until its text, width, state or the
-        vault changes — a day of history must not be re-parsed and re-wrapped every frame."""
+        vault changes — a day of history must not be re-masked, re-parsed and re-wrapped
+        every frame. The key is the unmasked text: the vault's pattern over every entry costs
+        more than a frame's slot, and an animation loop that never sleeps starves the server."""
         visible = entry.body.visible_text()
         if not self.show_debug and entry.kind == KIND_ASSISTANT:
             visible = self._without_fallback_notice(entry.body.text, visible)
-        text = normalize(self.redactor.mask(visible))
-        key = (text, width, entry.final, entry.detail, self.redactor.vault.version)
+        key = (visible, width, entry.final, entry.detail, self.redactor.vault.version)
         cached = entry._layout
         if cached is not None and cached[0] == key:
             return cached[1]
-        lines = self._wrap_entry(entry, text, width)
+        lines = self._wrap_entry(entry, normalize(self.redactor.mask(visible)), width)
         entry._layout = (key, lines)
         return lines
 
