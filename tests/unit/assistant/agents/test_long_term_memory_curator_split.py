@@ -84,7 +84,29 @@ class TestRunCommands:
         curator = make_curator(tmp_path, dirs)
         results = curator.run_commands('Here is what I did:\n- `save_watch("Parcel", "ordered", "")`\nThat is all.')
         assert [i.name for i in WatchList.items(dirs[0])] == ["parcel"]
-        assert sum(r.startswith("SKIPPED") for r in results) == 2
+        assert sum(r.startswith("SKIPPED") for r in results) == 1
+
+    def test_a_stray_quote_in_one_note_does_not_swallow_the_next_command(self, tmp_path, dirs):
+        """Regression: a note holding an inch mark and a quoted phrase unbalanced the quotes,
+        and every command after it was lost."""
+        curator = make_curator(tmp_path, dirs)
+        results = curator.run_commands(
+            'save_watch("tv-delivery", "TV 77" panel, order 1 (33 kg), press "Pay"", "2026-10-02")\n'
+            'save_watch("sofa-delivery", """ordered, "paid" (link), arrives in November""")\n'
+            'save_watch("parcel", "at the pickup point (code 12)")')
+        items = {i.name: i for i in WatchList.items(dirs[0])}
+        assert set(items) == {"tv-delivery", "sofa-delivery", "parcel"}
+        assert items["tv-delivery"].note == 'TV 77" panel, order 1 (33 kg), press "Pay"'
+        assert items["tv-delivery"].due == "2026-10-02"
+        assert items["sofa-delivery"].note == 'ordered, "paid" (link), arrives in November'
+        assert not any(r.startswith(("SKIPPED", "FAILED")) for r in results)
+
+    def test_a_command_name_inside_a_procedure_text_does_not_start_a_command(self, tmp_path, dirs):
+        curator = make_curator(tmp_path, dirs)
+        curator.run_commands('save_procedure("shop-checkout", "paying at shop.example", """1) open the cart\n'
+                             'save_watch("x", "y") is what to emit afterwards\n2) click "Pay")""")')
+        assert WatchList.items(dirs[0]) == []
+        assert 'save_watch("x", "y") is what to emit afterwards' in Procedures.read("shop-checkout", dirs[1])
 
     def test_a_command_outside_the_allowlist_is_not_run(self, tmp_path, dirs):
         curator = make_curator(tmp_path, dirs)

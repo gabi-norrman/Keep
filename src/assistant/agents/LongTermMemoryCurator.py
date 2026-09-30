@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, date
 from pathlib import Path
 
 from .. import MemoryFile, Procedures, WatchList
-from ..commands.CommandParser import CommandParser
 from ..llm import create_llm, parse_llm_config
 from common.ConfigManager import ConfigManager
 from common.FloxyDatabase import FloxyDatabase, NO_INTERACTIONS
@@ -105,11 +104,12 @@ Format the memory nicely with markdown. Add sections when an item contains more 
 
 ## Output format
 The COMPLETE updated memory bank (markdown) between <memory> and </memory>, then the commands, one per line, between
-<commands> and </commands> (leave it empty when there is nothing to do). Nothing else.
+<commands> and </commands> (leave it empty when there is nothing to do). Nothing else. Every command starts on a
+line of its own.
 
 The commands:
-- `save_watch("name", "note", "due")` — a new item, or the new note of the item with that name; `due` as
-  YYYY-MM-DD, optional
+- `save_watch("name", \"\"\"note\"\"\", "due")` — a new item, or the new note of the item with that name; the
+  note in a triple-quoted block; `due` as YYYY-MM-DD, optional
 - `delete_watch("name", "outcome")` — the item is over
 - `save_procedure("name", "when to load it, one line", \"\"\"the full text\"\"\")` — a NEW procedure; the text in a
   triple-quoted block
@@ -147,7 +147,7 @@ Today is {TODAY}.
 ## Your task:
 Lift the watch items and the procedures out of the bank, as commands. Do NOT output the bank.
 
-- `save_watch("name", "note", "due")` — one per watch item (as defined above) that is still open today; when in
+- `save_watch("name", \"\"\"note\"\"\", "due")` — the note in a triple-quoted block. One per watch item (as defined above) that is still open today; when in
   doubt, it is not one and stays in the bank. The name is a short label
   (`tv-delivery`, `dentist-charlotte`). The same thing is often mentioned
   in several places of the bank (a person's section, a monitoring list, a calendar-like list, a loose note at the end):
@@ -159,7 +159,7 @@ Lift the watch items and the procedures out of the bank, as commands. Do NOT out
   summarise, do not drop a detail, do not invent a step. Give related how-tos separate procedures (one per site or
   task), and let the name say what it is (`vklass-login`, `online-purchases`).
 
-Output only the commands, one after the other, between <commands> and </commands>.
+Output only the commands, each starting on a line of its own, between <commands> and </commands>.
 """
 
 SPLIT_BANK_PROMPT = """
@@ -790,6 +790,66 @@ class LongTermMemoryCurator:
         return {'source': str(source), 'backup': str(backup), 'watch_items': copied['watchlist'],
                 'procedures': copied['procedures'], 'kept': already}
 
+    _COMMAND_START = re.compile(r'^[`\-*•\s]*(' + '|'.join(CURATOR_COMMANDS) + r')\s*\(', re.IGNORECASE)
+
+    @classmethod
+    def _command_chunks(cls, block: str) -> tuple[list[str], list[tuple[str, str]]]:
+        """The block cut at every line that opens a curator command (outside a triple-quoted
+        text): the lines before the first command, and per command its name and the raw text
+        between its opening parenthesis and the last closing one before the next command.
+        Cutting at the command names, not by matching parentheses and quotes, keeps one
+        command's stray quote (an inch mark, a quoted phrase in a note) from swallowing the
+        commands after it."""
+        preamble, chunks, current, in_text = [], [], None, False
+        for line in block.splitlines():
+            start = None if in_text else cls._COMMAND_START.match(line)
+            if start:
+                current = [start.group(1).lower(), line[start.end():]]
+                chunks.append(current)
+            elif current is not None:
+                current[1] += "\n" + line
+            elif line.strip("` "):
+                preamble.append(line.strip())
+            if line.count('"""') % 2:
+                in_text = not in_text
+        return preamble, [(name, raw[:raw.rfind(")")] if ")" in raw else raw) for name, raw in chunks]
+
+    @staticmethod
+    def _split_arguments(raw: str) -> list[str]:
+        """The arguments of one curator command. A triple-quoted argument runs to its closing
+        triple quote; a quoted one ends only at a quote that is followed by a comma or the end,
+        so a quote inside the text does not cut it short; anything else runs to the next comma."""
+        args, i, n = [], 0, len(raw)
+        while i < n:
+            while i < n and raw[i] in " \t\r\n":
+                i += 1
+            if i >= n:
+                break
+            if raw.startswith('"""', i):
+                end = raw.find('"""', i + 3)
+                end = n if end < 0 else end
+                args.append(raw[i + 3:end].strip("\n"))
+                i = end + 3
+            elif raw[i] in "\"'`":
+                quote, j = raw[i], i + 1
+                while True:
+                    j = raw.find(quote, j)
+                    if j < 0 or not raw[j + 1:].strip() or raw[j + 1:].lstrip().startswith(","):
+                        break
+                    j += 1
+                end = n if j < 0 else j
+                args.append(raw[i + 1:end].replace("\\" + quote, quote))
+                i = end + 1
+            else:
+                end = raw.find(",", i)
+                end = n if end < 0 else end
+                args.append(raw[i:end].strip())
+                i = end
+            while i < n and raw[i] != ",":
+                i += 1
+            i += 1
+        return args
+
     def run_commands(self, block: str, watchlist_dir: Path = None, procedures_dir: Path = None,
                      log_dir: Path = None) -> list[str]:
         """Run the curator's command block against the watch list and the procedures, one
@@ -801,21 +861,13 @@ class LongTermMemoryCurator:
         if not block.strip():
             trace("Rem: no watch list or procedure commands this run")
             return []
-        parser = CommandParser(list(CURATOR_COMMANDS))
         results = []
-        rest = block
-        while rest.strip():
-            rest = rest.lstrip("`-*• \t\r\n")
-            parsed, remainder = (None, None)
-            if parser.unterminated_command(rest):
-                parsed, remainder = parser.extract_command_and_params(rest)
-            if parsed is None:
-                line, _, rest = rest.partition("\n")
-                if line.strip("` "):
-                    info(f"Rem: skipped a line that is not a curator command: {line.strip()[:120]}")
-                    results.append(f"SKIPPED (not a curator command): {line.strip()[:200]}")
-                continue
-            (command, params), rest = parsed, remainder
+        preamble, chunks = self._command_chunks(block)
+        for line in preamble:
+            info(f"Rem: skipped a line that is not a curator command: {line[:120]}")
+            results.append(f"SKIPPED (not a curator command): {line[:200]}")
+        for command, raw in chunks:
+            params = self._split_arguments(raw)
             shown = f"{command}({', '.join(p if len(p) <= 120 else p[:120] + '…' for p in params)})"
             if command in WatchList.COMMANDS:
                 failure = WatchList.run(command, params, watchlist_dir, log_dir)
