@@ -228,21 +228,33 @@ class TestDropClient:
 
 
 class TestFramePacing:
-    """The animation loop holds 30 fps: a frame sleeps only what is left of its slot."""
+    """The animation loop holds its rate: a frame sleeps only what is left of its slot, and the
+    sleep is the wake event's wait so input can end it early."""
 
-    def _clock(self, monkeypatch, now):
+    def _server(self, monkeypatch, now):
         slept = []
         monkeypatch.setattr(tui_server.time, "perf_counter", lambda: now)
-        monkeypatch.setattr(tui_server.time, "sleep", slept.append)
-        return slept
+        srv = TUIServer(draw_screen_callback=lambda frame, screen: None)
+        monkeypatch.setattr(srv._wake, "wait", lambda timeout: slept.append(timeout) and False)
+        return srv, slept
 
     def test_a_quick_frame_sleeps_the_rest_of_its_slot(self, monkeypatch):
-        slept = self._clock(monkeypatch, now=100.010)          # drawing took 10 ms of the slot
+        srv, slept = self._server(monkeypatch, now=100.010)          # drawing took 10 ms of the slot
         due = 100.0 + FRAME_INTERVAL
-        assert TUIServer._next_frame(due) == pytest.approx(due + FRAME_INTERVAL)
+        assert srv._next_frame(due, FRAME_INTERVAL) == pytest.approx(due + FRAME_INTERVAL)
         assert slept == [pytest.approx(FRAME_INTERVAL - 0.010)]
 
     def test_a_slow_frame_does_not_sleep_and_starts_a_fresh_slot(self, monkeypatch):
-        slept = self._clock(monkeypatch, now=100.050)          # drawing took 50 ms, past the slot
-        assert TUIServer._next_frame(100.0 + FRAME_INTERVAL) == pytest.approx(100.050 + FRAME_INTERVAL)
+        srv, slept = self._server(monkeypatch, now=100.050)          # drawing took 50 ms, past the slot
+        assert srv._next_frame(100.0 + FRAME_INTERVAL, FRAME_INTERVAL) == pytest.approx(100.050 + FRAME_INTERVAL)
         assert slept == []
+
+    def test_a_frame_scheduled_an_idle_slot_ahead_sleeps_only_a_full_slot(self, monkeypatch):
+        srv, slept = self._server(monkeypatch, now=100.0)
+        assert srv._next_frame(100.0 + 0.2, FRAME_INTERVAL) == pytest.approx(100.0 + 2 * FRAME_INTERVAL)
+        assert slept == [pytest.approx(FRAME_INTERVAL)]
+
+    def test_a_wake_ends_the_sleep_and_the_next_slot_starts_now(self, monkeypatch):
+        srv, slept = self._server(monkeypatch, now=100.0)
+        monkeypatch.setattr(srv._wake, "wait", lambda timeout: True)
+        assert srv._next_frame(100.0 + 0.2, FRAME_INTERVAL) == pytest.approx(100.0 + FRAME_INTERVAL)

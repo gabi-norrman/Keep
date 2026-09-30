@@ -12,7 +12,9 @@ from . import Curtain
 from common.logging import trace, info, error, note
 
 ACCEPT_TIMEOUT = 1.0      # how long a stopping server waits for its accept loop to notice
-FRAME_INTERVAL = 1 / 30   # the animation runs at a fixed 30 fps; a frame sleeps only what is left of its slot
+FRAME_INTERVAL = 1 / 30   # the animation runs at 30 fps; a frame sleeps only what is left of its slot
+IDLE_INTERVAL = 1 / 5     # ...until the picture has stood still for IDLE_AFTER: then frames are drawn this often
+IDLE_AFTER = 1.0          # seconds of unchanged frames before the loop drops to the idle rate
 
 
 class TUIServer:
@@ -20,6 +22,11 @@ class TUIServer:
 
     Clients can connect using: nc localhost 5151 (or tui.py). Runs daemon threads for accepting clients,
     the animation loop and per-client keyboard input.
+
+    The loop draws at 30 fps while the picture moves and drops to IDLE_INTERVAL once `get_frame`
+    has found nothing to send for IDLE_AFTER seconds — a full redraw of a still screen is the
+    biggest idle cost of the process. A keystroke, a client connecting or resizing, or a frame
+    with changes brings the full rate back at once (`wake`).
     """
 
     FULL_BLOCK_TERMINALS = {"Apple_Terminal"}   # TERM_PROGRAM values whose `▀` rendering breaks the Crystal
@@ -44,6 +51,8 @@ class TUIServer:
         self.last_resized_client = None  # Track which client was last resized
         self.force_full_redraw = False  # Set when a new client connects so next frame is a full redraw
         self.first_client_pending = True   # the first client of the process gets the curtains before its setup
+        self._wake = threading.Event()     # set to cut the current frame's sleep short and go back to 30 fps
+        self.idle = False                  # True while the loop draws at IDLE_INTERVAL
         self.running = False
         self.server_socket = None
         self.draw_screen_callback = draw_screen_callback
@@ -129,6 +138,7 @@ class TUIServer:
                     self.link_probes[client_socket] = LinkProbe(str(addr))
                     self.last_resized_client = client_socket
                     self.force_full_redraw = True
+                self.wake()
 
                 info(f"Client connected to TUI server: {addr} ({cols} x {rows}, terminal "
                      f"{terminal or 'unknown'}{'' if self.half_blocks_for(terminal) else ', full blocks'}), "
@@ -245,21 +255,30 @@ class TUIServer:
             return statuses[0]
         return NO_LINK_STATUS
 
-    @staticmethod
-    def _next_frame(due: float) -> float:
+    def wake(self):
+        """Cut the current frame's sleep short and draw the next frame at the full rate: for
+        input and client changes, which must show without waiting out an idle slot."""
+        self._wake.set()
+
+    def _next_frame(self, due: float, interval: float) -> float:
         """Sleep until `due`, the end of the current frame's slot, and return the end of the
-        next one. A frame that overran its slot starts the next slot now instead of racing
-        to catch up."""
+        next one, `interval` away. A frame that overran its slot starts the next slot now
+        instead of racing to catch up; a `wake` ends the sleep early and the next slot starts
+        now as well. The sleep never exceeds `interval`: the frame that ends an idle was
+        scheduled an idle slot ahead, and the next one must not wait that out."""
         now = time.perf_counter()
+        due = min(due, now + interval)
+        if due > now and self._wake.wait(due - now):
+            return time.perf_counter() + interval
         if due > now:
-            time.sleep(due - now)
-            return due + FRAME_INTERVAL
-        return now + FRAME_INTERVAL
+            return due + interval
+        return now + interval
 
     def _animation_loop(self):
         """Main animation loop that broadcasts to all clients"""
         frame = 0
         due = time.perf_counter() + FRAME_INTERVAL
+        still_since: Optional[float] = None   # when the frames stopped changing; None while they change
 
         while self.running:
             with self.clients_lock:
@@ -276,7 +295,8 @@ class TUIServer:
                     half_blocks = self.half_blocks_for(self.client_terminals.get(client_to_use, ""))
 
             if not has_clients:
-                time.sleep(0.5)
+                self._wake.wait(0.5)   # a connecting client wakes the loop
+                self._wake.clear()
                 due = time.perf_counter() + FRAME_INTERVAL
                 continue
 
@@ -312,12 +332,26 @@ class TUIServer:
             if frame_data:
                 self._broadcast(frame_data)
 
+            now = time.perf_counter()
+            if frame_data or self._wake.is_set():
+                still_since = None
+                if self.idle:
+                    self.idle = False
+                    trace("TUI Server: the picture moves again — back to 30 fps")
+            elif still_since is None:
+                still_since = now
+            elif not self.idle and now - still_since >= IDLE_AFTER:
+                self.idle = True
+                trace(f"TUI Server: nothing changed for {IDLE_AFTER:.0f}s — drawing {1 / IDLE_INTERVAL:.0f} fps until it does")
+            self._wake.clear()
+
             frame += 1
-            due = self._next_frame(due)
+            due = self._next_frame(due, IDLE_INTERVAL if self.idle else FRAME_INTERVAL)
 
     def stop(self):
         """Stop the server"""
         self.running = False
+        self.wake()
 
         # The alternate screen is left as it is: the last frame stays under tui.py's reconnect
         # box for the next process's curtains to close over (tui.py leaves the alternate
@@ -350,6 +384,7 @@ class TUIServer:
     _ESC_CHORDS = ("b", "f", "\x7f", "\r", "\n")
 
     def _emit_key(self, key: str, addr):
+        self.wake()
         if self.input_callback:
             try:
                 self.input_callback(key, addr)
@@ -443,6 +478,7 @@ class TUIServer:
                                         with self.clients_lock:
                                             self.client_dimensions[client_socket] = (cols, rows)
                                             self.last_resized_client = client_socket
+                                        self.wake()
                                         trace(f"TUI Client {addr} resized to {cols} x {rows}")
                                 except (ValueError, IndexError) as e:
                                     trace(f"Invalid resize command from {addr}: {line} ({e})")
