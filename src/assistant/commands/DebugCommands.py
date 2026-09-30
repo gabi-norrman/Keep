@@ -15,6 +15,7 @@ A command returns a human-readable string that is relayed back as the reply.
     //restart       - pull the target branch and restart the server, as the restart_server command does (fallback when the LLM is unusable)
     //feed <pause|resume> <all|name> - hold / carry on filling the history from a feed; bare //feed lists them
     //memory_curate <start> [end]    - curate the long-term memory over a span of days (YYYYMMDD, end inclusive), in 4-day chunks
+    //memory_split [apply]           - propose the split of an old one-file bank into bank / watch list / procedures; apply the latest proposal
     //first_run [stage <name>|reset] - the first-run pipeline's state; force a stage or delete the state (FTUE testing)
     //toolkits      - the toolkits with their size and whether each is in the LLM's history window
     //toolkit <name> - the reference of one toolkit as the LLM receives it
@@ -33,7 +34,7 @@ from pathlib import Path
 from assistant import FirstRun
 from common.logging import info, error
 from common.Paths import (AISERVER_DIR, CACHE_DIR, CONFIG_PATH, DUMMY_CONFIG_PATH, ICLOUD_SESSION_DIR, LOG_DIR,
-                          VAULT_PATH)
+                          MEMORY_DIR, MEMORY_LOG_DIR, VAULT_PATH)
 
 # Anchored on common.Paths so cwd doesn't matter.
 AUDIO_DIR = str(LOG_DIR / "audio")
@@ -55,7 +56,8 @@ WIPE_TARGETS = [
     (DATABASE_PATH, "database: dialog history, usage stats, photo index, feeds"),
     (CONFIG_PATH, "config.yaml (the next start writes a skeleton and asks for the required keys)"),
     (VAULT_PATH, "vault"),
-    (AISERVER_DIR / "memory.md", "long-term memory"),
+    (MEMORY_DIR, "long-term memory: bank, procedures, watch list"),
+    (AISERVER_DIR / "memory.md", "long-term memory bank of an install from before memory/"),
     (FirstRun.STATE_FILE, "first-run pipeline state"),
     (TELEGRAM_SESSION, "Telegram feed login (Telethon session, logged out on Telegram first)"),
     (TELEGRAM_SESSION.with_name(TELEGRAM_SESSION.name + "-journal"), "Telegram feed session journal"),
@@ -351,6 +353,43 @@ class DebugCommands:
             return
         if summary is None:
             info("//memory_curate: skipped, another curation was already running")
+
+    # --- //memory_split -------------------------------------------------------------------
+
+    def cmd_MEMORY_SPLIT(self, args: str) -> str:
+        """//memory_split [apply]: split a one-file memory bank into bank / watch list / procedures — a proposal in log/memory/split_<time>/ to read and edit first; `apply` puts the latest proposal in place."""
+        action = args.strip().lower()
+        if action not in ("", "apply"):
+            return "Usage: //memory_split (writes a proposal) or //memory_split apply (puts the latest proposal in place)"
+        from assistant.agents.LongTermMemoryCurator import LongTermMemoryCurator
+        if action == "apply":
+            proposals = sorted(p for p in MEMORY_LOG_DIR.glob("split_*") if (p / "bank.md").is_file())
+            if not proposals:
+                info("//memory_split apply: no proposal in log/memory/")
+                return "There is no split proposal yet. Run //memory_split first."
+            try:
+                done = LongTermMemoryCurator().apply_split(proposals[-1])
+            except Exception as e:
+                error(f"//memory_split apply: failed: {e}")
+                return f"Applying {proposals[-1].name} failed: {e}"
+            kept = f" {len(done['kept'])} already existed and were kept: {', '.join(done['kept'])}." \
+                if done['kept'] else ""
+            return (f"Applied {proposals[-1].name}: the bank is replaced, {len(done['watch_items'])} watch item(s) and "
+                    f"{len(done['procedures'])} procedure(s) are in place.{kept} "
+                    f"The memory as it was is in {done['backup']}.")
+        target = MEMORY_LOG_DIR / f"split_{datetime.now():%Y%m%d_%H%M%S}"
+        info(f"//memory_split: writing a proposal to {target} in the background")
+        threading.Thread(target=self._propose_split, args=(target,), daemon=True).start()
+        return (f"Splitting the memory bank in the background (two AI passes, a few minutes). The proposal lands in "
+                f"{target} — bank.md, watchlist/, procedures/. Nothing live changes until //memory_split apply.")
+
+    @staticmethod
+    def _propose_split(target: Path):
+        from assistant.agents.LongTermMemoryCurator import LongTermMemoryCurator
+        try:
+            LongTermMemoryCurator().propose_split(target)
+        except Exception as e:
+            error(f"//memory_split: the proposal failed: {e}")
 
     # --- //first_run ----------------------------------------------------------------------
 

@@ -60,13 +60,15 @@ source .venv/bin/activate && python <script.py>
 
 ### Core Components
 
-**Layout**: the root holds only scripts (`floxy_ai_server.py`, `tui.py`, `*.sh`), config, data (`res/`, `cache/`, `log/`, `voice_id/`, `floxy.db`) and `tests/`; the three source packages live under `src/` and are imported without a `src.` prefix (`from common.x import …`). `pytest.ini` adds `src` via `pythonpath`; `floxy_ai_server.py` and every external script insert `<root>/src` at the front of `sys.path`. `common/Paths.py` (`AISERVER_DIR` — the repository root, `REPO_DIR` — the same, `SRC_DIR`, `RES_DIR`, `CACHE_DIR`, `LOG_DIR`, `VOICE_ID_DIR`, `CONFIG_PATH`) is the one place that knows where the tree is — never do `Path(__file__).parents[N]` arithmetic in a package module.
+**Layout**: the root holds only scripts (`floxy_ai_server.py`, `tui.py`, `*.sh`), config, data (`res/`, `cache/`, `log/`, `voice_id/`, `memory/`, `floxy.db`) and `tests/`; the three source packages live under `src/` and are imported without a `src.` prefix (`from common.x import …`). `pytest.ini` adds `src` via `pythonpath`; `floxy_ai_server.py` and every external script insert `<root>/src` at the front of `sys.path`. `common/Paths.py` (`AISERVER_DIR` — the repository root, `REPO_DIR` — the same, `SRC_DIR`, `RES_DIR`, `CACHE_DIR`, `LOG_DIR`, `VOICE_ID_DIR`, `MEMORY_DIR`, `CONFIG_PATH`) is the one place that knows where the tree is — never do `Path(__file__).parents[N]` arithmetic in a package module.
 - `floxy_ai_server.py` — thin launcher: `build(port, testsuite) -> Server` constructs the `Assistant` and starts every enabled interface; `main()` serves (only under `__main__`)
 - `src/common/` — logging, ConfigManager, Paths, DevelopmentConfig, FloxyDatabase, monitors, RequirementsChecker
 - `src/assistant/` — the assistant proper; it never imports `interfaces.*`
   - `Assistant.py` (facade: `stream(RequestContext) -> AssistantEvents`, handler pool), 
   - `commands/` (Commands, CommandProcessor, light/music/photo handlers; `Toolkits.py` — the command references the LLM loads on demand)
   - `agents/CodeQualityMaintainer.py` runs the Claude Code CLI on the repo: the nightly bug-analysis / test-generation / auto-merge runs and the `self_analysis` / `self_improvement` commands.
+  - long-term memory, all under `memory/` (gitignored): `MemoryFile.py` — the bank `memory/bank.md` (people, preferences, contacts, rules; whole in every prompt; `remember` appends, the curator rewrites it); `WatchList.py` — `memory/watchlist/<slug>.md`, one file per tracked item (`save_watch` / `delete_watch`; open items are a prompt section); `Procedures.py` — `memory/procedures/<slug>.md`, the how-tos (`load_procedure` loads one, `save_procedure` / `delete_procedure` write; the curator alone appends dated notes with `procedure_note`; the prompt carries only a code-built index). `memory/` holds only what is live: replaced, deleted and closed versions are copied to `log/memory/{watchlist,procedures}/`, a debugging trail the LLM never reads.
+  - `agents/LongTermMemoryCurator.py` — the nightly run: rewrites the bank, then a `<commands>` block (`save_watch`, `delete_watch`, `save_procedure` for new names, `procedure_note`) tidies the watch list and may add (never replace or delete) procedures; `//memory_split` is the one-off move of an old one-file bank into the three parts.
   - self-setup: `list_integrations` / `config_help` / `config_request` / `restart_integration` let the assistant configure an integration itself.
 - `src/interfaces/` — one package per way of reaching the assistant, each an `Interface` (`enabled(config)`, `start(assistant, app)`, `start_async()`, `stop()`); a disabled interface's module is never imported
   - `http/` — HttpInterface (Quart app, `/stream`, `/health`, hypercorn, signals), `routes.py`, `WireFormat.py`
@@ -85,7 +87,7 @@ Before discovering test coverage gaps, verify findings by checking ALL test dire
 integration/, slow/ etc). Do not report a module as untested without searching for its name across the entire test
 tree.
 
-**Test data is fictional — the unit tests are public.** Never copy a value from `config.yaml`, `memory.md`,
+**Test data is fictional — the unit tests are public.** Never copy a value from `config.yaml`, `memory/`,
 `floxy.db`, the vault, the logs or a real conversation into a test, a fixture or a comment; invent one that
 exercises the same code path. Use the standing cast and nothing from the real household:
 - people: the owner **Marcus** (the unit conftest pins `owner_name` to it), family **Charlotte**, **Frances**,

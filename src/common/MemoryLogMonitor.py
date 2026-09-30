@@ -12,7 +12,7 @@ class MemoryLogMonitor:
     DashboardTab, and counts the words of the live memory bank for the chart's label."""
 
     LOG_DIR = Path("log/memory")
-    MEMORY_FILE = Path("memory.md")
+    MEMORY_FILE = Path("memory/bank.md")
     FILENAME_RE = re.compile(r"^(\d{8})_\d{6}_[0-9a-f]+_memory\.md$")
     NEW_SIZE_RE = re.compile(r"^- New size: (\d+) chars\s*$", re.MULTILINE)
     HEADER_READ_BYTES = 2048

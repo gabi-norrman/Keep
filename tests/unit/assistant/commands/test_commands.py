@@ -751,7 +751,7 @@ class TestCmdMusicPlayback:
 
 class TestCmdRemember:
     def test_strips_whitespace(self, tmp_path, monkeypatch):
-        mem_file = tmp_path / "memory.md"
+        mem_file = tmp_path / "memory" / "bank.md"
         monkeypatch.chdir(tmp_path)
         mock_cp = Mock()
         cmd = Commands(mock_cp)
@@ -761,7 +761,8 @@ class TestCmdRemember:
         assert "  padded  " not in content
 
     def test_appends_to_existing(self, tmp_path, monkeypatch):
-        mem_file = tmp_path / "memory.md"
+        mem_file = tmp_path / "memory" / "bank.md"
+        mem_file.parent.mkdir()
         mem_file.write_text("existing\n")
         monkeypatch.chdir(tmp_path)
         mock_cp = Mock()

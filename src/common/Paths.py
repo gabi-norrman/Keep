@@ -14,6 +14,11 @@ RES_DIR = AISERVER_DIR / "res"
 CACHE_DIR = AISERVER_DIR / "cache"
 LOG_DIR = AISERVER_DIR / "log"
 VOICE_ID_DIR = AISERVER_DIR / "voice_id"
+# The assistant's long-term memory, all of it: the bank, the procedures, the watch list
+# (assistant/MemoryFile.py, Procedures.py, WatchList.py). Only what is live; what they
+# replace, delete or close is copied to MEMORY_LOG_DIR first, for debugging.
+MEMORY_DIR = AISERVER_DIR / "memory"
+MEMORY_LOG_DIR = LOG_DIR / "memory"
 CONFIG_PATH = AISERVER_DIR / "config.yaml"
 # A developer's stand-in config: //wipe puts it in place of the wiped config.yaml when it
 # exists, so a dev install comes back with keys instead of the skeleton.

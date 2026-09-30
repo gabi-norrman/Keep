@@ -1,4 +1,5 @@
 import re
+import shutil
 import time
 import uuid
 import difflib
@@ -6,12 +7,14 @@ import threading
 from datetime import datetime, timedelta, date
 from pathlib import Path
 
-from .. import MemoryFile
+from .. import MemoryFile, Procedures, WatchList
+from ..commands.CommandParser import CommandParser
 from ..llm import create_llm, parse_llm_config
 from common.ConfigManager import ConfigManager
 from common.FloxyDatabase import FloxyDatabase, NO_INTERACTIONS
 from ..integration.integrations.CalDAVIntegration import CalDAVIntegration
 from common.logging import info, error, trace
+from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
 
 HISTORY_SOURCE = "memory_curation"   # the `source` of the system row a finished curation leaves
 # A span longer than this is curated in chunks of this many days, one after another, each
@@ -20,6 +23,10 @@ CURATION_CHUNK_DAYS = 4
 # The size the curator is told to keep the bank under. The LLM cannot count words in a 40 KB
 # document, so the prompt also states the measured count ({MEMORY_SIZE}) rather than trusting it to.
 MEMORY_WORD_LIMIT = 4000
+# What the curator may do to the watch list and the procedures, in the command block after the
+# bank. It may add to a procedure but never replace or delete one: a procedure is rewritten
+# only by the assistant that has the working flow in front of it, or by the user.
+CURATOR_COMMANDS = WatchList.COMMANDS + ("save_procedure", "procedure_note")
 
 PROMPT = """
 You are a long-term memory curator for a state of the art home automation AI system serving a family. Your role is to maintain a
@@ -27,7 +34,21 @@ comprehensive memory bank about the family and household that enables personaliz
 
 You are called periodically — every night once the system has been running for a while, more often right after a
 fresh install while the memory bank is still being built up — to analyze everything that happened in a period and
-update the long-term memory. This run covers {PERIOD}.
+update the long-term memory. This run covers {PERIOD}. Today is {TODAY}.
+
+The long-term memory has three parts:
+- the **memory bank**: what is durably true of the family — people, preferences, relationships, contacts, standing
+  rules — plus a short "Ongoing projects" section: where the family's own projects, to-dos and open decisions stand
+  (a renovation, a purchase being considered). It is in front of the AI in every conversation. You rewrite it.
+- the **watch list**: what the AI is expected to act on later — notify, remind, check. A delivery or order it is
+  following, an invoice it was asked to watch, a reminder someone asked for, a task of its own. NOT an appointment the
+  calendar already holds (unless the AI has a job attached to it, such as a reminder to cancel in time), NOT the
+  family's own to-dos, plans and open decisions that it merely heard about, and nothing that ends today. The test: would
+  the AI ever speak up about this unprompted? If not, it is not a watch item. Expect a handful of items, not dozens.
+  One item per thing, each with a note that holds its current state. The AI keeps it up to date during the day; you
+  tidy up what it missed.
+- the **procedures**: how something is done — login flows, checkouts, bookings, readings. The AI loads one when it
+  needs it, so a procedure can be as detailed as it has to be. You only see their index.
 
 {STT_NOTE}
 
@@ -39,13 +60,21 @@ update the long-term memory. This run covers {PERIOD}.
 
 {MEMORY_SIZE}
 
+## Current watch list (open items):
+{WATCHLIST}
+
+## Procedures (index only):
+{PROCEDURES}
+
 ## Your task:
 Update the memory bank based on new information. You may add, modify, remove and restructure information as needed.
 Keep the memory bank concise - no more than {WORD_LIMIT} words. Condense or remove outdated/less important information as needed.
 
+Then bring the watch list in line with what the period shows, with commands (see the output format).
+
 Rules:
-- Do NOT include command names or action IDs (the AI knows what commands it can run)
-- Do NOT include command syntax or how to interpret commands (the AI already understands natural language and has extensive knowledge of available commands)
+- The bank does NOT include command names or action IDs (the AI knows what commands it can run)
+- The bank does NOT include command syntax or how to interpret commands (the AI already understands natural language and has extensive knowledge of available commands). A procedure is different: there the exact commands and code that worked are the point
 - Do NOT include song/playlist/favorite IDs
 - Focus on personal preferences, patterns, and facts about the family that help personalization
 - Make sure to keep the entire memory under {WORD_LIMIT} words
@@ -55,15 +84,118 @@ Rules:
 - This memory bank is the system's ONLY long-term storage — anything dropped is permanently forgotten. Be mindful of deleting valuable information
 - The bank deliberately holds operational data the system acts with: credentials, payment details. Preserve these verbatim — never redact, mask or drop them
 - Do not assume things, be very mindful of what you put into the memory. Only facts you are sure of.
+- The bank holds no watch items: something the AI must act on later (see the watch list's definition above) that is
+  in the bank or in the period's interactions and still open today belongs on the watch list — `save_watch(...)` it
+  (under the name of the open item that already covers it, when there is one) and leave it out of the bank. One that
+  is already over is simply dropped. What an item leaves behind that is durably true (a new possession, a contact, a
+  preference learnt) does go in the bank
+- The family's own projects, to-dos and open decisions that the AI only heard about go in the bank's "Ongoing
+  projects" section, a line or two per project, kept current and freely rewritten: drop what is done, never let it
+  grow into a log. Appointments already in the calendar and plans for a single day go nowhere
+- The bank holds no how-tos: a multi-step way of doing something belongs in a procedure. When the bank or the period
+  holds one that no procedure in the index covers, save it with `save_procedure(...)`, complete and verbatim (every
+  step, URL, endpoint, code snippet, warning), and leave at most a one-line pointer in the bank. You cannot replace
+  an existing procedure; add what the period taught with `procedure_note(...)`
+- Watch list upkeep: delete an item the period shows is done, delivered, paid, cancelled or past
+  (`delete_watch`); rewrite the note of one whose state changed (`save_watch` under its existing name — the note
+  REPLACES the old one, so carry over every detail that still holds). Leave an item alone when the period says nothing about it, unless it
+  is marked STALE and clearly over
 
 Format the memory nicely with markdown. Add sections when an item contains more information that fits in a sentence or two.
 
-Output the COMPLETE updated memory bank only (use markdown formatting).
+## Output format
+The COMPLETE updated memory bank (markdown) between <memory> and </memory>, then the commands, one per line, between
+<commands> and </commands> (leave it empty when there is nothing to do). Nothing else.
+
+The commands:
+- `save_watch("name", "note", "due")` — a new item, or the new note of the item with that name; `due` as
+  YYYY-MM-DD, optional
+- `delete_watch("name", "outcome")` — the item is over
+- `save_procedure("name", "when to load it, one line", \"\"\"the full text\"\"\")` — a NEW procedure; the text in a
+  triple-quoted block
+- `procedure_note("name", "the lesson")` — append a lesson to an existing procedure
 """
 
 # Only worth the LLM's attention when a microphone is actually feeding the assistant.
 STT_NOTE = """The AI receives commands from the users using STT tech, the STT accuracy is not perfect and phrases are misheard sometimes. Keep
 track of common misheard phrases and their actual meaning - as a way to mitigate the sub-par accuracy of the STT system.
+"""
+
+# --- //memory_split: the one-off move of an old, single-file bank into the three parts --------
+# Two calls, so neither reply has to carry the whole bank: the first lifts the tracked items
+# and the how-tos out as commands, the second rewrites the bank without them.
+
+SPLIT_EXTRACT_PROMPT = """
+You maintain the long-term memory of a home automation AI serving a family. Until now that memory was one document,
+the memory bank below. It is being split into three parts:
+- the **memory bank** keeps what is durably true of the family: people, preferences, relationships, contacts,
+  standing rules, how the house is set up — and where the family's own projects, to-dos and open decisions stand.
+- the **watch list** takes what the AI is expected to act on later — notify, remind, check. A delivery or order it is
+  following, an invoice it was asked to watch, a reminder someone asked for, a task of its own. NOT an appointment the
+  calendar already holds (unless the AI has a job attached to it, such as a reminder to cancel in time), NOT the
+  family's own to-dos, plans and open decisions that it merely heard about, and nothing that ends today. The test: would
+  the AI ever speak up about this unprompted? If not, it is not a watch item. Expect a handful of items, not dozens.
+  One item per thing.
+- the **procedures** take every how-to: a multi-step way of doing something (a login flow, a checkout, a booking, a
+  reading, a cleanup routine), with the lessons learnt about it.
+
+Today is {TODAY}.
+
+## The memory bank:
+{BANK}
+
+## Your task:
+Lift the watch items and the procedures out of the bank, as commands. Do NOT output the bank.
+
+- `save_watch("name", "note", "due")` — one per watch item (as defined above) that is still open today; when in
+  doubt, it is not one and stays in the bank. The name is a short label
+  (`tv-delivery`, `dentist-charlotte`). The same thing is often mentioned
+  in several places of the bank (a person's section, a monitoring list, a calendar-like list, a loose note at the end):
+  merge them into ONE item whose note holds the current state and every detail worth keeping (order numbers, amounts,
+  references, names, phone numbers, times). Where two mentions disagree, the later-dated one is the current state.
+  `due` is the date it is due or expected as YYYY-MM-DD; leave it out when there is none. Skip what is already over.
+- `save_procedure("name", "when to load it, one line", \"\"\"the full text\"\"\")` — one per how-to, the text in a
+  triple-quoted block. Copy every step, URL, endpoint, code snippet, number and warning VERBATIM from the bank; do not
+  summarise, do not drop a detail, do not invent a step. Give related how-tos separate procedures (one per site or
+  task), and let the name say what it is (`vklass-login`, `online-purchases`).
+
+Output only the commands, one after the other, between <commands> and </commands>.
+"""
+
+SPLIT_BANK_PROMPT = """
+You maintain the long-term memory of a home automation AI serving a family. Until now that memory was one document,
+the memory bank below. It has just been split: what the AI must act on later (deliveries and orders it follows,
+reminders it was asked for) moved to the watch list, the how-tos moved to the procedures. Both are shown below as
+they now exist.
+
+Today is {TODAY}.
+
+## The memory bank (before the split):
+{BANK}
+
+## The watch list (now holds these):
+{WATCHLIST}
+
+## The procedures (now hold these):
+{PROCEDURES}
+
+## Your task:
+Output the memory bank as it should be after the split: everything that is durably true of the family — people,
+preferences, relationships, contacts, standing rules, how the house is set up, corrections of misheard phrases —
+and nothing that now lives in the watch list or in a procedure.
+
+- Remove what the watch list and the procedures hold. A pointer of at most one line may stay where the AI must know
+  that something exists before it would think of loading it ("Anything asked 'på Vklass' → the vklass-login procedure").
+- The family's own projects, to-dos and open decisions that did NOT become watch items stay in the bank: gather
+  them under an "Ongoing projects" section, a line or two per project, each thing said once (the old bank often
+  repeats them in a to-do list and again under a person or a room). Drop the ones that are already over.
+- Remove appointments the calendar holds and plans for a single day.
+- Remove dated day-level chatter (what happened on a given day) unless it carries a lasting fact; keep the fact.
+- Keep everything else VERBATIM. Apart from the "Ongoing projects" section this is a move, not a rewrite: do not
+  rephrase, condense, merge or reorder lines that stay, and keep credentials, numbers and names exactly as they are.
+- Loose notes at the end of the bank that stay are filed under the section they belong to.
+
+Output the complete bank (markdown) between <memory> and </memory>, and nothing else.
 """
 
 """
@@ -79,7 +211,8 @@ headlines
 
 class LongTermMemoryCurator:
     """Rewrites the long-term memory bank from the interaction history of a period — nightly
-    once the system is settled, more often while it is new."""
+    once the system is settled, more often while it is new — and tidies the watch list and
+    adds to the procedures through the command block that follows the bank in its reply."""
 
     _curation_lock = threading.Lock()
 
@@ -87,16 +220,22 @@ class LongTermMemoryCurator:
                  floxy_db: FloxyDatabase = None,
                  memory_file_path: str = None,
                  llm=None,
-                 test_mode: bool = False):
+                 test_mode: bool = False,
+                 watchlist_dir: Path = None,
+                 procedures_dir: Path = None):
         """
         Initialize the memory curator.
 
         Args:
             floxy_db: FloxyDatabase instance (defaults to FloxyDatabase.get_instance())
-            memory_file_path: Path to memory.md file (defaults to AIServer/memory.md)
+            memory_file_path: Path to the memory bank (defaults to memory/bank.md)
             llm: LLM instance to use (defaults to creating ClaudeLLM)
             test_mode: If True, skip database initialization (use curate_memory_with_data only)
+            watchlist_dir: The watch list the curator reads and tidies (defaults to memory/watchlist)
+            procedures_dir: The procedures it indexes and adds to (defaults to memory/procedures)
         """
+        self.watchlist_dir = watchlist_dir
+        self.procedures_dir = procedures_dir
         if test_mode:
             self.floxy_db = None
         else:
@@ -215,6 +354,7 @@ class LongTermMemoryCurator:
             info("Rem: nothing happened in this period — memory bank unchanged.")
             return metadata
         curator.save_memory(new_memory, metadata)
+        metadata['command_results'] = curator.run_commands(metadata.get('commands', ''))
         curator.save_debug_log(new_memory, metadata)
         info(f"Rem: cycle complete — dreamt through {metadata['interaction_count']} interactions, "
              f"memory bank now {metadata['new_memory_size']} bytes.")
@@ -384,7 +524,10 @@ class LongTermMemoryCurator:
               f"(interfaces.voice.enabled={voice_enabled})")
         word_count = self.word_count(current_memory)
         info(f"Rem: current memory bank is {word_count} words (limit {MEMORY_WORD_LIMIT})")
-        full_prompt = PROMPT.replace("{INTERACTION_HISTORY}", interaction_history) \
+        full_prompt = PROMPT.replace("{WATCHLIST}", WatchList.render(self.watchlist_dir)) \
+            .replace("{PROCEDURES}", Procedures.render_index(self.procedures_dir)) \
+            .replace("{TODAY}", f"{datetime.now():%Y-%m-%d}") \
+            .replace("{INTERACTION_HISTORY}", interaction_history) \
             .replace("{CALENDAR}", calendar_data) \
             .replace("{CURRENT_MEMORY}", current_memory) \
             .replace("{MEMORY_SIZE}", self.memory_size_note(word_count)) \
@@ -403,6 +546,7 @@ class LongTermMemoryCurator:
         llm_duration = time.time() - start_time
         trace(f"Rem: woke after {llm_duration:.1f}s of dreaming")
 
+        response, commands = self._split_commands(response)
         new_memory = self._extract_memory_content(response)
         new_words = self.word_count(new_memory)
         info(f"Rem: the AI returned a {new_words}-word memory bank (was {word_count}, limit {MEMORY_WORD_LIMIT})"
@@ -415,10 +559,12 @@ class LongTermMemoryCurator:
             error(f"Rem: the dream was cut short — the AI hit its output limit after {len(new_memory)} chars. "
                   "Keeping the previous memory bank.")
             new_memory = current_memory
+            commands = ""
         elif not new_memory or len(new_memory) < len(current_memory) * 0.3:
             error(f"WARNING: AI returned suspiciously short memory ({len(new_memory)} chars)")
             error("Keeping previous memory state")
             new_memory = current_memory
+            commands = ""
 
         # Build metadata
         metadata = {
@@ -432,7 +578,8 @@ class LongTermMemoryCurator:
             'truncated': truncated,
             'timestamp': time.time(),
             'old_memory': current_memory,
-            'full_prompt': full_prompt
+            'full_prompt': full_prompt,
+            'commands': commands,
         }
 
         return new_memory, metadata
@@ -443,7 +590,7 @@ class LongTermMemoryCurator:
 
         The bank was loaded minutes ago (metadata['old_memory']); anything appended to the file
         since — a `remember` while the curator was thinking — is carried over onto the new bank
-        rather than lost. The read-merge-write happens under the memory.md lock so no append
+        rather than lost. The read-merge-write happens under the bank's lock so no append
         can slip in between.
 
         Args:
@@ -532,6 +679,11 @@ class LongTermMemoryCurator:
                     f.write("\n```\n\n")
                     f.write("---\n\n")
 
+                if metadata.get('command_results'):
+                    f.write("## Watch list and procedure commands\n\n")
+                    f.write("\n".join(f"- {line}" for line in metadata['command_results']))
+                    f.write("\n\n---\n\n")
+
                 if diff_text:
                     f.write("## Diff from Previous Memory\n\n")
                     f.write("```diff\n")
@@ -553,8 +705,138 @@ class LongTermMemoryCurator:
         return MemoryFile.read(self.memory_file_path)
 
     @staticmethod
+    def _split_commands(response: str) -> tuple[str, str]:
+        """The reply without its <commands> block, and the block's content ('' when there is
+        none). An unclosed block runs to the end of the reply."""
+        match = re.search(r'<commands>(.*?)(?:</commands>|\Z)', response, re.DOTALL)
+        if not match:
+            return response, ""
+        return response[:match.start()] + response[match.end():], match.group(1).strip()
+
+    def _think_whole(self, prompt: str, what: str) -> str:
+        """One LLM call whose reply must be complete: a reply cut off at the output cap raises."""
+        response = self.llm.think(system_message=prompt, user_message="Please do it now.", thinking=True)
+        if getattr(self.llm, 'last_stop_reason', None) == 'max_tokens':
+            raise RuntimeError(f"the AI's reply was cut off at its output limit while {what}")
+        return response
+
+    def propose_split(self, target: Path) -> dict:
+        """Split the current bank into the three parts, as a proposal under `target`, laid out
+        like `memory/` (bank.md, watchlist/, procedures/) so it can be read and edited by hand
+        before `apply_split` puts it in place. Nothing live is touched. Returns the counts."""
+        bank = self._load_memory()
+        if not bank.strip():
+            raise RuntimeError(f"there is no memory bank at {self.memory_file_path} to split")
+        today = f"{datetime.now():%Y-%m-%d}"
+        watchlist_dir, procedures_dir = target / "watchlist", target / "procedures"
+        info(f"Memory split: lifting the watch items and procedures out of a {self.word_count(bank)}-word bank...")
+        reply = self._think_whole(SPLIT_EXTRACT_PROMPT.replace("{TODAY}", today).replace("{BANK}", bank),
+                                  "extracting the watch items and procedures")
+        commands = self._split_commands(reply)[1]
+        results = self.run_commands(commands, watchlist_dir, procedures_dir, log_dir=target / "replaced")
+        info(f"Memory split: {len(WatchList.items(watchlist_dir))} watch item(s), "
+             f"{len(Procedures.names(procedures_dir))} procedure(s); rewriting the bank without them...")
+        procedures = "\n\n".join(Procedures.load(name, procedures_dir) for name in Procedures.names(procedures_dir))
+        reply = self._think_whole(SPLIT_BANK_PROMPT.replace("{TODAY}", today)
+                                  .replace("{WATCHLIST}", WatchList.render(watchlist_dir))
+                                  .replace("{PROCEDURES}", procedures or Procedures.EMPTY)
+                                  .replace("{BANK}", bank),
+                                  "rewriting the bank")
+        new_bank = self._extract_memory_content(reply)
+        if not new_bank:
+            raise RuntimeError("the AI returned an empty bank")
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "bank.md").write_text(new_bank.rstrip("\n") + "\n", encoding="utf-8")
+        (target / "commands.log").write_text("\n".join(results) + "\n", encoding="utf-8")
+        summary = {'target': str(target), 'old_words': self.word_count(bank), 'new_words': self.word_count(new_bank),
+                   'watch_items': len(WatchList.items(watchlist_dir)),
+                   'procedures': len(Procedures.names(procedures_dir)),
+                   'failed_commands': sum(r.startswith(('FAILED', 'SKIPPED')) for r in results)}
+        info(f"Memory split: proposal in {target} — bank {summary['old_words']} → {summary['new_words']} words, "
+             f"{summary['watch_items']} watch item(s), {summary['procedures']} procedure(s), "
+             f"{summary['failed_commands']} command(s) failed or skipped")
+        return summary
+
+    def apply_split(self, source: Path) -> dict:
+        """Put a proposal in place: the live memory is copied to log/memory/ first, then the
+        bank is replaced and the proposal's watch items and procedures are copied in; an item
+        or a procedure that already exists is left as it is."""
+        bank_file = source / "bank.md"
+        if not bank_file.is_file():
+            raise RuntimeError(f"{source} holds no bank.md — not a split proposal")
+        backup = MEMORY_LOG_DIR / f"before_split_{datetime.now():%Y%m%d_%H%M%S}"
+        if MEMORY_DIR.is_dir():
+            shutil.copytree(MEMORY_DIR, backup)
+            info(f"Memory split: the live memory is backed up in {backup}")
+        else:
+            info(f"Memory split: no {MEMORY_DIR} to back up")
+        MemoryFile.write(bank_file.read_text(encoding="utf-8"), self.memory_file_path)
+        copied, kept = {}, {}
+        stores = (("watchlist", self.watchlist_dir or WatchList.WATCHLIST_DIR),
+                  ("procedures", self.procedures_dir or Procedures.PROCEDURES_DIR))
+        for store, directory in stores:
+            copied[store], kept[store] = [], []
+            for file in sorted((source / store).glob("*.md")):
+                if (directory / file.name).exists():
+                    kept[store].append(file.stem)
+                    continue
+                directory.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(file, directory / file.name)
+                copied[store].append(file.stem)
+        already = [name for names in kept.values() for name in names]
+        info(f"Memory split applied from {source}: bank replaced, {len(copied['watchlist'])} watch item(s) and "
+             f"{len(copied['procedures'])} procedure(s) copied"
+             + (f", {len(already)} already existed and were kept: {', '.join(already)}" if already else ""))
+        return {'source': str(source), 'backup': str(backup), 'watch_items': copied['watchlist'],
+                'procedures': copied['procedures'], 'kept': already}
+
+    def run_commands(self, block: str, watchlist_dir: Path = None, procedures_dir: Path = None,
+                     log_dir: Path = None) -> list[str]:
+        """Run the curator's command block against the watch list and the procedures, one
+        command after the other; a line that is not one of CURATOR_COMMANDS is skipped.
+        Returns one line per command for the debug log: the command, and why it failed if it did.
+        The directories default to the curator's own; `propose_split` points them at its proposal."""
+        watchlist_dir = watchlist_dir or self.watchlist_dir
+        procedures_dir = procedures_dir or self.procedures_dir
+        if not block.strip():
+            trace("Rem: no watch list or procedure commands this run")
+            return []
+        parser = CommandParser(list(CURATOR_COMMANDS))
+        results = []
+        rest = block
+        while rest.strip():
+            rest = rest.lstrip("`-*• \t\r\n")
+            parsed, remainder = (None, None)
+            if parser.unterminated_command(rest):
+                parsed, remainder = parser.extract_command_and_params(rest)
+            if parsed is None:
+                line, _, rest = rest.partition("\n")
+                if line.strip("` "):
+                    info(f"Rem: skipped a line that is not a curator command: {line.strip()[:120]}")
+                    results.append(f"SKIPPED (not a curator command): {line.strip()[:200]}")
+                continue
+            (command, params), rest = parsed, remainder
+            shown = f"{command}({', '.join(p if len(p) <= 120 else p[:120] + '…' for p in params)})"
+            if command in WatchList.COMMANDS:
+                failure = WatchList.run(command, params, watchlist_dir, log_dir)
+            else:
+                failure = Procedures.run(command, params, procedures_dir, log_dir, allow_replace=False)
+            if failure:
+                error(f"Rem: {shown} — {failure}")
+                results.append(f"FAILED {shown} — {failure}")
+            else:
+                info(f"Rem: {shown}")
+                results.append(shown)
+        info(f"Rem: {len(results)} watch list / procedure command(s) handled, "
+             f"{sum(r.startswith('FAILED') for r in results)} failed")
+        return results
+
+    @staticmethod
     def _extract_memory_content(response: str) -> str:
         """Extract memory content from AI response, handling markdown code blocks."""
+        tagged = re.search(r'<memory>(.*?)(?:</memory>|\Z)', response, re.DOTALL)
+        if tagged:
+            return tagged.group(1).strip()
         # Try to extract from markdown code block
         match = re.search(r'```(?:markdown)?\s*(.*?)\s*```', response, re.DOTALL)
         if match:

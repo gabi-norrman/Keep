@@ -10,6 +10,8 @@ from datetime import datetime
 from .TimeOfDay import TimeOfDay
 from .sections.MusicZonesSectionGenerator import MusicZonesSectionGenerator
 from .sections.MemorySectionGenerator import MemorySectionGenerator
+from .sections.ProceduresSectionGenerator import ProceduresSectionGenerator
+from .sections.WatchListSectionGenerator import WatchListSectionGenerator
 from .sections.VaultSectionGenerator import VaultSectionGenerator
 from .sections.WeatherSectionGenerator import WeatherSectionGenerator
 from .sections.PrecipitationSectionGenerator import PrecipitationSectionGenerator
@@ -83,6 +85,8 @@ class PromptManager:
         # invalidates anything.
         self.sections = {
             'memory': MemorySectionGenerator(self),
+            'procedures': ProceduresSectionGenerator(self),
+            'watchlist': WatchListSectionGenerator(self),
             'vault': VaultSectionGenerator(self),
             'weather': WeatherSectionGenerator(self),
             'precipitation': PrecipitationSectionGenerator(self),

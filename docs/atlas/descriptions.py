@@ -98,7 +98,7 @@ MODULES = {
     'src/assistant/integration/integrations/home/IndigoIntegration.py': 'Indigo as the home automation backend: REST for commands, a state file for the snapshot, the event log as a feed.',
     'src/assistant/integration/integrations/photos/PhotosIntegration.py': 'Indexes the macOS Photos library with a vision LLM and adds one history row per asset, as a feed.',
     'src/assistant/prompt/sections/HomeSectionGenerator.py': 'Polls the active home backend and renders the lights, sensors, variables and actions for the prompt.',
-    'src/assistant/prompt/sections/MemorySectionGenerator.py': 'Keeps the prompt’s memory section in sync with memory.md, reloading as soon as the file changes.',
+    'src/assistant/prompt/sections/MemorySectionGenerator.py': 'Keeps the prompt’s memory section in sync with the memory bank, reloading as soon as the file changes.',
     'src/assistant/prompt/sections/VaultSectionGenerator.py': 'Lists the vault’s secrets as placeholders for the prompt: id, description and kind, never a value.',
     'src/interfaces/voice/ios/routes.py': 'The /stream_text endpoint: streams the reply text token by token so the iOS app can show it while it speaks.',
     'src/interfaces/voice/microphones/local_outposts/scribe_status.py': 'Whether ElevenLabs Scribe came up at boot, shared by the outpost manager and the wake-word gate.',

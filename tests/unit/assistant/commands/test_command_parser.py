@@ -789,6 +789,47 @@ class TestSplitParameters:
 
 
 @pytest.mark.unit
+class TestTripleQuotedArguments:
+    """A long multi-line argument (a procedure's text) travels in a triple-quoted block:
+    everything up to the closing triple quote is the value, whatever it contains."""
+
+    @pytest.fixture
+    def parser(self):
+        return CommandParser(["save_procedure", "watch", "remember"])
+
+    def test_parens_quotes_commas_and_list_markers_inside_do_not_end_the_command(self, parser):
+        body = ('1) open shop.example (the cart)\n'
+                '2) click "Pay", don\'t press Back)\n'
+                "`fetch('/pay?id=' + id).then(r => r.text())`")
+        content = f'save_procedure("shop-checkout", "paying at shop.example", """{body}""") Saved it.'
+        (name, params), remainder = parser.extract_command_and_params(content)
+        assert name == "save_procedure"
+        assert params == ["shop-checkout", "paying at shop.example", body]
+        assert remainder == " Saved it."
+
+    def test_the_newlines_wrapping_the_block_are_not_part_of_the_value(self, parser):
+        content = 'save_procedure("a", "b", """\nline one\nline two\n""")'
+        (_, params), _ = parser.extract_command_and_params(content)
+        assert params[2] == "line one\nline two"
+
+    @pytest.mark.parametrize("streaming", [True, False])
+    def test_an_unclosed_block_is_an_incomplete_command(self, parser, streaming):
+        content = 'save_procedure("a", "b", """step one) and then'
+        assert parser.extract_command_and_params(content, streaming=streaming) == (None, None)
+
+    def test_a_block_can_be_followed_by_another_argument(self, parser):
+        (_, params), _ = parser.extract_command_and_params('watch("""Parcel (big), fragile""", "ordered", 2026-03-12)')
+        assert params == ["Parcel (big), fragile", "ordered", "2026-03-12"]
+
+    def test_an_ordinary_empty_string_argument_still_works(self, parser):
+        (name, params), remainder = parser.extract_command_and_params('watch("Call the plumber", "", "")')
+        assert (name, params, remainder) == ("watch", ["Call the plumber", "", ""], "")
+
+    def test_split_parameters_reads_a_block_verbatim(self, parser):
+        assert parser.split_parameters('"a", """x, "y" (z)"""') == ["a", 'x, "y" (z)']
+
+
+@pytest.mark.unit
 class TestRunDispatcher:
     """Commands.run dispatches list[str] → handler signatures.
 

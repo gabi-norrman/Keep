@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Callable, Optional
 
+from .... import MemoryFile
 from ....llm import create_llm, parse_llm_config
 from ...Feed import FeedEntry
 from common.logging import info, error, trace, fine
@@ -371,7 +372,7 @@ class PhotoProcessor:
         """The indexing LLM, one for stills and videos alike: the `photo_indexing` tier, by
         default Gemini 3.8 Flash — cheap enough for a backlog, and the only backend with native
         video input. Built through create_llm() like every other backend: the analysis prompt
-        carries all of memory.md, and only the VaultLLM wrapper keeps its secrets at home."""
+        carries all of the memory bank, and only the VaultLLM wrapper keeps its secrets at home."""
         if self._llm is None:
             with self._llm_lock:
                 if self._llm is None:
@@ -1099,11 +1100,9 @@ class PhotoProcessor:
     @staticmethod
     def _read_memory() -> str:
         try:
-            if os.path.exists("memory.md"):
-                with open("memory.md", "r") as f:
-                    return f.read()
+            return MemoryFile.read()
         except Exception as e:
-            trace(f"Photos: could not read memory.md: {e}")
+            trace(f"Photos: could not read the memory bank: {e}")
         return ""
 
     @staticmethod

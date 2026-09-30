@@ -17,7 +17,7 @@ from assistant.integration.integrations.home import HomeAutomation as home
 from assistant.tools.WebAccess import WebAccess
 from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import Toolkits, ToolkitPreloader
-from assistant import MemoryFile
+from assistant import MemoryFile, Procedures, WatchList
 from common.logging import trace, info, note, error, fine
 from assistant.integration.integrations.MusicIntegration import MusicManager
 from assistant.integration.integrations.CalDAVIntegration import CalDAVIntegration
@@ -91,10 +91,12 @@ class Commands:
         "search_photos", "search_history", "show_history",
         "create_event", "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
         "vault_request", "config_set", "load_toolkit", "schedule_wakeup",
+        "save_watch", "delete_watch",
+        "load_procedure", "save_procedure", "delete_procedure",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
-    PURE_COMMANDS = frozenset({"load_toolkit"})
+    PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure"})
     AI_MESSAGE_SUFFIX = "[Sent with the help of AI 🤖]"
 
     # Looked up by the portable iCloud asset GUID; ZUUID is resolved here because
@@ -1450,6 +1452,32 @@ class Commands:
     def cmd_remember(self, parameter_string: str):
         MemoryFile.append(parameter_string)
 
+    # The watch list and the procedures: the argument handling lives with the stores
+    # (the memory curator's command block runs the same commands through them).
+    def cmd_save_watch(self, *args: str) -> str:
+        return WatchList.run("save_watch", list(args))
+
+    def cmd_delete_watch(self, *args: str) -> str:
+        return WatchList.run("delete_watch", list(args))
+
+    def cmd_load_procedure(self, *names: str):
+        self.background_command(self._run_load_procedure, list(names))
+
+    @staticmethod
+    def _run_load_procedure(*names: str) -> str:
+        """The named procedures, each under its header. Splatted like every list-parameter
+        background command (`function(*params)`)."""
+        names = [n for n in names if n and n.strip()]
+        if not names:
+            return "load_procedure failed: expected a procedure name. Available: " + (", ".join(Procedures.names()) or "none")
+        return "\n\n".join(Procedures.load(name) for name in names)
+
+    def cmd_save_procedure(self, *args: str) -> str:
+        return Procedures.run("save_procedure", list(args))
+
+    def cmd_delete_procedure(self, *args: str) -> str:
+        return Procedures.run("delete_procedure", list(args))
+
     def cmd_false_positive(self, parameter_string: str):
         info("We detected a false positive!")
 
@@ -1778,6 +1806,10 @@ class Commands:
             error(f"describe_{command} raised: {e}")
             return None
 
+    @staticmethod
+    def _first_argument(p: str) -> str:
+        return p.split(",", 1)[0].strip().strip("\"'`")
+
     def describe_weather(self, p):                return "Checking the weather"
     def describe_home_automation_logs(self, p):   return "Reading home automation logs"
     def describe_server_logs(self, p):            return "Reading server logs"
@@ -1896,6 +1928,11 @@ class Commands:
     def describe_enable_integration(self, p):  return f"Enabling {p.strip()}" if p.strip() else "Enabling an integration"
     def describe_disable_integration(self, p): return f"Disabling {p.strip()}" if p.strip() else "Disabling an integration"
     def describe_remember(self, p):               return f"Saving to memory: {p.strip()}" if p.strip() else "Saving to memory"
+    def describe_save_watch(self, p):             return f"Watching: {self._first_argument(p)}" if p.strip() else "Saving a watch item"
+    def describe_delete_watch(self, p):           return f"No longer watching: {self._first_argument(p)}" if p.strip() else "Deleting a watch item"
+    def describe_load_procedure(self, p):         return f"Loading the {self._first_argument(p)} procedure" if p.strip() else "Loading a procedure"
+    def describe_save_procedure(self, p):         return f"Saving the {self._first_argument(p)} procedure" if p.strip() else "Saving a procedure"
+    def describe_delete_procedure(self, p):       return f"Deleting the {self._first_argument(p)} procedure" if p.strip() else "Deleting a procedure"
     def describe_false_positive(self, p):         return None  # noisy / dev-only — suppress
     def describe_load_toolkit(self, p):
         names = [n.strip().strip("\"'`") for n in p.split(",") if n.strip()]

@@ -227,6 +227,14 @@ class CommandParser:
             if track_single and not in_double_quote and not in_single_quote and ch == '/' and self._is_regex_start(content, i):
                 i = self._skip_regex_literal(content, i)
                 continue
+            if not in_double_quote and not in_single_quote and content.startswith(self._BLOCK_QUOTE, i):
+                # A triple-quoted block is opaque up to its closing triple quote; unclosed,
+                # the command is not complete yet.
+                end = content.find(self._BLOCK_QUOTE, i + 3)
+                if end < 0:
+                    return -1
+                i = end + 3
+                continue
             if ch == '"' and not in_single_quote:
                 in_double_quote = not in_double_quote
             elif ch == "'" and track_single and not in_double_quote:
@@ -288,6 +296,10 @@ class CommandParser:
     # Mid-token occurrences are treated as literal characters to avoid breaking
     # natural-language parameters like remember(I'm tired).
     _QUOTE_CHARS = ('"', "'", "`")
+    # Python's triple quote, for a long multi-line argument (a procedure's text): everything
+    # up to the closing triple quote is the value, verbatim — quotes, commas and parentheses
+    # inside need no escaping.
+    _BLOCK_QUOTE = '"""'
 
     @classmethod
     def split_parameters(cls, raw: str, raw_param_command: bool = False,
@@ -325,7 +337,14 @@ class CommandParser:
                 break
 
             ch = raw[i]
-            if ch in cls._QUOTE_CHARS:
+            if raw.startswith(cls._BLOCK_QUOTE, i):
+                end = raw.find(cls._BLOCK_QUOTE, i + 3)
+                end = n if end < 0 else end
+                tokens.append(raw[i + 3:end].strip("\n"))
+                i = min(end + 3, n)
+                while i < n and raw[i] != ',':
+                    i += 1
+            elif ch in cls._QUOTE_CHARS:
                 quote = ch
                 i += 1
                 buf: list[str] = []
@@ -438,6 +457,14 @@ class CommandParser:
             ch = content[i]
             if track_single and not in_double_quote and not in_single_quote and ch == '/' and self._is_regex_start(content, i):
                 i = self._skip_regex_literal(content, i)
+                continue
+            if not in_double_quote and not in_single_quote and content.startswith(self._BLOCK_QUOTE, i):
+                # A triple-quoted block is opaque up to its closing triple quote; unclosed,
+                # the command is not complete yet.
+                end = content.find(self._BLOCK_QUOTE, i + 3)
+                if end < 0:
+                    return -1
+                i = end + 3
                 continue
             if ch == '"' and not in_single_quote:
                 in_double_quote = not in_double_quote

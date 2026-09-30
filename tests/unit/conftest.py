@@ -102,6 +102,17 @@ def isolated_vault_file(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="session")
+def isolated_memory_stores(tmp_path_factory):
+    """No unit test reads or writes the developer's memory/watchlist and memory/procedures (or
+    their log/memory trail): the stores' default directories are empty ones for the session.
+    A test of the stores passes or patches its own tmp_path."""
+    from assistant import Procedures, WatchList
+    root = tmp_path_factory.mktemp("memory")
+    WatchList.WATCHLIST_DIR, WatchList.LOG_DIR = root / "watchlist", root / "log" / "watchlist"
+    Procedures.PROCEDURES_DIR, Procedures.LOG_DIR = root / "procedures", root / "log" / "procedures"
+
+
+@pytest.fixture(autouse=True, scope="session")
 def isolated_database(tmp_path_factory):
     """No unit test opens the developer's live floxy.db: the conftest chdirs to AIServer/, so the
     cwd-relative default would be the real one, and anything reaching the singleton — a launcher

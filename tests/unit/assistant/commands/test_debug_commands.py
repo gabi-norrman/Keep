@@ -662,3 +662,70 @@ def test_toolkit_unknown_or_missing_name_shows_usage():
     for query in ("//toolkit", "//toolkit nope"):
         text = DebugCommands().handle(query)
         assert text.startswith("Usage: //toolkit <name>") and "email" in text
+
+
+# --- //memory_split ---------------------------------------------------------------------
+
+def test_memory_split_rejects_an_unknown_argument(monkeypatch, tmp_path):
+    monkeypatch.setattr(dc_mod, "MEMORY_LOG_DIR", tmp_path)
+    started = []
+    monkeypatch.setattr(dc_mod.threading, "Thread", lambda **kw: started.append(kw))
+    reply = DebugCommands().handle("//memory_split now")
+    assert "//memory_split apply" in reply
+    assert started == [] and list(tmp_path.iterdir()) == []
+
+
+def test_memory_split_apply_without_a_proposal_says_so(monkeypatch, tmp_path):
+    import assistant.agents.LongTermMemoryCurator as curator_mod
+    monkeypatch.setattr(dc_mod, "MEMORY_LOG_DIR", tmp_path)
+    (tmp_path / "split_20260301_120000").mkdir()   # an aborted proposal: no bank.md in it
+    created = []
+    monkeypatch.setattr(curator_mod, "LongTermMemoryCurator", lambda *a, **kw: created.append(1))
+    reply = DebugCommands().handle("//memory_split apply")
+    assert "no split proposal" in reply.lower()
+    assert created == []
+
+
+def test_memory_split_apply_takes_the_latest_proposal(monkeypatch, tmp_path):
+    import assistant.agents.LongTermMemoryCurator as curator_mod
+    monkeypatch.setattr(dc_mod, "MEMORY_LOG_DIR", tmp_path)
+    for name in ("split_20260301_120000", "split_20260302_090000"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "bank.md").write_text("# Bank\n")
+    applied = []
+
+    class FakeCurator:
+        def apply_split(self, source):
+            applied.append(source)
+            return {'watch_items': ["parcel", "dentist", "plumber"], 'procedures': ["shop-checkout"],
+                    'kept': ["school-portal-login"], 'backup': "somewhere"}
+
+    monkeypatch.setattr(curator_mod, "LongTermMemoryCurator", FakeCurator)
+    reply = DebugCommands().handle("//memory_split apply")
+    assert applied == [tmp_path / "split_20260302_090000"]
+    assert "split_20260302_090000" in reply and "3" in reply and "school-portal-login" in reply
+
+
+def test_memory_split_writes_its_proposal_in_the_background(monkeypatch, tmp_path):
+    import assistant.agents.LongTermMemoryCurator as curator_mod
+    monkeypatch.setattr(dc_mod, "MEMORY_LOG_DIR", tmp_path)
+    targets, threads = [], []
+
+    class FakeCurator:
+        def propose_split(self, target):
+            targets.append(target)
+
+    monkeypatch.setattr(curator_mod, "LongTermMemoryCurator", FakeCurator)
+    real_thread = dc_mod.threading.Thread
+
+    class JoinedThread(real_thread):
+        def start(self):
+            super().start()
+            threads.append(self)
+
+    monkeypatch.setattr(dc_mod.threading, "Thread", JoinedThread)
+    reply = DebugCommands().handle("//memory_split")
+    for t in threads:
+        t.join(timeout=5)
+    assert len(targets) == 1 and targets[0].parent == tmp_path and targets[0].name.startswith("split_")
+    assert str(targets[0]) in reply
