@@ -25,7 +25,8 @@ MEMORY_WORD_LIMIT = 4000
 # What the curator may do to the watch list and the procedures, in the command block after the
 # bank. It may add to a procedure but never replace or delete one: a procedure is rewritten
 # only by the assistant that has the working flow in front of it, or by the user.
-CURATOR_COMMANDS = WatchList.COMMANDS + ("save_procedure", "procedure_note")
+# Not `checked_watch`: only a real check may stamp an item as looked at.
+CURATOR_COMMANDS = ("save_watch", "delete_watch", "save_procedure", "procedure_note")
 
 PROMPT = """
 You are a long-term memory curator for a state of the art home automation AI system serving a family. Your role is to maintain a
@@ -108,8 +109,9 @@ The COMPLETE updated memory bank (markdown) between <memory> and </memory>, then
 line of its own.
 
 The commands:
-- `save_watch("name", \"\"\"note\"\"\", "due")` — a new item, or the new note of the item with that name; the
-  note in a triple-quoted block; `due` as YYYY-MM-DD, optional
+- `save_watch("name", \"\"\"note\"\"\", "due", "every")` — a new item, or the new note of the item with that name;
+  the note in a triple-quoted block; `due` as YYYY-MM-DD, optional; `every` how often the AI must check it ("1d",
+  "weekly"), optional — omitted, both are kept as they were. Never `checked_watch`: only a real check stamps it
 - `delete_watch("name", "outcome")` — the item is over
 - `save_procedure("name", "when to load it, one line", \"\"\"the full text\"\"\")` — a NEW procedure; the text in a
   triple-quoted block

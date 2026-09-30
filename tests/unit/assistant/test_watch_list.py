@@ -1,8 +1,9 @@
 """WatchList: one file per tracked item under a directory, answering to its name; the note is
 the current state, deleting removes the file, and every replaced or deleted version lands in
-the log directory."""
+the log directory. An item may carry a check cadence, and `checked` records the last look
+separately from `updated`."""
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -122,6 +123,54 @@ class TestLifecycle:
 
 
 @pytest.mark.unit
+class TestChecks:
+    """`updated` moves when the state changes, `checked` whenever someone looks."""
+
+    def test_a_cadence_is_kept_across_updates_and_a_dash_clears_it(self, wl, log):
+        WatchList.save("Tickets", "not on sale yet", None, wl, log, every="1d")
+        WatchList.save("Tickets", "presale announced", None, wl, log)
+        assert WatchList.get("Tickets", wl).every == "1d"
+        WatchList.save("Tickets", "on sale, bought", None, wl, log, every="-")
+        assert WatchList.get("Tickets", wl).every == ""
+
+    def test_an_item_without_a_cadence_has_none(self, wl, log):
+        WatchList.save("Dentist", "12:30", None, wl, log)
+        assert WatchList.get("Dentist", wl).every == ""
+
+    def test_saving_stamps_the_check_with_the_time_of_day(self, wl, log):
+        before = datetime.now().replace(second=0, microsecond=0)
+        item = WatchList.save("Tickets", "not yet", None, wl, log, every="6h")
+        stamped = datetime.strptime(WatchList.get("Tickets", wl).checked, "%Y-%m-%d %H:%M")
+        assert before <= stamped <= datetime.now()
+        assert item.checked == WatchList.get("Tickets", wl).checked
+
+    def test_a_check_moves_checked_but_not_the_note_or_updated(self, wl, log):
+        WatchList.save("Tickets", "not on sale yet", "2026-08-01", wl, log, every="1d")
+        backdate(wl, "tickets", "Updated", date.today() - timedelta(days=5))
+        backdate(wl, "tickets", "Checked", date.today() - timedelta(days=5))
+        checked = WatchList.check("tickets", wl)
+        item = WatchList.get("Tickets", wl)
+        assert checked.name == "tickets"
+        assert (item.note, item.due, item.every) == ("not on sale yet", "2026-08-01", "1d")
+        assert item.updated == (date.today() - timedelta(days=5)).isoformat()
+        assert item.checked.startswith(date.today().isoformat())
+
+    def test_a_check_leaves_no_copy_in_the_log(self, wl, log):
+        WatchList.save("Tickets", "not yet", None, wl, log, every="1d")
+        WatchList.check("Tickets", wl)
+        assert log_texts(log) == []
+
+    def test_checking_an_unknown_item_does_nothing(self, wl, log):
+        assert WatchList.check("plumber", wl) is None
+
+    def test_an_old_file_without_the_new_headers_still_reads(self, wl):
+        wl.mkdir()
+        (wl / "parcel.md").write_text("# parcel\nDue: -\nCreated: 2026-03-01\nUpdated: 2026-03-02\n\nordered\n")
+        item, = WatchList.items(wl)
+        assert (item.note, item.every, item.checked) == ("ordered", "", "")
+
+
+@pytest.mark.unit
 class TestStaleness:
     def item(self, due="", updated=TODAY):
         return WatchList.Item("parcel", "note", due, TODAY.isoformat(), updated.isoformat())
@@ -177,6 +226,13 @@ class TestRender:
         WatchList.delete("Parcel", "done", wl, log)
         assert WatchList.render(wl) == WatchList.EMPTY
 
+    def test_the_cadence_and_the_last_check_stand_side_by_side(self, wl, log):
+        WatchList.save("Tickets", "not yet", None, wl, log, every="1d")
+        WatchList.save("Dentist", "12:30", None, wl, log)
+        blocks = {b.splitlines()[0].split("`")[1]: b.splitlines()[0] for b in WatchList.render(wl).split("\n\n")}
+        assert "1d" in blocks["tickets"] and WatchList.get("Tickets", wl).checked in blocks["tickets"]
+        assert "every" not in blocks["dentist"]
+
 
 @pytest.mark.unit
 class TestVersion:
@@ -212,6 +268,22 @@ class TestRun:
         assert WatchList.run("save_watch", ["parcel", "at the depot", ""], wl, log) == ""
         item, = WatchList.items(wl)
         assert (item.note, item.due) == ("at the depot", "2026-03-12")
+
+    def test_save_watch_takes_the_cadence_as_its_fourth_argument(self, wl, log):
+        assert WatchList.run("save_watch", ["Tickets", "not yet", "", "1d"], wl, log) == ""
+        item, = WatchList.items(wl)
+        assert (item.due, item.every) == ("", "1d")
+        assert WatchList.run("save_watch", ["Tickets", "presale"], wl, log) == ""
+        assert WatchList.get("Tickets", wl).every == "1d"
+
+    def test_checked_watch_stamps_the_item_and_names_the_open_ones_when_unknown(self, wl, log):
+        WatchList.save("Tickets", "not yet", None, wl, log, every="1d")
+        backdate(wl, "tickets", "Checked", date.today() - timedelta(days=3))
+        assert WatchList.run("checked_watch", ["tickets"], wl, log) == ""
+        assert WatchList.get("Tickets", wl).checked.startswith(date.today().isoformat())
+        failure = WatchList.run("checked_watch", ["plumber"], wl, log)
+        assert "plumber" in failure and "tickets" in failure
+        assert WatchList.run("checked_watch", [], wl, log)
 
     def test_save_watch_without_a_name_or_a_note_is_refused(self, wl, log):
         assert WatchList.run("save_watch", [], wl, log)

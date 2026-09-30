@@ -131,12 +131,19 @@ reminder someone asked for, a task of yours for another day. Not an appointment 
 family's own to-dos and plans you merely heard about, nothing that ends today. The open items are listed under WATCH
 LIST below, each with its name.
 
-`save_watch(name: str, note: str, due: str)` — start watching something, or update the item with that name. `note` is
-its current state with every detail you will need; it REPLACES the old note, so write the whole state, not only what
-is new. `due` is the date it is due or expected, as YYYY-MM-DD; optional. Give the note as a triple-quoted block:
-`save_watch("sofa-delivery", """...""", "2026-11-08")`.
+`save_watch(name: str, note: str, due: str, every: str)` — start watching something, or update the item with that
+name. `note` is its current state with every detail you will need; it REPLACES the old note, so write the whole state,
+not only what is new. `due` is the date it is due or expected, as YYYY-MM-DD; optional. `every` is how often the item
+must be checked ("1d", "6h", "weekly"); optional — leave it out for an item that only waits for its due date. Give the
+note as a triple-quoted block: `save_watch("sofa-delivery", """...""", "2026-11-08")`,
+`save_watch("festival-tickets", """...""", "", "1d")`.
+`checked_watch(name: str)` — you checked the item and nothing changed. It only records the time of the check; the
+note stays as it is.
 `delete_watch(name: str)` — it is done, delivered, paid, cancelled or no longer relevant.
 
+Each item shows its cadence and when it was last checked. On every autonomous check, compare the two against the
+current time: check every item whose cadence has elapsed, then `checked_watch` it when nothing changed or `save_watch`
+it with the new state when something did.
 Delete an item as soon as it is settled.
 
 ### Procedures

@@ -38,6 +38,9 @@ class TestWatchCommands:
         assert not run(commands, 'save_watch("parcel-from-shop-example", "shipped, arrives (probably) Friday")')
         item, = WatchList.items()
         assert (item.note, item.due) == ("shipped, arrives (probably) Friday", "2026-03-12")
+        assert not run(commands, 'checked_watch("parcel-from-shop-example")')
+        item, = WatchList.items()
+        assert item.note == "shipped, arrives (probably) Friday"
         assert not run(commands, 'delete_watch("parcel-from-shop-example")')
         assert WatchList.items() == []
 
@@ -92,13 +95,14 @@ class TestProcedureCommands:
 
     def test_loading_runs_in_test_suite_mode_but_writing_does_not(self, commands):
         assert commands.is_pure("load_procedure")
-        assert not any(commands.is_pure(c) for c in ("save_procedure", "delete_procedure", "save_watch", "delete_watch"))
+        assert not any(commands.is_pure(c) for c in ("save_procedure", "delete_procedure", "save_watch", "checked_watch", "delete_watch"))
 
 
 @pytest.mark.unit
 class TestEcho:
     @pytest.mark.parametrize("command, params, needle", [
         ("save_watch", ["Parcel from shop.example", "order 4711", "2026-03-12"], "Parcel from shop.example"),
+        ("checked_watch", ["festival-tickets"], "festival-tickets"),
         ("delete_watch", ["dentist-charlotte", "visit done"], "dentist-charlotte"),
         ("load_procedure", ["shop-checkout"], "shop-checkout"),
         ("save_procedure", ["shop-checkout", "paying", "a long body, with commas"], "shop-checkout"),

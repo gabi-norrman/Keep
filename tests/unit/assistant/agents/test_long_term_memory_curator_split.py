@@ -116,6 +116,16 @@ class TestRunCommands:
         assert len(results) == 3
         assert all(r.startswith("SKIPPED") for r in results)
 
+    def test_the_curator_cannot_stamp_an_item_as_checked(self, tmp_path, dirs):
+        """Only a real check may move `checked`; the nightly rewrite never looked at anything."""
+        curator = make_curator(tmp_path, dirs)
+        WatchList.save("Tickets", "not on sale yet", None, dirs[0], tmp_path / "wlog", every="1d")
+        path = dirs[0] / "tickets.md"
+        path.write_text(path.read_text().replace(WatchList.get("Tickets", dirs[0]).checked, "2026-03-01 09:00"))
+        results = curator.run_commands('checked_watch("tickets")')
+        assert results == ['SKIPPED (not a curator command): checked_watch("tickets")']
+        assert WatchList.get("Tickets", dirs[0]).checked == "2026-03-01 09:00"
+
     def test_replacing_an_existing_procedure_is_refused_and_reported(self, tmp_path, dirs):
         curator = make_curator(tmp_path, dirs)
         Procedures.save("shop-checkout", "paying", "the original steps", dirs[1], tmp_path / "plog")

@@ -80,7 +80,7 @@ TOOLKITS: tuple[Toolkit, ...] = (
 
 # Documented in the prompt itself, outside any toolkit.
 CORE_COMMANDS = frozenset({"load_toolkit", "false_positive", "remember", "weather",
-                           "save_watch", "delete_watch",
+                           "save_watch", "checked_watch", "delete_watch",
                            "load_procedure", "save_procedure", "delete_procedure"})
 # Runnable but deliberately offered nowhere (Commands.py carries the todo asking whether to keep it).
 UNDOCUMENTED = frozenset({"sonos_enqueue_and_play"})

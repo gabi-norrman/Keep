@@ -1457,6 +1457,9 @@ class Commands:
     def cmd_save_watch(self, *args: str) -> str:
         return WatchList.run("save_watch", list(args))
 
+    def cmd_checked_watch(self, *args: str) -> str:
+        return WatchList.run("checked_watch", list(args))
+
     def cmd_delete_watch(self, *args: str) -> str:
         return WatchList.run("delete_watch", list(args))
 
@@ -1929,6 +1932,7 @@ class Commands:
     def describe_disable_integration(self, p): return f"Disabling {p.strip()}" if p.strip() else "Disabling an integration"
     def describe_remember(self, p):               return f"Saving to memory: {p.strip()}" if p.strip() else "Saving to memory"
     def describe_save_watch(self, p):             return f"Watching: {self._first_argument(p)}" if p.strip() else "Saving a watch item"
+    def describe_checked_watch(self, p):          return f"Checked: {self._first_argument(p)}" if p.strip() else "Marking a watch item checked"
     def describe_delete_watch(self, p):           return f"No longer watching: {self._first_argument(p)}" if p.strip() else "Deleting a watch item"
     def describe_load_procedure(self, p):         return f"Loading the {self._first_argument(p)} procedure" if p.strip() else "Loading a procedure"
     def describe_save_procedure(self, p):         return f"Saving the {self._first_argument(p)} procedure" if p.strip() else "Saving a procedure"

@@ -7,8 +7,15 @@ an item lives in one place instead of as a trail of remembered sentences. Deleti
 removes its file; every replaced or deleted version is copied to `log/memory/watchlist/`
 first, which is a debugging trail the LLM never reads.
 
-The `save_watch` and `delete_watch` commands and the memory curator's command block both go
-through `run`; the prompt's watch-list section renders `render`.
+An item may carry a check cadence (`every`: "1d", "6h", "weekly" — free text the LLM reads)
+and always carries when it was last looked at (`checked`, with the time of day): `updated`
+moves when the state changes, `checked` whenever someone looks. A check that finds nothing
+stamps `checked` with `checked_watch` and leaves the note alone, so the note never turns into
+a trail again. Whether a check is due is the LLM's arithmetic, not the code's: the prompt shows
+the cadence and the stamp side by side.
+
+The `save_watch`, `checked_watch` and `delete_watch` commands and the memory curator's command
+block all go through `run`; the prompt's watch-list section renders `render`.
 """
 import re
 import threading
@@ -22,7 +29,7 @@ from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
 
 WATCHLIST_DIR = MEMORY_DIR / "watchlist"
 LOG_DIR = MEMORY_LOG_DIR / "watchlist"
-COMMANDS = ("save_watch", "delete_watch")
+COMMANDS = ("save_watch", "checked_watch", "delete_watch")
 # An item nobody has touched this long, or whose due date passed this long ago, is marked
 # STALE in the prompt: the assistant and the curator then know which ones to look at.
 STALE_AFTER_DAYS = 14
@@ -39,10 +46,12 @@ class Item:
     due: str = ""
     created: str = ""
     updated: str = ""
+    every: str = ""
+    checked: str = ""
 
     def text(self, closing: str = "") -> str:
-        header = [f"# {self.name}", f"Due: {self.due or '-'}", f"Created: {self.created}",
-                  f"Updated: {self.updated}"]
+        header = [f"# {self.name}", f"Due: {self.due or '-'}", f"Every: {self.every or '-'}",
+                  f"Created: {self.created}", f"Updated: {self.updated}", f"Checked: {self.checked or '-'}"]
         return "\n".join(header) + (f"\n{closing}" if closing else "") + f"\n\n{self.note.strip()}\n"
 
 
@@ -62,14 +71,15 @@ def _parse(path: Path) -> Item | None:
     except OSError as e:
         trace(f"Watch list: cannot read {path.name}: {e}")
         return None
-    fields = {"due": "", "created": "", "updated": ""}
+    fields = {"due": "", "created": "", "updated": "", "every": "", "checked": ""}
     for line in header.splitlines():
         if ":" in line and not line.startswith("#"):
             key, value = line.split(":", 1)
             if key.lower() in fields:
                 fields[key.lower()] = value.strip()
-    if fields["due"] == "-":
-        fields["due"] = ""
+    for key in ("due", "every", "checked"):
+        if fields[key] == "-":
+            fields[key] = ""
     return Item(name=path.stem, note=note.strip(), **fields)
 
 
@@ -98,28 +108,59 @@ def _log_copy(item: Item, log_dir: Path, closing: str = ""):
     (log_dir / f"{item.name}.{stamp}.md").write_text(item.text(closing), encoding="utf-8")
 
 
-def save(name: str, note: str, due: str | None = None, directory: Path = None, log_dir: Path = None) -> Item | None:
+def _now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def _given(value: str | None) -> str | None:
+    """A header value as the caller meant it: None (or blank) keeps the old one, '-' clears it."""
+    return None if value is None or not value.strip() else value.strip()
+
+
+def save(name: str, note: str, due: str | None = None, directory: Path = None, log_dir: Path = None,
+         every: str | None = None) -> Item | None:
     """Start watching `name`, or replace the note of the item that already answers to it. The
-    due date is kept unless one is given ('-' clears it). None when the name has no letters or digits."""
+    due date and the check cadence are kept unless given ('-' clears either). Saving is a look
+    at the item, so it stamps `checked` too. None when the name has no letters or digits."""
     directory = directory or WATCHLIST_DIR
     if not slug(name):
         return None
     today = date.today().isoformat()
-    due = None if due is None or not due.strip() else due.strip()
+    due, every = _given(due), _given(every)
     with lock:
         item = get(name, directory)
         if item is None:
-            item = Item(slug(name), note.strip(), "" if due in (None, "-") else due, today, today)
+            item = Item(slug(name), note.strip(), "" if due in (None, "-") else due, today, today,
+                        "" if every in (None, "-") else every)
             directory.mkdir(parents=True, exist_ok=True)
-            info(f"Watch list: '{item.name}' added" + (f", due {item.due}" if item.due else ""))
+            info(f"Watch list: '{item.name}' added" + (f", due {item.due}" if item.due else "")
+                 + (f", checked every {item.every}" if item.every else ""))
         else:
             _log_copy(item, log_dir or LOG_DIR)
             item.note = note.strip()
             if due is not None:
                 item.due = "" if due == "-" else due
+            if every is not None:
+                item.every = "" if every == "-" else every
             item.updated = today
-            info(f"Watch list: '{item.name}' updated")
+            info(f"Watch list: '{item.name}' updated" + (f", checked every {item.every}" if item.every else ""))
+        item.checked = _now()
         _path(name, directory).write_text(item.text(), encoding="utf-8")
+    return item
+
+
+def check(name: str, directory: Path = None) -> Item | None:
+    """Record that the item was looked at just now and nothing changed: only `checked` moves,
+    the note and `updated` stay. None when there is no such item."""
+    directory = directory or WATCHLIST_DIR
+    with lock:
+        item = get(name, directory)
+        if item is None:
+            info(f"Watch list: no item '{slug(name) or name.strip()}' to mark checked")
+            return None
+        item.checked = _now()
+        _path(name, directory).write_text(item.text(), encoding="utf-8")
+    info(f"Watch list: '{item.name}' checked, nothing new" + (f" (every {item.every})" if item.every else ""))
     return item
 
 
@@ -169,6 +210,10 @@ def render(directory: Path = None, today: date = None) -> str:
     blocks = []
     for item in open_items:
         facts = ([f"due {item.due}"] if item.due else []) + [f"updated {item.updated}"]
+        if item.every:
+            facts.append(f"check every {item.every}")
+        if item.checked:
+            facts.append(f"last checked {item.checked}")
         if stale := staleness(item, today):
             facts.append(stale)
         blocks.append(f"`{item.name}` ({', '.join(facts)})" + (f"\n{item.note}" if item.note else ""))
@@ -192,9 +237,17 @@ def run(command: str, args: list[str], directory: Path = None, log_dir: Path = N
     args = [a.strip() for a in args]
     if command == "save_watch":
         if len(args) < 2 or not args[1]:
-            return "save_watch failed: expected 'name, note, due' parameters"
-        if save(args[0], args[1], args[2] if len(args) > 2 else None, directory, log_dir) is None:
+            return "save_watch failed: expected 'name, note, due, every' parameters"
+        if save(args[0], args[1], args[2] if len(args) > 2 else None, directory, log_dir,
+                every=args[3] if len(args) > 3 else None) is None:
             return "save_watch failed: the name must contain letters or digits"
+        return ""
+    if command == "checked_watch":
+        if not args or not args[0]:
+            return "checked_watch failed: expected the item's name"
+        if check(args[0], directory) is None:
+            open_names = ", ".join(item.name for item in items(directory)) or "none"
+            return f"checked_watch failed: no item named '{slug(args[0]) or args[0]}'. Open: {open_names}"
         return ""
     if command == "delete_watch":
         if not args or not args[0]:
