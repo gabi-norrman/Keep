@@ -60,6 +60,8 @@ DEVELOPER_RELEASE_KEY = "developer_release"
 RELEASE_BRANCH = "release"
 DEVELOPER_BRANCH = "master"
 NIGHTLY_OFF_MESSAGE = f"{NIGHTLY_RUNS_KEY} is off"
+NIGHTLY_STEPS = ("bugs", "tests", "health", "merge")   # what //nightly takes to run one step alone
+_nightly_lock = threading.Lock()   # the scheduled run and //nightly work in the same checkout
 
 
 class ClaudeUnavailableError(RuntimeError):
@@ -336,20 +338,35 @@ class CodeQualityMaintainer:
             return NIGHTLY_OFF_MESSAGE
         return None
 
-    def _execute_nightly_run(self):
-        reason = self.nightly_skip_reason()
+    def _execute_nightly_run(self, force=False, only=None):
+        """The whole night, or with `only` (one of NIGHTLY_STEPS) that step alone. `force` is
+        //nightly: it runs with `self_improvement.nightly_runs` off, never with the integration off."""
+        reason = self.unavailable_reason() if force else self.nightly_skip_reason()
         if reason:
             info(f"CodeQualityMaintainer: skipping nightly run — {reason}")
             return
-        note("CodeQualityMaintainer: starting nightly run...")
+        if not _nightly_lock.acquire(blocking=False):
+            info("CodeQualityMaintainer: a nightly run is already going, not starting another.")
+            return
+        try:
+            self._nightly_run(only)
+        finally:
+            _nightly_lock.release()
+
+    def _nightly_run(self, only):
+        note(f"CodeQualityMaintainer: starting nightly run{f' ({only} only)' if only else ''}...")
         self._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
-        steps = [("Auto-Merge Test PRs", self._step_auto_merge)]
-        if self._has_recent_commits():
-            steps = [("Bug Analysis", self._step_bug_analysis),
-                     ("Test Generation", self._step_generate_tests),
-                     ("Test Health", self._step_test_health)] + steps
+        steps = dict(zip(NIGHTLY_STEPS, [("Bug Analysis", self._step_bug_analysis),
+                                         ("Test Generation", self._step_generate_tests),
+                                         ("Test Health", self._step_test_health),
+                                         ("Auto-Merge Test PRs", self._step_auto_merge)]))
+        if only:
+            steps = [steps[only]]
+        elif self._has_recent_commits():
+            steps = list(steps.values())
         else:
             info("CodeQualityMaintainer: no recent commits, only the auto-merge runs tonight.")
+            steps = [steps["merge"]]
         sections = []
         for title, step in steps:
             try:

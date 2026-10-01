@@ -729,3 +729,52 @@ def test_memory_split_writes_its_proposal_in_the_background(monkeypatch, tmp_pat
         t.join(timeout=5)
     assert len(targets) == 1 and targets[0].parent == tmp_path and targets[0].name.startswith("split_")
     assert str(targets[0]) in reply
+
+
+# --- //nightly --------------------------------------------------------------------------
+
+def _nightly(monkeypatch, query, unavailable=None):
+    """Runs the query with the run itself recorded instead of executed; returns (reply, runs)."""
+    import assistant.agents.CodeQualityMaintainer as cqm
+    runs, threads = [], []
+    monkeypatch.setattr(cqm.CodeQualityMaintainer, "unavailable_reason", staticmethod(lambda: unavailable))
+    monkeypatch.setattr(cqm.CodeQualityMaintainer, "_execute_nightly_run", lambda self, **kw: runs.append(kw))
+    real_thread = dc_mod.threading.Thread
+
+    class JoinedThread(real_thread):
+        def start(self):
+            super().start()
+            threads.append(self)
+
+    monkeypatch.setattr(dc_mod.threading, "Thread", JoinedThread)
+    reply = DebugCommands().handle(query)
+    for t in threads:
+        t.join(timeout=5)
+    return reply, runs
+
+
+def test_nightly_runs_the_whole_night_even_with_the_schedule_off(monkeypatch):
+    _, runs = _nightly(monkeypatch, "//nightly")
+    assert runs == [{'force': True, 'only': None}]
+
+
+def test_nightly_runs_one_named_step(monkeypatch):
+    _, runs = _nightly(monkeypatch, "//nightly Health")
+    assert runs == [{'force': True, 'only': "health"}]
+
+
+def test_nightly_rejects_an_unknown_step(monkeypatch):
+    reply, runs = _nightly(monkeypatch, "//nightly everything")
+    assert runs == [] and "health" in reply
+
+
+def test_nightly_does_not_start_while_the_integration_is_off(monkeypatch):
+    reply, runs = _nightly(monkeypatch, "//nightly", unavailable="Self Improvement is disabled")
+    assert runs == [] and reply == "Self Improvement is disabled"
+
+
+def test_nightly_does_not_start_a_second_run(monkeypatch):
+    import assistant.agents.CodeQualityMaintainer as cqm
+    with cqm._nightly_lock:
+        reply, runs = _nightly(monkeypatch, "//nightly")
+    assert runs == [] and "already" in reply

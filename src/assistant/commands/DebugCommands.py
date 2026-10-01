@@ -16,6 +16,7 @@ A command returns a human-readable string that is relayed back as the reply.
     //feed <pause|resume> <all|name> - hold / carry on filling the history from a feed; bare //feed lists them
     //memory_curate <start> [end]    - curate the long-term memory over a span of days (YYYYMMDD, end inclusive), in 4-day chunks
     //memory_split [apply]           - propose the split of an old one-file bank into bank / watch list / procedures; apply the latest proposal
+    //nightly [bugs|tests|health|merge] - run the nightly code-quality run now, or one step of it
     //first_run [stage <name>|reset] - the first-run pipeline's state; force a stage or delete the state (FTUE testing)
     //toolkits      - the toolkits with their size and whether each is in the LLM's history window
     //toolkit <name> - the reference of one toolkit as the LLM receives it
@@ -390,6 +391,28 @@ class DebugCommands:
             LongTermMemoryCurator().propose_split(target)
         except Exception as e:
             error(f"//memory_split: the proposal failed: {e}")
+
+    # --- //nightly ------------------------------------------------------------------------
+
+    def cmd_NIGHTLY(self, args: str) -> str:
+        """//nightly [bugs|tests|health|merge]: run the nightly code-quality run now (bug analysis, test generation, test health, auto-merge), or one step alone — in the background, also with self_improvement.nightly_runs off; the report is emailed."""
+        from assistant.agents import CodeQualityMaintainer as cqm
+        only = args.strip().lower() or None
+        if only and only not in cqm.NIGHTLY_STEPS:
+            return f"Usage: //nightly (the whole run) or //nightly <{'|'.join(cqm.NIGHTLY_STEPS)}> (one step)"
+        reason = cqm.CodeQualityMaintainer.unavailable_reason()
+        if reason:
+            info(f"//nightly: not started — {reason}")
+            return reason
+        if cqm._nightly_lock.locked():
+            info("//nightly: not started, a nightly run is already going")
+            return "A nightly run is already going. Follow it in log/floxy.out."
+        info(f"//nightly: starting {only or 'the whole run'} in the background")
+        threading.Thread(target=cqm.CodeQualityMaintainer()._execute_nightly_run, name="NightlyDebugRun",
+                         kwargs={'force': True, 'only': only}, daemon=True).start()
+        return (f"Started {f'the {only} step' if only else 'the nightly run'} in the background. "
+                f"Each Claude Code step can take up to an hour; follow it in log/floxy.out "
+                f"(CodeQualityMaintainer). The report is emailed when it is done.")
 
     # --- //first_run ----------------------------------------------------------------------
 

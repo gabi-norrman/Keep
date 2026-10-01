@@ -869,6 +869,36 @@ class TestExecuteNightlyRun:
         self.health.assert_not_called()
         self.merge.assert_called_once()
 
+    @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=False)
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_a_single_step_runs_alone_whatever_the_commits(self, mock_sub, mock_commits, maintainer):
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis') as mock_bugs:
+            maintainer._execute_nightly_run(only="health")
+        self.health.assert_called_once()
+        mock_bugs.assert_not_called()
+        self.merge.assert_not_called()
+
+    @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_force_ignores_the_schedule_switch_but_not_the_integration(self, mock_sub, mock_commits, maintainer):
+        with patch.object(CodeQualityMaintainer, 'nightly_skip_reason', return_value=NIGHTLY_OFF_MESSAGE), \
+                patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value=""):
+            maintainer._execute_nightly_run(force=True)
+            assert self.merge.call_count == 1
+            with patch.object(CodeQualityMaintainer, 'unavailable_reason', return_value=DISABLED_MESSAGE):
+                maintainer._execute_nightly_run(force=True)
+            assert self.merge.call_count == 1
+
+    @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_a_second_run_does_not_start_while_one_is_going(self, mock_sub, mock_commits, maintainer):
+        from assistant.agents.CodeQualityMaintainer import _nightly_lock
+        with _nightly_lock:
+            maintainer._execute_nightly_run()
+        mock_sub.assert_not_called()
+        self.merge.assert_not_called()
+
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_pulls_before_checking_commits(self, mock_sub, mock_commits, maintainer):
