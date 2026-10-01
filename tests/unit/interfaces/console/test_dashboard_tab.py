@@ -9,7 +9,9 @@ CHART_X, CHART_Y, CHART_W, CHART_H = 2, 2, 5, 4
 
 
 def make_tab():
-    return DashboardTab.__new__(DashboardTab)   # no monitors: _draw_columns needs none
+    tab = DashboardTab.__new__(DashboardTab)   # no monitors: the drawing helpers need none
+    tab._cards = []
+    return tab
 
 
 def column(screen, x):
@@ -148,6 +150,19 @@ class TestFeedRow:
         assert row.fg == DashboardTab.COLOR_DIM
 
 
+FULL, LEFT, RIGHT, NOTCH = DashboardTab.METER_FULL, DashboardTab.METER_LEFT, DashboardTab.METER_RIGHT, DashboardTab.METER_MARKER
+
+
+def cells(screen, row: int, char: str):
+    """The cells of a panel row holding `char`."""
+    return [c for c in screen.next_frame[PANEL_Y - 1 + row] if c.char == char]
+
+
+def filled(screen, row: int, track: Color) -> int:
+    """How many rule cells of a row are fill rather than track."""
+    return sum(1 for c in cells(screen, row, FULL) if c.style.fg != track)
+
+
 @pytest.mark.unit
 class TestDrawFeedsPanel:
     def test_one_row_per_feed_with_name_symbol_bar_and_count(self):
@@ -156,18 +171,20 @@ class TestDrawFeedsPanel:
             "iCloud Photos": status("catching_up", progress=0.34, stored=1234, total=23356, remaining=22122),
             "Telegram": status("stopped", last_error="no session file"),
         })
-        assert " Feeds " in row_text(screen, 0)
-        assert row_text(screen, 1).startswith(f"│  iMessage {SYMBOL_RUNNING} █")
-        assert "▏ 23436 " in row_text(screen, 1)
-        assert row_text(screen, 2).startswith(f"│  Photos   {DashboardTab.SYMBOL_CATCHING_UP} █")
-        assert "▏ 1234 / 23356" in row_text(screen, 2)
-        assert row_text(screen, 3).startswith(f"│  Telegram {SYMBOL_FAILED}  ")
-        assert row_text(screen, 3).rstrip("│ ").endswith("▏ stopped")
+        assert row_text(screen, 0).strip() == "Feeds"
+        assert row_text(screen, 1).startswith(f"  iMessage {SYMBOL_RUNNING} {FULL}")
+        assert row_text(screen, 1).endswith(f"{FULL} 23436 items")
+        assert row_text(screen, 2).startswith(f"  Photos   {DashboardTab.SYMBOL_CATCHING_UP} {FULL}")
+        assert f"{FULL} 1234 / 23356" in row_text(screen, 2)
+        assert row_text(screen, 3).startswith(f"  Telegram {SYMBOL_FAILED} {FULL}")
+        assert row_text(screen, 3).endswith(f"{FULL} stopped")
 
     def test_the_bar_takes_every_cell_the_longest_text_leaves(self):
         screen = draw_feeds({"a": status(stored=5), "b": status(stored=1234567)})
-        assert row_text(screen, 2).endswith("▏ 1234567 items │")
-        assert row_text(screen, 1).index("▏") == row_text(screen, 2).index("▏"), "one text column for every row"
+        line = row_text(screen, 2)
+        assert line.endswith(f"{FULL} 1234567 items")
+        assert len(line) == PANEL_X + PANEL_W - 3, "the longest text ends one cell of air before the tile's edge"
+        assert row_text(screen, 1).rindex(FULL) == line.rindex(FULL), "one text column for every row"
 
     def test_the_count_is_drawn_in_the_row_colour_not_grey(self):
         screen = draw_feeds({"iMessage": status()})
@@ -177,14 +194,15 @@ class TestDrawFeedsPanel:
 
     def test_the_bar_fill_follows_the_progress(self):
         screen = draw_feeds({"a": status(), "b": status("catching_up", progress=0.5), "c": status("stopped")})
-        full = row_text(screen, 1).count("█")
-        half = row_text(screen, 2).count("█")
-        assert full > 0 and abs(half - full / 2) <= 1
-        assert "█" not in row_text(screen, 3)
+        full = filled(screen, 1, DashboardTab.COLOR_GREEN_DIM)
+        half = filled(screen, 2, DashboardTab.COLOR_YELLOW_DIM)
+        assert full == len(cells(screen, 1, FULL)) > 0
+        assert abs(half - full / 2) <= 1
+        assert filled(screen, 3, DashboardTab.COLOR_RED_DIM) == 0
 
     def test_an_indeterminate_feed_sweeps_a_notch_across_the_bar(self):
         feeds = {"Indigo": status("catching_up")}
-        positions = {row_text(draw_feeds(feeds, frame=f), 1).index("▌") for f in (0, 15, 30, 45)}
+        positions = {row_text(draw_feeds(feeds, frame=f), 1).index(NOTCH) for f in (0, 15, 30, 45)}
         assert len(positions) == 4, "the notch moves with the frame"
         bounce = DashboardTab.FEED_SWEEP_FRAMES
         assert row_text(draw_feeds(feeds, frame=10), 1) == row_text(draw_feeds(feeds, frame=bounce - 10), 1)
@@ -192,13 +210,132 @@ class TestDrawFeedsPanel:
     def test_a_narrow_panel_keeps_a_minimum_bar_and_cuts_the_text(self):
         screen = draw_feeds({"iMessage": status(stored=123456789)}, width=30)
         line = row_text(screen, 1)
-        assert line.count("█") == DashboardTab.FEED_MIN_BAR
-        assert line.endswith("... │") and len(line) == 30
+        assert line.count(FULL) == DashboardTab.FEED_MIN_BAR
+        assert line.endswith("...") and len(line) == PANEL_X + 30 - 3
 
     def test_more_feeds_than_rows_are_clipped_to_the_box(self):
         screen = draw_feeds({f"f{i}": status() for i in range(6)})
-        assert row_text(screen, 4).startswith(f"│  f3 {SYMBOL_RUNNING}")
-        assert row_text(screen, 5).startswith("╰")
+        assert row_text(screen, 4).startswith(f"  f3 {SYMBOL_RUNNING}")
+        assert row_text(screen, 5) == "", "the tile's closing row stays empty"
+
+
+# --- Meters, tiles and the grid ------------------------------------------------------------------
+
+from interfaces.console.tabs.DashboardTab import MeterRow
+
+METER_X, METER_Y = 3, 2
+
+
+def meter(length, fraction, **kwargs) -> str:
+    screen = TUIScreen(40, 4)
+    make_tab()._draw_meter(screen, METER_X, METER_Y, length, fraction, C, **kwargs)
+    return meter_cells(screen, length)[0]
+
+
+def meter_cells(screen, length):
+    row = screen.next_frame[METER_Y - 1][METER_X - 1:METER_X - 1 + length]
+    return "".join(c.char for c in row), [c.style.fg for c in row]
+
+
+def fill_mask(length, fraction, **kwargs):
+    """Per cell: 'F' a filled full cell, 'h' a half cell, '.' track."""
+    screen = TUIScreen(40, 4)
+    track = Color(1, 2, 3)
+    make_tab()._draw_meter(screen, METER_X, METER_Y, length, fraction, C, track=track, **kwargs)
+    chars, colours = meter_cells(screen, length)
+    return "".join("." if fg == track else ("F" if ch == FULL else "h") for ch, fg in zip(chars, colours))
+
+
+@pytest.mark.unit
+class TestDrawMeter:
+    def test_the_fill_is_the_fraction_of_the_track_and_the_rest_is_track(self):
+        assert fill_mask(10, 0.5) == "FFFFF....."
+        assert fill_mask(10, 1.0) == "F" * 10
+        assert fill_mask(10, 0.0) == "." * 10
+
+    def test_a_fill_ending_mid_cell_ends_on_a_left_half(self):
+        assert fill_mask(10, 0.45) == "FFFFh....."
+        assert meter(10, 0.45)[4] == LEFT
+
+    def test_anything_above_zero_shows_at_least_a_half_cell(self):
+        assert fill_mask(10, 0.001) == "h........."
+
+    def test_start_offsets_the_fill_and_a_mid_cell_start_is_a_right_half(self):
+        assert fill_mask(10, 0.3, start=0.5) == ".....FFF.."
+        assert fill_mask(10, 0.35, start=0.45) == "....hFFF.."
+        assert meter(10, 0.35, start=0.45)[4] == RIGHT
+
+    def test_a_fill_never_runs_past_the_end_of_the_track(self):
+        assert fill_mask(10, 0.9, start=0.8) == "........FF"
+
+    def test_the_fill_reaches_its_own_colour_on_its_last_cell(self):
+        screen = TUIScreen(40, 4)
+        make_tab()._draw_meter(screen, METER_X, METER_Y, 10, 0.5, C)
+        _, colours = meter_cells(screen, 10)
+        assert colours[4] == C and colours[0] != C
+
+    def test_the_marker_is_a_notch_at_its_share_of_the_track(self):
+        assert meter(10, 0.2, marker=0.7).index(NOTCH) == 7
+        assert meter(10, 0.2, marker=1.0).index(NOTCH) == 9, "a marker at full scale stays on the track"
+
+    def test_a_zero_length_meter_draws_nothing(self):
+        screen = TUIScreen(40, 4)
+        make_tab()._draw_meter(screen, METER_X, METER_Y, 0, 0.5, C)
+        assert all(c.char == " " for row in screen.next_frame for c in row)
+
+
+@pytest.mark.unit
+class TestDrawMeterRows:
+    ROWS = [MeterRow("Database", "0.3/1 GB", 0.3, C), MeterRow("Open FDs", "59/1024", 0.06, C, note="RMS")]
+
+    @staticmethod
+    def draw(width):
+        screen = TUIScreen(80, 6)
+        make_tab()._draw_meter_rows(screen, 1, 1, width, TestDrawMeterRows.ROWS)
+        return ["".join(c.char for c in screen.next_frame[r]).rstrip() for r in (1, 2)]
+
+    def test_the_meter_takes_the_cells_the_label_and_value_leave(self):
+        wide, wider = self.draw(40), self.draw(50)
+        assert wider[0].count(FULL) + wider[0].count(LEFT) == wide[0].count(FULL) + wide[0].count(LEFT) + 10
+        assert wide[0].index("0.3/1 GB") == wide[1].index("59/1024"), "one value column"
+        assert wide[1].endswith("RMS")
+
+    def test_too_narrow_for_a_meter_drops_it_and_keeps_label_and_value(self):
+        lines = self.draw(26)
+        assert FULL not in "".join(lines) and LEFT not in "".join(lines)
+        assert lines[0].split() == ["Database", "0.3/1", "GB"]
+
+
+@pytest.mark.unit
+class TestColumns:
+    @pytest.mark.parametrize("width", [120, 181, 182, 183])
+    @pytest.mark.parametrize("count", [3, 4])
+    def test_tiles_span_the_width_with_even_gaps_and_the_last_takes_the_remainder(self, width, count):
+        columns = DashboardTab._columns(TUIScreen(width, 10), count)
+        assert len(columns) == count
+        assert columns[0][0] == DashboardTab.LEFT
+        for (x, w), (next_x, _) in zip(columns, columns[1:]):
+            assert next_x - (x + w) == DashboardTab.GAP
+        assert len({w for _, w in columns[:-1]}) == 1
+        last_x, last_w = columns[-1]
+        assert last_x + last_w == width - DashboardTab.RIGHT_MARGIN, "the last tile ends at the right margin"
+        assert 0 <= last_w - columns[0][1] < count
+
+
+@pytest.mark.unit
+class TestIntegrationGrid:
+    def test_a_narrow_tile_is_one_column(self):
+        assert DashboardTab._integration_grid(7, DashboardTab.INTEGRATION_COLUMN_MIN - 1) == (1, 7)
+
+    def test_columns_fill_top_to_bottom_so_rows_round_up(self):
+        assert DashboardTab._integration_grid(19, 2 * DashboardTab.INTEGRATION_COLUMN_MIN) == (2, 10)
+        assert DashboardTab._integration_grid(20, 2 * DashboardTab.INTEGRATION_COLUMN_MIN) == (2, 10)
+
+    def test_a_very_wide_tile_stops_at_three_columns(self):
+        assert DashboardTab._integration_grid(9, 10 * DashboardTab.INTEGRATION_COLUMN_MIN) == (3, 3)
+
+    def test_no_integrations_is_no_rows(self):
+        assert DashboardTab._integration_grid(0, 40)[1] == 0
 
 
 @pytest.mark.unit
