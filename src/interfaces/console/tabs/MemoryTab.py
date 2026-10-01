@@ -1,13 +1,12 @@
 import re
-import os
 import difflib
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 from .MarkdownTabView import MarkdownTabView, MARKDOWN_COLORS, ADDED_TINT_COLORS, fit
 from .ScrollableTabView import COLOR_HINT
-from .TabView import CONTENT_TOP
-from assistant import FirstRun, MemoryFile, Procedures, WatchList
+from .TabView import SUB_CONTENT_TOP
+from assistant import FirstRun
 from common.logging import trace
 from common.vault.Redactor import Redactor
 from common.vault.Vault import Vault
@@ -26,14 +25,17 @@ FIRST_CURATION_NOTICE = ("Keep is building its memory for the first time. What y
 
 
 class MemoryTab(MarkdownTabView):
-    """Memory viewer tab showing the long-term memory — the bank, then the watch list and the
-    procedures under headings of their own — with diff highlighting and snapshot history browsing
-    (the snapshots are the bank's: what each curation made of it).
+    """Base of the Memory group's sub-tabs (`BankTab`, `ProceduresTab`, `WatchListTab`): one part of
+    the long-term memory as markdown, `_live_text` being the part. A tab with `HAS_HISTORY` also
+    browses the snapshots in `log_dir` with diff highlighting (the bank's: what each curation
+    made of it).
     Every vaulted value is masked the way the Vault tab lists it (`•••• 1234`, `a•••@example.com`)
     as the text is loaded — before it is wrapped or diffed — so the tab never shows one in the
     clear; the Vault tab reveals on request. Outside a diff the masks are marked in bold orange.
     While the first-run pipeline curates the first bank (`FirstRun.curation_progress`) a two-row
     orange heads-up band sits above the text: what it shows is a work in progress, not a verdict."""
+
+    HAS_HISTORY = False
 
     def __init__(self, redactor: Optional[Redactor] = None):
         super().__init__()
@@ -42,7 +44,6 @@ class MemoryTab(MarkdownTabView):
         self._line_types: List[str] = []  # 'normal', 'added', 'removed' - parallel to memory_lines
         self._inline_highlights: List[Optional[List[Tuple[int, int]]]] = []  # char spans to highlight
         self.last_memory_hash = 0
-        self.memory_file_path = MemoryFile.MEMORY_FILE
         self.log_dir = Path("log/memory")
 
         # History browsing state
@@ -67,7 +68,7 @@ class MemoryTab(MarkdownTabView):
         """Draw the memory viewer"""
         self._read_memory_lines()
 
-        start_y = CONTENT_TOP
+        start_y = SUB_CONTENT_TOP
         curating = FirstRun.curation_progress() is not None
         if curating:
             self._draw_first_curation_notice(screen, start_y)
@@ -174,13 +175,16 @@ class MemoryTab(MarkdownTabView):
         if has_scrollbar:
             self.draw_scrollbar(screen, screen.width - 1, content_start_y,
                                 total_lines, display_height)
-        self.draw_bottom_bar(screen, f" {self.wrap_hint}  ←→ history  ↑↓ scroll  PgUp/PgDn page ",
+        history_hint = "←→ history  " if self.HAS_HISTORY else ""
+        self.draw_bottom_bar(screen, f" {self.wrap_hint}  {history_hint}↑↓ scroll  PgUp/PgDn page ",
                              total_lines, display_height)
 
     def handle_input(self, key: str) -> bool:
         """Handle scrolling and history navigation input"""
         if self.handle_scroll_input(key, self.scroll_total(len(self.memory_lines))):
             return True
+        if not self.HAS_HISTORY:
+            return False
         if key == 'left':
             self._navigate_history(-1)
             return True
@@ -252,14 +256,9 @@ class MemoryTab(MarkdownTabView):
         self._read_live_memory()
 
     def _read_live_memory(self):
-        """Read memory lines from the bank, followed by the watch list and the procedures"""
+        """Read memory lines from the tab's part of the memory"""
         try:
-            if os.path.exists(self.memory_file_path):
-                with open(self.memory_file_path, 'r', encoding='utf-8') as f:
-                    memory_text = f.read()
-            else:
-                memory_text = f"No memory bank found at {self.memory_file_path}\n"
-            memory_text = memory_text.rstrip("\n") + "\n" + self._watchlist_and_procedures()
+            memory_text = self._live_text()
             memory_hash = self._content_hash(memory_text)
             if memory_hash != self.last_memory_hash:
                 self.memory_lines = self.redactor.mask(memory_text).splitlines(keepends=True)
@@ -267,25 +266,9 @@ class MemoryTab(MarkdownTabView):
         except Exception as e:
             self.memory_lines = [f"Error reading memory: {str(e)}"]
 
-    @staticmethod
-    def _watchlist_and_procedures() -> str:
-        """The two other parts of the memory as the tab shows them below the bank: the open
-        watch items as the prompt lists them, and every procedure in full."""
-        parts = ["", "---", "", "# Watch list", "", WatchList.render()]
-        parts += ["", "---", "", "# Procedures", ""]
-        names = Procedures.names()
-        if not names:
-            parts.append(Procedures.EMPTY)
-        for name in names:
-            text = (Procedures.read(name) or "").strip()
-            # The tab's "## name" replaces the procedure's own "# name"; every heading in its
-            # body sits below that. The curator's "## Notes" is shown lower-case, like the
-            # procedure names around it; the file keeps its spelling.
-            body = text.removeprefix(f"# {name}\n").removeprefix("# ")
-            body = re.sub(r"(?m)^(#+)(?= )", lambda m: "#" * max(len(m.group(1)) + 1, 3), body)
-            body = re.sub(rf"(?m)^#{re.escape(Procedures.NOTES_HEADING)}$", f"#{Procedures.NOTES_HEADING.lower()}", body)
-            parts += [f"## {name}", "", body.strip(), ""]
-        return "\n".join(parts) + "\n"
+    def _live_text(self) -> str:
+        """The tab's part of the memory as it is now, unmasked."""
+        raise NotImplementedError
 
     def _read_snapshot_memory(self):
         """Read memory from a historical snapshot with diff annotations"""

@@ -11,7 +11,9 @@ from interfaces.console.tabs.DashboardTab import DashboardTab
 from interfaces.console.tabs.LogTab import LogTab
 from interfaces.console.tabs.PromptTab import PromptTab
 from interfaces.console.tabs.VoiceTab import VoiceTab
-from interfaces.console.tabs.MemoryTab import MemoryTab
+from interfaces.console.tabs.BankTab import BankTab
+from interfaces.console.tabs.ProceduresTab import ProceduresTab
+from interfaces.console.tabs.WatchListTab import WatchListTab
 from interfaces.console.tabs.VaultTab import VaultTab
 from interfaces.console.tabs.CrystalTab import CrystalTab
 from interfaces.console.tabs.iCloudTab import iCloudTab
@@ -105,7 +107,11 @@ class TUIFloxyConsole(AssistantObserver):
         self.navigator = TabNavigator([
             HomeTab(self, chat_pane if chat_pane is not None else ChatPane(), self.intro),
             DashboardTab(self),
-            MemoryTab(),
+            TabGroup("Memory", [
+                BankTab(),
+                ProceduresTab(),
+                WatchListTab(),
+            ]),
             VaultTab(),
             TabGroup("Integrations", [
                 iCloudTab(),
