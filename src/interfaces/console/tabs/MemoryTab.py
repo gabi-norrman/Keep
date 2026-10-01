@@ -278,8 +278,11 @@ class MemoryTab(MarkdownTabView):
             parts.append(Procedures.EMPTY)
         for name in names:
             text = (Procedures.read(name) or "").strip()
-            # A procedure's own "# Title" sits one level below the tab's heading.
-            parts += [f"## {name}", "", text.replace("\n# ", "\n### ").removeprefix("# ").strip(), ""]
+            # The tab's "## name" replaces the procedure's own "# name"; every heading in its
+            # body ("## Notes" included) sits below that.
+            body = text.removeprefix(f"# {name}\n").removeprefix("# ")
+            body = re.sub(r"(?m)^(#+)(?= )", lambda m: "#" * max(len(m.group(1)) + 1, 3), body)
+            parts += [f"## {name}", "", body.strip(), ""]
         return "\n".join(parts) + "\n"
 
     def _read_snapshot_memory(self):
