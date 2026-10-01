@@ -579,6 +579,19 @@ def test_select_voice_builds_one_synth_per_language_via_factory(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("server_sound", [True, False])
+def test_select_voice_allows_the_night_voice_only_on_the_house_speakers(monkeypatch, server_sound):
+    """A reply the client plays itself (the phone apps) wakes nobody, so only a
+    server_sound request may whisper."""
+    monkeypatch.setattr('assistant.DialogManager.CachedLLM', FakeAI)
+    monkeypatch.setattr('assistant.llm.CachedLLM.CachedLLM', FakeAI)
+
+    dm = DialogManager(web_request_handler=Mock(), test_suite_mode=True, voice_factory=lambda lang: Mock())
+    dm.select_voice(Mock(lang="en-US", server_sound=server_sound))
+    dm.voice.set_whisper_allowed.assert_called_once_with(server_sound)
+
+
+@pytest.mark.unit
 def test_smart_llm_constructed_with_prompt_cache_enabled(monkeypatch):
     """The smart LLM must be created with prompt_cache=True in production AND
     in test_suite_mode. Pins 1671e1cd: this was previously gated on

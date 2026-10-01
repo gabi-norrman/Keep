@@ -175,7 +175,10 @@ class DialogManager:
             info(f"No voice factory — request for lang={ctx.lang} runs text-only.")
             return
         self.voice.set_request_language(ctx.lang)
-        info(f"Voice for lang={ctx.lang}: {type(self.voice).__name__}")
+        # The night voice is for the house speakers; a client playing the reply itself (the apps) never whispers.
+        self.voice.set_whisper_allowed(ctx.server_sound)
+        info(f"Voice for lang={ctx.lang}: {type(self.voice).__name__}, "
+             f"night voice {'allowed' if ctx.server_sound else 'off (the client plays the reply)'}")
 
     # Per-request reply-language directive, written in the target language. Folded onto the
     # end of the request (see stream_llm_response / _with_trailing_directives) so it overrides

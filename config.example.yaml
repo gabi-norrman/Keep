@@ -348,7 +348,7 @@ tts:
   # elevenlabs:
   #   model: eleven_v4_turbo            # v3/v4 models stream over the text-to-dialogue socket; eleven_flash_v2_5 and older over stream-input
   #   voice: QtY3JBOUKEB5xzrRfOKc         # daytime voice
-  #   night_voice: geVuXdUpU0lgUukWJCUE   # the whispering voice of night, morning and late evening
+  #   night_voice: geVuXdUpU0lgUukWJCUE   # the whispering voice of night, morning and late evening (house speakers only; the apps keep the daytime voice)
   fish:
     model: s2.1-pro-free # free through 2026-08-31; also: s2.1-pro, s2-pro, s1
     reference_id: YOUR_FISH_AUDIO_VOICE_REFERENCE_ID  # voice id from the fish.audio voice library

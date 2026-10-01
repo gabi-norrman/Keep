@@ -67,11 +67,10 @@ class ElevenLabsVoiceSynthesizer(WebSocketVoiceSynthesizer, Integration):
     def uses_dialogue_socket(self) -> bool:
         return self.model_id.startswith(self.DIALOGUE_MODEL_PREFIXES)
 
-    @staticmethod
-    def voice_id() -> str:
-        if TimeOfDay.get_current() == TimeOfDay.DAY:
+    def voice_id(self) -> str:
+        if not self.whisper_allowed or TimeOfDay.get_current() == TimeOfDay.DAY:
             return WebSocketVoiceSynthesizer.configured_voice("elevenlabs", "QtY3JBOUKEB5xzrRfOKc")  # Maisie, normal speech
-        # Night, morning and late evening we whisper
+        # Night, morning and late evening we whisper on the house speakers
         return WebSocketVoiceSynthesizer.configured_voice("elevenlabs", "geVuXdUpU0lgUukWJCUE", key="night_voice")  # Shannon, ASMR American whisper
 
     def _get_ws_url(self) -> str:

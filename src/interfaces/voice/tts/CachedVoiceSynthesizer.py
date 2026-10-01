@@ -36,6 +36,10 @@ class CachedVoiceSynthesizer(VoiceSynthesizer):
         super().set_request_language(lang)
         self.impl.set_request_language(lang)
 
+    def set_whisper_allowed(self, allowed: bool):
+        super().set_whisper_allowed(allowed)
+        self.impl.set_whisper_allowed(allowed)
+
     def _missing_credentials(self) -> list[str]:
         """The wrapped engine's unset config keys (an api key, a service account); empty
         for a local engine or a synthesizer that is not an Integration."""

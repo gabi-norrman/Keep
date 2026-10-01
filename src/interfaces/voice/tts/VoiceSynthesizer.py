@@ -31,6 +31,9 @@ class VoiceSynthesizer(ABC):
         self.text_queue = queue.Queue()
         # Per-request BCP-47 locale (e.g. 'sv-SE'); None falls back to global config.
         self.request_language: Optional[str] = None
+        # Whether this request's reply may use the engine's whispering night voice: only a
+        # reply played on the house speakers wakes anyone, a phone gets the normal voice.
+        self.whisper_allowed = True
 
     def name_replacements(self) -> list[tuple[str, str]]:
         """(name, replacement) pairs, lowercase names. `tts.names` lists names that only get
@@ -64,6 +67,10 @@ class VoiceSynthesizer(ABC):
         language to the TTS backend should read it via effective_language()
         so the spoken locale tracks the request, not just the global config."""
         self.request_language = lang
+
+    def set_whisper_allowed(self, allowed: bool):
+        """Allow or forbid the night voice for the current request (see whisper_allowed)."""
+        self.whisper_allowed = allowed
 
     @abstractmethod
     def start(self, llm_text_stream: Iterator[str]) -> Iterator[bytes]:

@@ -47,6 +47,15 @@ class TestVoiceChoice:
             mock_tod.DAY = TimeOfDay.DAY
             assert synthesizer.voice_id() == "geVuXdUpU0lgUukWJCUE"  # Shannon
 
+    def test_voice_id_night_keeps_the_day_voice_when_whisper_is_not_allowed(self, synthesizer):
+        from assistant.prompt.TimeOfDay import TimeOfDay
+        with patch(f'{MODULE}.TimeOfDay') as mock_tod:
+            mock_tod.get_current.return_value = TimeOfDay.NIGHT
+            mock_tod.DAY = TimeOfDay.DAY
+            night = synthesizer.voice_id()
+            synthesizer.set_whisper_allowed(False)
+            assert synthesizer.voice_id() != night
+
 
 class TestModelChoice:
     def test_model_is_the_tts_elevenlabs_model_config_key(self):
