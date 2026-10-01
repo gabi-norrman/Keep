@@ -1221,6 +1221,17 @@ class TestScribeTranscriptGate:
         outpost._on_scribe_transcript("turn on the lights", 0.9, "en", 0.0)
         assert client.send_query.call_args.kwargs["verified_phrase"] == ""
 
+    def test_only_a_verify_vote_tells_the_server_the_wake_word_was_confirmed(self):
+        # The server lets a confirmation outweigh another mic's veto, so a follow-up vote
+        # (no wake word was verified) must never claim one.
+        outpost, client = make_outpost(awaiting_wakeword=False, languages=("en-US",))
+        outpost._on_scribe_transcript("Michelle, turn on the lights", 0.9, "en", 0.0,
+                                      verify_wake_word=True, whisper_query="turn on the lights")
+        assert client.send_query.call_args.kwargs["wake_word_confirmed"] is True
+        client.send_query.reset_mock()
+        outpost._on_scribe_transcript("turn on the lights", 0.9, "en", 0.0)
+        assert client.send_query.call_args.kwargs["wake_word_confirmed"] is False
+
     def test_verify_empty_transcript_vetoes(self):
         # An empty Scribe result means it ran and heard no speech (a network error never
         # reaches the callback) — that refutes Whisper's wake word as strongly as a missing
@@ -1664,6 +1675,17 @@ class TestStreamUrl:
                           verified_phrase="turn on the lights")
         assert len(got) == 1
         assert parse_qs(urlparse(got[0]).query)["verified_phrase"] == ["turn on the lights"]
+
+    def test_wake_word_confirmed_is_the_stream_param_the_server_reads(self):
+        # Contract with MicrophoneRoutes.accept_transcription: wake_word_confirmed=1 on /stream.
+        from urllib.parse import parse_qs, urlparse
+        client = OutpostStreamClient(8888)
+        confirmed = client.build_stream_url("turn the lights on", "en-US", engine="scribe",
+                                            verified_phrase="turn on the lights",
+                                            wake_word_confirmed=True)
+        plain = client.build_stream_url("turn the lights on", "en-US", engine="scribe")
+        assert parse_qs(urlparse(confirmed).query)["wake_word_confirmed"] == ["1"]
+        assert "wake_word_confirmed" not in parse_qs(urlparse(plain).query)
 
 @pytest.mark.unit
 class TestSpeakerIdentification:

@@ -425,3 +425,62 @@ class TestStaleScribeVoteDrop:
 
         assert reason is None
         assert not analyzer.scribe_has_settled(analyzer.utterance_generation)
+
+
+@pytest.mark.unit
+class TestScribeConfirmationOutweighsVeto:
+    """Several mics hear one utterance and each runs its own Scribe verify. Scribe can garble
+    the wake word on one mic while hearing it on another, so a veto is ignored once another
+    mic's Scribe has confirmed the wake word for the same utterance."""
+
+    WHISPER = "defrost the car"
+
+    def _fire(self, deps):
+        assert deps.speech_analyzer.is_best_transcription(self.WHISPER, False, 0.5, "hall", "whisper")
+        h = _handler(self.WHISPER)
+        deps.running.put(h)
+        return h
+
+    def _scribe_vote(self, routes, confirmed=True, verified_phrase=WHISPER):
+        args = {"query": "would approach the car", "confidence": "0.48", "mic": "hall",
+                "engine": "scribe", "verified_phrase": verified_phrase}
+        if confirmed:
+            args["wake_word_confirmed"] = "1"
+        return routes.accept_transcription(_req(args), RequestContext())
+
+    async def _veto(self, app):
+        return await app.test_client().get('/false_positive?query=defrost%20the%20car&mic=kitchen')
+
+    @pytest.mark.asyncio
+    async def test_veto_after_another_mics_confirmation_does_not_kill(self, app, deps):
+        h = self._fire(deps)
+        self._scribe_vote(app.mic_routes)
+        assert (await self._veto(app)).status_code == 204
+        h.kill.assert_not_called()
+        h.dialog_manager.command_processor.commands.cmd_false_positive.assert_not_called()
+        assert deps.speech_analyzer.scribe_has_settled(deps.speech_analyzer.utterance_generation)
+
+    @pytest.mark.asyncio
+    async def test_follow_up_scribe_vote_is_not_a_confirmation(self, app, deps):
+        h = self._fire(deps)
+        self._scribe_vote(app.mic_routes, confirmed=False)
+        await self._veto(app)
+        h.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_confirmation_does_not_carry_into_the_next_utterance(self, app, deps):
+        self._fire(deps)
+        self._scribe_vote(app.mic_routes)
+        deps.speech_analyzer.clean()
+        h = self._fire(deps)
+        await self._veto(app)
+        h.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stale_confirmation_for_a_previous_utterance_is_not_recorded(self, app, deps):
+        assert deps.speech_analyzer.is_best_transcription("open the garage", False, 0.5, "hall", "whisper")
+        deps.speech_analyzer.clean()
+        h = self._fire(deps)
+        self._scribe_vote(app.mic_routes, verified_phrase="open the garage")
+        await self._veto(app)
+        h.kill.assert_called_once()

@@ -1612,6 +1612,9 @@ class LocalOutpost:
         # identification — Whisper's send already populated the server's identity history.
         # verified_phrase lets the server settle the wake-word verdict gate for the utterance
         # this vote actually belongs to (whisper_query is the exact phrase the server ran).
+        # A verify job that got this far heard the wake word (anything else vetoed above), so
+        # its vote also tells the server the fire is confirmed — see /false_positive.
         self._client.send_query(query, lang, calibrated, self.label, wake_word=False,
                                 audio=None, stt_ms=stt_ms, engine=ENGINE_SCRIBE,
-                                verified_phrase=whisper_query or "")
+                                verified_phrase=whisper_query or "",
+                                wake_word_confirmed=verify_wake_word)

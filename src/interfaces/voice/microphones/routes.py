@@ -201,6 +201,12 @@ class MicrophoneRoutes:
             gen = analyzer.mark_scribe_settled(scribe_correlator or query)
             if gen is not None:
                 trace(f"Scribe vote landed for utterance generation {gen}: '{query}'")
+                # A vote from a wake-word VERIFY job means that mic's Scribe heard the wake
+                # word; remember it so another mic's veto on this utterance can't kill it.
+                if (req_data.args.get('wake_word_confirmed') in ('1', 'true')
+                        and analyzer.mark_wake_word_confirmed(scribe_correlator or query, mic)):
+                    info(f"Scribe on '{mic or 'outpost'}' confirmed the wake word for utterance "
+                         f"generation {gen}.")
             elif scribe_correlator:
                 # The outpost named the exact Whisper phrase this Scribe job verified, and
                 # it is NOT in the current utterance window — the vote belongs to a
@@ -318,6 +324,15 @@ class MicrophoneRoutes:
                 # doesn't match (another mic's transcript won the vote) from waiting out the cap;
                 # the phrase match inside mark_scribe_settled keeps a STALE veto (previous
                 # utterance) from settling a new utterance's gate.
+                # Scribe garbles the wake word on one mic while hearing it on another; a
+                # confirmation already recorded for this utterance outweighs the veto. Only
+                # that order is covered — a veto that lands first has already killed.
+                confirmed_by = deps.speech_analyzer.wake_word_confirmed_by(query)
+                if confirmed_by is not None:
+                    note(f"Ignoring Scribe veto from '{mic or 'outpost'}' for '{query}': Scribe on "
+                         f"'{confirmed_by or 'outpost'}' already confirmed the wake word for this utterance.")
+                    deps.speech_analyzer.mark_scribe_settled(query)
+                    return "", 204
                 killed = self.kill_running_request_matching(query, reason=f"Scribe veto from {mic or 'outpost'}")
                 deps.speech_analyzer.mark_scribe_settled(query)
                 if not killed:

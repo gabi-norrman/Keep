@@ -33,7 +33,7 @@ class OutpostStreamClient:
         self._base = f"http://{host}:{port}"
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="LocalOutpostSend")
 
-    def build_stream_url(self, query: str, lang: str, confidence=None, wake_word=False, stt_ms=None, stt_wait_ms=None, stt_trigger=None, mic="", engine="", verified_phrase="", scribe_skipped=False) -> str:
+    def build_stream_url(self, query: str, lang: str, confidence=None, wake_word=False, stt_ms=None, stt_wait_ms=None, stt_trigger=None, mic="", engine="", verified_phrase="", scribe_skipped=False, wake_word_confirmed=False) -> str:
         """Build the /stream URL. source=VoiceToVoice marks this as a spoken
         interaction (the server otherwise defaults non-app User-Agents to TextChat);
         low_stability is always false — Whisper transcriptions are treated as final.
@@ -49,7 +49,10 @@ class OutpostStreamClient:
         legitimately differ from Whisper's, so it can't serve as the correlator).
         scribe_skipped=True tells the server no Scribe verdict is coming for this send
         (high-confidence skip, see SCRIBE_SKIP_CONFIDENCE_PCT), so the wake-word verdict
-        gate must not hold the reply waiting for one."""
+        gate must not hold the reply waiting for one.
+        wake_word_confirmed=True (Scribe votes from a wake-word verify job only) tells the
+        server this mic's Scribe heard the wake word, so another mic's veto on the same
+        utterance is outweighed."""
         params = {
             "server_sound": "true",
             "source": OUTPOST_SOURCE,
@@ -77,6 +80,8 @@ class OutpostStreamClient:
             params["verified_phrase"] = verified_phrase
         if scribe_skipped:
             params["scribe_skipped"] = "1"
+        if wake_word_confirmed:
+            params["wake_word_confirmed"] = "1"
         return f"{self._base}/stream?{urllib.parse.urlencode(params)}"
 
     def identify_async(self, audio, label=""):
@@ -87,7 +92,7 @@ class OutpostStreamClient:
         already done) — keeping the history-before-vote ordering while costing ~0ms."""
         return self._executor.submit(self._identify_speaker, audio, label)
 
-    def send_query(self, query: str, lang: str, confidence=None, label="", wake_word=False, audio=None, stt_ms=None, stt_wait_ms=None, stt_trigger=None, identify_future=None, engine="", verified_phrase="", scribe_skipped=False):
+    def send_query(self, query: str, lang: str, confidence=None, label="", wake_word=False, audio=None, stt_ms=None, stt_wait_ms=None, stt_trigger=None, identify_future=None, engine="", verified_phrase="", scribe_skipped=False, wake_word_confirmed=False):
         """Push a final transcription to /stream, optionally carrying the wake-word signal.
 
         `audio` is the float32 utterance segment; when present it's run through the
@@ -104,8 +109,9 @@ class OutpostStreamClient:
 
         `verified_phrase` (Scribe votes only) is the Whisper phrase this Scribe job ran
         on, used server-side to correlate the vote with its utterance (see
-        build_stream_url)."""
-        url = self.build_stream_url(query, lang, confidence, wake_word=wake_word, stt_ms=stt_ms, stt_wait_ms=stt_wait_ms, stt_trigger=stt_trigger, mic=label, engine=engine, verified_phrase=verified_phrase, scribe_skipped=scribe_skipped)
+        build_stream_url). `wake_word_confirmed` marks a Scribe vote from a wake-word verify
+        job (see build_stream_url)."""
+        url = self.build_stream_url(query, lang, confidence, wake_word=wake_word, stt_ms=stt_ms, stt_wait_ms=stt_wait_ms, stt_trigger=stt_trigger, mic=label, engine=engine, verified_phrase=verified_phrase, scribe_skipped=scribe_skipped, wake_word_confirmed=wake_word_confirmed)
         conf_str = f"{confidence:.1%}" if confidence is not None else "n/a"
         info(f"  [{label}] Accepted phrase: '{query}' (lang={lang}, confidence={conf_str}, "
              f"wake_word={wake_word}, engine={engine or 'n/a'})")
