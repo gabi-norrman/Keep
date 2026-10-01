@@ -29,35 +29,45 @@ def draw(history, max_value=100.0, guides=None):
 class TestDrawColumns:
     def test_the_newest_sample_is_the_rightmost_column_and_short_history_pads_left(self):
         screen = draw([0.0, 0.0, 100.0])
-        assert column(screen, CHART_X + 4) == "████"
+        assert column(screen, CHART_X + 4) == "▄▄▄▄"
         assert all(column(screen, CHART_X + i) == "    " for i in range(4))
 
     def test_long_history_keeps_the_tail(self):
         screen = draw([100.0] * 10 + [0.0] * 5)
         assert all(column(screen, CHART_X + i) == "    " for i in range(5))
         screen = draw([0.0] * 10 + [100.0] * 5)
-        assert all(column(screen, CHART_X + i) == "████" for i in range(5))
+        assert all(column(screen, CHART_X + i) == "▄▄▄▄" for i in range(5))
 
     def test_a_partial_row_uses_a_fractional_block(self):
         screen = draw([0.0, 0.0, 0.0, 0.0, 62.5])     # 2.5 rows of 4
-        assert column(screen, CHART_X + 4) == " \u2584██"
+        assert column(screen, CHART_X + 4) == " \u2584▄▄"
 
     def test_a_zero_scale_draws_an_empty_chart_instead_of_raising(self):
         screen = draw([1.0, 2.0], max_value=0.0)
         assert all(column(screen, CHART_X + i) == "    " for i in range(CHART_W))
 
-    def test_a_full_block_carries_its_colour_as_background(self):
-        # Terminal.app leaves seams between cells; the same colour behind the block hides them
+    def test_a_full_cell_is_two_shades_and_never_shows_the_ground(self):
+        # Terminal.app leaves seams between cells; a bar colour behind the block hides them
         screen = draw([0.0, 0.0, 0.0, 0.0, 62.5])
-        full = screen.next_frame[CHART_Y - 1 + 3][CHART_X + 3].style      # bottom row, full block
-        assert full.bg == full.fg
+        full = screen.next_frame[CHART_Y - 1 + 3][CHART_X + 3].style      # bottom row, full cell
+        assert DashboardTab.COLOR_PANEL_BG not in (full.fg, full.bg) and full.fg != full.bg
         partial = screen.next_frame[CHART_Y - 1 + 1][CHART_X + 3].style   # the half block on top
         assert partial.bg == DashboardTab.COLOR_PANEL_BG, "a partial block keeps the ground so its height reads"
+
+    def test_the_shading_steps_every_half_row_up_to_the_colour(self):
+        tall = 2 * DashboardTab.SHADE_MIN_ROWS      # tall enough for the shading to run its whole range
+        screen = TUIScreen(20, tall + 4)
+        make_tab()._draw_columns(screen, CHART_X, CHART_Y, 1, tall, [100.0], 100.0, lambda v: C)
+        shades = []
+        for row in reversed(range(tall)):           # bottom cell first; in a cell the glyph is the lower half
+            style = screen.next_frame[CHART_Y - 1 + row][CHART_X - 1].style
+            shades += [style.fg, style.bg]
+        assert len(set(shades)) == 2 * tall and shades[-1] == C
 
     def test_guides_show_only_where_no_bar_covers_them(self):
         screen = draw([0.0, 0.0, 0.0, 0.0, 75.0], guides={1: C, 3: C})   # rows count up from the base
         assert column(screen, CHART_X) == "┄ ┄ "
-        assert column(screen, CHART_X + 4) == "┄███"
+        assert column(screen, CHART_X + 4) == "┄▄▄▄"
 
 
 # --- Feeds panel -------------------------------------------------------------------------------

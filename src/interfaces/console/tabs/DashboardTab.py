@@ -589,10 +589,12 @@ class DashboardTab(TabView):
         show, so a quiet chart keeps its colour. The shading never runs faster than the whole
         range over `SHADE_MIN_ROWS`: on a chart only a row or two high it would otherwise jump
         from deep to full between neighbouring rows and read as a cap of another colour.
+        The shading steps every half row: a full cell is a lower half block in one shade over
+        the next shade as its background. A column's top cell, filled to an eighth, has one.
         `color_for(value)` gives a column its colour; `guides` maps a chart row to the colour
         of a dashed line drawn across the empty part of the chart.
-        A full block carries its colour as background too: the glyph covers the cell in most
-        terminals, but Terminal.app leaves seams between cells that would show the ground."""
+        A full cell is never drawn over the ground, so the seams Terminal.app leaves between
+        cells show the bar's colour."""
         data = list(history)
         if len(data) > chart_w:
             data = data[-chart_w:]
@@ -600,8 +602,9 @@ class DashboardTab(TabView):
         guides = guides or {}
         base: Dict[Color, Color] = {}
         peak = max(data) if data else 0.0
-        max_row = max(1, min(chart_h, math.ceil(peak / max_value * chart_h)) - 1) if max_value > 0 and peak > 0 else 1
-        shade_rows = max(max_row, self.SHADE_MIN_ROWS - 1)
+        halves = chart_h * 2
+        peak_half = max(1, min(halves, math.ceil(peak / max_value * halves)) - 1) if max_value > 0 and peak > 0 else 1
+        shade_halves = max(peak_half, self.SHADE_MIN_ROWS * 2 - 1)
 
         for col_idx, value in enumerate(data):
             cx = chart_x + col_idx
@@ -612,17 +615,19 @@ class DashboardTab(TabView):
             full_rows = int(filled_rows)
             partial = filled_rows - full_rows
 
+            def shade(half: int) -> Color:
+                return self._lerp_color(base[fg], fg, max(0.0, min(1.0, 1 - (peak_half - half) / shade_halves)))
+
             for row in range(chart_h):
                 cell_y = chart_y + chart_h - 1 - row
-                if row < full_rows or (row == full_rows and partial > 0):
-                    color = self._lerp_color(base[fg], fg, 1 - (max_row - row) / shade_rows)
-                    screen.set_color(color)
-                    if row < full_rows:
-                        screen.set_bg_color(color)
-                        screen.write_at(cx, cell_y, '█')
-                    else:
-                        screen.set_bg_color(self.COLOR_PANEL_BG)
-                        screen.write_at(cx, cell_y, self.BLOCK_CHARS[max(1, int(partial * 8))])
+                if row < full_rows:
+                    screen.set_color(shade(row * 2))
+                    screen.set_bg_color(shade(row * 2 + 1))
+                    screen.write_at(cx, cell_y, '▄')
+                elif row == full_rows and partial > 0:
+                    screen.set_color(shade(row * 2 + (1 if partial > 0.5 else 0)))
+                    screen.set_bg_color(self.COLOR_PANEL_BG)
+                    screen.write_at(cx, cell_y, self.BLOCK_CHARS[max(1, int(partial * 8))])
                 elif row in guides:
                     screen.set_color(guides[row])
                     screen.set_bg_color(self.COLOR_PANEL_BG)
