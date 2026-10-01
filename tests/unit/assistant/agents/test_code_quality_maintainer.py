@@ -250,7 +250,10 @@ class TestExecuteAutoMergeRun:
     @patch.object(CodeQualityMaintainer, '_send_email')
     def test_sends_email_with_report(self, mock_email, mock_claude, mock_count, mock_sub, maintainer):
         maintainer._execute_auto_merge_run()
-        mock_claude.assert_called_once_with(CodeQualityMaintainer._auto_merge_prompt([7, 9]), "auto-merge-tests")
+        (prompt, label), kwargs = mock_claude.call_args
+        assert (prompt, label) == (CodeQualityMaintainer._auto_merge_prompt([7, 9]), "auto-merge-tests")
+        # contract with the Claude Code CLI: the rule that lets auto mode run the merge
+        assert kwargs["allowed_tools"] == ["Bash(gh pr merge:*)"]
         mock_email.assert_called_once()
         subject, html = mock_email.call_args[0]
         assert subject == "Keep Auto-Merge Test PRs Report"

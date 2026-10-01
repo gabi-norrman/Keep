@@ -24,6 +24,9 @@ CLAUDE_FALLBACK_PATH = os.path.expanduser("~/.local/bin/claude")   # where claud
 CLAUDE_PATH = shutil.which("claude") or CLAUDE_FALLBACK_PATH
 RUN_HOUR = 3
 AUTO_MERGE_HOUR = RUN_HOUR + 1
+# Auto mode's classifier refuses a write to an external system nobody allowed in so many words,
+# so the auto-merge run is handed this one rule; no other run gets it.
+AUTO_MERGE_ALLOWED_TOOLS = ["Bash(gh pr merge:*)"]
 CLAUDE_TIMEOUT = 60 * 60
 AUTH_STATUS_TIMEOUT = 30
 GIT_TIMEOUT = 60
@@ -412,7 +415,8 @@ class CodeQualityMaintainer:
             return
         branch = self._current_branch()
         try:
-            report = self._run_claude(self._auto_merge_prompt(candidates), "auto-merge-tests")
+            report = self._run_claude(self._auto_merge_prompt(candidates), "auto-merge-tests",
+                                      allowed_tools=AUTO_MERGE_ALLOWED_TOOLS)
             if report:
                 html_report = self._markdown_to_html(f"# Auto-Merge Test PRs\n\n{report}")
                 self._send_email("Keep Auto-Merge Test PRs Report", html_report)
@@ -458,7 +462,7 @@ class CodeQualityMaintainer:
         return None
 
     @staticmethod
-    def _run_claude(prompt, label):
+    def _run_claude(prompt, label, allowed_tools=None):
         path = claude_path()
         if path is None:
             error(f"CodeQualityMaintainer [{label}] Claude Code CLI not found on this machine")
@@ -467,6 +471,9 @@ class CodeQualityMaintainer:
         trace(f"CodeQualityMaintainer [{label}] using Claude Code model: {model}")
         cmd = [path, "--permission-mode", "auto", "-p", prompt,
                "--output-format", "stream-json", "--verbose", "--model", model]
+        if allowed_tools:
+            info(f"CodeQualityMaintainer [{label}] pre-approved for this run: {', '.join(allowed_tools)}")
+            cmd += ["--allowedTools", *allowed_tools]
         process = subprocess.Popen(
             cmd, cwd=WORKING_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL, text=True
