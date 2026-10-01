@@ -89,7 +89,10 @@ class DashboardTab(TabView):
     LEFT = 3                    # the first tile's column
     RIGHT_MARGIN = 2
     GAP = 2                     # columns between tiles; one row between tile rows
-    SUMMARY_H = 6
+    CARD_TOP = 2                # rows from a tile's title strip to its content: one blank row of air
+    CARD_CHROME = CARD_TOP + 1  # a tile's rows that are not content: title strip, the blank row, a closing row
+    SUMMARY_ROWS = 4
+    SUMMARY_H = SUMMARY_ROWS + CARD_CHROME
 
     HISTORY_SIZE = 120
     BLOCK_CHARS = [' ', '\u2581', '\u2582', '\u2583', '\u2584', '\u2585', '\u2586', '\u2587', '\u2588']
@@ -160,13 +163,13 @@ class DashboardTab(TabView):
         y += self.SUMMARY_H + 1
 
         # The status tiles below the charts grow with the integration list and the outposts,
-        # so the three chart rows (tile = chart_height + 2, plus a gap row) take whatever
+        # so the three chart rows (tile = chart_height + CARD_CHROME, plus a gap row) take whatever
         # height is left after reserving them.
         panel_h = self._status_panel_height(screen)
-        chart_height = max(5, (screen.height - y - 1 - panel_h) // 3 - 3)
+        chart_height = max(5, (screen.height - y - 1 - panel_h) // 3 - self.CARD_CHROME - 1)
         for draw_row in (self._draw_charts_row, self._draw_ttft_charts_row, self._draw_bottom_charts_row):
             draw_row(screen, thirds, y, chart_height)
-            y += chart_height + 2 + 1
+            y += chart_height + self.CARD_CHROME + 1
         self._draw_status_panel(screen, y, panel_h)
         self._tint_cards(screen)
 
@@ -204,7 +207,7 @@ class DashboardTab(TabView):
         (ltm_x, ltm_w), (temp_x, temp_w), (cost_x, cost_w) = columns
         self._draw_long_term_memory_chart(screen, ltm_x, y, ltm_w, chart_h)
         self._draw_temp_chart(screen, temp_x, y, temp_w, chart_h)
-        self._draw_cost_chart(screen, cost_x, y, cost_w, chart_h + 2)
+        self._draw_cost_chart(screen, cost_x, y, cost_w, chart_h + self.CARD_CHROME)
 
     def _draw_header(self, screen: TUIScreen, x: int, y: int) -> int:
         if not self.model:
@@ -259,7 +262,7 @@ class DashboardTab(TabView):
         floors = self._mic_noise_floors()
         if not floors:
             screen.set_color(self.COLOR_DIM)
-            screen.write_at(x + 2, y + 1, "no local outposts")
+            screen.write_at(x + 2, y + self.CARD_TOP, "no local outposts")
             screen.reset_color()
             return
 
@@ -268,8 +271,8 @@ class DashboardTab(TabView):
         # value area: " 0.0004 (floor 0.0008)" ≈ 22 cols
         bar_len = panel_w - (bar_x - x) - 24
 
-        for i, (label, floor, _threshold, live_min) in enumerate(floors[:panel_h - 2]):
-            row_y = y + 1 + i
+        for i, (label, floor, _threshold, live_min) in enumerate(floors[:panel_h - self.CARD_CHROME]):
+            row_y = y + self.CARD_TOP + i
             screen.set_color(self.COLOR_LABEL)
             screen.write_at(x + 2, row_y, fit(label, label_w))
             if floor is None or live_min is None:
@@ -321,11 +324,11 @@ class DashboardTab(TabView):
         rows = [self._feed_row(name, status) for name, status in self._feed_statuses()]
         if not rows:
             screen.set_color(self.COLOR_DIM)
-            screen.write_at(x + 2, y + 1, "no feeds running")
+            screen.write_at(x + 2, y + self.CARD_TOP, "no feeds running")
             screen.reset_color()
             return
 
-        rows = rows[:panel_h - 2]
+        rows = rows[:panel_h - self.CARD_CHROME]
         label_w = max(len(row.name) for row in rows)
         symbol_x = x + 2 + label_w + 1
         bar_x = symbol_x + 2
@@ -336,7 +339,7 @@ class DashboardTab(TabView):
         text_w = x + panel_w - 2 - text_x     # one cell of air before the right border
 
         for i, row in enumerate(rows):
-            row_y = y + 1 + i
+            row_y = y + self.CARD_TOP + i
             screen.set_color(self.COLOR_LABEL)
             screen.write_at(x + 2, row_y, f"{row.name:<{label_w}}")
             screen.set_color(row.fg)
@@ -438,9 +441,9 @@ class DashboardTab(TabView):
         """The bar chart with a colour per temperature zone and dashed guides at the zone thresholds."""
         fg, _, status = self._temp_zone(self.cpu_temp)
         value = "" if self.cpu_temp <= 0 else (f"{self.cpu_temp:.0f}°C" if status == "OK" else f"{self.cpu_temp:.0f}°C {status}")
-        self._draw_card(screen, x, y, width, chart_h + 2, "CPU Temp", value, fg)
+        self._draw_card(screen, x, y, width, chart_h + self.CARD_CHROME, "CPU Temp", value, fg)
 
-        chart_y = y + 1
+        chart_y = y + self.CARD_TOP
         chart_x = x + 2 + self.Y_AXIS_W
         chart_w = width - 4 - self.Y_AXIS_W
         if chart_w <= 0 or chart_h <= 0:
@@ -476,7 +479,7 @@ class DashboardTab(TabView):
     def _draw_card(self, screen: TUIScreen, x: int, y: int, width: int, height: int, label: str,
                    value: str = "", value_color: Optional[Color] = None):
         """A tile: a title strip carrying the label and, when it fits, a bold `value` at its
-        right end, over a body whose content starts at (x + 2, y + 1). Content is written
+        right end, over a body whose content starts at (x + 2, y + CARD_TOP). Content is written
         without a background; `_tint_cards` grounds every tile once the frame is drawn."""
         self._cards.append((x, y, width, height))
         screen.set_color(self.COLOR_TITLE)
@@ -567,7 +570,7 @@ class DashboardTab(TabView):
         value_room = max(0, x + width - 2 - value_x)
 
         for i, row in enumerate(rows):
-            row_y = y + 1 + i
+            row_y = y + self.CARD_TOP + i
             screen.set_color(self.COLOR_DIM if row.idle else self.COLOR_LABEL)
             screen.write_at(x + 2, row_y, fit(row.label, label_w))
             self._draw_meter(screen, meter_x, row_y, meter_len, row.fraction, row.color, start=row.start)
@@ -642,9 +645,9 @@ class DashboardTab(TabView):
                         max_value: float = 100.0, y_axis_format=None):
         """A chart tile: the title strip with the latest value, a labelled y-axis (percent
         unless `y_axis_format` says otherwise) and the columns over dashed rules at the labels."""
-        self._draw_card(screen, x, y, width, chart_h + 2, label, value_str, fg)
+        self._draw_card(screen, x, y, width, chart_h + self.CARD_CHROME, label, value_str, fg)
 
-        chart_y = y + 1
+        chart_y = y + self.CARD_TOP
         chart_x = x + 2 + self.Y_AXIS_W
         chart_w = width - 4 - self.Y_AXIS_W
         if chart_w <= 0 or chart_h <= 0:
@@ -760,14 +763,13 @@ class DashboardTab(TabView):
         return columns, math.ceil(count / columns)
 
     def _status_panel_height(self, screen: TUIScreen) -> int:
-        """Height of the status tiles: the tallest body plus the title strip and a closing
-        row, so the chart rows above can shrink to fit it."""
+        """Height of the status tiles: the tallest body plus the tile's own rows, so the chart rows above can shrink to fit it."""
         inner_w = self._columns(screen, 4)[0][1] - 4
         enabled, disabled_lines = self._integration_rows(IntegrationMonitor.get_instance().get_all_statuses(), inner_w)
         integrations = self._integration_grid(len(enabled), inner_w)[1] + (1 + len(disabled_lines) if disabled_lines else 0)
         pm = self.console.prompt_manager
         prompt_sections = len(pm.get_section_stats()) if pm else 0
-        return max(integrations, self.TIMING_ROWS, len(self._resource_rows()), prompt_sections) + 2
+        return max(integrations, self.TIMING_ROWS, len(self._resource_rows()), prompt_sections) + self.CARD_CHROME
 
     def _draw_status_panel(self, screen: TUIScreen, y: int, height: int):
         (ix, iw), (tx, tw), (rx, rw), (px, pw) = self._columns(screen, 4)
@@ -788,7 +790,7 @@ class DashboardTab(TabView):
         column_w = inner_w // columns
         for i, status in enumerate(enabled):
             cx = x + 2 + (i // rows) * column_w
-            cy = y + 1 + i % rows
+            cy = y + self.CARD_TOP + i % rows
             healthy = status["state"] == IntegrationState.OK.value
             state_color = self.STATUS_STATE_COLORS.get(status["state"], self.COLOR_DIM)
             screen.set_color(state_color)
@@ -797,7 +799,7 @@ class DashboardTab(TabView):
             screen.write_at(cx + 2, cy, fit(status["name"], column_w - 3))
         screen.set_color(self.COLOR_DIM)
         for i, line in enumerate(disabled_lines):
-            screen.write_at(x + 2, y + 1 + rows + 1 + i, line)
+            screen.write_at(x + 2, y + self.CARD_TOP + rows + 1 + i, line)
         screen.reset_color()
 
     def _draw_timing(self, screen: TUIScreen, x: int, y: int, width: int, height: int):
@@ -927,7 +929,7 @@ class DashboardTab(TabView):
         # Legend height: 1 line for legend + 1 for x-axis labels
         legend_h = 2
         box_w = width
-        chart_h = box_h - 2 - legend_h  # subtract title strip + closing row + legend
+        chart_h = box_h - self.CARD_CHROME - legend_h
 
         self._draw_card(screen, x, y, box_w, box_h, "Anthropic API Cost",
                         cost_summary if self.cost_last_updated > 0 else "", self.COLOR_CYAN)
@@ -935,17 +937,17 @@ class DashboardTab(TabView):
         # Show loading/error state
         if self.cost_error and not daily_costs:
             screen.set_color(self.COLOR_DIM)
-            screen.write_at(x + 2, y + 2, fit(self.cost_error, box_w - 4))
+            screen.write_at(x + 2, y + self.CARD_TOP, fit(self.cost_error, box_w - 4))
             screen.reset_color()
             return
         if not self.cost_last_updated or not date_strs:
             screen.set_color(self.COLOR_DIM)
-            screen.write_at(x + 2, y + 2, "Loading cost data...")
+            screen.write_at(x + 2, y + self.CARD_TOP, "Loading cost data...")
             screen.reset_color()
             return
 
         chart_x = x + 2 + y_axis_w
-        chart_y = y + 1
+        chart_y = y + self.CARD_TOP
         chart_w = box_w - 4 - y_axis_w
 
         gap = 1

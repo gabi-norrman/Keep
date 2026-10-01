@@ -66,7 +66,7 @@ from unittest.mock import patch
 
 from interfaces.console.widgets.FeedStrip import SYMBOL_FAILED, SYMBOL_PAUSED, SYMBOL_RUNNING
 
-PANEL_X, PANEL_Y, PANEL_W, PANEL_H = 1, 1, 64, 6
+PANEL_X, PANEL_Y, PANEL_W, PANEL_H = 1, 1, 64, 4 + DashboardTab.CARD_CHROME   # room for four feeds
 
 
 def status(state="live", **extra) -> dict:
@@ -97,8 +97,13 @@ def draw_feeds(feeds: dict, frame: int = 0, width: int = PANEL_W):
     return screen
 
 
+def panel_row(screen, row: int):
+    """A row of the panel: 0 is the title strip, 1 the first content row under the tile's blank row."""
+    return screen.next_frame[PANEL_Y - 1 + (row + DashboardTab.CARD_TOP - 1 if row else 0)]
+
+
 def row_text(screen, row: int) -> str:
-    return "".join(c.char for c in screen.next_frame[PANEL_Y - 1 + row]).rstrip()
+    return "".join(c.char for c in panel_row(screen, row)).rstrip()
 
 
 @pytest.mark.unit
@@ -155,7 +160,7 @@ FULL, LEFT, RIGHT, NOTCH = DashboardTab.METER_FULL, DashboardTab.METER_LEFT, Das
 
 def cells(screen, row: int, char: str):
     """The cells of a panel row holding `char`."""
-    return [c for c in screen.next_frame[PANEL_Y - 1 + row] if c.char == char]
+    return [c for c in panel_row(screen, row) if c.char == char]
 
 
 def filled(screen, row: int, track: Color) -> int:
@@ -189,7 +194,7 @@ class TestDrawFeedsPanel:
     def test_the_count_is_drawn_in_the_row_colour_not_grey(self):
         screen = draw_feeds({"iMessage": status()})
         line = row_text(screen, 1)
-        cell = screen.next_frame[PANEL_Y][line.index("23436")]
+        cell = panel_row(screen, 1)[line.index("23436")]
         assert cell.style.fg == DashboardTab.COLOR_GREEN
 
     def test_the_bar_fill_follows_the_progress(self):
@@ -292,7 +297,7 @@ class TestDrawMeterRows:
     def draw(width):
         screen = TUIScreen(80, 6)
         make_tab()._draw_meter_rows(screen, 1, 1, width, TestDrawMeterRows.ROWS)
-        return ["".join(c.char for c in screen.next_frame[r]).rstrip() for r in (1, 2)]
+        return ["".join(c.char for c in screen.next_frame[r]).rstrip() for r in (DashboardTab.CARD_TOP, DashboardTab.CARD_TOP + 1)]
 
     def test_the_meter_takes_the_cells_the_label_and_value_leave(self):
         wide, wider = self.draw(40), self.draw(50)
