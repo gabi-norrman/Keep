@@ -46,6 +46,9 @@ calendar:
   username: your_icloud_email@me.com
   password: YOUR_CALENDAR_PASSWORD_HERE (for iCloud this is an app password)
   default_calendar: Home  # Name of the iCloud calendar to create events in
+  # Calendars whose events are always in the prompt. The others are only listed by name and
+  # the assistant loads one when it needs it. Leave out to show every calendar.
+  # shown_calendars: [Home, Family]
 
 email:
   # smtp_host: smtp.gmail.com   # where the nightly reports are sent from; Gmail by default

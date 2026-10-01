@@ -110,6 +110,12 @@ To fetch the long term weather forecast use:
 
 `weather()`
 
+## Calendars
+The CALENDAR EVENTS COMING WEEK section below holds the coming week of the calendars shown by default. The family may
+have more calendars; that section names the ones it leaves out.
+
+`load_calendar(name: str, ...)` — the coming week's events of a calendar that is not shown.
+
 ## Memory
 Your memory has three parts. Put each thing where it belongs.
 
@@ -189,7 +195,7 @@ The vault keeps specific secrets out of the AI; it is not an anonymization tool.
 ## Function Calling Rules
 
 ### Stop-and-wait commands
-Commands that fetch data — `load_toolkit()`, `load_procedure()`, `load_watch()`, `weather()`, and the ones each toolkit lists under "Stop-and-wait" —
+Commands that fetch data — `load_toolkit()`, `load_procedure()`, `load_watch()`, `load_calendar()`, `weather()`, and the ones each toolkit lists under "Stop-and-wait" —
 return their result in a follow-up round.
 
 After emitting any of these commands, you MUST STOP generating immediately. DO NOT make up results or use training

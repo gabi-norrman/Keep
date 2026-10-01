@@ -91,12 +91,12 @@ class Commands:
         "search_photos", "search_history", "show_history",
         "create_event", "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
         "vault_request", "config_set", "load_toolkit", "schedule_wakeup",
-        "load_watch", "save_watch", "delete_watch",
+        "load_watch", "save_watch", "delete_watch", "load_calendar",
         "load_procedure", "save_procedure", "delete_procedure",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
-    PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch"})
+    PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch", "load_calendar"})
     AI_MESSAGE_SUFFIX = "[Sent with the help of AI 🤖]"
 
     # Looked up by the portable iCloud asset GUID; ZUUID is resolved here because
@@ -822,6 +822,20 @@ class Commands:
 
     def cmd_create_event(self, *args: str):
         self.background_command(self._run_create_event, list(args))
+
+    def cmd_load_calendar(self, *names: str):
+        self.background_command(self._run_load_calendar, list(names))
+
+    @staticmethod
+    def _run_load_calendar(*names: str) -> str:
+        """The named calendars over the window the prompt's calendar section covers."""
+        names = [n for n in names if n and n.strip()]
+        if not names:
+            return "load_calendar failed: expected a calendar's name"
+        try:
+            return CalDAVIntegration.load_calendars(names)
+        except Exception as e:
+            return f"load_calendar failed: {e}"
 
     def cmd_add_shopping_list_item(self, parameter_string: str) -> str:
         return add_reminder_item(parameter_string)
@@ -1942,6 +1956,7 @@ class Commands:
     def describe_enable_integration(self, p):  return f"Enabling {p.strip()}" if p.strip() else "Enabling an integration"
     def describe_disable_integration(self, p): return f"Disabling {p.strip()}" if p.strip() else "Disabling an integration"
     def describe_remember(self, p):               return f"Saving to memory: {p.strip()}" if p.strip() else "Saving to memory"
+    def describe_load_calendar(self, p):          return f"Looking at the calendar: {self._first_argument(p)}" if p.strip() else "Looking at a calendar"
     def describe_load_watch(self, p):             return f"Looking at: {self._first_argument(p)}" if p.strip() else "Looking at a watch item"
     def describe_save_watch(self, p):             return f"Watching: {self._first_argument(p)}" if p.strip() else "Saving a watch item"
     def describe_checked_watch(self, p):          return f"Checked: {self._first_argument(p)}" if p.strip() else "Marking a watch item checked"

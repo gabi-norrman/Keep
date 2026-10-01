@@ -1,6 +1,6 @@
 """The watch list and procedure commands: thin delegates to the stores, returning the reason
 as the command's error when the store refuses."""
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -60,6 +60,18 @@ class TestWatchCommands:
         assert "Alice next door" in loaded and "12:30" in loaded
         assert "parcel" in commands._run_load_watch() and "Alice" not in commands._run_load_watch()
         assert "parcel" in commands._run_load_watch("sofa")
+
+    def test_loading_a_calendar_is_a_background_command_and_runs_in_test_suite_mode(self, commands):
+        commands.background_command = Mock()
+        run(commands, 'load_calendar("Work")')
+        function, params = commands.background_command.call_args.args[:2]
+        assert params == ["Work"] and callable(function)
+        assert commands.is_pure("load_calendar")
+
+    def test_loading_a_calendar_without_a_name_or_with_a_broken_account_is_a_failure_message(self, commands):
+        assert "failed" in commands._run_load_calendar()
+        with patch("assistant.commands.Commands.CalDAVIntegration.load_calendars", side_effect=ValueError("no login")):
+            assert "no login" in commands._run_load_calendar("Work")
 
     def test_a_watch_without_a_name_is_an_error(self, commands):
         assert run(commands, "save_watch()")

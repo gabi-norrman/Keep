@@ -2,7 +2,7 @@ from datetime import date, timedelta
 
 from ..PromptSectionGenerator import PromptSectionGenerator
 from common.logging import info, trace
-from ...integration.integrations.CalDAVIntegration import CalDAVIntegration
+from ...integration.integrations.CalDAVIntegration import CalDAVIntegration, CALENDAR_DAYS_AHEAD
 
 
 class CalendarDataSectionGenerator(PromptSectionGenerator):
@@ -18,7 +18,7 @@ class CalendarDataSectionGenerator(PromptSectionGenerator):
         trace("Fetching calendar from iCloud over CalDAV...")
 
         start_date = date.today()
-        end_date = start_date + timedelta(days=8)
+        end_date = start_date + timedelta(days=CALENDAR_DAYS_AHEAD)
 
         calendar_summary = CalDAVIntegration.fetch_calendar_events(start_date, end_date)
 
