@@ -307,7 +307,7 @@ class TestSaveMemoryCarriesOverAppends:
         memory_file = tmp_path / "memory.md"
         curator = LongTermMemoryCurator(llm=Mock(), test_mode=True, memory_file_path=str(memory_file))
         curator.save_memory("# Bank\n")
-        assert sorted(p.name for p in tmp_path.iterdir()) == ["memory.md"]
+        assert not [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
 
 
 # --- chunked spans (run_span) --------------------------------------------------------------

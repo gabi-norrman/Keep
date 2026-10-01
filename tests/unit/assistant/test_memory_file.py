@@ -68,3 +68,60 @@ class TestWriters:
         MemoryFile.write("# Bank\n", str(other))
         assert other.read_text() == "# Bank\n"
         assert not (other.parent / "bank.md.tmp").exists()
+
+
+@pytest.mark.unit
+class TestSplit:
+    """`split` separates what the curator wrote from what `remember` appended since, so the
+    prompt can keep the curated part byte-stable between curations."""
+
+    def test_a_note_appended_after_a_write_is_not_part_of_the_curated_text(self, tmp_path):
+        bank = str(tmp_path / "bank.md")
+        MemoryFile.write("# The Family\n* Charlotte plays the cello\n", bank)
+        MemoryFile.append("Frances moved to Lund", bank)
+        curated, since = MemoryFile.split(bank)
+        assert curated == "# The Family\n* Charlotte plays the cello\n"
+        assert since.strip() == "Frances moved to Lund"
+
+    def test_the_curated_text_stays_identical_as_notes_pile_up(self, tmp_path):
+        bank = str(tmp_path / "bank.md")
+        MemoryFile.write("# The Family\n", bank)
+        MemoryFile.append("Ingeborg prefers tea", bank)
+        before, _ = MemoryFile.split(bank)
+        MemoryFile.append("Frances moved to Lund", bank)
+        after, since = MemoryFile.split(bank)
+        assert after == before
+        assert since.split() == "Ingeborg prefers tea Frances moved to Lund".split()
+
+    def test_the_two_parts_always_add_up_to_the_file(self, tmp_path):
+        bank = tmp_path / "bank.md"
+        MemoryFile.write("# The Family\n", str(bank))
+        MemoryFile.append("Ingeborg prefers tea", str(bank))
+        assert "".join(MemoryFile.split(str(bank))) == bank.read_text()
+
+    def test_a_rewrite_absorbs_the_notes(self, tmp_path):
+        bank = str(tmp_path / "bank.md")
+        MemoryFile.write("# The Family\n", bank)
+        MemoryFile.append("Ingeborg prefers tea", bank)
+        MemoryFile.write("# The Family\n* Ingeborg prefers tea\n", bank)
+        assert MemoryFile.split(bank) == ("# The Family\n* Ingeborg prefers tea\n", "")
+
+    def test_a_bank_never_written_here_counts_as_curated_whole_and_later_notes_as_since(self, tmp_path):
+        bank = tmp_path / "bank.md"
+        bank.write_text("# The Family\n* Charlotte plays the cello\n")
+        assert MemoryFile.split(str(bank)) == ("# The Family\n* Charlotte plays the cello\n", "")
+        MemoryFile.append("Frances moved to Lund", str(bank))
+        assert MemoryFile.split(str(bank))[1].strip() == "Frances moved to Lund"
+
+    def test_a_hand_edit_of_the_curated_part_makes_the_whole_file_curated(self, tmp_path):
+        bank = tmp_path / "bank.md"
+        MemoryFile.write("# The Family\n* Charlotte plays the cello\n", str(bank))
+        MemoryFile.append("Frances moved to Lund", str(bank))
+        bank.write_text(bank.read_text().replace("cello", "viola"))
+        curated, since = MemoryFile.split(str(bank))
+        assert since == ""
+        assert "viola" in curated and "Frances moved to Lund" in curated
+
+    def test_a_missing_bank_splits_into_nothing_and_creates_nothing(self, tmp_path):
+        assert MemoryFile.split(str(tmp_path / "bank.md")) == ("", "")
+        assert list(tmp_path.iterdir()) == []

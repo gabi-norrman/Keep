@@ -203,6 +203,13 @@ the most accurate rain reading we have. Values are mm/h, averaged over each labe
 Phones registered with Find My iPhone, by the name the family uses (the `location` toolkit rings and locates them):
 {PHONES}
 
+# REMEMBERED SINCE THE LAST CURATION
+What you saved with `remember` after the LONG TERM MEMORY BANK above was last curated. These notes are part of
+that bank and count exactly as much — they are newer, and win where they contradict it:
+<memory_recent>
+{MEMORY_RECENT}
+</memory_recent>
+
 # PROCEDURES
 The procedures you have saved (`load_procedure(name)` loads one):
 {PROCEDURES}

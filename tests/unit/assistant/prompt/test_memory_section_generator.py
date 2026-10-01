@@ -146,3 +146,67 @@ class TestFirstCurationNotice:
                 pass
             mock_update.assert_called_once()
         assert section._curating is False
+
+
+class TestRememberedNotes:
+    """A `remember` must leave the memory section — the top of the prompt — untouched and
+    surface in the notes section instead."""
+
+    @staticmethod
+    def _section(tmp_path, prompt_manager=None):
+        from assistant import MemoryFile
+        from assistant.prompt.sections.MemorySectionGenerator import MemorySectionGenerator
+        bank = str(tmp_path / "bank.md")
+        MemoryFile.write("# The Family\n* Charlotte plays the cello\n", bank)
+        section = MemorySectionGenerator(prompt_manager)
+        section.file_path = bank
+        section._refresh()
+        return section, bank
+
+    @patch('assistant.prompt.sections.MemorySectionGenerator.FirstRun.curation_progress', return_value=None)
+    def test_a_remembered_note_lands_in_the_notes_section_only(self, _progress, tmp_path):
+        from assistant import MemoryFile
+        section, bank = self._section(tmp_path)
+        top_before = section.get_content()
+        MemoryFile.append("Frances moved to Lund", bank)
+        section._refresh()
+        assert section.get_content() == top_before
+        assert section.recent.get_content() == "Frances moved to Lund"
+
+    @patch('assistant.prompt.sections.MemorySectionGenerator.FirstRun.curation_progress', return_value=None)
+    def test_a_remembered_note_notifies_for_the_notes_section_not_the_bank(self, _progress, tmp_path):
+        from unittest.mock import Mock
+        from assistant import MemoryFile
+        manager = Mock()
+        section, bank = self._section(tmp_path, manager)
+        manager.reset_mock()
+        MemoryFile.append("Frances moved to Lund", bank)
+        section._refresh()
+        assert [c.args[0] for c in manager.on_section_updated.call_args_list] == [section.recent.section_name]
+
+    @patch('assistant.prompt.sections.MemorySectionGenerator.FirstRun.curation_progress', return_value=None)
+    def test_a_curation_moves_the_notes_into_the_bank_and_empties_the_notes_section(self, _progress, tmp_path):
+        from assistant import MemoryFile
+        section, bank = self._section(tmp_path)
+        empty = section.recent.get_content()
+        MemoryFile.append("Frances moved to Lund", bank)
+        section._refresh()
+        MemoryFile.write("# The Family\n* Charlotte plays the cello\n* Frances lives in Lund\n", bank)
+        section._refresh()
+        assert "Frances lives in Lund" in section.get_content()
+        assert section.recent.get_content() == empty
+
+    @patch('assistant.prompt.sections.MemorySectionGenerator.FirstRun.curation_progress', return_value=None)
+    def test_the_bank_is_notified_before_the_notes_so_a_rebuild_sees_both_halves(self, _progress, tmp_path):
+        from unittest.mock import Mock
+        from assistant import MemoryFile
+        manager = Mock()
+        section, bank = self._section(tmp_path, manager)
+        MemoryFile.append("Frances moved to Lund", bank)
+        section._refresh()
+        seen = []
+        manager.on_section_updated.side_effect = lambda name: seen.append((name, section.recent.get_content()))
+        MemoryFile.write("# The Family\n* Frances lives in Lund\n", bank)
+        section._refresh()
+        assert seen[0][0] == section.section_name
+        assert "Frances moved to Lund" not in seen[0][1]

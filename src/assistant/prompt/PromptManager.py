@@ -83,8 +83,10 @@ class PromptManager:
         # cache on every turn. It's now appended to the trailing user message in
         # get_messages() instead, where it lives in the uncached suffix and never
         # invalidates anything.
+        memory = MemorySectionGenerator(self)
         self.sections = {
-            'memory': MemorySectionGenerator(self),
+            'memory': memory,
+            'memory_recent': memory.recent,
             'procedures': ProceduresSectionGenerator(self),
             'watchlist': WatchListSectionGenerator(self),
             'vault': VaultSectionGenerator(self),

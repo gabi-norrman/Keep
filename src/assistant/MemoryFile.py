@@ -9,7 +9,14 @@ write) and the `remember` command's append. The lock serialises the append with 
 final read-merge-write, so a note taken while the curator was thinking is carried over instead
 of overwritten; `write` replaces the file atomically so a reader (the prompt's memory section,
 the console's Memory tab) never sees a half-written bank.
+
+The prompt shows the bank in two places (`split`): the part the curator last wrote, near the
+top, and what `remember` appended since, lower down. A `remember` then leaves the top of the
+prompt byte-identical, which keeps the LLM's prompt cache alive between curations. `write`
+records where the curated part ends in a sidecar, `<bank>.curated`.
 """
+import hashlib
+import json
 import os
 import shutil
 import threading
@@ -82,3 +89,48 @@ def write(text: str, path: str = MEMORY_FILE):
         with open(tmp, "w") as f:
             f.write(text)
         os.replace(tmp, path)
+        _mark_curated(path, text)
+
+
+def _mark_path(path: str) -> str:
+    return f"{path}.curated"
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _mark_curated(path: str, text: str):
+    with open(_mark_path(path), "w") as f:
+        json.dump({"length": len(text), "sha256": _digest(text)}, f)
+
+
+def _read_mark(path: str) -> dict | None:
+    try:
+        with open(_mark_path(path), "r") as f:
+            mark = json.load(f)
+        return mark if isinstance(mark.get("length"), int) and isinstance(mark.get("sha256"), str) else None
+    except (FileNotFoundError, json.JSONDecodeError, AttributeError):
+        return None
+
+
+def split(path: str = MEMORY_FILE) -> tuple[str, str]:
+    """The bank as (curated, appended since): the text the last `write` left, and what
+    `append` added after it. A bank without a valid mark — never curated here, or edited by
+    hand above the mark — counts as curated whole and is marked as such, so the next append
+    starts a fresh "since"."""
+    with lock:
+        if not os.path.exists(path):
+            return "", ""
+        text = read(path)
+        mark = _read_mark(path)
+        if mark is not None:
+            curated = text[:mark["length"]]
+            if len(curated) == mark["length"] and _digest(curated) == mark["sha256"]:
+                return curated, text[mark["length"]:]
+            info(f"Memory bank {path} no longer matches its curated mark (edited by hand?) — "
+                 f"treating all {len(text)} chars as curated")
+        else:
+            info(f"Memory bank {path} has no curated mark yet — treating all {len(text)} chars as curated")
+        _mark_curated(path, text)
+        return text, ""
