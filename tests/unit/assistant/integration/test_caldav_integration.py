@@ -68,7 +68,8 @@ class TestShownCalendars:
     def test_the_calendars_left_out_are_named_with_the_command_that_loads_them(self, mock_config, mock_caldav):
         _configure(mock_config, ["Home", "Family"])
         self._household(mock_caldav)
-        left_out = self._fetch().split("\n\n")[-1]
+        shown, left_out = self._fetch().split("\n\n")[0].split("\n")
+        assert "Home" in shown and "Family" in shown and "Work" not in shown
         assert "load_calendar" in left_out and "Work" in left_out
         assert "Home" not in left_out and "Family" not in left_out
 
@@ -87,6 +88,8 @@ class TestShownCalendars:
         result = self._fetch()
         assert "Dentist Charlotte" in result and "Budget review" in result
         assert "load_calendar" not in result
+        names = result.split("\n\n")[0]
+        assert all(name in names for name in ("Home", "Family", "Work")) and "Shopping" not in names
 
     @patch(CALDAV)
     @patch(CONFIG, new_callable=lambda: _config_mock())
@@ -282,7 +285,7 @@ class TestCalendarHelper:
 
         from assistant.integration.integrations.CalDAVIntegration import fetch_calendar_events
         result = fetch_calendar_events(date(2025, 6, 15), date(2025, 6, 20))
-        assert result == "(No upcoming events)"
+        assert result.split("\n\n")[-1] == "(No upcoming events)"
 
     @patch('assistant.integration.integrations.CalDAVIntegration.caldav')
     @patch('assistant.integration.integrations.CalDAVIntegration.config', new_callable=lambda: _config_mock())
@@ -393,7 +396,7 @@ class TestCalendarHelper:
         from assistant.integration.integrations.CalDAVIntegration import fetch_calendar_events
         result = fetch_calendar_events(date(2025, 6, 15), date(2025, 6, 20))
         assert "Line1 Line2" in result
-        assert "\n" not in result.split(": ", 1)[-1]
+        assert "\n" not in result.split("\n\n")[-1].split(": ", 1)[-1]
 
     @patch('assistant.integration.integrations.CalDAVIntegration.caldav')
     @patch('assistant.integration.integrations.CalDAVIntegration.config', new_callable=lambda: _config_mock())

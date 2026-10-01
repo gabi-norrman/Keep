@@ -120,30 +120,33 @@ class CalDAVIntegration(Integration):
 
     @staticmethod
     def fetch_calendar_events(start_date: date, end_date: date) -> str:
-        """The events of the shown calendars, followed by the names of the ones left out."""
+        """The names of the calendars — shown and left out — followed by the events of the shown ones."""
         try:
             if not config.get('calendar.username', "") or not config.get('calendar.password', ""):
                 return "(Calendar not configured)"
 
             calendars = CalDAVIntegration._calendars()
             shown_names = {name.lower() for name in CalDAVIntegration.shown_calendar_names()}
-            if not shown_names:
+            if shown_names:
+                shown = [c for c in calendars if str(c.name).lower() in shown_names]
+                missing = shown_names - {str(c.name).lower() for c in shown}
+                if missing:
+                    info(f"calendar.shown_calendars names calendars the account does not have: {sorted(missing)}. "
+                         f"Available: {[c.name for c in calendars]}")
+            else:
                 trace(f"calendar.shown_calendars not set, showing all {len(calendars)} calendars")
-                return CalDAVIntegration._render_events(calendars, start_date, end_date)
+                shown = calendars
 
-            shown = [c for c in calendars if str(c.name).lower() in shown_names]
-            missing = shown_names - {str(c.name).lower() for c in shown}
-            if missing:
-                info(f"calendar.shown_calendars names calendars the account does not have: {sorted(missing)}. "
-                     f"Available: {[c.name for c in calendars]}")
-            hidden = [c.name for c in calendars
-                      if str(c.name).lower() not in shown_names and CalDAVIntegration._holds_events(c)]
-            trace(f"Calendars shown: {[c.name for c in shown]}, not shown: {hidden}")
+            # A Reminders list among the shown ones is searched (it holds no events) but not named.
+            named = [c for c in calendars if CalDAVIntegration._holds_events(c)]
+            shown_labels = [str(c.name) for c in named if c in shown]
+            hidden_labels = [str(c.name) for c in named if c not in shown]
+            trace(f"Calendars shown: {shown_labels}, not shown: {hidden_labels}")
 
-            summary = CalDAVIntegration._render_events(shown, start_date, end_date)
-            if hidden:
-                summary += "\n\nCalendars not shown here (`load_calendar(name)` loads one): " + ", ".join(hidden)
-            return summary
+            header = "Calendars shown below: " + (", ".join(shown_labels) or "none")
+            if hidden_labels:
+                header += "\nOther calendars, not shown (`load_calendar(name)` loads one): " + ", ".join(hidden_labels)
+            return header + "\n\n" + CalDAVIntegration._render_events(shown, start_date, end_date)
 
         except Exception as e:
             error(f"Error fetching calendar events, the prompt gets '{EVENTS_UNAVAILABLE}': {type(e).__name__}: {e}")

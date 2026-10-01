@@ -111,8 +111,8 @@ To fetch the long term weather forecast use:
 `weather()`
 
 ## Calendars
-The CALENDAR EVENTS COMING WEEK section below holds the coming week of the calendars shown by default. The family may
-have more calendars; that section names the ones it leaves out.
+The CALENDAR EVENTS COMING WEEK section below holds the coming week of the calendars shown by default. It opens with
+the names of the calendars it shows and of the family's other calendars, which it leaves out.
 
 `load_calendar(name: str, ...)` — the coming week's events of a calendar that is not shown.
 
