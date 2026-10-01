@@ -127,6 +127,19 @@ class TestShownCalendarsKeyAbsent:
         assert "load_calendar" not in result
 
 
+class TestShownCalendarsSetting:
+    @patch(CONFIG, new_callable=lambda: _config_mock())
+    def test_a_comma_separated_string_promoted_to_a_list_item_still_names_each_calendar(self, mock_config):
+        from assistant.integration.integrations.CalDAVIntegration import CalDAVIntegration
+        _configure(mock_config, ["Home, Family", "Work"])
+        assert CalDAVIntegration.shown_calendar_names() == ["Home", "Family", "Work"]
+
+    def test_the_example_config_lists_it_as_plain_values_so_config_set_can_add_one_by_index(self):
+        from common import ConfigSchema
+        assert ConfigSchema.is_scalar_list("calendar.shown_calendars")
+        assert ConfigSchema.example_value("calendar.shown_calendars") == []
+
+
 class TestLoadCalendars:
     def _load(self, *names):
         from assistant.integration.integrations.CalDAVIntegration import CalDAVIntegration

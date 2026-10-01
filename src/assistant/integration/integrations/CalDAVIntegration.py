@@ -57,10 +57,12 @@ class CalDAVIntegration(Integration):
         # An empty default, not None: ConfigManager.get raises KeyError for an absent key without one.
         configured = config.get('calendar.shown_calendars', [])
         if isinstance(configured, str):
-            configured = configured.split(",")
+            configured = [configured]
         if not isinstance(configured, (list, tuple)):
             return []
-        return [str(name).strip() for name in configured if str(name).strip()]
+        # An item may itself be "Home, Family": config_set stores such a string whole, and an
+        # indexed write later promotes it to a one-item list.
+        return [name.strip() for item in configured for name in str(item).split(",") if name.strip()]
 
     @staticmethod
     def _holds_events(calendar) -> bool:
