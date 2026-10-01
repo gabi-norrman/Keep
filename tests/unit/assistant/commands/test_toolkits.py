@@ -68,11 +68,20 @@ def test_by_name_is_tolerant():
 
 
 @pytest.mark.unit
-def test_index_lists_every_toolkit_once():
+def test_index_lists_every_offered_toolkit_once():
     index = Toolkits.render_index()
     for toolkit in TOOLKITS:
-        assert index.count(f"`{toolkit.name}`") == 1, toolkit.name
-        assert toolkit.summary in index
+        assert index.count(f"`{toolkit.name}`") == (0 if toolkit.hidden else 1), toolkit.name
+        assert (toolkit.summary in index) != toolkit.hidden
+
+
+@pytest.mark.unit
+def test_the_voice_toolkit_is_hidden_but_loadable():
+    """A text chat must never be offered the voice dialog style; the voice channel's preload
+    still finds it by name."""
+    assert "voice" not in Toolkits.names()
+    assert Toolkits.by_name("voice").hidden
+    assert "false_positive()" in Toolkits.render(Toolkits.by_name("voice"))
 
 
 @pytest.mark.unit

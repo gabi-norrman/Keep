@@ -14,7 +14,7 @@ from assistant.commands import ToolkitPreloader, Toolkits
 from assistant.RequestProcessor import RequestProcessor
 
 DATA = '## LIGHTS\n"Lamp [Kök]": off'
-HOME_ONLY = replace(VOICE_TO_VOICE, preload_toolkits=("home",))
+HOME_ONLY = replace(VOICE_TO_VOICE, preload_toolkits=("home",), fixed_toolkits=())
 CONFIGURED = {}
 
 
@@ -54,6 +54,17 @@ def test_the_configured_list_replaces_the_channels_own():
     assert ToolkitPreloader.preload(_prompt_manager({}), HOME_ONLY) == ["music", "tesla"]
     CONFIGURED["preload_toolkits"] = {SOURCE_VOICE: []}
     assert ToolkitPreloader.preload(_prompt_manager({}), HOME_ONLY) == []
+
+
+@pytest.mark.unit
+def test_the_configured_list_cannot_drop_a_fixed_toolkit():
+    """The voice dialog style is in the voice toolkit and nowhere in the prompt: a household
+    trimming its preload list must not lose it."""
+    profile = replace(HOME_ONLY, fixed_toolkits=("voice",))
+    assert ToolkitPreloader.preload(_prompt_manager({}), profile) == ["voice", "home"]
+    CONFIGURED["preload_toolkits"] = {SOURCE_VOICE: []}
+    assert ToolkitPreloader.preload(_prompt_manager({}), profile) == ["voice"]
+    assert ToolkitPreloader.preload(_prompt_manager({"voice": 1000.0}), profile) == []
 
 
 @pytest.mark.unit
@@ -110,7 +121,7 @@ def test_extra_toolkits_load_after_the_channels_own_without_duplicates():
 @pytest.mark.unit
 def test_an_unknown_name_in_the_profile_is_skipped_and_the_rest_still_load():
     pm = _prompt_manager({})
-    assert ToolkitPreloader.preload(pm, replace(VOICE_TO_VOICE, preload_toolkits=("nope", "home"))) == ["home"]
+    assert ToolkitPreloader.preload(pm, replace(HOME_ONLY, preload_toolkits=("nope", "home"))) == ["home"]
     pm.add_command_result.assert_called_once()
 
 
@@ -221,13 +232,13 @@ class TestRequestProcessorHook:
         self._handler(RequestContext(source=SOURCE_VOICE, user_input="hi"))._preload_toolkits(pm)
         texts = [c.args[0] for c in pm.add_command_result.call_args_list]
         assert [Toolkits.loaded_name(line) for t in texts for line in t.split("\n") if Toolkits.loaded_name(line)] \
-            == ["home", "music", "tesla"]
+            == ["voice", "home", "music", "tesla"]
 
     @pytest.mark.unit
     def test_voice_request_with_home_and_tesla_in_the_window_still_preloads_music(self):
         """The 2026-09-14 case: home was preloaded on an earlier turn, and "turn off the music"
         still spent a round on load_toolkit(music) — now music rides along with home."""
-        pm = _prompt_manager({"home": 1000.0, "tesla": 1000.0})
+        pm = _prompt_manager({"voice": 1000.0, "home": 1000.0, "tesla": 1000.0})
         self._handler(RequestContext(source=SOURCE_VOICE, user_input="turn off the music"))._preload_toolkits(pm)
         pm.add_command_result.assert_called_once()
         text = pm.add_command_result.call_args.args[0]

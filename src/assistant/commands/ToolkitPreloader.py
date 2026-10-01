@@ -2,7 +2,9 @@
 request from it starts (`ChannelProfile.preload_toolkits`, or the `preload_toolkits.<channel>`
 config list in its place — voice wants `home`, with the home data, `music` and `tesla`, since
 "turn on the kitchen lamp", "turn off the music" and "defrost the car" are the product and a
-`load_toolkit` round there costs a second or two on every request), plus
+`load_toolkit` round there costs a second or two on every request), in front of them the
+channel's `ChannelProfile.fixed_toolkits`, which no config list replaces (voice's `voice`:
+the spoken dialog style lives there and not in the prompt), plus
 whatever the caller adds for the moment
 (`FirstRun.preload_toolkits` — the `setup` toolkit while the FTUE lasts, on any channel).
 
@@ -64,7 +66,7 @@ def preload(prompt_manager, profile: ChannelProfile, extra: tuple[str, ...] = ()
     killed once the lock is held — a later request superseded it and preloads for itself."""
     configured = (config.get('preload_toolkits', {}) or {}).get(profile.name)
     channel_toolkits = profile.preload_toolkits if configured is None else tuple(configured)
-    wanted = tuple(dict.fromkeys(channel_toolkits + tuple(extra)))
+    wanted = tuple(dict.fromkeys(profile.fixed_toolkits + channel_toolkits + tuple(extra)))
     if not wanted:
         trace(f"Toolkit preload: the {profile.name} channel preloads nothing and nothing else is wanted")
         return []

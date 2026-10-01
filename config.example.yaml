@@ -266,7 +266,8 @@ developer_release: false
 #   android_location: Kitchen
 
 # Toolkits put in the LLM's window before every request from a channel, replacing the
-# channel's default (VoiceToVoice: [home, music, tesla]). Optional.
+# channel's default (VoiceToVoice: [home, music, tesla]). Optional. The `voice` toolkit (the
+# spoken dialog style) is always loaded for VoiceToVoice and is not part of this list.
 # preload_toolkits:
 #   VoiceToVoice: [home, music]   # a household without a Tesla
 

@@ -51,13 +51,17 @@ class ChannelProfile:
     # `preload_toolkits.<channel>` config list, which replaces this default. `weather()` is a
     # core command, always in the prompt, so it needs no preload.
     preload_toolkits: tuple[str, ...] = ()
+    # Toolkits the channel cannot do without, preloaded ahead of `preload_toolkits` and out of
+    # the config list's reach: voice's is `voice`, the spoken dialog style and the false
+    # positive rule, which the prompt carries nowhere else.
+    fixed_toolkits: tuple[str, ...] = ()
 
 
 VOICE_TO_VOICE = ChannelProfile(
     name=SOURCE_VOICE, llm_tier="fast", brevity_directive=True, forward_thinking=False,
     command_notifications=False, notification_ephemeral=False, notify_observers_of_commands=False,
     photo_target=PHOTO_TARGET_KITCHEN_TV, screenshot_allowed=False,
-    streams_tokens=False, preload_toolkits=("home", "music", "tesla"),
+    streams_tokens=False, preload_toolkits=("home", "music", "tesla"), fixed_toolkits=("voice",),
 )
 
 TEXT_CHAT = ChannelProfile(

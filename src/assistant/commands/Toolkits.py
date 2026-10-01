@@ -9,6 +9,10 @@ placeholder is not in the prompt template, so the prompt never holds the data �
 sends them, current, after the reference, and again on a pointer-back, since the reference is
 static but the data is not. While the toolkit is in the LLM's window, later changes follow as
 delta notes against what was sent (PromptManager._on_carried_section_updated_locked).
+
+A hidden toolkit (`voice` — how to talk on the voice channel, and `false_positive`) is not in
+the index: the channel it belongs to always has it preloaded (`ChannelProfile.fixed_toolkits`),
+so a text chat's prompt never carries a word of it.
 """
 from dataclasses import dataclass
 from typing import Callable
@@ -30,6 +34,8 @@ class Toolkit:
     commands: tuple[str, ...]
     # The prompt sections (PromptManager.sections keys) the toolkit carries, see the module doc.
     sections: tuple[str, ...] = ()
+    # Left out of the index and the "Available:" lists; `load_toolkit` still resolves it.
+    hidden: bool = False
 
     @property
     def path(self):
@@ -76,10 +82,12 @@ TOOLKITS: tuple[Toolkit, ...] = (
              "enable_integration", "disable_integration", "telegram_login")),
     Toolkit("developer", "study or change your own code: analyse a bug or a question, build a fix or a small feature as a PR; read your own log, restart the server",
             ("self_analysis", "self_improvement", "server_logs", "restart_server")),
+    Toolkit("voice", "how to reply when the user is speaking: spoken style, emotion tags, false positives",
+            ("false_positive",), hidden=True),
 )
 
 # Documented in the prompt itself, outside any toolkit.
-CORE_COMMANDS = frozenset({"load_toolkit", "false_positive", "remember", "weather", "load_calendar",
+CORE_COMMANDS = frozenset({"load_toolkit", "remember", "weather", "load_calendar",
                            "load_watch", "save_watch", "checked_watch", "delete_watch",
                            "load_procedure", "save_procedure", "delete_procedure"})
 # Runnable but deliberately offered nowhere (Commands.py carries the todo asking whether to keep it).
@@ -93,7 +101,8 @@ SECTION_HEADINGS = {"home": "HOME AUTOMATION DATA"}
 
 
 def names() -> list[str]:
-    return [t.name for t in TOOLKITS]
+    """The toolkits the LLM is offered by name (the hidden ones are not)."""
+    return [t.name for t in TOOLKITS if not t.hidden]
 
 
 def by_name(name: str) -> Toolkit | None:
@@ -113,8 +122,8 @@ def owner_of(command: str) -> Toolkit | None:
 
 
 def render_index() -> str:
-    """The `{TOOLKITS}` text: one line per toolkit."""
-    return "\n".join(f"- `{t.name}` — {t.summary}" for t in TOOLKITS)
+    """The `{TOOLKITS}` text: one line per toolkit the LLM may load itself."""
+    return "\n".join(f"- `{t.name}` — {t.summary}" for t in TOOLKITS if not t.hidden)
 
 
 def render(toolkit: Toolkit, substitute: Callable[[str], str] = lambda text: text) -> str:
