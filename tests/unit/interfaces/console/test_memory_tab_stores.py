@@ -84,5 +84,5 @@ class TestLiveViewShowsAllThreeParts:
         text = MemoryTab._watchlist_and_procedures()
         headings = [line for line in text.splitlines() if line.startswith("#")]
         assert headings[headings.index("# Procedures") + 1:] == [
-            "## courier", "## shop-checkout", "### Card declined", "#### 3-D Secure", "### Notes"]
+            "## courier", "## shop-checkout", "### Card declined", "#### 3-D Secure", "### notes"]
         assert "the Pay button moved" in text and "use the other card" in text

@@ -279,9 +279,11 @@ class MemoryTab(MarkdownTabView):
         for name in names:
             text = (Procedures.read(name) or "").strip()
             # The tab's "## name" replaces the procedure's own "# name"; every heading in its
-            # body ("## Notes" included) sits below that.
+            # body sits below that. The curator's "## Notes" is shown lower-case, like the
+            # procedure names around it; the file keeps its spelling.
             body = text.removeprefix(f"# {name}\n").removeprefix("# ")
             body = re.sub(r"(?m)^(#+)(?= )", lambda m: "#" * max(len(m.group(1)) + 1, 3), body)
+            body = re.sub(rf"(?m)^#{re.escape(Procedures.NOTES_HEADING)}$", f"#{Procedures.NOTES_HEADING.lower()}", body)
             parts += [f"## {name}", "", body.strip(), ""]
         return "\n".join(parts) + "\n"
 
@@ -448,7 +450,7 @@ class MemoryTab(MarkdownTabView):
             self.draw_formatted_line(screen, x, y, line, max_width, colors)
             return
         # A line with inline highlights is plain text with highlight backgrounds
-        fg = ADDED_TINT_COLORS['normal'] if colors else MARKDOWN_COLORS['normal']
+        fg = (colors or MARKDOWN_COLORS)['normal']
         self._draw_highlighted(screen, x, y, fit(line, max_width), fg, COLOR_ADDED_HIGHLIGHT_BG, highlights)
 
     def _draw_removed_line(self, screen: TUIScreen, x: int, y: int, line: str,

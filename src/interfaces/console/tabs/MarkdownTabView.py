@@ -10,7 +10,7 @@ from interfaces.console.framework.TextWidth import char_width, display_width, no
 MARKDOWN_COLORS = {
     'h1': Color(100, 200, 255),
     'h2': Color(150, 220, 150),
-    'h3': Color(220, 180, 100),
+    'h3': Color(85, 125, 85),          # h2's green, dimmed
     'h4': Color(200, 150, 200),
     'code': Color(120, 205, 190),      # teal, so backticked names never read as a vaulted value
     'code_block': Color(180, 180, 120),
