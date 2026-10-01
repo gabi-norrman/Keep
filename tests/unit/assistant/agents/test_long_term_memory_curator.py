@@ -217,9 +217,16 @@ class TestMemoryWordCount:
         assert "at least 2162 words shorter" in note
 
 
+def _mock_curator() -> Mock:
+    """A curator stub whose command block runs nothing: `run_commands` answers (results, unsaved)."""
+    curator = Mock()
+    curator.run_commands.return_value = ([], [])
+    return curator
+
+
 class TestRun:
     def test_run_curates_saves_and_logs(self, tmp_path):
-        curator = Mock()
+        curator = _mock_curator()
         curator.curate_memory.return_value = ("new bank", {'interaction_count': 3, 'new_memory_size': 8})
         metadata = LongTermMemoryCurator.run(datetime(2026, 9, 10, 14), datetime(2026, 9, 10, 16), curator=curator)
         curator.curate_memory.assert_called_once_with(datetime(2026, 9, 10, 14), datetime(2026, 9, 10, 16))
@@ -227,7 +234,7 @@ class TestRun:
         curator.save_debug_log.assert_called_once_with("new bank", metadata)
 
     def test_run_records_the_completion_in_the_history(self):
-        curator = Mock()
+        curator = _mock_curator()
         curator.curate_memory.return_value = ("bank", {
             'interaction_count': 17, 'new_memory_size': 4,
             'period_start': '2026-09-08T00:00', 'period_end': '2026-09-10T04:00'})
@@ -241,7 +248,7 @@ class TestRun:
 
     def test_second_run_while_one_is_in_progress_is_skipped(self):
         started, release = threading.Event(), threading.Event()
-        slow = Mock()
+        slow = _mock_curator()
 
         def curate(*_):
             started.set()
@@ -252,18 +259,18 @@ class TestRun:
         first.start()
         assert started.wait(5)
         try:
-            assert LongTermMemoryCurator.run(curator=Mock()) is None
+            assert LongTermMemoryCurator.run(curator=_mock_curator()) is None
         finally:
             release.set()
             first.join(5)
         assert slow.save_memory.called
 
     def test_lock_is_released_after_a_failure(self):
-        failing = Mock()
+        failing = _mock_curator()
         failing.curate_memory.side_effect = RuntimeError("boom")
         with pytest.raises(RuntimeError):
             LongTermMemoryCurator.run(curator=failing)
-        ok = Mock()
+        ok = _mock_curator()
         ok.curate_memory.return_value = ("bank", {'interaction_count': 0, 'new_memory_size': 4})
         assert LongTermMemoryCurator.run(curator=ok) is not None
 
@@ -352,7 +359,7 @@ class TestChunks:
 def _span_curator(metadata_for=None):
     """A curator whose curate_memory answers ("bank", metadata) per call; `metadata_for(start)`
     picks the metadata by the chunk's start (default: a normal curated chunk)."""
-    curator = Mock()
+    curator = _mock_curator()
 
     def curate(period_start, period_end):
         base = {'interaction_count': 2, 'new_memory_size': 8,
@@ -449,7 +456,7 @@ class TestRunSpan:
 
     def test_span_is_skipped_while_another_curation_runs(self):
         started, release = threading.Event(), threading.Event()
-        slow = Mock()
+        slow = _mock_curator()
 
         def curate(*_):
             started.set()
@@ -462,7 +469,7 @@ class TestRunSpan:
         assert started.wait(5)
         try:
             assert LongTermMemoryCurator.run_span(self.START, self.END, curator=_span_curator()) is None
-            assert LongTermMemoryCurator.run(curator=Mock()) is None
+            assert LongTermMemoryCurator.run(curator=_mock_curator()) is None
         finally:
             release.set()
             first.join(5)

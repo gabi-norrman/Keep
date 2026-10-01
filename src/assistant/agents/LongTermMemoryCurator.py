@@ -348,15 +348,20 @@ class LongTermMemoryCurator:
     @classmethod
     def _curate_period(cls, curator: 'LongTermMemoryCurator', period_start, period_end, history,
                        record: bool = True) -> dict:
-        """One period, lock already held: curate, save the bank and its debug log and, when
-        `record`, leave the completion in the history. A period with no interactions
-        changes nothing."""
+        """One period, lock already held: curate, run the commands, save the bank and its debug
+        log and, when `record`, leave the completion in the history. The commands run before
+        the bank is written: the bank keeps only a pointer to a how-to the commands move into
+        a procedure, so a refused `save_procedure` must be known before the bank is replaced —
+        its text is then kept in the bank. A period with no interactions changes nothing."""
         new_memory, metadata = curator.curate_memory(period_start, period_end)
         if metadata.get('empty'):
             info("Rem: nothing happened in this period — memory bank unchanged.")
             return metadata
+        metadata['command_results'], unsaved = curator.run_commands(metadata.get('commands', ''))
+        if unsaved:
+            new_memory = "\n\n".join([new_memory.rstrip("\n")] + unsaved) + "\n"
+            metadata['new_memory_size'] = len(new_memory)
         curator.save_memory(new_memory, metadata)
-        metadata['command_results'] = curator.run_commands(metadata.get('commands', ''))
         curator.save_debug_log(new_memory, metadata)
         info(f"Rem: cycle complete — dreamt through {metadata['interaction_count']} interactions, "
              f"memory bank now {metadata['new_memory_size']} bytes.")
@@ -735,7 +740,8 @@ class LongTermMemoryCurator:
         reply = self._think_whole(SPLIT_EXTRACT_PROMPT.replace("{TODAY}", today).replace("{BANK}", bank),
                                   "extracting the watch items and procedures")
         commands = self._split_commands(reply)[1]
-        results = self.run_commands(commands, watchlist_dir, procedures_dir, log_dir=target / "replaced")
+        # A refused procedure stays in the old bank's text, which the rewrite below keeps verbatim
+        results, _ = self.run_commands(commands, watchlist_dir, procedures_dir, log_dir=target / "replaced")
         info(f"Memory split: {len(WatchList.items(watchlist_dir))} watch item(s), "
              f"{len(Procedures.names(procedures_dir))} procedure(s); rewriting the bank without them...")
         procedures = "\n\n".join(Procedures.load(name, procedures_dir) for name in Procedures.names(procedures_dir))
@@ -797,24 +803,40 @@ class LongTermMemoryCurator:
     @classmethod
     def _command_chunks(cls, block: str) -> tuple[list[str], list[tuple[str, str]]]:
         """The block cut at every line that opens a curator command (outside a triple-quoted
-        text): the lines before the first command, and per command its name and the raw text
-        between its opening parenthesis and the last closing one before the next command.
-        Cutting at the command names, not by matching parentheses and quotes, keeps one
-        command's stray quote (an inch mark, a quoted phrase in a note) from swallowing the
-        commands after it."""
-        preamble, chunks, current, in_text = [], [], None, False
+        text): the lines that belong to no command, and per command its name and the raw text
+        between its opening parenthesis and the last closing one. A command runs on to the next
+        line only while it is open — inside a triple-quoted text, or with its parentheses not
+        yet balanced (quotes do not count: an inch mark or a quoted phrase in a note must not
+        swallow the commands after it); any other line is skipped, so a forbidden command or a
+        line of prose never ends up inside the previous command's last argument."""
+        skipped, chunks, current, in_text, depth = [], [], None, False, 0
         for line in block.splitlines():
             start = None if in_text else cls._COMMAND_START.match(line)
             if start:
                 current = [start.group(1).lower(), line[start.end():]]
                 chunks.append(current)
-            elif current is not None:
+                in_text, depth = cls._scan(current[1], in_text, 1)
+            elif current is not None and (in_text or depth > 0):
                 current[1] += "\n" + line
-            elif line.strip("` "):
-                preamble.append(line.strip())
-            if line.count('"""') % 2:
+                in_text, depth = cls._scan(line, in_text, depth)
+            else:
+                in_text, depth = cls._scan(line, in_text, 0)
+                if line.strip("` "):
+                    skipped.append(line.strip())
+            if current is not None and not in_text and depth <= 0:
+                current = None
+        return skipped, [(name, raw[:raw.rfind(")")] if ")" in raw else raw) for name, raw in chunks]
+
+    @staticmethod
+    def _scan(text: str, in_text: bool, depth: int) -> tuple[bool, int]:
+        """`in_text` and the parenthesis depth after `text`; parentheses count only outside a
+        triple-quoted text."""
+        for index, part in enumerate(text.split('"""')):
+            if index:
                 in_text = not in_text
-        return preamble, [(name, raw[:raw.rfind(")")] if ")" in raw else raw) for name, raw in chunks]
+            if not in_text:
+                depth += part.count("(") - part.count(")")
+        return in_text, depth
 
     @staticmethod
     def _split_arguments(raw: str) -> list[str]:
@@ -853,37 +875,46 @@ class LongTermMemoryCurator:
         return args
 
     def run_commands(self, block: str, watchlist_dir: Path = None, procedures_dir: Path = None,
-                     log_dir: Path = None) -> list[str]:
+                     log_dir: Path = None) -> tuple[list[str], list[str]]:
         """Run the curator's command block against the watch list and the procedures, one
-        command after the other; a line that is not one of CURATOR_COMMANDS is skipped.
-        Returns one line per command for the debug log: the command, and why it failed if it did.
-        The directories default to the curator's own; `propose_split` points them at its proposal."""
+        command after the other; a line that is not one of CURATOR_COMMANDS is skipped. A
+        `save_watch` here is a rewrite, not a look, so it leaves the item's `checked` stamp alone.
+        Returns one line per command for the debug log (the command, and why it failed if it
+        did), and the bank sections that keep the text of every refused `save_procedure`: the
+        bank is rewritten to hold a one-line pointer in its place, so the how-to would be lost
+        otherwise. The directories default to the curator's own; `propose_split` points them at
+        its proposal."""
         watchlist_dir = watchlist_dir or self.watchlist_dir
         procedures_dir = procedures_dir or self.procedures_dir
         if not block.strip():
             trace("Rem: no watch list or procedure commands this run")
-            return []
-        results = []
-        preamble, chunks = self._command_chunks(block)
-        for line in preamble:
+            return [], []
+        results, unsaved = [], []
+        skipped, chunks = self._command_chunks(block)
+        for line in skipped:
             info(f"Rem: skipped a line that is not a curator command: {line[:120]}")
             results.append(f"SKIPPED (not a curator command): {line[:200]}")
         for command, raw in chunks:
             params = self._split_arguments(raw)
             shown = f"{command}({', '.join(p if len(p) <= 120 else p[:120] + '…' for p in params)})"
             if command in WatchList.COMMANDS:
-                failure = WatchList.run(command, params, watchlist_dir, log_dir)
+                failure = WatchList.run(command, params, watchlist_dir, log_dir, looked=False)
             else:
                 failure = Procedures.run(command, params, procedures_dir, log_dir, allow_replace=False)
             if failure:
                 error(f"Rem: {shown} — {failure}")
                 results.append(f"FAILED {shown} — {failure}")
+                if command == "save_procedure" and len(params) > 2 and "".join(params[2:]).strip():
+                    unsaved.append(f"## Procedure not saved: {params[0]}\n"
+                                   f"({failure}; move it with the commands)\nWhen: {params[1]}\n\n"
+                                   + ", ".join(params[2:]).strip())
+                    info(f"Rem: the text of '{params[0]}' stays in the bank until it is saved")
             else:
                 info(f"Rem: {shown}")
                 results.append(shown)
         info(f"Rem: {len(results)} watch list / procedure command(s) handled, "
              f"{sum(r.startswith('FAILED') for r in results)} failed")
-        return results
+        return results, unsaved
 
     @staticmethod
     def _extract_memory_content(response: str) -> str:

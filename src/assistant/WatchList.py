@@ -9,7 +9,8 @@ first, which is a debugging trail the LLM never reads.
 
 An item may carry a check cadence (`every`: "1d", "6h", "weekly" — free text the LLM reads)
 and always carries when it was last looked at (`checked`, with the time of day): `updated`
-moves when the state changes, `checked` whenever someone looks. A check that finds nothing
+moves when the state changes, `checked` whenever someone looks (the assistant's `save_watch` is a
+look; the curator's nightly rewrite is not). A check that finds nothing
 stamps `checked` with `checked_watch` and leaves the note alone, so the note never turns into
 a trail again. Whether a check is due is the LLM's arithmetic, not the code's: the prompt shows
 the cadence and the stamp side by side.
@@ -118,10 +119,12 @@ def _given(value: str | None) -> str | None:
 
 
 def save(name: str, note: str, due: str | None = None, directory: Path = None, log_dir: Path = None,
-         every: str | None = None) -> Item | None:
+         every: str | None = None, looked: bool = True) -> Item | None:
     """Start watching `name`, or replace the note of the item that already answers to it. The
-    due date and the check cadence are kept unless given ('-' clears either). Saving is a look
-    at the item, so it stamps `checked` too. None when the name has no letters or digits."""
+    due date and the check cadence are kept unless given ('-' clears either). The assistant's
+    save is a look at the item, so it stamps `checked` too; the curator's nightly rewrite is
+    not one (`looked=False`) and leaves the stamp alone, or the next check would be postponed
+    by a whole cadence. None when the name has no letters or digits."""
     directory = directory or WATCHLIST_DIR
     if not slug(name):
         return None
@@ -144,7 +147,10 @@ def save(name: str, note: str, due: str | None = None, directory: Path = None, l
                 item.every = "" if every == "-" else every
             item.updated = today
             info(f"Watch list: '{item.name}' updated" + (f", checked every {item.every}" if item.every else ""))
-        item.checked = _now()
+        if looked:
+            item.checked = _now()
+        else:
+            trace(f"Watch list: '{item.name}' saved without a look — checked stays {item.checked or 'unset'}")
         _path(name, directory).write_text(item.text(), encoding="utf-8")
     return item
 
@@ -231,15 +237,17 @@ def version(directory: Path = None) -> tuple:
     return files, time.strftime("%Y-%m-%d")
 
 
-def run(command: str, args: list[str], directory: Path = None, log_dir: Path = None) -> str:
+def run(command: str, args: list[str], directory: Path = None, log_dir: Path = None,
+        looked: bool = True) -> str:
     """One watch-list command with the arguments as the command parser split them. Returns ''
-    when it ran and the reason when it could not — the error the LLM is told."""
+    when it ran and the reason when it could not — the error the LLM is told. `looked` is
+    whether a save counts as a check of the item (the assistant's does, the curator's does not)."""
     args = [a.strip() for a in args]
     if command == "save_watch":
         if len(args) < 2 or not args[1]:
             return "save_watch failed: expected 'name, note, due, every' parameters"
         if save(args[0], args[1], args[2] if len(args) > 2 else None, directory, log_dir,
-                every=args[3] if len(args) > 3 else None) is None:
+                every=args[3] if len(args) > 3 else None, looked=looked) is None:
             return "save_watch failed: the name must contain letters or digits"
         return ""
     if command == "checked_watch":

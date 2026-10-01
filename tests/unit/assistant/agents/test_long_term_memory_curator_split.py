@@ -68,7 +68,7 @@ class TestRunCommands:
     def test_watch_and_procedure_commands_land_in_the_injected_directories(self, tmp_path, dirs):
         curator = make_curator(tmp_path, dirs)
         WatchList.save("Dentist for Charlotte", "12:30", "2026-03-11", dirs[0], tmp_path / "wlog")
-        results = curator.run_commands(
+        results, _ = curator.run_commands(
             'save_watch("Parcel from shop.example", "order 4711, evening (16-22)", "2026-03-12")\n'
             'save_watch("dentist-for-charlotte", "moved to 14:00")\n'
             'save_procedure("shop-checkout", "paying at shop.example", """1) open the cart\n2) click "Pay")""")\n'
@@ -82,15 +82,45 @@ class TestRunCommands:
 
     def test_prose_and_markdown_dressing_around_commands_is_tolerated(self, tmp_path, dirs):
         curator = make_curator(tmp_path, dirs)
-        results = curator.run_commands('Here is what I did:\n- `save_watch("Parcel", "ordered", "")`\nThat is all.')
+        results, _ = curator.run_commands('Here is what I did:\n- `save_watch("Parcel", "ordered", "")`\nThat is all.')
         assert [i.name for i in WatchList.items(dirs[0])] == ["parcel"]
-        assert sum(r.startswith("SKIPPED") for r in results) == 1
+        assert WatchList.get("parcel", dirs[0]).due == ""
+        assert sum(r.startswith("SKIPPED") for r in results) == 2
+
+    def test_a_line_after_a_closed_command_is_not_glued_into_its_last_argument(self, tmp_path, dirs):
+        """Regression: every non-command line after the first command was appended to it, so a
+        forbidden `checked_watch` line or trailing prose ended up inside a due date or a note."""
+        curator = make_curator(tmp_path, dirs)
+        Procedures.save("shop-checkout", "paying", "the steps", dirs[1], tmp_path / "plog")
+        results, _ = curator.run_commands(
+            'save_watch("sofa", """Paid (order 12), shipped""", "2026-11-08")\n'
+            'checked_watch("sofa")\n'
+            'procedure_note("shop-checkout", "the push may need a retry")\n'
+            'delete_procedure("shop-checkout")\n'
+            'That is all.')
+        sofa = WatchList.get("sofa", dirs[0])
+        assert (sofa.note, sofa.due) == ("Paid (order 12), shipped", "2026-11-08")
+        text = Procedures.read("shop-checkout", dirs[1])
+        assert text.endswith("the push may need a retry\n") and "delete_procedure" not in text
+        assert sum(r.startswith("SKIPPED") for r in results) == 3 and not any(r.startswith("FAILED") for r in results)
+
+    def test_a_command_spread_over_several_lines_is_still_one_command(self, tmp_path, dirs):
+        curator = make_curator(tmp_path, dirs)
+        results, _ = curator.run_commands(
+            'save_watch("sofa (grey)",\n'
+            '    """Paid, shipped\n'
+            'tracking 1234""",\n'
+            '    "2026-11-08")\n'
+            'delete_watch("nothing", "x")')
+        sofa = WatchList.get("sofa-grey", dirs[0])
+        assert (sofa.note, sofa.due) == ("Paid, shipped\ntracking 1234", "2026-11-08")
+        assert [r[:6] for r in results] == ["save_w", "FAILED"]
 
     def test_a_stray_quote_in_one_note_does_not_swallow_the_next_command(self, tmp_path, dirs):
         """Regression: a note holding an inch mark and a quoted phrase unbalanced the quotes,
         and every command after it was lost."""
         curator = make_curator(tmp_path, dirs)
-        results = curator.run_commands(
+        results, _ = curator.run_commands(
             'save_watch("tv-delivery", "TV 77" panel, order 1 (33 kg), press "Pay"", "2026-10-02")\n'
             'save_watch("sofa-delivery", """ordered, "paid" (link), arrives in November""")\n'
             'save_watch("parcel", "at the pickup point (code 12)")')
@@ -111,7 +141,7 @@ class TestRunCommands:
     def test_a_command_outside_the_allowlist_is_not_run(self, tmp_path, dirs):
         curator = make_curator(tmp_path, dirs)
         Procedures.save("shop-checkout", "paying", "the steps", dirs[1], tmp_path / "plog")
-        results = curator.run_commands('delete_procedure("shop-checkout")\nremember("x")\nwatch_close(1, "y")')
+        results, _ = curator.run_commands('delete_procedure("shop-checkout")\nremember("x")\nwatch_close(1, "y")')
         assert Procedures.read("shop-checkout", dirs[1]) is not None
         assert len(results) == 3
         assert all(r.startswith("SKIPPED") for r in results)
@@ -122,25 +152,34 @@ class TestRunCommands:
         WatchList.save("Tickets", "not on sale yet", None, dirs[0], tmp_path / "wlog", every="1d")
         path = dirs[0] / "tickets.md"
         path.write_text(path.read_text().replace(WatchList.get("Tickets", dirs[0]).checked, "2026-03-01 09:00"))
-        results = curator.run_commands('checked_watch("tickets")')
-        assert results == ['SKIPPED (not a curator command): checked_watch("tickets")']
-        assert WatchList.get("Tickets", dirs[0]).checked == "2026-03-01 09:00"
+        results, _ = curator.run_commands('checked_watch("tickets")\nsave_watch("tickets", """on sale Friday""")')
+        assert results[0] == 'SKIPPED (not a curator command): checked_watch("tickets")'
+        tickets = WatchList.get("Tickets", dirs[0])
+        assert tickets.note == "on sale Friday"
+        assert tickets.checked == "2026-03-01 09:00"   # the rewrite is not a look; the assistant's save_watch is
+        WatchList.run("save_watch", ["tickets", "bought"], dirs[0], tmp_path / "wlog")
+        assert WatchList.get("Tickets", dirs[0]).checked != "2026-03-01 09:00"
 
     def test_replacing_an_existing_procedure_is_refused_and_reported(self, tmp_path, dirs):
         curator = make_curator(tmp_path, dirs)
         Procedures.save("shop-checkout", "paying", "the original steps", dirs[1], tmp_path / "plog")
-        results = curator.run_commands('save_procedure("Shop Checkout", "paying", """condensed""")')
+        results, unsaved = curator.run_commands('save_procedure("Shop Checkout", "paying", """condensed""")')
         assert "the original steps" in Procedures.read("shop-checkout", dirs[1])
         assert len(results) == 1 and results[0].startswith("FAILED")
+        assert len(unsaved) == 1 and "condensed" in unsaved[0] and "Shop Checkout" in unsaved[0]
+
+    def test_a_refused_procedure_with_no_text_leaves_nothing_to_keep(self, tmp_path, dirs):
+        _, unsaved = make_curator(tmp_path, dirs).run_commands('save_procedure("x", "when", "")')
+        assert unsaved == []
 
     def test_a_failing_command_does_not_stop_the_ones_after_it(self, tmp_path, dirs):
         curator = make_curator(tmp_path, dirs)
-        results = curator.run_commands('delete_watch("plumber", "gone")\nsave_watch("Parcel", "ordered", "")')
+        results, _ = curator.run_commands('delete_watch("plumber", "gone")\nsave_watch("Parcel", "ordered", "")')
         assert results[0].startswith("FAILED")
         assert [i.name for i in WatchList.items(dirs[0])] == ["parcel"]
 
     def test_an_empty_block_does_nothing(self, tmp_path, dirs):
-        assert make_curator(tmp_path, dirs).run_commands("  \n") == []
+        assert make_curator(tmp_path, dirs).run_commands("  \n") == ([], [])
         assert not dirs[0].exists()
 
 
@@ -178,7 +217,7 @@ class TestCuration:
         _, metadata = curator.curate_memory_with_data("history", "", "B" * 1000)
         assert metadata['commands'] == ""
 
-    def test_a_period_run_saves_the_bank_then_runs_the_commands(self, tmp_path, dirs):
+    def test_a_period_run_runs_the_commands_and_saves_the_bank(self, tmp_path, dirs):
         curator = make_curator(tmp_path, dirs)
         WatchList.save("Parcel", "shipped", None, dirs[0], tmp_path / "wlog")
         curator.curate_memory = Mock(return_value=("# Bank\n", {
@@ -189,6 +228,23 @@ class TestCuration:
         assert WatchList.items(dirs[0]) == []
         assert len(metadata['command_results']) == 1
         curator.save_debug_log.assert_called_once()
+
+    def test_a_refused_procedure_keeps_its_text_in_the_bank(self, tmp_path, dirs):
+        """Regression: the bank (now holding only a pointer to the how-to) was written before
+        the commands ran, so a refused save_procedure lost the how-to from live memory."""
+        curator = make_curator(tmp_path, dirs)
+        Procedures.save("shop-checkout", "paying", "the original steps", dirs[1], tmp_path / "plog")
+        curator.curate_memory = Mock(return_value=("# Bank\n* Shopping: see shop-checkout\n", {
+            'interaction_count': 2, 'new_memory_size': 7,
+            'commands': 'save_procedure("shop-checkout", "paying", """1) cart\n2) Pay, never Back""")'}))
+        curator.save_debug_log = Mock()
+        metadata = LongTermMemoryCurator.run(curator=curator)
+        bank = MemoryFile.read(curator.memory_file_path)
+        assert bank.startswith("# Bank\n* Shopping: see shop-checkout\n")
+        assert "1) cart\n2) Pay, never Back" in bank and "shop-checkout" in bank.split("\n\n", 1)[1]
+        assert metadata['new_memory_size'] == len(bank)
+        assert "the original steps" in Procedures.read("shop-checkout", dirs[1])
+        assert metadata['command_results'][0].startswith("FAILED")
 
     def test_an_empty_period_runs_no_commands(self, tmp_path, dirs):
         curator = make_curator(tmp_path, dirs)
