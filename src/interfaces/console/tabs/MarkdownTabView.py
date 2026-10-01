@@ -2,34 +2,25 @@ import re
 from typing import List
 
 from .ScrollableTabView import ScrollableTabView
-from interfaces.console.framework.TUIScreen import TUIScreen, Color
+from interfaces.console import Theme
+from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.framework import TextWidth
 from interfaces.console.framework.TextWidth import char_width, display_width, normalize
 
-# Markdown colors
 MARKDOWN_COLORS = {
-    'h1': Color(100, 200, 255),
-    'h2': Color(150, 220, 150),
-    'h3': Color(102, 148, 102),       # h2's green, dimmed
-    'h4': Color(200, 150, 200),
-    'code': Color(120, 205, 190),      # teal, so backticked names never read as a vaulted value
-    'code_block': Color(180, 180, 120),
-    'bullet': Color(120, 180, 220),
-    'bold': Color(255, 255, 255),
-    'normal': Color(180, 180, 180),
+    'h1': Theme.COLOR_CYAN,
+    'h2': Theme.COLOR_GREEN,
+    'h3': Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_GREEN, 0.62),   # h2's green, dimmed
+    'h4': Theme.COLOR_PURPLE,
+    'code': Theme.COLOR_TEAL,          # teal, so backticked names never read as a vaulted value
+    'code_block': Theme.mix(Theme.COLOR_LABEL, Theme.COLOR_YELLOW, 0.45),
+    'bullet': Theme.COLOR_BLUE,
+    'bold': Theme.COLOR_BRIGHT,
+    'normal': Theme.COLOR_TEXT,
 }
 
-ADDED_TINT_COLORS = {
-    'h1': Color(100, 220, 140),
-    'h2': Color(110, 220, 110),
-    'h3': Color(140, 210, 100),
-    'h4': Color(130, 200, 130),
-    'code': Color(140, 210, 100),
-    'code_block': Color(130, 200, 100),
-    'bullet': Color(100, 200, 120),
-    'bold': Color(150, 255, 150),
-    'normal': Color(120, 210, 120),
-}
+# An added line: every element pulled most of the way to the green.
+ADDED_TINT_COLORS = {element: Theme.mix(color, Theme.COLOR_GREEN, 0.65) for element, color in MARKDOWN_COLORS.items()}
 
 
 fit = TextWidth.fit

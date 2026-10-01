@@ -1,14 +1,15 @@
 from dataclasses import dataclass
 from typing import List
 
+from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
 from interfaces.console.framework.TextWidth import display_width, ljust
 
 TAB_WIDTH = 10
 
-COLOR_INACTIVE_FG = Color(100, 105, 115)
-COLOR_ACTIVE_FG = Color(220, 225, 235)
-COLOR_SELECTED_UNFOCUSED_FG = Color(160, 165, 175)
+COLOR_INACTIVE_FG = Theme.COLOR_DIM
+COLOR_ACTIVE_FG = Theme.COLOR_BRIGHT
+COLOR_SELECTED_UNFOCUSED_FG = Theme.COLOR_TITLE
 
 
 @dataclass(frozen=True)
@@ -19,12 +20,13 @@ class BarStyle:
     active_bg: Color     # the selected tab
 
 
-TOP_BAR = BarStyle(tab_bg=Color(25, 28, 35), separator=Color(35, 38, 45), fill=Color(35, 38, 45),
-                   active_bg=Color(0, 0, 0))
+TOP_BAR = BarStyle(tab_bg=Theme.COLOR_TITLE_BG, separator=Theme.COLOR_GRID, fill=Theme.COLOR_GRID,
+                   active_bg=TUIScreen.BACKGROUND)
 # The sub-tab row sits between the top bar's gray and a selected tab's black; a selected
 # TabGroup in the top bar takes the row's colors so tab and row join up
-SUB_BAR = BarStyle(tab_bg=Color(12, 14, 18), separator=Color(18, 20, 25), fill=Color(18, 20, 25),
-                   active_bg=Color(0, 0, 0))
+_SUB_FILL = Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_TITLE_BG, 0.5)
+SUB_BAR = BarStyle(tab_bg=Theme.COLOR_PANEL_BG, separator=_SUB_FILL, fill=_SUB_FILL,
+                   active_bg=TUIScreen.BACKGROUND)
 TOP_BAR_GROUP_SELECTED = BarStyle(tab_bg=TOP_BAR.tab_bg, separator=TOP_BAR.separator, fill=TOP_BAR.fill,
                                   active_bg=SUB_BAR.fill)
 

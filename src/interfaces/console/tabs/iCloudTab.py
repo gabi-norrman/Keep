@@ -1,11 +1,12 @@
 from typing import Optional, Tuple
 
+from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
 from interfaces.console.tabs.AuthTab import AuthTab, COLOR_GRAY, COLOR_GREEN, COLOR_WHITE, COLOR_YELLOW
 from assistant.integration.integrations.ICloudIntegration import iCloudAPI, iCloudAuthenticationError
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
 
-COLOR_DEVICE_ID = Color(100, 100, 100)
+COLOR_DEVICE_ID = Theme.COLOR_DIM
 DEVICE_ID_X = 60
 VERIFIED_STATES = ("authenticated", "partial_auth")   # partial_auth still serves Find My
 

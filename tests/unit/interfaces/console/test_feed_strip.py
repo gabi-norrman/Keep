@@ -11,8 +11,8 @@ from interfaces.console.widgets.FeedStrip import (BAR_EMPTY_DIMMING, COLOR_START
 
 WIDTH, HEIGHT = 100, 12
 
-FILL = dimmed(Theme.COLOR_GREEN_FG_BRIGHTER)
-BOX = dimmed(Theme.COLOR_GREEN_FG_BRIGHTER, BAR_EMPTY_DIMMING)
+FILL = dimmed(Theme.COLOR_GREEN)
+BOX = dimmed(Theme.COLOR_GREEN, BAR_EMPTY_DIMMING)
 
 
 def status(state="live", **extra) -> dict:
@@ -57,7 +57,7 @@ class TestChipFor:
 
     def test_failed_and_stopped_are_a_red_cross_without_a_box(self):
         for state in ("failed", "stopped"):
-            assert chip_for("Indigo", status(state, last_error="boom")) == FeedChip(SYMBOL_FAILED, dimmed(Theme.COLOR_RED_FG), "Indigo")
+            assert chip_for("Indigo", status(state, last_error="boom")) == FeedChip(SYMBOL_FAILED, dimmed(Theme.COLOR_RED), "Indigo")
 
     def test_starting_is_a_dim_dot(self):
         assert chip_for("Telegram", status("starting")) == FeedChip(SYMBOL_RUNNING, dimmed(COLOR_STARTING), "Telegram")
@@ -116,7 +116,7 @@ class TestFooter:
         dot = screen.next_frame[HEIGHT - 1][line.index(SYMBOL_RUNNING)]
         assert (dot.style.fg, dot.style.bg) == (FILL, None)
         cross = screen.next_frame[HEIGHT - 1][line.index(SYMBOL_FAILED)]
-        assert (cross.style.fg, cross.style.bg) == (dimmed(Theme.COLOR_RED_FG), None)
+        assert (cross.style.fg, cross.style.bg) == (dimmed(Theme.COLOR_RED), None)
 
     def test_notice_replaces_the_chips(self):
         pane = ChatPane()

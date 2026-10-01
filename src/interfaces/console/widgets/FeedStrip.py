@@ -23,7 +23,7 @@ SYMBOL_RUNNING = "●"
 SYMBOL_PAUSED = "○"
 SYMBOL_FAILED = "✕"
 
-COLOR_STARTING = Color(106, 105, 101)   # ChatPane.COLOR_DIM: the strip's own text colour
+COLOR_STARTING = Theme.COLOR_DIM   # ChatPane.COLOR_DIM: the strip's own text colour
 SYMBOL_DIMMING = 0.75                   # the symbol's colour, faded a quarter of the way to black
 PAUSED_DIMMING = 0.5                    # a paused bar, faded half way
 BAR_EMPTY_DIMMING = 0.3                 # the box behind the fill: the same green, most of the way to black
@@ -64,17 +64,17 @@ def chip_for(name: str, status: dict) -> FeedChip:
     state = status["state"]
     label = SHORT_NAMES.get(name, name)
     if state in ("stopped", "failed"):
-        return FeedChip(SYMBOL_FAILED, dimmed(Theme.COLOR_RED_FG), label)
+        return FeedChip(SYMBOL_FAILED, dimmed(Theme.COLOR_RED), label)
     if state == "catching_up":
         if status.get("eta_seconds") is not None:
             label += f" ETA: {format_eta(status['eta_seconds'])}"
         elif status.get("remaining") is not None:
             label += f" {status['remaining']} left"
-        fill, box = dimmed(Theme.COLOR_GREEN_FG_BRIGHTER), dimmed(Theme.COLOR_GREEN_FG_BRIGHTER, BAR_EMPTY_DIMMING)
+        fill, box = dimmed(Theme.COLOR_GREEN), dimmed(Theme.COLOR_GREEN, BAR_EMPTY_DIMMING)
         if status.get("paused"):
             fill, box = dimmed(fill, PAUSED_DIMMING), dimmed(box, PAUSED_DIMMING)
         return FeedChip(bar_block(status.get("progress") or 0.0), fill, label, box)
-    color = Theme.COLOR_GREEN_FG_BRIGHTER if state == "live" else COLOR_STARTING
+    color = Theme.COLOR_GREEN if state == "live" else COLOR_STARTING
     return FeedChip(SYMBOL_PAUSED if status.get("paused") else SYMBOL_RUNNING, dimmed(color), label)
 
 

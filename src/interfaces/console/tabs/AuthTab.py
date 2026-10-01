@@ -11,16 +11,17 @@ import threading
 import time
 from typing import Callable, Optional, Tuple
 
+from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
 from interfaces.console.tabs.TabView import TabView, SUB_CONTENT_TOP
 from common.logging import info, trace
 
-COLOR_GREEN = Color(80, 200, 80)
-COLOR_YELLOW = Color(200, 200, 80)
-COLOR_RED = Color(200, 80, 80)
-COLOR_GRAY = Color(150, 150, 150)
-COLOR_WHITE = Color(220, 220, 220)
-COLOR_HELP = Color(100, 100, 100)
+COLOR_GREEN = Theme.COLOR_GREEN
+COLOR_YELLOW = Theme.COLOR_YELLOW
+COLOR_RED = Theme.COLOR_RED
+COLOR_GRAY = Theme.COLOR_LABEL
+COLOR_WHITE = Theme.COLOR_BRIGHT
+COLOR_HELP = Theme.COLOR_DIM
 
 # The names TUIFloxyConsole._parse_key gives these keys, plus the raw bytes some paths pass
 ENTER_KEYS = ('\r', '\n', 'enter')

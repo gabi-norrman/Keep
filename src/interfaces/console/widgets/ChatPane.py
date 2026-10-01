@@ -118,25 +118,24 @@ class ChatPane:
     SHOW_ELAPSED_AFTER = 2.5   # seconds a request runs before the working line counts them
     PREFILL_BAR_WIDTH = 12     # cells of the working line's prompt-prefill bar
 
-    # One mint (OKLCH hue 164°, the Theme green) and one gold (hue 88°, the Theme yellow); the tones
-    # differ in lightness and chroma only, and the grays lean a touch towards the gold.
-    COLOR_USER = Color(73, 216, 162)
-    COLOR_ASSISTANT = Color(215, 215, 215)
-    COLOR_EMPHASIS = Color(214, 187, 121)   # bold / italic in a reply
-    COLOR_INPUT = Color(215, 215, 215)
-    COLOR_DIM = Color(106, 105, 101)
-    COLOR_RULE = Color(68, 66, 63)
-    COLOR_PROMPT = Color(58, 183, 136)
-    COLOR_CODE = Color(238, 197, 94)
-    COLOR_LINK = Color(110, 200, 230)
-    COLOR_QUOTE = Color(136, 134, 130)
-    COLOR_STRIKE = Color(124, 122, 118)
-    COLOR_THINKING = Color(136, 134, 130)
-    COLOR_WORKING = Color(222, 185, 92)
-    COLOR_APPROVAL = Color(243, 196, 67)
-    COLOR_NOTICE_FG = Color(143, 51, 49)
-    COLOR_SYSTEM = Color(154, 152, 148)
-    COLOR_HEADER_DETAIL = Color(78, 77, 73)    # the "(channel in location)" part of a header
+    # The chat speaks in the Theme's green and yellow; everything else is one of its text levels.
+    COLOR_USER = Theme.COLOR_GREEN
+    COLOR_ASSISTANT = Theme.COLOR_TEXT
+    COLOR_EMPHASIS = Theme.mix(Theme.COLOR_TEXT, Theme.COLOR_YELLOW, 0.6)   # bold / italic in a reply
+    COLOR_INPUT = Theme.COLOR_TEXT
+    COLOR_DIM = Theme.COLOR_DIM
+    COLOR_RULE = Theme.COLOR_FAINT
+    COLOR_PROMPT = Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_GREEN, 0.8)
+    COLOR_CODE = Theme.COLOR_YELLOW
+    COLOR_LINK = Theme.COLOR_CYAN
+    COLOR_QUOTE = Theme.COLOR_LABEL
+    COLOR_STRIKE = Theme.mix(Theme.COLOR_DIM, Theme.COLOR_LABEL, 0.5)
+    COLOR_THINKING = Theme.COLOR_LABEL
+    COLOR_WORKING = Theme.COLOR_YELLOW
+    COLOR_APPROVAL = Theme.COLOR_YELLOW
+    COLOR_NOTICE_FG = Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_RED, 0.6)
+    COLOR_SYSTEM = Theme.COLOR_LABEL
+    COLOR_HEADER_DETAIL = Theme.COLOR_FAINT    # the "(channel in location)" part of a header
 
     def __init__(self, redactor: Optional[Redactor] = None):
         self._redactor = redactor   # over the Vault singleton, resolved on first use
@@ -948,7 +947,7 @@ class ChatPane:
         screen.write_at(start, y, label)
         bar_x = start + display_width(label)
         screen.draw_progress_bar(bar_x, y, self.PROGRESS_BAR_WIDTH, self.footer_progress,
-                                 Theme.COLOR_YELLOW_FG, Theme.COLOR_YELLOW_BG)
+                                 Theme.COLOR_YELLOW, Theme.COLOR_YELLOW_DIM)
         screen.set_color(self.COLOR_DIM)
         screen.write_at(bar_x + self.PROGRESS_BAR_WIDTH, y, eta)
         screen.reset_color()

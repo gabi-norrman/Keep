@@ -7,7 +7,7 @@ from assistant import FirstRun
 from assistant.FirstRun import CurationProgress
 from common.vault.Redactor import Redactor
 from common.vault.Vault import Vault
-from interfaces.console.Theme import COLOR_YELLOW_BG, COLOR_YELLOW_FG
+from interfaces.console.Theme import COLOR_YELLOW_DIM, COLOR_YELLOW
 from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.tabs.BankTab import BankTab
 from interfaces.console.tabs.MemoryTab import FIRST_CURATION_LABEL, FIRST_CURATION_NOTICE
@@ -70,13 +70,13 @@ class TestFirstCurationNotice:
     def test_the_band_is_in_the_home_tabs_progress_bar_colours(self, tab, curating):
         screen = draw(tab)
         label = cells(screen, SUB_CONTENT_TOP, FIRST_CURATION_LABEL)
-        assert all(c.style.fg == COLOR_YELLOW_FG and c.style.bold for c in label)
+        assert all(c.style.fg == COLOR_YELLOW and c.style.bold for c in label)
         sentence = cells(screen, SUB_CONTENT_TOP + 1, "work in progress")
-        assert all(c.style.fg == COLOR_YELLOW_FG and not c.style.bold for c in sentence)
-        assert all(c.style.bg == COLOR_YELLOW_BG for c in label + sentence)
+        assert all(c.style.fg == COLOR_YELLOW and not c.style.bold for c in sentence)
+        assert all(c.style.bg == COLOR_YELLOW_DIM for c in label + sentence)
         for y in (SUB_CONTENT_TOP, SUB_CONTENT_TOP + 1):   # both rows tinted edge to edge
-            assert screen.next_frame[y - 1][0].style.bg == COLOR_YELLOW_BG
-            assert screen.next_frame[y - 1][WIDTH - 3].style.bg == COLOR_YELLOW_BG
+            assert screen.next_frame[y - 1][0].style.bg == COLOR_YELLOW_DIM
+            assert screen.next_frame[y - 1][WIDTH - 3].style.bg == COLOR_YELLOW_DIM
 
     def test_a_narrow_screen_clips_the_sentence_inside_the_band(self, tab, curating):
         screen = TUIScreen(40, HEIGHT)

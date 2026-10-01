@@ -5,6 +5,7 @@ import time
 from typing import TYPE_CHECKING, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from .TabView import TabView, CONTENT_TOP
+from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
 from interfaces.console.framework.TextWidth import display_width, fit
 from interfaces.console.widgets.FeedStrip import SHORT_NAMES, SYMBOL_FAILED, SYMBOL_PAUSED, SYMBOL_RUNNING, format_eta
@@ -50,41 +51,29 @@ class DashboardTab(TabView):
     prompt sections. Everything sits in flat tiles — a title strip over a tinted body — on a
     three-column grid (four for the status row)."""
 
-    COLOR_PANEL_BG = Color(14, 16, 24)
-    COLOR_TITLE_BG = Color(24, 27, 40)
-    COLOR_GRID = Color(38, 42, 60)
-    COLOR_BORDER = Color(40, 42, 54)
-    COLOR_BRIGHT = Color(225, 230, 240)
-    COLOR_TITLE = Color(176, 183, 204)
-    COLOR_DIM = Color(92, 98, 118)
-    COLOR_LABEL = Color(140, 147, 166)
+    # The Theme's colours under the names the tab draws with.
+    COLOR_PANEL_BG = Theme.COLOR_PANEL_BG
+    COLOR_TITLE_BG = Theme.COLOR_TITLE_BG
+    COLOR_GRID = Theme.COLOR_GRID
+    COLOR_BORDER = Theme.COLOR_GRID
+    COLOR_BRIGHT = Theme.COLOR_BRIGHT
+    COLOR_TITLE = Theme.COLOR_TITLE
+    COLOR_DIM = Theme.COLOR_DIM
+    COLOR_LABEL = Theme.COLOR_LABEL
 
-    COLOR_CYAN = Color(64, 200, 255)
-    COLOR_CYAN_DIM = Color(14, 42, 58)
-    COLOR_GREEN = Color(70, 230, 150)
-    COLOR_GREEN_DIM = Color(14, 50, 36)
-    COLOR_YELLOW = Color(255, 205, 80)
-    COLOR_YELLOW_DIM = Color(56, 44, 16)
-    COLOR_PINK = Color(255, 105, 180)
-    COLOR_PINK_DIM = Color(58, 24, 44)
-    COLOR_PURPLE = Color(175, 130, 255)
-    COLOR_BLUE = Color(110, 150, 255)
-    COLOR_ORANGE = Color(255, 150, 70)
-    COLOR_RED = Color(255, 90, 90)
-    COLOR_RED_DIM = Color(58, 20, 22)
-
-    # The colour a bar or meter starts from before it reaches its own: a neighbouring, deeper
-    # hue, so a fill reads as a gradient and not as a slab. Any other colour fades from the ground.
-    DEEP = {
-        COLOR_CYAN: Color(40, 80, 225),
-        COLOR_GREEN: Color(0, 125, 140),
-        COLOR_YELLOW: Color(225, 95, 40),
-        COLOR_PINK: Color(125, 60, 220),
-        COLOR_PURPLE: Color(70, 70, 210),
-        COLOR_BLUE: Color(70, 60, 180),
-        COLOR_ORANGE: Color(190, 50, 70),
-        COLOR_RED: Color(150, 20, 70),
-    }
+    COLOR_CYAN = Theme.COLOR_CYAN
+    COLOR_CYAN_DIM = Theme.COLOR_CYAN_DIM
+    COLOR_GREEN = Theme.COLOR_GREEN
+    COLOR_GREEN_DIM = Theme.COLOR_GREEN_DIM
+    COLOR_YELLOW = Theme.COLOR_YELLOW
+    COLOR_YELLOW_DIM = Theme.COLOR_YELLOW_DIM
+    COLOR_PINK = Theme.COLOR_PINK
+    COLOR_PINK_DIM = Theme.COLOR_PINK_DIM
+    COLOR_PURPLE = Theme.COLOR_PURPLE
+    COLOR_BLUE = Theme.COLOR_BLUE
+    COLOR_ORANGE = Theme.COLOR_ORANGE
+    COLOR_RED = Theme.COLOR_RED
+    COLOR_RED_DIM = Theme.COLOR_RED_DIM
 
     LEFT = 3                    # the first tile's column
     RIGHT_MARGIN = 2
@@ -500,7 +489,7 @@ class DashboardTab(TabView):
 
     @classmethod
     def _deep(cls, fg: Color) -> Color:
-        return cls.DEEP.get(fg) or cls._lerp_color(cls.COLOR_PANEL_BG, fg, 0.35)
+        return Theme.deep(fg)
 
     METER_BLOCKS = " ▏▎▍▌▋▊▉█"  # a cell filled from its left edge, in eighths
     METER_MARKER = "▌"
@@ -590,12 +579,16 @@ class DashboardTab(TabView):
                 screen.write_at(value_x + value_w + 1, row_y, row.note)
         screen.reset_color()
 
+    SHADE_MIN_ROWS = 6
+
     def _draw_columns(self, screen: TUIScreen, chart_x: int, chart_y: int, chart_w: int, chart_h: int,
                       history, max_value: float, color_for: Callable[[float], Color],
                       guides: Optional[Dict[int, Color]] = None):
         """One column per value, the newest at the right, each bar shading up from its colour's
         deep companion to the colour itself — reached at the height of the tallest column on
-        show, so a quiet chart keeps its colour.
+        show, so a quiet chart keeps its colour. The shading never runs faster than the whole
+        range over `SHADE_MIN_ROWS`: on a chart only a row or two high it would otherwise jump
+        from deep to full between neighbouring rows and read as a cap of another colour.
         `color_for(value)` gives a column its colour; `guides` maps a chart row to the colour
         of a dashed line drawn across the empty part of the chart.
         A full block carries its colour as background too: the glyph covers the cell in most
@@ -608,6 +601,7 @@ class DashboardTab(TabView):
         base: Dict[Color, Color] = {}
         peak = max(data) if data else 0.0
         max_row = max(1, min(chart_h, math.ceil(peak / max_value * chart_h)) - 1) if max_value > 0 and peak > 0 else 1
+        shade_rows = max(max_row, self.SHADE_MIN_ROWS - 1)
 
         for col_idx, value in enumerate(data):
             cx = chart_x + col_idx
@@ -621,7 +615,7 @@ class DashboardTab(TabView):
             for row in range(chart_h):
                 cell_y = chart_y + chart_h - 1 - row
                 if row < full_rows or (row == full_rows and partial > 0):
-                    color = self._lerp_color(base[fg], fg, row / max_row)
+                    color = self._lerp_color(base[fg], fg, 1 - (max_row - row) / shade_rows)
                     screen.set_color(color)
                     if row < full_rows:
                         screen.set_bg_color(color)
@@ -737,14 +731,14 @@ class DashboardTab(TabView):
     # --- Status tiles (integrations, request timing, resource meters, prompt sections) ---
 
     STATUS_STATE_COLORS = {
-        IntegrationState.OK.value: Color(62, 196, 140),
-        IntegrationState.WARNING.value: Color(214, 172, 70),
-        IntegrationState.NOT_CONFIGURED.value: Color(84, 88, 104),
-        IntegrationState.ERROR.value: Color(235, 80, 80),
-        IntegrationState.NEEDS_2FA.value: Color(175, 130, 255),
-        IntegrationState.RATE_LIMITED.value: Color(255, 150, 70),
-        IntegrationState.UNKNOWN.value: Color(84, 88, 104),
-        IntegrationState.DISABLED.value: Color(84, 88, 104),
+        IntegrationState.OK.value: Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_GREEN, 0.85),
+        IntegrationState.WARNING.value: Theme.COLOR_YELLOW,
+        IntegrationState.NOT_CONFIGURED.value: Theme.COLOR_DIM,
+        IntegrationState.ERROR.value: Theme.COLOR_RED,
+        IntegrationState.NEEDS_2FA.value: Theme.COLOR_PURPLE,
+        IntegrationState.RATE_LIMITED.value: Theme.COLOR_ORANGE,
+        IntegrationState.UNKNOWN.value: Theme.COLOR_DIM,
+        IntegrationState.DISABLED.value: Theme.COLOR_DIM,
     }
     TIMING_ROWS = 6           # the six stages; their total is in the title strip
 
@@ -1129,12 +1123,7 @@ class DashboardTab(TabView):
 
     @staticmethod
     def _lerp_color(c1: Color, c2: Color, t: float) -> Color:
-        t = max(0.0, min(1.0, t))
-        return Color(
-            int(c1.r + (c2.r - c1.r) * t),
-            int(c1.g + (c2.g - c1.g) * t),
-            int(c1.b + (c2.b - c1.b) * t)
-        )
+        return Theme.mix(c1, c2, t)
 
     @staticmethod
     def _nice_ceil(value: float) -> float:

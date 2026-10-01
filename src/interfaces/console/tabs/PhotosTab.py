@@ -7,7 +7,8 @@ from datetime import datetime
 from typing import Optional
 
 from .TabView import TabView, SUB_CONTENT_TOP
-from interfaces.console.framework.TUIScreen import TUIScreen, Color
+from interfaces.console import Theme
+from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.framework.TextWidth import clip, display_width
 from common.FloxyDatabase import FloxyDatabase
 from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor, PHOTOS_SQLITE_PATH
@@ -26,16 +27,16 @@ SORT_MODES = [
 class PhotosTab(TabView):
     """Tab for browsing the indexed photo library and triggering photo processing."""
 
-    COLOR_WHITE = Color(220, 220, 220)
-    COLOR_GRAY = Color(150, 150, 150)
-    COLOR_DIM = Color(100, 100, 100)
-    COLOR_ACCENT = Color(110, 160, 220)
-    COLOR_BAR_FILLED = Color(90, 160, 230)
-    COLOR_BAR_EMPTY = Color(50, 55, 65)
-    COLOR_LABEL = Color(140, 145, 155)
-    COLOR_GREEN = Color(80, 200, 120)
-    COLOR_YELLOW = Color(220, 200, 80)
-    COLOR_RED = Color(220, 80, 80)
+    COLOR_WHITE = Theme.COLOR_BRIGHT
+    COLOR_GRAY = Theme.COLOR_LABEL
+    COLOR_DIM = Theme.COLOR_DIM
+    COLOR_ACCENT = Theme.COLOR_BLUE
+    COLOR_BAR_FILLED = Theme.COLOR_BLUE
+    COLOR_BAR_EMPTY = Theme.COLOR_BLUE_DIM
+    COLOR_LABEL = Theme.COLOR_LABEL
+    COLOR_GREEN = Theme.COLOR_GREEN
+    COLOR_YELLOW = Theme.COLOR_YELLOW
+    COLOR_RED = Theme.COLOR_RED
 
     def __init__(self):
         self._index: int = 0

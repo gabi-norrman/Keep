@@ -31,12 +31,12 @@ class VoiceTab(TabView):
 
         if self.console.speech_analyzer is None:
             screen.reset_color()
-            screen.set_color(Theme.COLOR_GREEN_FG_BRIGHTER)
+            screen.set_color(Theme.COLOR_GREEN)
             screen.write_at(x0, TOP_ROW, "  voice interface disabled (interfaces.voice.enabled: false)")
             return
 
         screen.reset_color()
-        screen.set_color_rgb(100, 100, 100)
+        screen.set_color(Theme.COLOR_DIM)
         screen.write_at(x0, TOP_ROW, f"{' SCORE  VOTES CONF':<{SCORE_WIDTH}}")
         screen.write_at(x0 + CANDIDATE_X, TOP_ROW, "  CANDIDATES  [mic +extra mics ·W=Whisper ·S=Scribe]")
         screen.write_at(x0 + ACCEPTED_X, TOP_ROW, "  ACCEPTED")
@@ -69,7 +69,7 @@ class VoiceTab(TabView):
         y_start = top + rows - len(phrases)
 
         screen.reset_color()
-        screen.set_bg_color(Theme.COLOR_GREEN_BG)
+        screen.set_bg_color(Theme.COLOR_GREEN_DIM)
         for empty_y in range(top, y_start):
             screen.write_at(x, empty_y, " " * width)
 
@@ -78,12 +78,12 @@ class VoiceTab(TabView):
             p: 'Phrase'
             f = min(1.0, p.count / 15.0 + 0.25)
             screen.reset_color()
-            screen.set_bg_color(Theme.COLOR_GREEN_BG)
+            screen.set_bg_color(Theme.COLOR_GREEN_DIM)
             if last_accepted == p.phrase:
-                screen.set_color(Theme.COLOR_GREEN_FG_BRIGHTER)
+                screen.set_color(Theme.COLOR_GREEN)
                 screen.bold()
             else:
-                c = Theme.COLOR_GREEN_FG_BRIGHTER
+                c = Theme.COLOR_GREEN
                 screen.set_color_rgb(c.r * f, c.g * f, c.b * f)
             screen.write_at(x, y, self._fit(f"  {p.phrase}", width))
             y += 1
@@ -95,7 +95,7 @@ class VoiceTab(TabView):
         y_start = top + rows - len(phrases)
 
         screen.reset_color()
-        screen.set_bg_color(Theme.COLOR_YELLOW_BG)
+        screen.set_bg_color(Theme.COLOR_YELLOW_DIM)
         for empty_y in range(top, y_start):
             screen.write_at(x, empty_y, " " * SCORE_WIDTH)
             screen.write_at(x + CANDIDATE_X, empty_y, " " * CANDIDATE_WIDTH)
@@ -108,17 +108,17 @@ class VoiceTab(TabView):
             bar = '■' * min(10, int(score * 6))
 
             screen.reset_color()
-            screen.set_color_rgb(222 * 0.5, 193 * 0.5, 52 * 0.5)
-            screen.set_bg_color(Theme.COLOR_YELLOW_BG)
+            screen.set_color(Theme.mix(Theme.COLOR_YELLOW_DIM, Theme.COLOR_YELLOW, 0.5))
+            screen.set_bg_color(Theme.COLOR_YELLOW_DIM)
             screen.write_at(x, y, f"{score:6.1f} ({p.count:2.0f}v) {p.confidence * 100:3.0f}% {bar:<10}")
 
             screen.reset_color()
-            screen.set_bg_color(Theme.COLOR_YELLOW_BG)
+            screen.set_bg_color(Theme.COLOR_YELLOW_DIM)
             if last_accepted == p.phrase:
-                screen.set_color(Theme.COLOR_YELLOW_FG)
+                screen.set_color(Theme.COLOR_YELLOW)
                 screen.bold()
             else:
-                c = Theme.COLOR_YELLOW_FG
+                c = Theme.COLOR_YELLOW
                 screen.set_color_rgb(c.r * f, c.g * f, c.b * f)
 
             if p.source:

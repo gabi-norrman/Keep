@@ -2,6 +2,7 @@ import time
 from collections import deque
 from typing import Callable, Deque, Optional, Tuple
 
+from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
 
 
@@ -23,7 +24,7 @@ class CrtCursor:
     All methods must be called from a single thread (the TUI animation loop).
     """
 
-    BRIGHT = Color(73, 216, 162)   # the console's mint, the same green the Home chat speaks in
+    BRIGHT = Theme.COLOR_GREEN   # the same green the Home chat speaks in
     # The trail starts at this fraction of the head colour and fades to black from there.
     TRAIL_BRIGHTNESS = 0.4
     TRAIL_DURATION = 0.6

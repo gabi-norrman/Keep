@@ -8,17 +8,19 @@ import difflib
 from typing import List, Tuple
 
 from common.logging import trace
-from interfaces.console.framework.TUIScreen import Color
+from interfaces.console.Theme import COLOR_GREEN, COLOR_RED, mix
+from interfaces.console.framework.TUIScreen import Color, TUIScreen
 from interfaces.console.tabs.TelegramHtmlParser import StyledSpan
 
-COLOR_REMOVED = Color(180, 80, 80)
-COLOR_ADDED = Color(120, 210, 120)
-COLOR_GUTTER_ADD = Color(80, 180, 80)
-COLOR_GUTTER_DEL = Color(200, 60, 60)
-COLOR_ADDED_HIGHLIGHT_BG = Color(40, 80, 40)       # the characters that changed
-COLOR_REMOVED_HIGHLIGHT_BG = Color(90, 30, 30)
-COLOR_ADDED_LINE_BG = Color(10, 26, 10)            # the rest of the line
-COLOR_REMOVED_LINE_BG = Color(30, 10, 10)
+_GROUND = TUIScreen.BACKGROUND
+COLOR_REMOVED = mix(_GROUND, COLOR_RED, 0.72)
+COLOR_ADDED = COLOR_GREEN
+COLOR_GUTTER_ADD = mix(_GROUND, COLOR_GREEN, 0.8)
+COLOR_GUTTER_DEL = COLOR_RED
+COLOR_ADDED_HIGHLIGHT_BG = mix(_GROUND, COLOR_GREEN, 0.32)     # the characters that changed
+COLOR_REMOVED_HIGHLIGHT_BG = mix(_GROUND, COLOR_RED, 0.34)
+COLOR_ADDED_LINE_BG = mix(_GROUND, COLOR_GREEN, 0.1)           # the rest of the line
+COLOR_REMOVED_LINE_BG = mix(_GROUND, COLOR_RED, 0.11)
 
 Ranges = List[Tuple[int, int]]
 

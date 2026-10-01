@@ -1,13 +1,14 @@
 from typing import Optional, Tuple
 
 from .TabView import TabView
-from interfaces.console.framework.TUIScreen import TUIScreen, Color
+from interfaces.console import Theme
+from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.framework.TextWidth import clip, display_width, normalize
 
 
-COLOR_SCROLLBAR_THUMB = Color(120, 120, 140)
-COLOR_SCROLLBAR_TRACK = Color(50, 50, 55)
-COLOR_HINT = Color(100, 100, 100)   # the key hints and the scroll position on the bottom row
+COLOR_SCROLLBAR_THUMB = Theme.COLOR_LABEL
+COLOR_SCROLLBAR_TRACK = Theme.COLOR_GRID
+COLOR_HINT = Theme.COLOR_DIM   # the key hints and the scroll position on the bottom row
 
 
 def scrollbar_thumb(total_lines: int, display_height: int, scroll_offset: int) -> Tuple[int, int]:

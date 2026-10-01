@@ -14,10 +14,10 @@ from interfaces.console.widgets.DiffText import (COLOR_ADDED_HIGHLIGHT_BG, COLOR
                                                  COLOR_GUTTER_DEL, COLOR_REMOVED, COLOR_REMOVED_HIGHLIGHT_BG,
                                                  COLOR_REMOVED_LINE_BG, inline_diff)
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
-from interfaces.console.Theme import COLOR_SECRET, COLOR_YELLOW_BG, COLOR_YELLOW_FG
+from interfaces.console.Theme import COLOR_PURPLE, COLOR_SECRET, COLOR_YELLOW, COLOR_YELLOW_DIM
 from interfaces.console.widgets.SecretMarks import mark_masks
 
-COLOR_DATE_LABEL = Color(180, 140, 255)
+COLOR_DATE_LABEL = COLOR_PURPLE
 
 FIRST_CURATION_LABEL = "Heads up"
 FIRST_CURATION_NOTICE = ("Keep is building its memory for the first time. What you read here is a "
@@ -473,12 +473,12 @@ class MemoryTab(MarkdownTabView):
             screen.reset_color()
             screen.write_at(1, row_y, " " * width)
             text = fit(text, width)
-            screen.set_color(COLOR_YELLOW_FG)
+            screen.set_color(COLOR_YELLOW)
             if bold:
                 screen.bold()
             screen.write_at(1 + (width - len(text)) // 2, row_y, text)
             screen.reset_color()
-            screen.tint_row(1, row_y, width, COLOR_YELLOW_BG)
+            screen.tint_row(1, row_y, width, COLOR_YELLOW_DIM)
 
     def _draw_date_bar(self, screen: TUIScreen, y: int):
         """Draw the date navigation bar, centered"""

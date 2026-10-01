@@ -256,7 +256,7 @@ class TestTranscript:
 
     def test_footer_progress_bar_sits_centred_between_the_hints_and_the_strip(self, pane):
         from interfaces.console.widgets.FeedStrip import FeedChip
-        from interfaces.console.Theme import COLOR_YELLOW_FG
+        from interfaces.console.Theme import COLOR_YELLOW
         width = 140
         pane.footer_chips = [FeedChip("●", ChatPane.COLOR_DIM, "Photos")]
         pane.footer_progress, pane.footer_eta = 0.5, 4 * 3600
@@ -268,7 +268,7 @@ class TestTranscript:
         label_at = line.index(ChatPane.PROGRESS_LABEL)
         bar_at = label_at + len(ChatPane.PROGRESS_LABEL)
         assert line[bar_at:bar_at + 10] == "█" * 10, "half of a 20-cell bar is filled"
-        assert screen.next_frame[HEIGHT - 1][bar_at].style.fg == COLOR_YELLOW_FG
+        assert screen.next_frame[HEIGHT - 1][bar_at].style.fg == COLOR_YELLOW
         eta_at = bar_at + ChatPane.PROGRESS_BAR_WIDTH
         assert line[eta_at:eta_at + 8] == " ETA: 4h"
         hints_end = len(f"{ChatPane.FOOTER}   {ChatPane.DEBUG_HINT} off")

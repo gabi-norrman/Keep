@@ -1,19 +1,20 @@
 from typing import Optional
 
 from .TabView import TabView, SUB_CONTENT_TOP
-from interfaces.console.framework.TUIScreen import TUIScreen, Color
+from interfaces.console import Theme
+from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.crystal.Scene import Scene
 from interfaces.console.crystal.Tuning import PARAMS
 from common.logging import info
 
-COLOR_STATUS = Color(110, 110, 110)
-COLOR_PANEL_BG = Color(14, 14, 18)
-COLOR_PANEL_FG = Color(150, 150, 156)
-COLOR_PANEL_TITLE = Color(200, 200, 206)
-COLOR_SELECTED_BG = Color(46, 46, 58)
-COLOR_SELECTED_FG = Color(255, 255, 255)
-COLOR_CHANGED = Color(185, 155, 81)
-COLOR_SATURATED = Color(230, 70, 70)
+COLOR_STATUS = Theme.COLOR_DIM
+COLOR_PANEL_BG = Theme.COLOR_PANEL_BG
+COLOR_PANEL_FG = Theme.COLOR_LABEL
+COLOR_PANEL_TITLE = Theme.COLOR_TITLE
+COLOR_SELECTED_BG = Theme.COLOR_SELECTED_BG
+COLOR_SELECTED_FG = Theme.COLOR_BRIGHT
+COLOR_CHANGED = Theme.COLOR_YELLOW
+COLOR_SATURATED = Theme.COLOR_RED
 
 
 class CrystalTab(TabView):
