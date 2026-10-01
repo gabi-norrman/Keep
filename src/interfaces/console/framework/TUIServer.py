@@ -281,6 +281,12 @@ class TUIServer:
         still_since: Optional[float] = None   # when the frames stopped changing; None while they change
 
         while self.running:
+            # Consumed before the frame is drawn, and cleared only when seen set: a wake that
+            # lands any later stays set and ends this frame's sleep.
+            woken = self._wake.is_set()
+            if woken:
+                self._wake.clear()
+
             with self.clients_lock:
                 has_clients = bool(self.clients)
                 if not has_clients:
@@ -296,7 +302,6 @@ class TUIServer:
 
             if not has_clients:
                 self._wake.wait(0.5)   # a connecting client wakes the loop
-                self._wake.clear()
                 due = time.perf_counter() + FRAME_INTERVAL
                 continue
 
@@ -333,7 +338,7 @@ class TUIServer:
                 self._broadcast(frame_data)
 
             now = time.perf_counter()
-            if frame_data or self._wake.is_set():
+            if frame_data or woken:
                 still_since = None
                 if self.idle:
                     self.idle = False
@@ -343,7 +348,6 @@ class TUIServer:
             elif not self.idle and now - still_since >= IDLE_AFTER:
                 self.idle = True
                 trace(f"TUI Server: nothing changed for {IDLE_AFTER:.0f}s — drawing {1 / IDLE_INTERVAL:.0f} fps until it does")
-            self._wake.clear()
 
             frame += 1
             due = self._next_frame(due, IDLE_INTERVAL if self.idle else FRAME_INTERVAL)
