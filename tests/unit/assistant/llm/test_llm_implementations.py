@@ -577,6 +577,52 @@ class TestClaudeLLM:
         assert isinstance(prev_msg['content'], list)
         assert prev_msg['content'][-1].get('cache_control') == {"type": "ephemeral"}
 
+    _ROUNDS = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "Marcus (Telegram): is the garage door closed?"},
+        {"role": "assistant", "content": 'door_state("garage")'},
+        {"role": "user", "content": "result: \nclosed"},
+    ]
+
+    @staticmethod
+    def _marked(params) -> list[int]:
+        return [i for i, m in enumerate(params['messages'])
+                if isinstance(m['content'], list) and any('cache_control' in b for b in m['content'])]
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_a_model_with_a_byte_stable_tail_caches_the_last_message(self, mock_config):
+        """The next round's prefix ends at this round's last message, so that is where the
+        one history breakpoint goes — a command result is then written once and read after."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        params = ClaudeLLM("claude-fable-5-1")._build_api_params(self._ROUNDS, thinking=False, stream=True)
+        assert self._marked(params) == [len(params['messages']) - 1]
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_a_model_whose_tail_is_re_rendered_caches_the_message_before_it(self, mock_config):
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        params = ClaudeLLM("claude-sonnet-4-5")._build_api_params(self._ROUNDS, thinking=False, stream=True)
+        assert self._marked(params) == [len(params['messages']) - 2]
+
+    @patch('assistant.llm.ClaudeLLM.BYTE_PREFIX_TAIL', False)
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_with_the_byte_prefix_tail_switched_off_the_last_message_is_not_cached(self, mock_config):
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        params = ClaudeLLM("claude-fable-5-1")._build_api_params(self._ROUNDS, thinking=False, stream=True)
+        assert self._marked(params) == [len(params['messages']) - 2]
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_only_a_model_that_uses_the_prefix_cache_and_thinks_on_its_own_gets_the_byte_stable_tail(self, mock_config):
+        """An older model would lose its <thinking> tag instruction in that mode, and one that
+        gets the query prepended to the prompt has no prefix cache to protect."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        assert ClaudeLLM("claude-fable-5-1").prefers_byte_prefix_tail()
+        assert not ClaudeLLM("claude-sonnet-4-5").prefers_byte_prefix_tail()
+        assert not ClaudeLLM("claude-opus-5-5").prefers_byte_prefix_tail()
+
     @patch('assistant.llm.ClaudeLLM.config')
     def test_build_api_params_cache_control_with_string_content(self, mock_config):
         """When previous message content is a string, it's wrapped in a list with cache_control."""

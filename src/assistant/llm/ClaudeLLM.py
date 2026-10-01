@@ -6,7 +6,7 @@ import httpx
 from .AbstractLLM import AbstractLLM, LLMRefusalError
 from anthropic import Anthropic, APIConnectionError, APIStatusError
 from common.ConfigManager import config
-from common.DevelopmentConfig import CLAUDE_STATIC_CACHE_TTL
+from common.DevelopmentConfig import BYTE_PREFIX_TAIL, CLAUDE_STATIC_CACHE_TTL
 from common.logging import trace, info
 
 
@@ -14,7 +14,7 @@ class ClaudeLLM(AbstractLLM):
     """Talks to Anthropic's Messages API with prompt caching, extended thinking and fast mode.
 
     Places cache_control breakpoints from the prompt's CACHE_BREAKPOINT_MARKERs (3 system + 1
-    history), retries retryable status errors and raises LLMRefusalError when the safety layer
+    history — on the last message when the trailing turn is byte-stable, see _message_cache_index), retries retryable status errors and raises LLMRefusalError when the safety layer
     keeps refusing.
     """
 
@@ -110,6 +110,22 @@ class ClaudeLLM(AbstractLLM):
         steepest (1h writes at 2x, reads at 0.1x) and prompt scaffolding helps least,
         so Fable opts out and lets the shared prefix cache work."""
         return not self.model.startswith("claude-fable")
+
+    def prefers_byte_prefix_tail(self) -> bool:
+        """A model whose chat requests use the prefix cache gets its trailing turn sent as the
+        history renders it afterwards, so the cache breakpoint can sit on that turn
+        (_message_cache_index) and the next round reads it. With the per-request directives
+        folded on, the turn changed between rounds: it went out uncached and was then written
+        to the cache a round later — paid for twice. Models that get the prepended query have
+        no prefix cache to protect, and one that needs the <thinking> tag instruction would
+        lose it in this mode, so both keep the old tail."""
+        return self.handles_thinking_internally() and not self.prefers_prepended_user_query()
+
+    def _message_cache_index(self) -> int:
+        """Which message carries the history cache breakpoint: the last one when the trailing
+        turn is byte-stable (the next round's prefix then ends exactly there), else the one
+        before it — a trailing turn that will be re-rendered would only ever be written."""
+        return -1 if BYTE_PREFIX_TAIL and self.prefers_byte_prefix_tail() else -2
 
     def set_prompt_cache(self, enabled: bool):
         """Toggle Anthropic prompt caching for the next request. Prepending the user
@@ -225,9 +241,12 @@ class ClaudeLLM(AbstractLLM):
             system = None
 
         if self.prompt_cache and len(anthropic_messages) >= 2:
-            cached = self._with_cache_breakpoint(anthropic_messages[-2])
+            index = self._message_cache_index()
+            cached = self._with_cache_breakpoint(anthropic_messages[index])
             if cached is not None:
-                anthropic_messages[-2] = cached
+                anthropic_messages[index] = cached
+            else:
+                trace(f"Claude cache: message {index} is empty — no history breakpoint this request")
 
         api_params = {
             'model': self.model,

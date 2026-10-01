@@ -42,6 +42,8 @@ PREPEND_USER_QUERY_OVERRIDE = _prepend_user_query_override()
 # row, the query header timestamped, and none of the per-request extras the next turn drops
 # (<thinking> instruction, language and brevity directives). FLOXY_BYTE_PREFIX_TAIL=0 turns
 # it off for an A/B run.
+# Claude on the prefix cache asks for the same tail (ClaudeLLM.prefers_byte_prefix_tail): with it the
+# history cache breakpoint sits on the last message and each round reads what the previous one wrote.
 BYTE_PREFIX_TAIL = os.environ.get("FLOXY_BYTE_PREFIX_TAIL", "1") != "0"
 
 # TTL of the Anthropic prompt-cache system blocks (one per <<<CACHE_BREAKPOINT>>> marker,
