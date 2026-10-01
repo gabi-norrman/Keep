@@ -23,7 +23,8 @@ AISERVER_DIR = str(_AISERVER_PATH)
 CLAUDE_FALLBACK_PATH = os.path.expanduser("~/.local/bin/claude")   # where claude.ai/install.sh puts it
 CLAUDE_PATH = shutil.which("claude") or CLAUDE_FALLBACK_PATH
 RUN_HOUR = 3
-AUTO_MERGE_HOUR = RUN_HOUR + 1
+SLOW_TEST_MS = 100
+TEST_HEALTH_RUNS = 10
 # Auto mode's classifier refuses a write to an external system nobody allowed in so many words,
 # so the auto-merge run is handed this one rule; no other run gets it.
 AUTO_MERGE_ALLOWED_TOOLS = ["Bash(gh pr merge:*)"]
@@ -168,6 +169,44 @@ Do a thorough analysis and provide a report with what you found.
 IMPORTANT: Your entire analysis must be in your final message. Do not ask follow-up questions or offer to implement changes. Keep the report concise — it will be read over a chat on a phone.
 """
 
+TEST_HEALTH_PROMPT = """
+Check the health of the unit test suite: it must be reliable and FAST. Find the flaky tests and the slow
+tests, and fix them.
+
+Measure:
+1. Run the unit suite {runs} times (the command is in CLAUDE.md, "Always run unit tests"), each time with
+   `--durations=0 --durations-min=0.02` added and the whole output kept in a file in your scratch directory
+   (the `grep` in that command would drop the durations), so that for every test you have its outcome and
+   its duration in each run. A test's duration is its setup + call + teardown together.
+2. Flaky: a test that failed in some runs but not in all of them. Also flaky: a test whose slowest run took
+   over a second while its fastest was under the limit below.
+3. Slow: a test whose FASTEST run took more than {slow_ms} ms. The fastest run is the measure because
+   machine noise and one-off costs (a first import, a shared fixture) only ever add time.
+4. A test that failed in every run is broken, not flaky: leave it alone and report it.
+
+Fix — change files under tests/ ONLY, never the code under test:
+- Flaky: find the cause (ordering, shared state, real time, threads, a race) and remove it. Never hide it
+  with a retry, a skip, an xfail or a wider tolerance. When the cause is a real bug in the code under test,
+  leave both the test and the code as they are and describe the bug in your report.
+- Slow: remove the cost at its source (a real sleep or timeout, real I/O, an expensive fixture or import that
+  can be faked or made cheaper). When a test cannot get under {slow_ms} ms and what it checks is not worth
+  that time, delete it. No test over {slow_ms} ms stays.
+- Follow "Test data" and "Tests not to write" in CLAUDE.md in anything you rewrite.
+- Verify: measure every test you touched {runs} more times, then run the whole suite once.
+
+If you changed anything, create a branch, commit (check rules for commits in the /commit skill), push it and
+create ONE pull request with all of it. If nothing was flaky or slow, change nothing and say so.
+
+Final report:
+- Flaky tests: name, cause, fix
+- Slow tests made faster: name, before -> after
+- Tests REMOVED: every one by name, with why it was not worth keeping
+- Bugs in the code under test that a flaky test exposed: the test, the file and line, what goes wrong
+- Anything left undone (broken tests, flaky or slow ones you could not fix), and the pull request
+
+IMPORTANT: The user will only see your final message so keep the entire report in your last message.
+"""
+
 AUTO_MERGE_TESTS_PROMPT = """
 Your task is to auto-merge open pull requests that ONLY add or modify test files.
 
@@ -222,17 +261,17 @@ IMPORTANT: Your entire response to the user must be in your final message. Keep 
 
 
 class CodeQualityMaintainer:
-    """Runs nightly Claude Code jobs (bug analysis, test generation, auto-merge) on the repo.
+    """Runs the nightly Claude Code jobs on the repo, one after another: bug analysis, test generation,
+    test health (flaky and slow tests), then the auto-merge of test-only PRs — one email for the night.
 
-    A daemon thread fires the runs at RUN_HOUR and AUTO_MERGE_HOUR while `self_improvement.nightly_runs`
-    is on (off by default, read at each fire); nights without recent commits are skipped. Also exposes the ad-hoc analyze_code / improve_code / restart helpers
-    behind the self_analysis / self_improvement commands.
+    A daemon thread fires the run at RUN_HOUR while `self_improvement.nightly_runs` is on (off by
+    default, read at each fire); a night without recent commits only auto-merges. Also exposes the
+    ad-hoc analyze_code / improve_code / restart helpers behind the self_analysis / self_improvement commands.
     """
     def __init__(self):
         self._running = False
         self._thread = None
         self._last_run_date = None
-        self._last_auto_merge_date = None
 
     def start(self):
         self._running = True
@@ -250,9 +289,6 @@ class CodeQualityMaintainer:
                 if now.hour == RUN_HOUR and self._last_run_date != now.date():
                     self._last_run_date = now.date()
                     self._execute_nightly_run()
-                if now.hour == AUTO_MERGE_HOUR and self._last_auto_merge_date != now.date():
-                    self._last_auto_merge_date = now.date()
-                    self._execute_auto_merge_run()
             except Exception as e:
                 error(f"CodeQualityMaintainer error: {e}")
             for _ in range(CHECK_INTERVAL):
@@ -290,7 +326,7 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def nightly_skip_reason() -> Optional[str]:
-        """Why the scheduled runs (nightly analysis, auto-merge) must not fire now, None when they
+        """Why the scheduled nightly run must not fire now, None when it
         may: the integration switch first, then `self_improvement.nightly_runs`, which is read at
         each fire so a config_set takes effect without a restart. The ad-hoc commands ignore it."""
         reason = CodeQualityMaintainer.unavailable_reason()
@@ -307,22 +343,23 @@ class CodeQualityMaintainer:
             return
         note("CodeQualityMaintainer: starting nightly run...")
         self._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
-        if not self._has_recent_commits():
-            info("CodeQualityMaintainer: skipping nightly run, no recent commits.")
-            return
+        steps = [("Auto-Merge Test PRs", self._step_auto_merge)]
+        if self._has_recent_commits():
+            steps = [("Bug Analysis", self._step_bug_analysis),
+                     ("Test Generation", self._step_generate_tests),
+                     ("Test Health", self._step_test_health)] + steps
+        else:
+            info("CodeQualityMaintainer: no recent commits, only the auto-merge runs tonight.")
         sections = []
-        try:
-            bug_report = self._step_bug_analysis()
-            if bug_report:
-                sections.append(("Bug Analysis", bug_report))
-        except Exception as e:
-            error(f"CodeQualityMaintainer: bug analysis exception: {e}")
-        try:
-            test_report = self._step_generate_tests()
-            if test_report:
-                sections.append(("Test Generation", test_report))
-        except Exception as e:
-            error(f"CodeQualityMaintainer: test generation exception: {e}")
+        for title, step in steps:
+            try:
+                report = step()
+                if report:
+                    sections.append((title, report))
+                else:
+                    info(f"CodeQualityMaintainer: {title} produced no report.")
+            except Exception as e:
+                error(f"CodeQualityMaintainer: {title} exception: {e}")
         if sections:
             combined_md = "\n\n---\n\n".join(
                 f"# {title}\n\n{body}" for title, body in sections
@@ -403,30 +440,24 @@ class CodeQualityMaintainer:
              f"({', '.join(sorted(trusted))}).")
         return candidates
 
-    def _execute_auto_merge_run(self):
-        reason = self.nightly_skip_reason()
-        if reason:
-            info(f"CodeQualityMaintainer: skipping auto-merge run — {reason}")
-            return
-        note("CodeQualityMaintainer: starting auto-merge run for test-only PRs...")
+    def _step_auto_merge(self) -> str:
+        """Last step of the night, so the test-only PRs the earlier steps opened are merged with it."""
+        info("CodeQualityMaintainer: auto-merge of test-only PRs...")
         candidates = self._auto_merge_candidates()
         if not candidates:
-            info("CodeQualityMaintainer: no open PRs from trusted authors, skipping auto-merge run.")
-            return
+            info("CodeQualityMaintainer: no open PRs from trusted authors, skipping the auto-merge.")
+            return ""
         branch = self._current_branch()
         try:
             report = self._run_claude(self._auto_merge_prompt(candidates), "auto-merge-tests",
                                       allowed_tools=AUTO_MERGE_ALLOWED_TOOLS)
-            if report:
-                html_report = self._markdown_to_html(f"# Auto-Merge Test PRs\n\n{report}")
-                self._send_email("Keep Auto-Merge Test PRs Report", html_report)
-            else:
-                info("CodeQualityMaintainer: auto-merge produced no report, skipping email.")
+            info("CodeQualityMaintainer: auto-merge complete.")
+            return report
         except Exception as e:
-            error(f"CodeQualityMaintainer: auto-merge run failed: {e}")
+            error(f"CodeQualityMaintainer: auto-merge failed: {e}")
+            return ""
         finally:
             self._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
-        info("CodeQualityMaintainer: auto-merge run complete.")
 
     @staticmethod
     def _run_subprocess(cmd, label, timeout):
@@ -537,6 +568,22 @@ class CodeQualityMaintainer:
             return report
         except Exception as e:
             error(f"CodeQualityMaintainer: test generation failed: {e}")
+            return ""
+        finally:
+            CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+
+    @staticmethod
+    def _step_test_health() -> str:
+        branch = CodeQualityMaintainer._current_branch()
+        try:
+            info(f"CodeQualityMaintainer: test health — flaky tests and tests over {SLOW_TEST_MS} ms "
+                 f"across {TEST_HEALTH_RUNS} runs of the unit suite...")
+            report = CodeQualityMaintainer._run_claude(
+                TEST_HEALTH_PROMPT.format(runs=TEST_HEALTH_RUNS, slow_ms=SLOW_TEST_MS), "test-health")
+            info("CodeQualityMaintainer: test health complete.")
+            return report
+        except Exception as e:
+            error(f"CodeQualityMaintainer: test health failed: {e}")
             return ""
         finally:
             CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)

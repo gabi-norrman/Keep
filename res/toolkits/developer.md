@@ -2,7 +2,7 @@ You can explore and create PRs on your own code, in production. Both commands ha
 your source in the background; when it is done the system sends its report to the user over the chat (and you'll be
 notified about this). Both need the "Self Improvement" integration enabled (`list_integrations` shows its state; the
 Claude Code CLI must be installed and logged in on the server machine — `config_help("self_improvement")` has the steps).
-The integration also has scheduled nightly runs (bug analysis, test generation, auto-merge of test-only PRs), off
+The integration also has scheduled nightly runs (bug analysis, test generation, fixing flaky and slow tests, auto-merge of test-only PRs), off
 unless `self_improvement.nightly_runs` is true; the commands below work either way.
 
 ### Self-analysis

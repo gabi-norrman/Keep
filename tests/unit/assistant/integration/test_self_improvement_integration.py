@@ -133,7 +133,6 @@ class TestGating:
         with patch.object(CodeQualityMaintainer, "_run_subprocess") as run, \
                 patch.object(CodeQualityMaintainer, "_run_claude") as claude:
             maintainer._execute_nightly_run()
-            maintainer._execute_auto_merge_run()
         run.assert_not_called()
         claude.assert_not_called()
 

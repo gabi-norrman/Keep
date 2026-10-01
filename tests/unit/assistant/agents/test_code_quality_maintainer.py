@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, AUTO_MERGE_HOUR, AUTO_MERGE_TESTS_PROMPT, ClaudeNotLoggedInError, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, AUTO_MERGE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -114,67 +114,6 @@ class TestScheduling:
             maintainer._run()
             assert maintainer._last_run_date == date(2026, 2, 19)
 
-    @patch('assistant.agents.CodeQualityMaintainer.time.sleep')
-    @patch('assistant.agents.CodeQualityMaintainer.datetime')
-    def test_auto_merge_triggers_at_auto_merge_hour(self, mock_dt, mock_sleep, maintainer):
-        mock_dt.now.return_value = datetime(2026, 2, 19, AUTO_MERGE_HOUR, 0, 0)
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-        call_count = 0
-
-        def stop_after_trigger(*args):
-            nonlocal call_count
-            call_count += 1
-            if call_count > 1:
-                maintainer._running = False
-
-        mock_sleep.side_effect = stop_after_trigger
-
-        with patch.object(maintainer, '_execute_nightly_run'):
-            with patch.object(maintainer, '_execute_auto_merge_run') as mock_am:
-                maintainer._running = True
-                maintainer._run()
-                mock_am.assert_called_once()
-
-    @patch('assistant.agents.CodeQualityMaintainer.time.sleep')
-    @patch('assistant.agents.CodeQualityMaintainer.datetime')
-    def test_auto_merge_skips_if_already_ran_today(self, mock_dt, mock_sleep, maintainer):
-        today = date(2026, 2, 19)
-        mock_dt.now.return_value = datetime(2026, 2, 19, AUTO_MERGE_HOUR, 0, 0)
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-        maintainer._last_auto_merge_date = today
-        call_count = 0
-
-        def stop_soon(*args):
-            nonlocal call_count
-            call_count += 1
-            if call_count > 1:
-                maintainer._running = False
-
-        mock_sleep.side_effect = stop_soon
-
-        with patch.object(maintainer, '_execute_nightly_run'):
-            with patch.object(maintainer, '_execute_auto_merge_run') as mock_am:
-                maintainer._running = True
-                maintainer._run()
-                mock_am.assert_not_called()
-
-    @patch('assistant.agents.CodeQualityMaintainer.time.sleep')
-    @patch('assistant.agents.CodeQualityMaintainer.datetime')
-    def test_auto_merge_sets_last_date(self, mock_dt, mock_sleep, maintainer):
-        mock_dt.now.return_value = datetime(2026, 2, 19, AUTO_MERGE_HOUR, 0, 0)
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-
-        def stop_after_one(*args):
-            maintainer._running = False
-
-        mock_sleep.side_effect = stop_after_one
-
-        with patch.object(maintainer, '_execute_nightly_run'):
-            with patch.object(maintainer, '_execute_auto_merge_run'):
-                maintainer._running = True
-                maintainer._run()
-                assert maintainer._last_auto_merge_date == date(2026, 2, 19)
-
 
 def _pr(number, login, fork=False):
     return {"number": number, "author": {"login": login}, "isCrossRepository": fork}
@@ -236,55 +175,68 @@ class TestAutoMergeCandidates:
 
 
 @pytest.mark.unit
-class TestExecuteAutoMergeRun:
+class TestStepAutoMerge:
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[])
     def test_skips_when_no_open_prs(self, mock_count, mock_sub, maintainer):
         with patch.object(CodeQualityMaintainer, '_run_claude') as mock_claude:
-            maintainer._execute_auto_merge_run()
+            assert maintainer._step_auto_merge() == ""
             mock_claude.assert_not_called()
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
     @patch.object(CodeQualityMaintainer, '_run_claude', return_value="Merged PR #42")
-    @patch.object(CodeQualityMaintainer, '_send_email')
-    def test_sends_email_with_report(self, mock_email, mock_claude, mock_count, mock_sub, maintainer):
-        maintainer._execute_auto_merge_run()
+    def test_hands_claude_the_candidates_and_returns_its_report(self, mock_claude, mock_count, mock_sub, maintainer):
+        assert maintainer._step_auto_merge() == "Merged PR #42"
         (prompt, label), kwargs = mock_claude.call_args
         assert (prompt, label) == (CodeQualityMaintainer._auto_merge_prompt([7, 9]), "auto-merge-tests")
         # contract with the Claude Code CLI: the rule that lets auto mode run the merge
         assert kwargs["allowed_tools"] == ["Bash(gh pr merge:*)"]
-        mock_email.assert_called_once()
-        subject, html = mock_email.call_args[0]
-        assert subject == "Keep Auto-Merge Test PRs Report"
-        assert "Merged PR #42" in html
-
-    @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="")
-    @patch.object(CodeQualityMaintainer, '_send_email')
-    def test_skips_email_when_no_report(self, mock_email, mock_claude, mock_count, mock_sub, maintainer):
-        maintainer._execute_auto_merge_run()
-        mock_email.assert_not_called()
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude crashed"))
     def test_restores_the_starting_branch_in_finally(self, mock_claude, mock_count, mock_sub, maintainer):
         mock_sub.return_value = Mock(stdout="release\n", returncode=0)
-        maintainer._execute_auto_merge_run()
+        assert maintainer._step_auto_merge() == ""
         checkout_calls = [c for c in mock_sub.call_args_list if c[0][0][:2] == ["git", "checkout"]]
         assert checkout_calls == [call(["git", "checkout", "release"], "git checkout", GIT_TIMEOUT)]
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
     @patch.object(CodeQualityMaintainer, '_run_claude', return_value="report")
-    @patch.object(CodeQualityMaintainer, '_send_email')
-    def test_restores_the_starting_branch_after_success(self, mock_email, mock_claude, mock_count, mock_sub, maintainer):
+    def test_restores_the_starting_branch_after_success(self, mock_claude, mock_count, mock_sub, maintainer):
         mock_sub.return_value = Mock(stdout="master\n", returncode=0)
-        maintainer._execute_auto_merge_run()
+        maintainer._step_auto_merge()
         checkout_calls = [c for c in mock_sub.call_args_list if c[0][0][:2] == ["git", "checkout"]]
         assert checkout_calls == [call(["git", "checkout", "master"], "git checkout", GIT_TIMEOUT)]
+
+
+@pytest.mark.unit
+class TestStepTestHealth:
+    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="2 flaky tests fixed")
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_reads_the_branch_then_claude_then_checks_it_out_again(self, mock_run, mock_claude, maintainer):
+        mock_run.return_value = Mock(stdout="release\n", returncode=0)
+        assert maintainer._step_test_health() == "2 flaky tests fixed"
+        assert [c[0][0] for c in mock_run.call_args_list] == [
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], ["git", "checkout", "release"]]
+
+    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="")
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_the_prompt_carries_the_limit_and_the_run_count(self, mock_run, mock_claude, maintainer):
+        mock_run.return_value = Mock(stdout="master\n", returncode=0)
+        maintainer._step_test_health()
+        prompt = mock_claude.call_args[0][0]
+        assert f"{SLOW_TEST_MS} ms" in prompt and f"{TEST_HEALTH_RUNS} times" in prompt
+        assert "{" not in prompt
+
+    @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude timed out"))
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_a_failed_run_reports_nothing_and_still_restores_the_branch(self, mock_run, mock_claude, maintainer):
+        mock_run.return_value = Mock(stdout="master\n", returncode=0)
+        assert maintainer._step_test_health() == ""
+        assert mock_run.call_args[0][0] == ["git", "checkout", "master"]
 
 
 @pytest.mark.unit
@@ -809,31 +761,47 @@ class TestNightlySkipReason:
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_nightly_run_skips_while_off(self, mock_sub, maintainer):
         with patch.object(CodeQualityMaintainer, "nightly_skip_reason", return_value=NIGHTLY_OFF_MESSAGE), \
-                patch.object(CodeQualityMaintainer, '_step_bug_analysis') as bugs:
+                patch.object(CodeQualityMaintainer, '_step_bug_analysis') as bugs, \
+                patch.object(CodeQualityMaintainer, '_step_auto_merge') as merge:
             maintainer._execute_nightly_run()
         bugs.assert_not_called()
+        merge.assert_not_called()
         mock_sub.assert_not_called()
-
-    @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
-    def test_auto_merge_skips_while_off(self, mock_count, maintainer):
-        with patch.object(CodeQualityMaintainer, "nightly_skip_reason", return_value=NIGHTLY_OFF_MESSAGE), \
-                patch.object(CodeQualityMaintainer, '_run_claude') as claude:
-            maintainer._execute_auto_merge_run()
-        claude.assert_not_called()
-        mock_count.assert_not_called()
 
 
 @pytest.mark.unit
 class TestExecuteNightlyRun:
+    @pytest.fixture(autouse=True)
+    def later_steps(self):
+        with patch.object(CodeQualityMaintainer, '_step_test_health', return_value="") as health, \
+                patch.object(CodeQualityMaintainer, '_step_auto_merge', return_value="") as merge:
+            self.health, self.merge = health, merge
+            yield
+
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_calls_both_steps_in_order(self, mock_sub, mock_commits, maintainer):
+    def test_runs_the_four_steps_in_order_with_the_auto_merge_last(self, mock_sub, mock_commits, maintainer):
         call_order = []
+        self.health.side_effect = lambda: call_order.append('health') or ''
+        self.merge.side_effect = lambda: call_order.append('merge') or ''
         with patch.object(CodeQualityMaintainer, '_step_bug_analysis', side_effect=lambda: call_order.append('bugs') or ''):
             with patch.object(CodeQualityMaintainer, '_step_generate_tests', side_effect=lambda: call_order.append('tests') or ''):
                 with patch.object(CodeQualityMaintainer, '_send_email'):
                     maintainer._execute_nightly_run()
-        assert call_order == ['bugs', 'tests']
+        assert call_order == ['bugs', 'tests', 'health', 'merge']
+
+    @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_one_email_carries_every_step_that_reported(self, mock_sub, mock_commits, maintainer):
+        self.health.return_value = "test_sync_waits removed"
+        self.merge.return_value = "Merged PR #42"
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_send_email') as mock_email:
+            maintainer._execute_nightly_run()
+        mock_email.assert_called_once()
+        html = mock_email.call_args[0][1]
+        assert "test_sync_waits removed" in html and "Merged PR #42" in html
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
@@ -892,12 +860,14 @@ class TestExecuteNightlyRun:
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=False)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_skips_run_when_no_recent_commits(self, mock_sub, mock_commits, maintainer):
+    def test_a_night_without_recent_commits_only_auto_merges(self, mock_sub, mock_commits, maintainer):
         with patch.object(CodeQualityMaintainer, '_step_bug_analysis') as mock_bugs:
             with patch.object(CodeQualityMaintainer, '_step_generate_tests') as mock_tests:
                 maintainer._execute_nightly_run()
                 mock_bugs.assert_not_called()
                 mock_tests.assert_not_called()
+        self.health.assert_not_called()
+        self.merge.assert_called_once()
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
