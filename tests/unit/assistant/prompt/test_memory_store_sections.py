@@ -36,6 +36,11 @@ class TestWatchListSection:
         assert "parcel-from-shop-example" in content and "order 4711" in content
         assert "dentist" not in content
 
+    def test_the_section_is_the_index_not_the_whole_notes(self):
+        WatchList.save("Parcel", "order 4711\nleave it with Alice next door", "2026-03-12", every="6h")
+        content = WatchListSectionGenerator(None)._fetch_content()
+        assert "order 4711" in content and "Alice" not in content and "6h" not in content
+
     def test_the_loop_refreshes_only_when_the_list_changed(self):
         section = WatchListSectionGenerator(None)
         one_tick(section)

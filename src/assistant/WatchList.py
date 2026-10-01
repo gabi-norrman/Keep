@@ -16,7 +16,9 @@ a trail again. Whether a check is due is the LLM's arithmetic, not the code's: t
 the cadence and the stamp side by side.
 
 The `save_watch`, `checked_watch` and `delete_watch` commands and the memory curator's command
-block all go through `run`; the prompt's watch-list section renders `render`.
+block all go through `run`. The prompt's watch-list section is only an index (`render_index`: a
+line per item); `load_watch` returns whole items (`load`), and the readers that work through the
+whole list — the autonomous check, the curator, the TUI — get `render`.
 """
 import re
 import threading
@@ -36,6 +38,10 @@ COMMANDS = ("save_watch", "checked_watch", "delete_watch")
 STALE_AFTER_DAYS = 14
 OVERDUE_AFTER_DAYS = 2
 EMPTY = "Nothing is being watched."
+# The header of a loaded item, as `load_watch(name)` returns it.
+HEADER_PREFIX = "# Watch item: "
+# How much of an item's note its index line carries.
+INDEX_NOTE_CHARS = 80
 
 lock = threading.RLock()
 
@@ -208,22 +214,54 @@ def staleness(item: Item, today: date = None) -> str:
     return ""
 
 
+def _block(item: Item, today: date = None) -> str:
+    """One item in full: its name and facts on a line, the note under it."""
+    facts = ([f"due {item.due}"] if item.due else []) + [f"updated {item.updated}"]
+    if item.every:
+        facts.append(f"check every {item.every}")
+    if item.checked:
+        facts.append(f"last checked {item.checked}")
+    if stale := staleness(item, today):
+        facts.append(stale)
+    return f"`{item.name}` ({', '.join(facts)})" + (f"\n{item.note}" if item.note else "")
+
+
 def render(directory: Path = None, today: date = None) -> str:
-    """The open items as the prompt and the curator show them."""
-    open_items = items(directory)
-    if not open_items:
-        return EMPTY
-    blocks = []
-    for item in open_items:
-        facts = ([f"due {item.due}"] if item.due else []) + [f"updated {item.updated}"]
-        if item.every:
-            facts.append(f"check every {item.every}")
-        if item.checked:
-            facts.append(f"last checked {item.checked}")
+    """The open items in full, as the autonomous check and the curator read them."""
+    return "\n\n".join(_block(item, today) for item in items(directory)) or EMPTY
+
+
+def _note_start(note: str) -> str:
+    """The start of a note, cut at a word once it runs past what an index line carries."""
+    first = " ".join(note.strip().split("\n", 1)[0].split())
+    if len(first) <= INDEX_NOTE_CHARS:
+        return first
+    return first[:INDEX_NOTE_CHARS].rsplit(" ", 1)[0].rstrip(" ,;:—-(") + "…"
+
+
+def render_index(directory: Path = None, today: date = None) -> str:
+    """The `{WATCHLIST}` text: one line per open item — its name, due date, staleness and the
+    start of its note. Neither the cadence nor the check stamp, so a poll that only stamps an
+    item leaves the prompt as it was."""
+    lines = []
+    for item in items(directory):
+        facts = ([f"due {item.due}"] if item.due else [])
         if stale := staleness(item, today):
             facts.append(stale)
-        blocks.append(f"`{item.name}` ({', '.join(facts)})" + (f"\n{item.note}" if item.note else ""))
-    return "\n\n".join(blocks)
+        start = _note_start(item.note)
+        lines.append(f"- `{item.name}`" + (f" ({', '.join(facts)})" if facts else "") + (f" — {start}" if start else ""))
+    return "\n".join(lines) or EMPTY
+
+
+def load(name: str, directory: Path = None, today: date = None) -> str:
+    """What `load_watch(name)` answers: the item in full, or which items exist instead."""
+    item = get(name, directory)
+    if item is None:
+        info(f"Watch list: '{name.strip()}' asked for, no such item")
+        open_names = ", ".join(i.name for i in items(directory)) or "none"
+        return f"load_watch failed: no item named '{slug(name) or name.strip()}'. Open: {open_names}"
+    trace(f"Watch list: '{item.name}' loaded ({len(item.note)} chars)")
+    return f"{HEADER_PREFIX}{_block(item, today)}\n"
 
 
 def version(directory: Path = None) -> tuple:

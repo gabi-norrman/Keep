@@ -4,8 +4,8 @@ from common.logging import info, trace
 
 
 class WatchListSectionGenerator(PromptSectionGenerator):
-    """Renders the open watch-list items and re-renders as soon as one is added, updated or
-    closed — and at midnight, since an item's staleness is counted in days."""
+    """Renders the index of the open watch-list items and re-renders as soon as one is added,
+    updated or closed — and at midnight, since an item's staleness is counted in days."""
 
     def __init__(self, prompt_manager):
         super().__init__(prompt_manager, "WatchList")
@@ -24,6 +24,6 @@ class WatchListSectionGenerator(PromptSectionGenerator):
             self._wait(1)
 
     def _fetch_content(self) -> str:
-        content = WatchList.render()
-        info(f"Watch list section: {len(WatchList.items())} open item(s)")
+        content = WatchList.render_index()
+        info(f"Watch list section: {len(WatchList.items())} open item(s) indexed in {len(content)} chars")
         return content

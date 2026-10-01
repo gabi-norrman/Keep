@@ -91,12 +91,12 @@ class Commands:
         "search_photos", "search_history", "show_history",
         "create_event", "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
         "vault_request", "config_set", "load_toolkit", "schedule_wakeup",
-        "save_watch", "delete_watch",
+        "load_watch", "save_watch", "delete_watch",
         "load_procedure", "save_procedure", "delete_procedure",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
-    PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure"})
+    PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch"})
     AI_MESSAGE_SUFFIX = "[Sent with the help of AI 🤖]"
 
     # Looked up by the portable iCloud asset GUID; ZUUID is resolved here because
@@ -1454,6 +1454,17 @@ class Commands:
 
     # The watch list and the procedures: the argument handling lives with the stores
     # (the memory curator's command block runs the same commands through them).
+    def cmd_load_watch(self, *names: str):
+        self.background_command(self._run_load_watch, list(names))
+
+    @staticmethod
+    def _run_load_watch(*names: str) -> str:
+        """The named watch items in full, splatted like `_run_load_procedure`."""
+        names = [n for n in names if n and n.strip()]
+        if not names:
+            return "load_watch failed: expected an item's name. Open: " + (", ".join(i.name for i in WatchList.items()) or "none")
+        return "\n".join(WatchList.load(name) for name in names)
+
     def cmd_save_watch(self, *args: str) -> str:
         return WatchList.run("save_watch", list(args))
 
@@ -1931,6 +1942,7 @@ class Commands:
     def describe_enable_integration(self, p):  return f"Enabling {p.strip()}" if p.strip() else "Enabling an integration"
     def describe_disable_integration(self, p): return f"Disabling {p.strip()}" if p.strip() else "Disabling an integration"
     def describe_remember(self, p):               return f"Saving to memory: {p.strip()}" if p.strip() else "Saving to memory"
+    def describe_load_watch(self, p):             return f"Looking at: {self._first_argument(p)}" if p.strip() else "Looking at a watch item"
     def describe_save_watch(self, p):             return f"Watching: {self._first_argument(p)}" if p.strip() else "Saving a watch item"
     def describe_checked_watch(self, p):          return f"Checked: {self._first_argument(p)}" if p.strip() else "Marking a watch item checked"
     def describe_delete_watch(self, p):           return f"No longer watching: {self._first_argument(p)}" if p.strip() else "Deleting a watch item"

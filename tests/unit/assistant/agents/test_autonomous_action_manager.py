@@ -5,6 +5,7 @@ import time
 import pytest
 from unittest.mock import Mock, patch
 
+from assistant import WatchList
 from assistant.llm.AbstractLLM import LLMRefusalError
 
 from assistant.agents.AutonomousActionManager import (
@@ -17,8 +18,15 @@ from assistant.agents.AutonomousActionManager import (
 # What a model without thinking of its own receives (a bare Mock LLM counts as one).
 FORMATTED_AUTONOMOUS_ACTION_PROMPT = AUTONOMOUS_ACTION_PROMPT.format(
     interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES,
+    watch_list=WatchList.EMPTY,
     thinking_tag_instruction=THINKING_TAG_INSTRUCTION,
 )
+
+
+@pytest.fixture(autouse=True)
+def empty_watch_list(tmp_path, monkeypatch):
+    monkeypatch.setattr(WatchList, "WATCHLIST_DIR", tmp_path / "watchlist")
+    monkeypatch.setattr(WatchList, "LOG_DIR", tmp_path / "log" / "watchlist")
 
 
 @pytest.fixture(autouse=True)
@@ -1209,3 +1217,13 @@ class TestThinkingTagInstruction:
         sent = mgr._think([{"role": "system", "content": "test prompt"}, {"role": "user", "content": prompt}])
 
         assert sent[1]["content"] == prompt and "<thinking>" in prompt
+
+
+@pytest.mark.unit
+class TestWatchListInTheInstruction:
+    def test_the_check_reads_every_item_whole_with_its_cadence_and_stamp(self):
+        note = "order 4711 with the courier, " + "tracking page shows no movement yet, " * 4 + "door code needed"
+        WatchList.save("Parcel from shop.example", note, "2026-03-12", every="6h")
+        prompt = AutonomousActionManager._action_prompt(Mock())
+        assert note in prompt and "6h" in prompt
+        assert WatchList.get("parcel-from-shop-example").checked in prompt

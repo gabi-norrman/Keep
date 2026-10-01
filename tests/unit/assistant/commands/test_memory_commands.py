@@ -47,6 +47,20 @@ class TestWatchCommands:
     def test_an_unknown_item_comes_back_as_the_commands_error(self, commands):
         assert "dentist" in run(commands, 'delete_watch("dentist")')
 
+    def test_loading_a_watch_item_is_a_background_command(self, commands):
+        commands.background_command = Mock()
+        run(commands, 'load_watch("parcel", "dentist")')
+        function, params = commands.background_command.call_args.args[:2]
+        assert params == ["parcel", "dentist"] and callable(function)
+
+    def test_loading_returns_the_named_items_whole_and_says_what_is_open_otherwise(self, commands):
+        WatchList.save("Parcel", "order 4711\nleave it with Alice next door", "2026-03-12")
+        WatchList.save("Dentist", "12:30")
+        loaded = commands._run_load_watch("parcel", "dentist")
+        assert "Alice next door" in loaded and "12:30" in loaded
+        assert "parcel" in commands._run_load_watch() and "Alice" not in commands._run_load_watch()
+        assert "parcel" in commands._run_load_watch("sofa")
+
     def test_a_watch_without_a_name_is_an_error(self, commands):
         assert run(commands, "save_watch()")
         assert WatchList.items() == []
@@ -94,7 +108,7 @@ class TestProcedureCommands:
         assert params == ["shop-checkout"] and callable(function)
 
     def test_loading_runs_in_test_suite_mode_but_writing_does_not(self, commands):
-        assert commands.is_pure("load_procedure")
+        assert commands.is_pure("load_procedure") and commands.is_pure("load_watch")
         assert not any(commands.is_pure(c) for c in ("save_procedure", "delete_procedure", "save_watch", "checked_watch", "delete_watch"))
 
 

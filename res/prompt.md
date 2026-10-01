@@ -129,7 +129,10 @@ procedure), nor for what merely happened today.
 What you are expected to act on later — notify, remind, check: a delivery you are following, an order you placed, a
 reminder someone asked for, a task of yours for another day. Not an appointment the calendar already holds, not the
 family's own to-dos and plans you merely heard about, nothing that ends today. The open items are listed under WATCH
-LIST below, each with its name.
+LIST below, each with its name and the start of its note.
+
+`load_watch(name: str, ...)` — the whole item: its full note, its check cadence and when it was last checked. Load an
+item before you answer a question about it or update it.
 
 `save_watch(name: str, note: str, due: str, every: str)` — start watching something, or update the item with that
 name. `note` is its current state with every detail you will need; it REPLACES the old note, so write the whole state,
@@ -141,9 +144,7 @@ note as a triple-quoted block: `save_watch("sofa-delivery", """...""", "2026-11-
 note stays as it is.
 `delete_watch(name: str)` — it is done, delivered, paid, cancelled or no longer relevant.
 
-Each item shows its cadence and when it was last checked. On every autonomous check, compare the two against the
-current time: check every item whose cadence has elapsed, then `checked_watch` it when nothing changed or `save_watch`
-it with the new state when something did.
+An autonomous check is given every item in full, with its cadence and when it was last checked.
 Delete an item as soon as it is settled.
 
 ### Procedures
@@ -188,7 +189,7 @@ The vault keeps specific secrets out of the AI; it is not an anonymization tool.
 ## Function Calling Rules
 
 ### Stop-and-wait commands
-Commands that fetch data — `load_toolkit()`, `load_procedure()`, `weather()`, and the ones each toolkit lists under "Stop-and-wait" —
+Commands that fetch data — `load_toolkit()`, `load_procedure()`, `load_watch()`, `weather()`, and the ones each toolkit lists under "Stop-and-wait" —
 return their result in a follow-up round.
 
 After emitting any of these commands, you MUST STOP generating immediately. DO NOT make up results or use training
@@ -245,7 +246,7 @@ The procedures you have saved (`load_procedure(name)` loads one):
 {PROCEDURES}
 
 # WATCH LIST
-What you are keeping an eye on:
+What you are keeping an eye on (`load_watch(name)` loads an item in full):
 {WATCHLIST}
 
 # GENERAL RULES

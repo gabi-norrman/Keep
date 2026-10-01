@@ -235,6 +235,57 @@ class TestRender:
 
 
 @pytest.mark.unit
+class TestIndex:
+    def test_empty_list_says_so(self, wl):
+        assert WatchList.render_index(wl) == WatchList.EMPTY
+
+    def test_one_line_per_item_with_its_name_due_and_the_start_of_its_note(self, wl, log):
+        long_note = "order 4711 with the courier, " + "tracking page shows no movement yet, " * 4 + "door code needed"
+        WatchList.save("Parcel from shop.example", long_note, "2026-03-12", wl, log)
+        WatchList.save("Dentist for Charlotte", "12:30\nbring the referral", None, wl, log)
+        lines = {line.split("`")[1]: line for line in WatchList.render_index(wl, TODAY).splitlines()}
+        parcel, dentist = lines["parcel-from-shop-example"], lines["dentist-for-charlotte"]
+        assert "2026-03-12" in parcel and "order 4711" in parcel
+        assert "door code needed" not in parcel and len(parcel) < len(long_note)
+        assert "12:30" in dentist and "referral" not in dentist and "due" not in dentist
+
+    def test_a_stale_item_is_marked(self, wl, log):
+        WatchList.save("Old parcel", "x", (date.today() - timedelta(days=9)).isoformat(), wl, log)
+        assert "STALE" in WatchList.render_index(wl)
+
+    def test_a_poll_that_only_stamps_leaves_the_index_as_it_was(self, wl, log):
+        WatchList.save("Tickets", "not yet", None, wl, log, every="1d")
+        before = WatchList.render_index(wl)
+        backdate(wl, "tickets", "Checked", date.today() - timedelta(days=1))
+        WatchList.check("Tickets", wl)
+        assert WatchList.render_index(wl) == before
+        assert "1d" not in before
+
+
+@pytest.mark.unit
+class TestLoad:
+    def test_an_item_loads_whole_under_its_name(self, wl, log):
+        long_note = "order 4711 with the courier, " + "tracking page shows no movement yet, " * 4 + "door code needed"
+        WatchList.save("Parcel from shop.example", long_note, "2026-03-12", wl, log, every="6h")
+        loaded = WatchList.load("Parcel from shop.example", wl)
+        assert "parcel-from-shop-example" in loaded.splitlines()[0]
+        assert long_note in loaded and "2026-03-12" in loaded and "6h" in loaded
+        assert WatchList.get("parcel-from-shop-example", wl).checked in loaded
+
+    def test_an_unknown_name_answers_with_the_open_ones(self, wl, log):
+        WatchList.save("Parcel", "order 4711", None, wl, log)
+        answer = WatchList.load("dentist", wl)
+        assert "dentist" in answer and "parcel" in answer and "order 4711" not in answer
+
+    def test_loading_is_not_a_look(self, wl, log):
+        WatchList.save("Tickets", "not yet", None, wl, log, every="1d")
+        backdate(wl, "tickets", "Checked", date.today() - timedelta(days=1))
+        stamp = WatchList.get("Tickets", wl).checked
+        WatchList.load("Tickets", wl)
+        assert WatchList.get("Tickets", wl).checked == stamp
+
+
+@pytest.mark.unit
 class TestVersion:
     def test_version_moves_on_save_update_and_delete(self, wl, log):
         empty = WatchList.version(wl)
