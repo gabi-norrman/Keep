@@ -431,7 +431,7 @@ class TestStaleScribeVoteDrop:
 class TestScribeConfirmationOutweighsVeto:
     """Several mics hear one utterance and each runs its own Scribe verify. Scribe can garble
     the wake word on one mic while hearing it on another, so a veto is ignored once another
-    mic's Scribe has confirmed the wake word for the same utterance."""
+    mic's Scribe has confirmed the wake word for the same Whisper phrase."""
 
     WHISPER = "defrost the car"
 
@@ -482,5 +482,19 @@ class TestScribeConfirmationOutweighsVeto:
         deps.speech_analyzer.clean()
         h = self._fire(deps)
         self._scribe_vote(app.mic_routes, verified_phrase="open the garage")
+        await self._veto(app)
+        h.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_confirmation_of_a_different_whisper_phrase_does_not_protect(self, app, deps):
+        """Mics whose Whisper transcripts disagree are each hallucinating over background
+        speech; one Scribe hearing the wake word on its own phrase says nothing about the
+        phrase another mic fired on."""
+        analyzer = deps.speech_analyzer
+        assert analyzer.is_best_transcription("read a bedtime story", False, 0.44, "hall", "whisper")
+        self._scribe_vote(app.mic_routes, verified_phrase="read a bedtime story")
+        analyzer.is_best_transcription(self.WHISPER, False, 0.45, "kitchen", "whisper")
+        h = _handler(self.WHISPER)
+        deps.running.put(h)
         await self._veto(app)
         h.kill.assert_called_once()

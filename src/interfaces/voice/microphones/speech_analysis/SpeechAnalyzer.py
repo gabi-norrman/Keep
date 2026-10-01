@@ -93,13 +93,16 @@ class SpeechAnalyzer:
         # instead of racing it. Monotonic like utterance_generation, so an old settled value
         # is naturally < a fresh turn's generation (which starts un-settled).
         self.scribe_settled_generation = -1
-        # The utterance_generation whose wake word a Scribe verify job CONFIRMED, and the mic
-        # it ran on. "Settled" only says Scribe answered; this says what it answered, so a
-        # later veto from another mic on the same utterance can be weighed against it (the
-        # 2026-09-28 miss: one mic's Scribe heard "Michelle …", the next one's garbled the
-        # wake word and its lone veto killed a genuine request).
-        self.scribe_confirmed_generation = -1
-        self.scribe_confirmed_mic = ""
+        # The Whisper fires of the current utterance whose wake word a Scribe verify job
+        # CONFIRMED: normalized phrase → the mic it ran on. "Settled" only says Scribe
+        # answered; this says what it answered, so a later veto from another mic on the same
+        # phrase can be weighed against it (the 2026-09-28 miss: one mic's Scribe heard
+        # "Michelle …", the next one's garbled the wake word and its lone veto killed a
+        # genuine request). Keyed by phrase, not by utterance: when the mics' Whisper
+        # transcripts disagree with each other (2026-08-18: three mics, three different
+        # "Michelle, …" hallucinations over a conversation) one Scribe hearing the wake
+        # word says nothing about another mic's fire. Wiped by clean().
+        self.scribe_confirmed_phrases = {}
         # Last-utterance snapshot for display purposes. Refreshed from live state
         # while an utterance is in flight and right before clean() wipes it, so the
         # console can show the previous utterance even if its tab was hidden the
@@ -374,20 +377,15 @@ class SpeechAnalyzer:
                 trace(f"Scribe wake-word confirmation for '{phrase}' doesn't match the current "
                       f"utterance window — stale, not recording it.")
                 return False
-            self.scribe_confirmed_generation = self.utterance_generation
-            self.scribe_confirmed_mic = mic
+            self.scribe_confirmed_phrases[normalized] = mic
             return True
 
     def wake_word_confirmed_by(self, phrase: str) -> Optional[str]:
-        """The mic whose Scribe confirmed the wake word of the utterance `phrase` belongs to
-        (a label, '' when the mic sent none), or None when that utterance has no
-        confirmation — including when `phrase` is not in the current window."""
-        normalized = self.normalize_query(phrase)
+        """The mic whose Scribe confirmed the wake word of the Whisper fire `phrase` in the
+        current utterance (a label, '' when the mic sent none), or None when no Scribe
+        confirmed that exact (normalized) phrase."""
         with self.lock:
-            if (normalized and normalized in self.phrases
-                    and self.scribe_confirmed_generation == self.utterance_generation):
-                return self.scribe_confirmed_mic
-            return None
+            return self.scribe_confirmed_phrases.get(self.normalize_query(phrase))
 
     def clean(self):
         """Remove all phrases, preserving them in the last-utterance snapshot"""
@@ -397,6 +395,7 @@ class SpeechAnalyzer:
             self.last_accepted_phrase = ""
             self.phrases.clear()
             self.accepted_phrases.clear()
+            self.scribe_confirmed_phrases.clear()
             self.utterance_generation += 1
 
     @staticmethod

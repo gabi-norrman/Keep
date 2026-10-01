@@ -325,12 +325,14 @@ class MicrophoneRoutes:
                 # the phrase match inside mark_scribe_settled keeps a STALE veto (previous
                 # utterance) from settling a new utterance's gate.
                 # Scribe garbles the wake word on one mic while hearing it on another; a
-                # confirmation already recorded for this utterance outweighs the veto. Only
-                # that order is covered — a veto that lands first has already killed.
+                # confirmation already recorded for this exact Whisper phrase outweighs the
+                # veto (a different phrase in the same utterance is not covered — see
+                # SpeechAnalyzer.scribe_confirmed_phrases). Only that order is covered — a
+                # veto that lands first has already killed.
                 confirmed_by = deps.speech_analyzer.wake_word_confirmed_by(query)
                 if confirmed_by is not None:
                     note(f"Ignoring Scribe veto from '{mic or 'outpost'}' for '{query}': Scribe on "
-                         f"'{confirmed_by or 'outpost'}' already confirmed the wake word for this utterance.")
+                         f"'{confirmed_by or 'outpost'}' already confirmed the wake word for that phrase.")
                     deps.speech_analyzer.mark_scribe_settled(query)
                     return "", 204
                 killed = self.kill_running_request_matching(query, reason=f"Scribe veto from {mic or 'outpost'}")
