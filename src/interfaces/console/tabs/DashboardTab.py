@@ -34,7 +34,7 @@ class FeedRow(NamedTuple):
 
 
 class MeterRow(NamedTuple):
-    """One line of a meter tile: a label, a slim meter and the value it shows."""
+    """One line of a meter tile: a label, a meter and the value it shows."""
     label: str
     value: str
     fraction: float             # 0..1 of the meter filled
@@ -502,52 +502,59 @@ class DashboardTab(TabView):
     def _deep(cls, fg: Color) -> Color:
         return cls.DEEP.get(fg) or cls._lerp_color(cls.COLOR_PANEL_BG, fg, 0.35)
 
-    METER_FULL = "━"
-    METER_LEFT = "╸"            # the half cell a fill ends on
-    METER_RIGHT = "╺"           # the half cell a fill starting mid-track begins on
-    METER_MARKER = "┃"
+    METER_BLOCKS = " ▏▎▍▌▋▊▉█"  # a cell filled from its left edge, in eighths
+    METER_MARKER = "▌"
     METER_MIN = 4
 
     def _draw_meter(self, screen: TUIScreen, x: int, y: int, length: int, fraction: float, fg: Color,
                     start: float = 0.0, track: Optional[Color] = None,
                     marker: Optional[float] = None, marker_color: Optional[Color] = None):
-        """A slim one-row meter, `length` cells of heavy rule: `fraction` of it (0..1) filled
-        from `start`, to half a cell, shading from the colour's deep companion where the fill
-        begins to the colour where it ends; the rest is the dim `track`. Anything above zero
-        shows at least a half cell. `marker` (0..1) is a second value drawn as a notch on top."""
+        """A one-row bar, `length` cells on the dim `track`: `fraction` of it (0..1) filled
+        from `start`, to an eighth of a cell. The shading belongs to the track, not the fill:
+        the colour's deep companion at its left end, the colour at its right, so a cell has
+        the same shade whatever the value. Anything above zero shows at least an
+        eighth. `marker` (0..1) is a second value drawn as a notch on top.
+        A full cell carries its colour as background too, like the chart columns. A fill that
+        starts inside a cell is drawn inverted — the track's block over the fill's ground —
+        since the block glyphs only grow from the left."""
         if length <= 0:
             return
         start = max(0.0, min(1.0, start))
         lo = start * length
         hi = lo + max(0.0, min(1.0 - start, fraction)) * length
+        if fraction > 0 and hi - lo < 1 / 8:
+            lo = min(lo, length - 1 / 8)
+            hi = lo + 1 / 8
         track = track or self._lerp_color(self.COLOR_PANEL_BG, fg, 0.22)
         deep = self._deep(fg)
-
-        cells = []
-        for i in range(length):
-            covered = min(hi, i + 1) - max(lo, i)
-            if covered >= 0.75:
-                cells.append(self.METER_FULL)
-            elif covered >= 0.25:
-                cells.append(self.METER_LEFT if lo <= i else self.METER_RIGHT)
-            else:
-                cells.append(None)
-        if hi > lo and not any(cells):
-            cells[min(length - 1, int(lo))] = self.METER_LEFT
         marker_idx = None if marker is None else max(0, min(length - 1, int(max(0.0, min(1.0, marker)) * length)))
 
-        first = int(lo)
-        span = max(1, math.ceil(hi) - 1 - first)
-        for i, cell in enumerate(cells):
+        span = max(1, length - 1)
+        for i in range(length):
+            begin = max(lo, i) - i
+            end = min(hi, i + 1) - i
+            color = self._lerp_color(deep, fg, i / span)
             if i == marker_idx:
                 screen.set_color(marker_color or self.COLOR_BRIGHT)
-                screen.write_at(x + i, y, self.METER_MARKER)
-            elif cell:
-                screen.set_color(self._lerp_color(deep, fg, (i - first) / span))
-                screen.write_at(x + i, y, cell)
-            else:
+                screen.set_bg_color(track)
+                char = self.METER_MARKER
+            elif end <= begin:
                 screen.set_color(track)
-                screen.write_at(x + i, y, self.METER_FULL)
+                screen.set_bg_color(track)
+                char = " "
+            elif begin > 0:
+                screen.set_color(track)
+                screen.set_bg_color(color)
+                char = self.METER_BLOCKS[min(7, round(begin * 8))]
+            elif end >= 1:
+                screen.set_color(color)
+                screen.set_bg_color(color)
+                char = self.METER_BLOCKS[8]
+            else:
+                screen.set_color(color)
+                screen.set_bg_color(track)
+                char = self.METER_BLOCKS[max(1, int(end * 8))]
+            screen.write_at(x + i, y, char)
         screen.reset_color()
 
     def _draw_meter_rows(self, screen: TUIScreen, x: int, y: int, width: int, rows: List[MeterRow]):

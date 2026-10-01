@@ -155,7 +155,8 @@ class TestFeedRow:
         assert row.fg == DashboardTab.COLOR_DIM
 
 
-FULL, LEFT, RIGHT, NOTCH = DashboardTab.METER_FULL, DashboardTab.METER_LEFT, DashboardTab.METER_RIGHT, DashboardTab.METER_MARKER
+BLOCKS, NOTCH = DashboardTab.METER_BLOCKS, DashboardTab.METER_MARKER
+FULL = BLOCKS[8]
 
 
 def cells(screen, row: int, char: str):
@@ -164,7 +165,7 @@ def cells(screen, row: int, char: str):
 
 
 def filled(screen, row: int, track: Color) -> int:
-    """How many rule cells of a row are fill rather than track."""
+    """How many cells of a row's bar are filled whole."""
     return sum(1 for c in cells(screen, row, FULL) if c.style.fg != track)
 
 
@@ -180,9 +181,9 @@ class TestDrawFeedsPanel:
         assert row_text(screen, 1).startswith(f"  iMessage {SYMBOL_RUNNING} {FULL}")
         assert row_text(screen, 1).endswith(f"{FULL} 23436 items")
         assert row_text(screen, 2).startswith(f"  Photos   {DashboardTab.SYMBOL_CATCHING_UP} {FULL}")
-        assert f"{FULL} 1234 / 23356" in row_text(screen, 2)
-        assert row_text(screen, 3).startswith(f"  Telegram {SYMBOL_FAILED} {FULL}")
-        assert row_text(screen, 3).endswith(f"{FULL} stopped")
+        assert "1234 / 23356" in row_text(screen, 2)
+        assert row_text(screen, 3).startswith(f"  Telegram {SYMBOL_FAILED}")
+        assert row_text(screen, 3).endswith(" stopped") and FULL not in row_text(screen, 3)
 
     def test_the_bar_takes_every_cell_the_longest_text_leaves(self):
         screen = draw_feeds({"a": status(stored=5), "b": status(stored=1234567)})
@@ -243,12 +244,14 @@ def meter_cells(screen, length):
 
 
 def fill_mask(length, fraction, **kwargs):
-    """Per cell: 'F' a filled full cell, 'h' a half cell, '.' track."""
+    """Per cell: 'F' filled whole, 'p' filled from its left edge to some eighth, 's' a fill
+    starting inside the cell (the track's block over the fill's ground), '.' track."""
     screen = TUIScreen(40, 4)
     track = Color(1, 2, 3)
     make_tab()._draw_meter(screen, METER_X, METER_Y, length, fraction, C, track=track, **kwargs)
     chars, colours = meter_cells(screen, length)
-    return "".join("." if fg == track else ("F" if ch == FULL else "h") for ch, fg in zip(chars, colours))
+    return "".join("." if ch == " " else "F" if ch == FULL else "s" if fg == track else "p"
+                   for ch, fg in zip(chars, colours))
 
 
 @pytest.mark.unit
@@ -258,26 +261,31 @@ class TestDrawMeter:
         assert fill_mask(10, 1.0) == "F" * 10
         assert fill_mask(10, 0.0) == "." * 10
 
-    def test_a_fill_ending_mid_cell_ends_on_a_left_half(self):
-        assert fill_mask(10, 0.45) == "FFFFh....."
-        assert meter(10, 0.45)[4] == LEFT
+    def test_a_fill_ending_mid_cell_ends_on_that_many_eighths(self):
+        assert fill_mask(8, 2.5 / 8) == "FFp....."
+        assert meter(8, 2.5 / 8)[2] == BLOCKS[4]
+        assert meter(8, 2.75 / 8)[2] == BLOCKS[6]
 
-    def test_anything_above_zero_shows_at_least_a_half_cell(self):
-        assert fill_mask(10, 0.001) == "h........."
+    def test_anything_above_zero_shows_at_least_an_eighth(self):
+        assert fill_mask(10, 0.001) == "p........."
+        assert meter(10, 0.001)[0] == BLOCKS[1]
 
-    def test_start_offsets_the_fill_and_a_mid_cell_start_is_a_right_half(self):
+    def test_start_offsets_the_fill_and_a_mid_cell_start_is_drawn_inverted(self):
         assert fill_mask(10, 0.3, start=0.5) == ".....FFF.."
-        assert fill_mask(10, 0.35, start=0.45) == "....hFFF.."
-        assert meter(10, 0.35, start=0.45)[4] == RIGHT
+        assert fill_mask(10, 0.35, start=0.45) == "....sFFF.."
+        assert meter(10, 0.35, start=0.45)[4] == BLOCKS[4], "the track covers the half before the fill starts"
 
     def test_a_fill_never_runs_past_the_end_of_the_track(self):
         assert fill_mask(10, 0.9, start=0.8) == "........FF"
 
-    def test_the_fill_reaches_its_own_colour_on_its_last_cell(self):
-        screen = TUIScreen(40, 4)
-        make_tab()._draw_meter(screen, METER_X, METER_Y, 10, 0.5, C)
-        _, colours = meter_cells(screen, 10)
-        assert colours[4] == C and colours[0] != C
+    def test_a_cell_has_the_same_shade_whatever_the_value(self):
+        def colours(fraction):
+            screen = TUIScreen(40, 4)
+            make_tab()._draw_meter(screen, METER_X, METER_Y, 10, fraction, C)
+            return meter_cells(screen, 10)[1]
+        half, full = colours(0.5), colours(1.0)
+        assert half[:5] == full[:5]
+        assert full[9] == C and len(set(full)) == 10, "the shading runs the whole track, up to the colour itself"
 
     def test_the_marker_is_a_notch_at_its_share_of_the_track(self):
         assert meter(10, 0.2, marker=0.7).index(NOTCH) == 7
@@ -301,13 +309,13 @@ class TestDrawMeterRows:
 
     def test_the_meter_takes_the_cells_the_label_and_value_leave(self):
         wide, wider = self.draw(40), self.draw(50)
-        assert wider[0].count(FULL) + wider[0].count(LEFT) == wide[0].count(FULL) + wide[0].count(LEFT) + 10
+        assert wider[0].index("0.3/1 GB") == wide[0].index("0.3/1 GB") + 10
         assert wide[0].index("0.3/1 GB") == wide[1].index("59/1024"), "one value column"
         assert wide[1].endswith("RMS")
 
     def test_too_narrow_for_a_meter_drops_it_and_keeps_label_and_value(self):
         lines = self.draw(26)
-        assert FULL not in "".join(lines) and LEFT not in "".join(lines)
+        assert not set("".join(lines)) & set(BLOCKS.strip())
         assert lines[0].split() == ["Database", "0.3/1", "GB"]
 
 
