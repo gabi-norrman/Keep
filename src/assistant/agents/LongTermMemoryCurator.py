@@ -13,6 +13,7 @@ from common.ConfigManager import ConfigManager
 from common.FloxyDatabase import FloxyDatabase, NO_INTERACTIONS
 from ..integration.integrations.CalDAVIntegration import CalDAVIntegration, EVENTS_UNAVAILABLE, NO_EVENTS
 from common.logging import info, error, trace
+from ..llm.AbstractLLM import LLMRefusalError
 from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
 
 HISTORY_SOURCE = "memory_curation"   # the `source` of the system row a finished curation leaves
@@ -22,6 +23,9 @@ CURATION_CHUNK_DAYS = 4
 # The size the curator is told to keep the bank under. The LLM cannot count words in a 40 KB
 # document, so the prompt also states the measured count ({MEMORY_SIZE}) rather than trusting it to.
 MEMORY_WORD_LIMIT = 4000
+# How long a nightly run waits for its batch before it makes the ordinary full-price call
+# (`ai.memory_curator.batch_wait_minutes`): from the 04:00 run, done before the house wakes.
+BATCH_WAIT_MINUTES = 90
 # What the curator may do to the watch list and the procedures, in the command block after the
 # bank. It may add to a procedure but never replace or delete one: a procedure is rewritten
 # only by the assistant that has the working flow in front of it, or by the user.
@@ -224,7 +228,8 @@ class LongTermMemoryCurator:
                  llm=None,
                  test_mode: bool = False,
                  watchlist_dir: Path = None,
-                 procedures_dir: Path = None):
+                 procedures_dir: Path = None,
+                 batch: bool = False):
         """
         Initialize the memory curator.
 
@@ -235,7 +240,10 @@ class LongTermMemoryCurator:
             test_mode: If True, skip database initialization (use curate_memory_with_data only)
             watchlist_dir: The watch list the curator reads and tidies (defaults to memory/watchlist)
             procedures_dir: The procedures it indexes and adds to (defaults to memory/procedures)
+            batch: Nobody waits for this curation (the nightly run), so it may take the half-price
+                batch API and an answer that is up to `ai.memory_curator.batch_wait_minutes` away
         """
+        self.batch = batch
         self.watchlist_dir = watchlist_dir
         self.procedures_dir = procedures_dir
         if test_mode:
@@ -255,17 +263,18 @@ class LongTermMemoryCurator:
 
     @classmethod
     def run(cls, period_start: datetime | date = None, period_end: datetime | date = None,
-            curator: 'LongTermMemoryCurator' = None, history=None) -> dict | None:
+            curator: 'LongTermMemoryCurator' = None, history=None, batch: bool = False) -> dict | None:
         """Curate the period, save the bank and its debug log. One curation at a time: a run
         that finds another in progress is skipped (the next one covers its period anyway).
         With a `MessageHistory` the completion is recorded as a system row, so it shows in
         the Home tab chat like the other system events and the LLM knows its memory changed.
-        Returns the metadata, or None when skipped."""
+        `batch` is for a run nobody waits for (see `__init__`). Returns the metadata, or None
+        when skipped."""
         if not cls._curation_lock.acquire(blocking=False):
             info("Rem: already dreaming — skipping this run.")
             return None
         try:
-            return cls._curate_period(curator or cls(), period_start, period_end, history)
+            return cls._curate_period(curator or cls(batch=batch), period_start, period_end, history)
         finally:
             cls._curation_lock.release()
 
@@ -545,11 +554,7 @@ class LongTermMemoryCurator:
         # Send to LLM with thinking enabled for complex reasoning
         info("Rem: deep in REM — consolidating the period's memories with the AI...")
         start_time = time.time()
-        response = self.llm.think(
-            system_message=full_prompt,
-            user_message="Please curate the memory now.",
-            thinking=True
-        )
+        response = self._think(full_prompt, "Please curate the memory now.")
         llm_duration = time.time() - start_time
         trace(f"Rem: woke after {llm_duration:.1f}s of dreaming")
 
@@ -590,6 +595,32 @@ class LongTermMemoryCurator:
         }
 
         return new_memory, metadata
+
+    def _think(self, prompt: str, user_message: str) -> str:
+        """The curation call: through the batch API at half price when this run can wait
+        (`batch`) and `ai.memory_curator.batch` has not turned it off, the ordinary call
+        otherwise — and whenever the batch gave no answer (a backend without a batch API, the
+        wait ran out, an error). A refusal is not retried: the same request is refused again."""
+        config = ConfigManager.get_instance()
+        if not self.batch:
+            trace("Rem: an interactive curation — the ordinary call")
+        elif not config.get('ai.memory_curator.batch', True):
+            info("Rem: ai.memory_curator.batch is off — the ordinary call")
+        else:
+            wait_minutes = float(config.get('ai.memory_curator.batch_wait_minutes', BATCH_WAIT_MINUTES))
+            try:
+                response = self.llm.think_batched(system_message=prompt, user_message=user_message,
+                                                  thinking=True, max_wait_seconds=wait_minutes * 60)
+            except LLMRefusalError:
+                raise
+            except Exception as e:
+                error(f"Rem: the batch failed ({type(e).__name__}: {e})")
+                response = None
+            if response is not None:
+                info("Rem: the dream came back from the batch API (half price)")
+                return response
+            info("Rem: no answer from the batch API — making the ordinary call")
+        return self.llm.think(system_message=prompt, user_message=user_message, thinking=True)
 
     def save_memory(self, memory_text: str, metadata: dict = None) -> str:
         """

@@ -569,6 +569,9 @@ class TestAutonomousActionManager:
              patch('assistant.agents.AutonomousActionManager.time.sleep', side_effect=patched_sleep), \
              patch.object(mgr, '_run_memory_curation') as curation:
             mgr._run_periodic_check()
+            for thread in threading.enumerate():
+                if thread.name == "MemoryCuration":
+                    thread.join()
         mgr.running = True  # restore
         return curation.call_count, pending.call_count
 

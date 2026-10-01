@@ -324,6 +324,8 @@ wake_word_near_misses: [mission, missions, we shall]
 #    llm: OllamaLLM
 #  memory_curator:
 #    llm: OllamaLLM
+#    # batch: false           # the nightly run goes through Anthropic's batch API (half price, the answer
+#    # batch_wait_minutes: 90 # minutes to an hour later); false, or no answer within the wait → the ordinary call
 #  cache_auditor:
 #    llm: OllamaLLM
 #  photo_indexing:         # indexes Apple Photos stills and videos, one call each (thousands on a backfill).

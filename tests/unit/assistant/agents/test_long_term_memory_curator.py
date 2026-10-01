@@ -507,3 +507,69 @@ class TestEmptyPeriod:
         curator.save_memory.assert_not_called()
         curator.save_debug_log.assert_not_called()
         history.add_context_message.assert_not_called()
+
+
+class TestBatch:
+    """The nightly run goes through the batch API; every other outcome is the ordinary call."""
+
+    BANK = "# Memory\n" + "Marcus likes tea. " * 20
+
+    def _curate(self, batch, batched_reply=None, batch_config=None, batched_error=None):
+        llm = Mock()
+        llm.last_stop_reason = 'end_turn'
+        llm.think.return_value = self.BANK + "ordinary"
+        llm.think_batched.return_value = batched_reply
+        llm.think_batched.side_effect = batched_error
+        curator = LongTermMemoryCurator(llm=llm, test_mode=True, batch=batch)
+        values = {'interfaces.voice.enabled': False}
+        if batch_config is not None:
+            values.update(batch_config)
+        config = Mock()
+        config.get.side_effect = lambda key, default=None: values.get(key, default)
+        with patch('assistant.agents.LongTermMemoryCurator.ConfigManager.get_instance', return_value=config), \
+             patch('assistant.agents.LongTermMemoryCurator.WatchList.render', return_value=""), \
+             patch('assistant.agents.LongTermMemoryCurator.Procedures.render_index', return_value=""):
+            memory, _ = curator.curate_memory_with_data("[10:00] Marcus: hi", "", self.BANK)
+        return memory, llm
+
+    def test_batched_reply_is_the_bank_and_nothing_is_paid_twice(self):
+        memory, llm = self._curate(batch=True, batched_reply=self.BANK + "batched")
+        assert memory.endswith("batched")
+        llm.think.assert_not_called()
+
+    def test_no_answer_from_the_batch_falls_back_to_the_ordinary_call(self):
+        memory, llm = self._curate(batch=True, batched_reply=None)
+        assert memory.endswith("ordinary")
+
+    def test_failed_batch_falls_back_to_the_ordinary_call(self):
+        memory, _ = self._curate(batch=True, batched_error=RuntimeError("batches are down"))
+        assert memory.endswith("ordinary")
+
+    def test_refused_batch_is_not_sent_again(self):
+        from assistant.llm.AbstractLLM import LLMRefusalError
+        with pytest.raises(LLMRefusalError):
+            self._curate(batch=True, batched_error=LLMRefusalError("refused"))
+
+    def test_interactive_curation_never_waits_for_a_batch(self):
+        _, llm = self._curate(batch=False)
+        llm.think_batched.assert_not_called()
+
+    def test_config_key_ai_memory_curator_batch_turns_it_off(self):
+        """Contract with config.yaml: `ai.memory_curator.batch: false`."""
+        memory, llm = self._curate(batch=True, batched_reply=self.BANK + "batched",
+                                   batch_config={'ai.memory_curator.batch': False})
+        assert memory.endswith("ordinary")
+        llm.think_batched.assert_not_called()
+
+    def test_config_key_batch_wait_minutes_is_the_wait_handed_to_the_llm(self):
+        """Contract with config.yaml: `ai.memory_curator.batch_wait_minutes`."""
+        _, llm = self._curate(batch=True, batched_reply=self.BANK,
+                              batch_config={'ai.memory_curator.batch_wait_minutes': 20})
+        assert llm.think_batched.call_args.kwargs['max_wait_seconds'] == 20 * 60
+
+    def test_nightly_run_builds_a_batching_curator(self):
+        with patch.object(LongTermMemoryCurator, '_curate_period', return_value={}) as curate, \
+             patch('assistant.agents.LongTermMemoryCurator.create_llm'), \
+             patch('assistant.agents.LongTermMemoryCurator.FloxyDatabase.get_instance'):
+            LongTermMemoryCurator.run(batch=True)
+        assert curate.call_args.args[0].batch is True

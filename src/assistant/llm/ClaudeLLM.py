@@ -448,6 +448,78 @@ class ClaudeLLM(AbstractLLM):
         info("Claude replied with empty message on every retry - returning the empty reply.")
         return text
 
+    # A batch is polled, not streamed: most end within the hour, so half a minute between
+    # looks costs nothing. After a cancel the batch still has to wind down before its result
+    # (the reply, if it finished in the meantime) can be read.
+    BATCH_POLL_SECONDS = 30
+    BATCH_CANCEL_WAIT_SECONDS = 300
+
+    def create_batched_completion(self, messages: list[dict], thinking: bool = False,
+                                  max_wait_seconds: float = 3600) -> str | None:
+        """One request through the Message Batches API — every token at half price, the answer
+        whenever Anthropic gets to it (usually well within the hour, 24 hours at most). A batch
+        that has not ended after `max_wait_seconds` is cancelled; a reply it produced while the
+        cancel was on its way is still used, so the caller never pays for the same answer
+        twice. None when the batch gave no reply. Fast mode is not available on batches."""
+        self._ensure_initialized()
+        if self.speed == "fast":
+            info("Claude batch: fast mode is not available on the Batches API - no batch")
+            return None
+
+        api_params = self._build_api_params(messages, thinking, stream=False)
+        del api_params['stream'], api_params['timeout']
+        self._last_stop_reason = None
+        t_start = time.time()
+        batch = self.client.messages.batches.create(requests=[{'custom_id': 'request', 'params': api_params}])
+        info(f"Claude batch {batch.id} submitted ({self.model}), waiting up to {max_wait_seconds / 60:.0f} min...")
+
+        if not self._wait_for_batch(batch.id, t_start + max_wait_seconds):
+            info(f"Claude batch {batch.id} has not ended after {(time.time() - t_start) / 60:.0f} min - cancelling it")
+            self.client.messages.batches.cancel(batch.id)
+            if not self._wait_for_batch(batch.id, time.time() + self.BATCH_CANCEL_WAIT_SECONDS):
+                info(f"Claude batch {batch.id} is still winding down - giving up on it")
+                return None
+
+        result = next(iter(self.client.messages.batches.results(batch.id)), None)
+        outcome = getattr(getattr(result, 'result', None), 'type', None)
+        if outcome != 'succeeded':
+            info(f"Claude batch {batch.id} ended without a reply ({outcome or 'no result'})")
+            return None
+        response = result.result.message
+        info(f"Claude batch {batch.id} answered after {(time.time() - t_start) / 60:.1f} min")
+        self._log_cache_usage(response.usage)
+        self._log_output_tokens(response.usage)
+        self._last_stop_reason = getattr(response, 'stop_reason', None)
+        if self._last_stop_reason == 'refusal':
+            info("Claude refused the batched request (stop_reason=refusal) - raising LLMRefusalError.")
+            raise LLMRefusalError(f"{self.model} refused the request (stop_reason=refusal)")
+        if self._last_stop_reason == 'max_tokens':
+            info(f"Claude hit max_tokens={api_params['max_tokens']} - the reply is cut short")
+        text = ''.join(block.text for block in response.content if block.type == 'text')
+        if not text.strip():
+            info(f"Claude batch {batch.id} returned no text (stop_reason={self._last_stop_reason})")
+            return None
+        return text
+
+    def _wait_for_batch(self, batch_id: str, deadline: float) -> bool:
+        """Poll until the batch has ended (True) or the deadline passes (False). A poll that
+        fails on the network or on an overloaded API is just a missed look."""
+        while True:
+            try:
+                status = self.client.messages.batches.retrieve(batch_id).processing_status
+                if status == 'ended':
+                    return True
+                trace(f"Claude batch {batch_id}: {status}")
+            except (httpx.TransportError, APIConnectionError) as e:
+                info(f"Claude batch {batch_id}: poll failed on transport ({type(e).__name__}), looking again later")
+            except APIStatusError as e:
+                if not self._is_retryable(e):
+                    raise
+                info(f"Claude batch {batch_id}: poll failed (status={e.status_code}), looking again later")
+            if time.time() >= deadline:
+                return False
+            time.sleep(self.BATCH_POLL_SECONDS)
+
     def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
         self._ensure_initialized()
 

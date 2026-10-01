@@ -146,6 +146,23 @@ class AbstractLLM(ABC):
                     thinking=thinking)
         return self._retry(fn)
 
+    def think_batched(self, system_message: str, user_message: str, thinking: bool = False,
+                      max_wait_seconds: float = 3600) -> str | None:
+        """`think` for work nobody is waiting on, through the provider's batch API where it has
+        one (half price, an answer within minutes to hours). Blocks until the batch ends or
+        `max_wait_seconds` pass. None means there is no answer from a batch — no batch API, the
+        wait ran out, the request failed there — and the caller makes the ordinary call
+        instead. Not retried here: a retry would submit, and pay for, a second batch."""
+        return self.create_batched_completion(
+            [{'role': 'system', 'content': system_message}, {'role': 'user', 'content': user_message}],
+            thinking=thinking, max_wait_seconds=max_wait_seconds)
+
+    def create_batched_completion(self, messages: list[dict], thinking: bool = False,
+                                  max_wait_seconds: float = 3600) -> str | None:
+        """The completion through the provider's batch API, or None (see `think_batched`).
+        Default: no batch API. Override in backends that have one (ClaudeLLM)."""
+        return None
+
     def supports_video(self) -> bool:
         """True if this LLM accepts a video clip as input. Override in backends that do (Gemini)."""
         return False

@@ -93,6 +93,20 @@ class TestOutbound:
 
 
 @pytest.mark.unit
+class TestBatched:
+    def test_batched_completion_is_redacted_out_and_restored_back(self, wrapped, inner, messages):
+        """Not left to __getattr__ / the AbstractLLM default: a batch is a provider call too."""
+        inner.create_batched_completion.return_value = f"call {PH_MOBILE}"
+        assert wrapped.think_batched("mail " + EMAIL, "go", max_wait_seconds=60) == f"call {MOBILE}"
+        sent = inner.create_batched_completion.call_args
+        assert EMAIL not in str(sent) and PH_EMAIL in str(sent)
+        assert sent.kwargs['max_wait_seconds'] == 60
+
+    def test_no_batch_answer_stays_none(self, wrapped, inner, messages):
+        inner.create_batched_completion.return_value = None
+        assert wrapped.create_batched_completion(messages) is None
+
+
 class TestInbound:
     def test_create_completion_restores_placeholders(self, wrapped, inner, messages):
         inner.create_completion.return_value = f"Calling {PH_MOBILE} and mailing {PH_EMAIL}."

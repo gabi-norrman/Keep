@@ -44,6 +44,12 @@ class VaultLLM(AbstractLLM):
         return self._restored(self.llm.create_completion_with_images(
             self.redactor.redact_messages(messages), images, background=background))
 
+    def create_batched_completion(self, messages: list[dict], thinking: bool = False,
+                                  max_wait_seconds: float = 3600) -> str | None:
+        # Explicit: the AbstractLLM default (None, "no batch API") would win over __getattr__.
+        return self._restored(self.llm.create_batched_completion(
+            self.redactor.redact_messages(messages), thinking=thinking, max_wait_seconds=max_wait_seconds))
+
     def is_local(self) -> bool:
         return self.llm.is_local()
 

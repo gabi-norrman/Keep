@@ -458,3 +458,99 @@ class TestNonStreamingRetry:
 
         assert result == 'hello'
         assert call_count == 2
+
+
+def _batch_message(text: str = "the reply", stop_reason: str = "end_turn"):
+    message = MagicMock(stop_reason=stop_reason)
+    message.usage.cache_creation_input_tokens = 0
+    message.usage.cache_read_input_tokens = 0
+    message.usage.input_tokens = 10
+    message.usage.output_tokens = 5
+    message.content = [MagicMock(type='text', text=text)] if text else []
+    return message
+
+
+def _batch_llm(statuses: list[str], outcome: str = "succeeded", message=None) -> ClaudeLLM:
+    """A ClaudeLLM whose batch reports `statuses` on successive polls (the last one for ever)
+    and ends with one result of type `outcome`."""
+    llm = _make_llm()
+    llm.prompt_cache = False
+    batches = llm.client.messages.batches
+    batches.create.return_value = Mock(id="batch_1")
+    remaining = list(statuses)
+    batches.retrieve.side_effect = lambda _id: Mock(
+        processing_status=remaining.pop(0) if len(remaining) > 1 else remaining[0])
+    result = Mock()
+    result.result.type = outcome
+    result.result.message = message or _batch_message()
+    batches.results.return_value = [result]
+    return llm
+
+
+MESSAGES = [{'role': 'system', 'content': 'curate'}, {'role': 'user', 'content': 'now'}]
+
+
+@patch('assistant.llm.ClaudeLLM.time.sleep')
+class TestBatchedCompletion:
+    def test_reply_comes_from_the_batch_once_it_has_ended(self, _sleep):
+        llm = _batch_llm(["in_progress", "in_progress", "ended"])
+        assert llm.create_batched_completion(MESSAGES, thinking=True) == "the reply"
+        assert llm.client.messages.batches.retrieve.call_count == 3
+        llm.client.messages.batches.cancel.assert_not_called()
+        llm.client.messages.create.assert_not_called()
+
+    def test_batch_params_are_the_ordinary_request_without_transport_options(self, _sleep):
+        """The Batches API takes Messages API bodies: `stream` and the SDK-side `timeout`
+        are not part of one and get the whole batch rejected."""
+        llm = _batch_llm(["ended"])
+        llm.create_batched_completion(MESSAGES, thinking=True)
+        (request,) = llm.client.messages.batches.create.call_args.kwargs['requests']
+        assert request['params'] == {k: v for k, v in llm._build_api_params(MESSAGES, True, stream=False).items()
+                                     if k not in ('stream', 'timeout')}
+
+    def test_batch_still_running_at_the_deadline_is_cancelled_and_gives_none(self, _sleep):
+        llm = _batch_llm(["in_progress", "ended"], outcome="canceled")
+        assert llm.create_batched_completion(MESSAGES, max_wait_seconds=0) is None
+        llm.client.messages.batches.cancel.assert_called_once_with("batch_1")
+
+    def test_reply_that_finished_while_being_cancelled_is_used(self, _sleep):
+        """Otherwise the caller would pay for the batch's answer and for its own retry."""
+        llm = _batch_llm(["in_progress", "ended"], outcome="succeeded")
+        assert llm.create_batched_completion(MESSAGES, max_wait_seconds=0) == "the reply"
+        llm.client.messages.batches.cancel.assert_called_once_with("batch_1")
+
+    @pytest.mark.parametrize("outcome", ["errored", "expired"])
+    def test_batch_that_ended_without_a_message_gives_none(self, _sleep, outcome):
+        assert _batch_llm(["ended"], outcome=outcome).create_batched_completion(MESSAGES) is None
+
+    def test_empty_reply_gives_none(self, _sleep):
+        llm = _batch_llm(["ended"], message=_batch_message(text=""))
+        assert llm.create_batched_completion(MESSAGES) is None
+
+    def test_refusal_raises_instead_of_inviting_a_second_refused_call(self, _sleep):
+        llm = _batch_llm(["ended"], message=_batch_message(text="", stop_reason="refusal"))
+        with pytest.raises(LLMRefusalError):
+            llm.create_batched_completion(MESSAGES)
+
+    def test_truncated_reply_reports_max_tokens(self, _sleep):
+        llm = _batch_llm(["ended"], message=_batch_message(stop_reason="max_tokens"))
+        llm.create_batched_completion(MESSAGES)
+        assert llm.last_stop_reason == "max_tokens"
+
+    def test_failed_poll_is_a_missed_look_not_the_end(self, _sleep):
+        llm = _batch_llm(["ended"])
+        ended = llm.client.messages.batches.retrieve.side_effect
+        looks = iter([_make_api_status_error(529), httpx.ConnectError("down")])
+        def retrieve(batch_id):
+            failure = next(looks, None)
+            if failure:
+                raise failure
+            return ended(batch_id)
+        llm.client.messages.batches.retrieve.side_effect = retrieve
+        assert llm.create_batched_completion(MESSAGES) == "the reply"
+
+    def test_fast_mode_has_no_batch(self, _sleep):
+        llm = _batch_llm(["ended"])
+        llm.speed = "fast"
+        assert llm.create_batched_completion(MESSAGES) is None
+        llm.client.messages.batches.create.assert_not_called()

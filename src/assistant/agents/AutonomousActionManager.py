@@ -259,7 +259,10 @@ class AutonomousActionManager:
                 if FirstRun.curation_pending():
                     info("Rem: the first-run pipeline has not built the first memory bank yet — skipping the nightly run")
                 else:
-                    self._run_memory_curation()
+                    # On a thread of its own: the batch it waits for can be over an hour away,
+                    # and this loop has other things to check meanwhile.
+                    threading.Thread(target=self._run_memory_curation, kwargs={'batch': True},
+                                     daemon=True, name="MemoryCuration").start()
                 last_memory_curation_date = now.date()
 
             if self.prompt_manager.is_night_mode_active():
@@ -612,12 +615,14 @@ class AutonomousActionManager:
             self.activity_check()
         info(f"Caffeine wore off after {wakeups} wakeup(s).")
 
-    def _run_memory_curation(self, period_start=None, period_end=None):
+    def _run_memory_curation(self, period_start=None, period_end=None, batch: bool = False):
         """Curate the memory bank — nightly over the default lookback, or over an explicit period.
-        The completion lands in the dialog history as a system row."""
+        The completion lands in the dialog history as a system row. `batch` lets the run wait
+        for the half-price batch API (the nightly run; nobody is waiting for it)."""
         note("Rem: falling asleep — starting memory curation...")
         try:
-            LongTermMemoryCurator.run(period_start, period_end, history=self.prompt_manager.message_history)
+            LongTermMemoryCurator.run(period_start, period_end, history=self.prompt_manager.message_history,
+                                      batch=batch)
         except Exception as e:
             import traceback
             error(f"Memory curation failed: {e}")
