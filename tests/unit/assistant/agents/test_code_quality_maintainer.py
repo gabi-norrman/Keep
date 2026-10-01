@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, AUTO_MERGE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -176,40 +176,104 @@ class TestAutoMergeCandidates:
 
 @pytest.mark.unit
 class TestStepAutoMerge:
-    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    """The merge is plain `gh` calls: a PR is merged only when every path it changes is under tests/."""
+
+    PRS = {7: ("test: cover the parser", ["tests/unit/test_parser.py"]),
+           8: ("fix: the parser", ["tests/unit/test_parser.py", "src/common/Parser.py"]),
+           9: ("test: cover the lexer", ["tests/unit/test_lexer.py", "tests/unit/data/lexer.txt"])}
+
+    @pytest.fixture
+    def gh(self):
+        """_run_subprocess as a fake git + gh; `fail` holds the PR numbers GitHub refuses to merge."""
+        fail = set()
+
+        def run(cmd, label, timeout):
+            if cmd[:3] == ["gh", "pr", "merge"] and int(cmd[3]) in fail:
+                return Mock(returncode=1, stdout="", stderr="not mergeable: conflicts")
+            return Mock(returncode=0, stdout="master\n", stderr="")
+        with patch.object(CodeQualityMaintainer, '_run_subprocess', side_effect=run) as mock_sub, \
+                patch.object(CodeQualityMaintainer, '_tests_path', return_value="tests/"), \
+                patch.object(CodeQualityMaintainer, '_pr_title_and_files', side_effect=lambda n: self.PRS[n]), \
+                patch('assistant.agents.CodeQualityMaintainer.ConfigManager') as mock_cm:
+            mock_cm.return_value.get.side_effect = lambda k, default=None: default
+            mock_sub.fail, mock_sub.config = fail, mock_cm.return_value.get
+            yield mock_sub
+
+    @staticmethod
+    def _merges(mock_sub):
+        return [c[0][0] for c in mock_sub.call_args_list if c[0][0][:3] == ["gh", "pr", "merge"]]
+
     @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[])
-    def test_skips_when_no_open_prs(self, mock_count, mock_sub, maintainer):
-        with patch.object(CodeQualityMaintainer, '_run_claude') as mock_claude:
-            assert maintainer._step_auto_merge() == ""
-            mock_claude.assert_not_called()
-
-    @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="Merged PR #42")
-    def test_hands_claude_the_candidates_and_returns_its_report(self, mock_claude, mock_count, mock_sub, maintainer):
-        assert maintainer._step_auto_merge() == "Merged PR #42"
-        (prompt, label), kwargs = mock_claude.call_args
-        assert (prompt, label) == (CodeQualityMaintainer._auto_merge_prompt([7, 9]), "auto-merge-tests")
-        # contract with the Claude Code CLI: the rule that lets auto mode run the merge
-        assert kwargs["allowed_tools"] == ["Bash(gh pr merge:*)"]
-
-    @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
-    @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude crashed"))
-    def test_restores_the_starting_branch_in_finally(self, mock_claude, mock_count, mock_sub, maintainer):
-        mock_sub.return_value = Mock(stdout="release\n", returncode=0)
+    def test_skips_when_no_open_prs(self, mock_candidates, gh, maintainer):
         assert maintainer._step_auto_merge() == ""
-        checkout_calls = [c for c in mock_sub.call_args_list if c[0][0][:2] == ["git", "checkout"]]
-        assert checkout_calls == [call(["git", "checkout", "release"], "git checkout", GIT_TIMEOUT)]
+        gh.assert_not_called()
 
-    @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
-    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="report")
-    def test_restores_the_starting_branch_after_success(self, mock_claude, mock_count, mock_sub, maintainer):
-        mock_sub.return_value = Mock(stdout="master\n", returncode=0)
+    @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 8, 9])
+    def test_merges_only_the_prs_confined_to_the_tests_directory(self, mock_candidates, gh, maintainer):
+        report = maintainer._step_auto_merge()
+        assert self._merges(gh) == [["gh", "pr", "merge", "7", "--rebase", "--delete-branch"],
+                                    ["gh", "pr", "merge", "9", "--rebase", "--delete-branch"]]
+        merged, skipped = report.split("Skipped PRs")
+        assert "#7" in merged and "#9" in merged and "#8" not in merged
+        assert "#8" in skipped and "src/common/Parser.py" in skipped
+
+    @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7])
+    def test_merges_with_the_configured_strategy(self, mock_candidates, gh, maintainer):
+        gh.config.side_effect = lambda k, default=None: {"self_improvement.merge_strategy": "squash"}.get(k, default)
         maintainer._step_auto_merge()
-        checkout_calls = [c for c in mock_sub.call_args_list if c[0][0][:2] == ["git", "checkout"]]
-        assert checkout_calls == [call(["git", "checkout", "master"], "git checkout", GIT_TIMEOUT)]
+        assert self._merges(gh) == [["gh", "pr", "merge", "7", "--squash", "--delete-branch"]]
+
+    @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
+    def test_a_refused_merge_is_reported_and_the_next_pr_still_merges(self, mock_candidates, gh, maintainer):
+        gh.fail.add(7)
+        merged, skipped = maintainer._step_auto_merge().split("Skipped PRs")
+        assert "#9" in merged and "#7" not in merged
+        assert "#7" in skipped and "conflicts" in skipped
+
+    @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
+    def test_a_pr_that_cannot_be_read_is_not_merged(self, mock_candidates, gh, maintainer):
+        with patch.object(CodeQualityMaintainer, '_pr_title_and_files', side_effect=RuntimeError("gh: timeout")):
+            report = maintainer._step_auto_merge()
+        assert self._merges(gh) == []
+        assert "#7" in report and "#9" in report and "gh: timeout" in report
+
+    @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7])
+    def test_a_pr_without_changed_files_is_not_merged(self, mock_candidates, gh, maintainer):
+        with patch.object(CodeQualityMaintainer, '_pr_title_and_files', return_value=("test: nothing", [])):
+            maintainer._step_auto_merge()
+        assert self._merges(gh) == []
+
+    @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7])
+    def test_restores_the_starting_branch(self, mock_candidates, gh, maintainer):
+        maintainer._step_auto_merge()
+        assert gh.call_args_list[-1] == call(["git", "checkout", "master"], "git checkout", GIT_TIMEOUT)
+
+
+@pytest.mark.unit
+class TestPrTitleAndFiles:
+    @staticmethod
+    def _view(files, changed):
+        return Mock(returncode=0, stderr="", stdout=json.dumps(
+            {"title": "test: cover the parser", "files": [{"path": p} for p in files], "changedFiles": changed}))
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_returns_the_title_and_every_changed_path(self, mock_run):
+        mock_run.return_value = self._view(["tests/unit/a.py", "tests/unit/b.py"], 2)
+        assert CodeQualityMaintainer._pr_title_and_files(7) == \
+            ("test: cover the parser", ["tests/unit/a.py", "tests/unit/b.py"])
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_refuses_a_file_list_shorter_than_the_pr(self, mock_run):
+        """gh lists at most 100 files; the paths it left out could be outside tests/."""
+        mock_run.return_value = self._view(["tests/unit/a.py"], 140)
+        with pytest.raises(RuntimeError):
+            CodeQualityMaintainer._pr_title_and_files(7)
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_raises_when_gh_fails(self, mock_run):
+        mock_run.return_value = Mock(returncode=1, stdout="", stderr="gh: not found")
+        with pytest.raises(RuntimeError, match="gh: not found"):
+            CodeQualityMaintainer._pr_title_and_files(7)
 
 
 @pytest.mark.unit
@@ -685,24 +749,6 @@ class TestMarkdownToHtml:
         result = CodeQualityMaintainer._markdown_to_html(md)
         assert "<table " in result
         assert ">a</td>" in result
-
-@pytest.mark.unit
-class TestAutoMergePrompt:
-    @patch('assistant.agents.CodeQualityMaintainer.ConfigManager')
-    def test_names_the_tests_directory_and_the_configured_strategy(self, mock_cm_class):
-        mock_cm_class.return_value.get.side_effect = \
-            lambda k, default=None: {"self_improvement.merge_strategy": "squash"}.get(k, default)
-        prompt = CodeQualityMaintainer._auto_merge_prompt([7, 9])
-        assert "{" not in prompt and prompt != AUTO_MERGE_TESTS_PROMPT
-        assert "no others: #7, #9." in prompt and "do not run `gh pr list`" in prompt
-        assert "inside `tests/` (no exceptions)" in prompt
-        assert "gh pr merge <number> --squash --delete-branch" in prompt
-
-    @patch('assistant.agents.CodeQualityMaintainer.ConfigManager')
-    def test_rebases_by_default(self, mock_cm_class):
-        mock_cm_class.return_value.get.side_effect = lambda k, default=None: default
-        assert "gh pr merge <number> --rebase --delete-branch" in CodeQualityMaintainer._auto_merge_prompt([7])
-
 
 @pytest.mark.unit
 class TestSendEmail:

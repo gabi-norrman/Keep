@@ -25,9 +25,6 @@ CLAUDE_PATH = shutil.which("claude") or CLAUDE_FALLBACK_PATH
 RUN_HOUR = 3
 SLOW_TEST_MS = 100
 TEST_HEALTH_RUNS = 10
-# Auto mode's classifier refuses a write to an external system nobody allowed in so many words,
-# so the auto-merge run is handed this one rule; no other run gets it.
-AUTO_MERGE_ALLOWED_TOOLS = ["Bash(gh pr merge:*)"]
 CLAUDE_TIMEOUT = 60 * 60
 AUTH_STATUS_TIMEOUT = 30
 GIT_TIMEOUT = 60
@@ -209,37 +206,6 @@ Final report:
 IMPORTANT: The user will only see your final message so keep the entire report in your last message.
 """
 
-AUTO_MERGE_TESTS_PROMPT = """
-Your task is to auto-merge open pull requests that ONLY add or modify test files.
-
-Evaluate these pull requests and no others: {pr_numbers}.
-They are the open PRs from this repository's own trusted authors. Every other open PR is out of
-scope: do not list it, do not read its title, description or comments, and never merge it.
-
-A PR qualifies if EVERY changed file path is inside `{tests_path}` (no exceptions).
-Any file outside that directory disqualifies the PR — do NOT merge it.
-
-Steps:
-1. Take the PR numbers above; do not run `gh pr list`.
-2. For each PR, fetch its changed files with `gh pr view <number> --json files --jq '.files[].path'`.
-3. If every path starts with `{tests_path}`, merge the PR via
-   `gh pr merge <number> --{merge_strategy} --delete-branch` — the merge strategy this
-   repository is configured for; use no other.
-   Do NOT check out the branch — merge directly via the GitHub API.
-4. If any path falls outside `{tests_path}`, skip the PR.
-
-Do not modify any code, do not create new commits, and do not push anything yourself —
-the only mutating action allowed is `gh pr merge`.
-
-Provide a final report with two sections:
-- Merged PRs: number, title
-- Skipped PRs: number, title, reason (which non-test file disqualified it)
-
-If there were no qualifying PRs, say so explicitly.
-
-IMPORTANT: The user will only see your final message so keep the entire analysis in your last message.
-"""
-
 SELF_IMPROVEMENT_PROMPT = """
 This is a request for an automated change to this code base, delivered as a pull request. It is usually a bug fix,
 but it can also be a new feature/improvement/integration/etc.
@@ -388,21 +354,17 @@ class CodeQualityMaintainer:
         info("CodeQualityMaintainer: nightly run complete.")
 
     @staticmethod
-    def _auto_merge_prompt(pr_numbers: list[int]) -> str:
-        """AUTO_MERGE_TESTS_PROMPT for this checkout: the PRs to evaluate, the tests directory as
-        GitHub spells it (relative to the git root) and the configured strategy."""
+    def _tests_path() -> str:
+        """The tests directory as GitHub spells it: relative to the git root, with a trailing slash."""
         tests_dir = _AISERVER_PATH / "tests"
         try:
             toplevel = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=WORKING_DIR,
                                       capture_output=True, text=True, timeout=GIT_TIMEOUT).stdout.strip()
-            tests_path = tests_dir.relative_to(toplevel).as_posix() + "/"
+            return tests_dir.relative_to(toplevel).as_posix() + "/"
         except (OSError, ValueError, subprocess.SubprocessError) as e:
             tests_path = tests_dir.relative_to(REPO_DIR).as_posix() + "/"
             error(f"CodeQualityMaintainer: could not resolve the git root ({e}), assuming {tests_path}")
-        merge_strategy = ConfigManager().get('self_improvement.merge_strategy', 'rebase')
-        info(f"CodeQualityMaintainer: auto-merge covers {tests_path} with --{merge_strategy}")
-        return AUTO_MERGE_TESTS_PROMPT.format(tests_path=tests_path, merge_strategy=merge_strategy,
-                                              pr_numbers=", ".join(f"#{n}" for n in pr_numbers))
+            return tests_path
 
     @staticmethod
     def _trusted_pr_authors() -> set[str]:
@@ -426,9 +388,8 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def _auto_merge_candidates() -> list[int]:
-        """The open PRs the auto-merge may evaluate: from a trusted author and from a branch of
-        this repository, never from a fork. The agent is handed these numbers and nothing else,
-        so it never reads a stranger's PR text either."""
+        """The open PRs the auto-merge may evaluate, oldest first: from a trusted author and from a
+        branch of this repository, never from a fork."""
         trusted = CodeQualityMaintainer._trusted_pr_authors()
         if not trusted:
             info("CodeQualityMaintainer: no trusted PR author known, the auto-merge evaluates nothing.")
@@ -455,26 +416,63 @@ class CodeQualityMaintainer:
             candidates.append(pr["number"])
         info(f"CodeQualityMaintainer: {len(candidates)} of {len(prs)} open PR(s) are from trusted authors "
              f"({', '.join(sorted(trusted))}).")
-        return candidates
+        return sorted(candidates)
+
+    @staticmethod
+    def _pr_title_and_files(number: int) -> tuple[str, list[str]]:
+        """A PR's title and every path it changes; raises when gh fails or hands back fewer paths
+        than the PR changes (gh lists at most 100), since an unseen path cannot be vouched for."""
+        result = subprocess.run(["gh", "pr", "view", str(number), "--json", "title,files,changedFiles"],
+                                cwd=WORKING_DIR, capture_output=True, text=True, timeout=GIT_TIMEOUT)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or f"gh pr view exited {result.returncode}")
+        pr = json.loads(result.stdout)
+        paths = [f["path"] for f in pr.get("files") or []]
+        if len(paths) != pr.get("changedFiles"):
+            raise RuntimeError(f"gh listed {len(paths)} of {pr.get('changedFiles')} changed files")
+        return pr.get("title", ""), paths
 
     def _step_auto_merge(self) -> str:
-        """Last step of the night, so the test-only PRs the earlier steps opened are merged with it."""
+        """Last step of the night, so the test-only PRs the earlier steps opened are merged with it.
+        Plain code, no Claude Code run: a PR qualifies when every path it changes is under tests/."""
         info("CodeQualityMaintainer: auto-merge of test-only PRs...")
         candidates = self._auto_merge_candidates()
         if not candidates:
             info("CodeQualityMaintainer: no open PRs from trusted authors, skipping the auto-merge.")
             return ""
+        tests_path = self._tests_path()
+        merge_strategy = ConfigManager().get('self_improvement.merge_strategy', 'rebase')
+        info(f"CodeQualityMaintainer: auto-merge covers {tests_path} with --{merge_strategy}")
         branch = self._current_branch()
+        merged, skipped = [], []
         try:
-            report = self._run_claude(self._auto_merge_prompt(candidates), "auto-merge-tests",
-                                      allowed_tools=AUTO_MERGE_ALLOWED_TOOLS)
-            info("CodeQualityMaintainer: auto-merge complete.")
-            return report
-        except Exception as e:
-            error(f"CodeQualityMaintainer: auto-merge failed: {e}")
-            return ""
+            for number in candidates:
+                title = ""
+                try:
+                    title, paths = self._pr_title_and_files(number)
+                    outside = [p for p in paths if not p.startswith(tests_path)]
+                    if outside or not paths:
+                        reason = f"changes files outside `{tests_path}`: {', '.join(outside[:5])}" if outside \
+                            else "changes no files"
+                    else:
+                        result = self._run_subprocess(
+                            ["gh", "pr", "merge", str(number), f"--{merge_strategy}", "--delete-branch"],
+                            f"gh pr merge {number}", GIT_TIMEOUT)
+                        reason = "" if result.returncode == 0 else \
+                            f"merge failed: {result.stderr.strip() or f'gh exited {result.returncode}'}"
+                except Exception as e:
+                    reason = f"could not be evaluated: {e}"
+                if reason:
+                    info(f"CodeQualityMaintainer: PR #{number} not merged — {reason}")
+                    skipped.append(f"- #{number} {title} — {reason}")
+                else:
+                    info(f"CodeQualityMaintainer: merged PR #{number} ({title})")
+                    merged.append(f"- #{number} {title}")
         finally:
             self._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+        info(f"CodeQualityMaintainer: auto-merge complete, {len(merged)} merged, {len(skipped)} skipped.")
+        return "\n\n".join(f"## {heading}\n\n" + ("\n".join(lines) or "None.")
+                           for heading, lines in (("Merged PRs", merged), ("Skipped PRs", skipped)))
 
     @staticmethod
     def _run_subprocess(cmd, label, timeout):
@@ -510,7 +508,7 @@ class CodeQualityMaintainer:
         return None
 
     @staticmethod
-    def _run_claude(prompt, label, allowed_tools=None):
+    def _run_claude(prompt, label):
         path = claude_path()
         if path is None:
             error(f"CodeQualityMaintainer [{label}] Claude Code CLI not found on this machine")
@@ -519,9 +517,6 @@ class CodeQualityMaintainer:
         trace(f"CodeQualityMaintainer [{label}] using Claude Code model: {model}")
         cmd = [path, "--permission-mode", "auto", "-p", prompt,
                "--output-format", "stream-json", "--verbose", "--model", model]
-        if allowed_tools:
-            info(f"CodeQualityMaintainer [{label}] pre-approved for this run: {', '.join(allowed_tools)}")
-            cmd += ["--allowedTools", *allowed_tools]
         process = subprocess.Popen(
             cmd, cwd=WORKING_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL, text=True
