@@ -620,8 +620,18 @@ class TestClaudeLLM:
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
         assert ClaudeLLM("claude-fable-5-1").prefers_byte_prefix_tail()
+        assert ClaudeLLM("claude-opus-5-5").prefers_byte_prefix_tail()
         assert not ClaudeLLM("claude-sonnet-4-5").prefers_byte_prefix_tail()
-        assert not ClaudeLLM("claude-opus-5-5").prefers_byte_prefix_tail()
+        assert not ClaudeLLM("claude-opus-5").prefers_byte_prefix_tail()
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_opus_5_5_keeps_its_prompt_prefix_cacheable_and_opus_5_does_not(self, mock_config):
+        """"claude-opus-5" is a prefix of "claude-opus-5-5": the older model must still get
+        the prepended query."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        assert not ClaudeLLM("claude-opus-5-5").prefers_prepended_user_query()
+        assert ClaudeLLM("claude-opus-5").prefers_prepended_user_query()
 
     @patch('assistant.llm.ClaudeLLM.config')
     def test_build_api_params_cache_control_with_string_content(self, mock_config):

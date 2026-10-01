@@ -25,6 +25,10 @@ class ClaudeLLM(AbstractLLM):
     # Sonnet 4.x and Haiku 4.5 do not: without the parameter they do not think at all.
     ALWAYS_THINKING_MODEL_PREFIXES = ("claude-fable", "claude-mythos", "claude-opus-5", "claude-sonnet-5")
 
+    # The models whose chat requests keep the prompt prefix cacheable: no user query prepended
+    # to the top of the prompt (prefers_prepended_user_query) and a byte-stable trailing turn.
+    PREFIX_CACHED_MODEL_PREFIXES = ("claude-fable", "claude-opus-5-5")
+
     # CACHE_BREAKPOINT_MARKER is inherited from AbstractLLM.
     # Anthropic allows 4 cache_control breakpoints per request; _build_api_params
     # reserves one for the message-history breakpoint, leaving 3 for the system
@@ -106,10 +110,10 @@ class ClaudeLLM(AbstractLLM):
         """Prepending the user query to the top of the system prompt puts per-request
         content at byte 0 of the cached prefix, defeating Anthropic prompt caching
         (every request becomes a cache write, 0 reads). It nudges accuracy up, so it
-        stays on for older Claude models — but on Fable the cache economics are the
-        steepest (1h writes at 2x, reads at 0.1x) and prompt scaffolding helps least,
-        so Fable opts out and lets the shared prefix cache work."""
-        return not self.model.startswith("claude-fable")
+        stays on for older Claude models — but on Fable and Opus 5.5 the cache economics
+        are the steepest (1h writes at 2x, reads at 0.025x and 0.05x) and prompt scaffolding
+        helps least, so they opt out and let the shared prefix cache work."""
+        return not self.model.startswith(self.PREFIX_CACHED_MODEL_PREFIXES)
 
     def prefers_byte_prefix_tail(self) -> bool:
         """A model whose chat requests use the prefix cache gets its trailing turn sent as the
