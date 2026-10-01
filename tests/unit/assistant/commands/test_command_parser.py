@@ -824,6 +824,14 @@ class TestTripleQuotedArguments:
         assert parser.find_complete_command(content, streaming=streaming) is False
         assert parser.find_complete_command(content + ' done""")', streaming=streaming) is True
 
+    def test_a_block_starting_on_its_own_line_is_still_one_argument(self, parser):
+        """Regression: only spaces were skipped before an argument, so a block after a line
+        break was read as plain text and cut at its commas."""
+        content = 'save_procedure("shop-checkout",\n    "paying",\n    """Paid, shipped (1)\nstep 2""",\n    "2026-11-08")'
+        (_, params), remainder = parser.extract_command_and_params(content)
+        assert params == ["shop-checkout", "paying", "Paid, shipped (1)\nstep 2", "2026-11-08"]
+        assert remainder == ""
+
     def test_a_block_can_be_followed_by_another_argument(self, parser):
         (_, params), _ = parser.extract_command_and_params('watch("""Parcel (big), fragile""", "ordered", 2026-03-12)')
         assert params == ["Parcel (big), fragile", "ordered", "2026-03-12"]

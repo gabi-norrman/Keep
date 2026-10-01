@@ -329,8 +329,9 @@ class CommandParser:
         n = len(raw)
         i = 0
         while i < n:
-            # Skip leading whitespace at the start of each parameter slot
-            while i < n and raw[i] in ' \t':
+            # Skip leading whitespace at the start of each parameter slot — a line break too,
+            # so a triple-quoted block that starts on its own line is still seen as one
+            while i < n and raw[i] in ' \t\r\n':
                 i += 1
             if i >= n:
                 tokens.append("")
@@ -360,7 +361,7 @@ class CommandParser:
                     buf.append(c)
                     i += 1
                 # Skip whitespace right after the closing quote.
-                while i < n and raw[i] in ' \t':
+                while i < n and raw[i] in ' \t\r\n':
                     i += 1
                 # Tolerate stray non-whitespace text between the closing quote
                 # and the next comma — append it to the value so nothing is
