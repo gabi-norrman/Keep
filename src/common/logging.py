@@ -1,5 +1,6 @@
 import os
 import queue
+import sys
 import threading
 from datetime import datetime
 
@@ -7,7 +8,9 @@ from colorama import Fore, Style
 
 log_lock = threading.Lock()
 last_log_time = None
-disable_file_logging = False
+# Only the server process writes log/: anything else importing the tree from the repository
+# root (a test, a one-off script, a Claude Code probe) would append to the live server's files.
+disable_file_logging = os.path.basename(sys.argv[0] if sys.argv else "") != "floxy_ai_server.py"
 separator_color = '\033[38;2;80;80;80m'  # Darkest gray for │ separators
 
 _write_queue = queue.SimpleQueue()
