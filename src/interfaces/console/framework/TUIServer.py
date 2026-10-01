@@ -166,7 +166,7 @@ class TUIServer:
         try:
             for data in Curtain.frames(cols, rows, round(1 / FRAME_INTERVAL)):
                 client.sendall(data)
-                due = self._next_frame(due)
+                due = self._next_frame(due, FRAME_INTERVAL)
         except (BrokenPipeError, ConnectionResetError, socket.error) as e:
             trace(f"TUI Server: curtains cut short on {addr}: {e}")
 

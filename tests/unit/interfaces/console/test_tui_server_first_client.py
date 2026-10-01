@@ -53,7 +53,9 @@ class TestFirstClient:
         srv.server_socket.listen(5)
         srv.running = True
         thread = threading.Thread(target=srv._accept_clients, daemon=True)
-        with patch.object(TUIServer, "_next_frame", side_effect=lambda due: due + FRAME_INTERVAL):
+        # autospec: a call that does not match the real signature must fail here too
+        with patch.object(TUIServer, "_next_frame", autospec=True,
+                          side_effect=lambda self, due, interval: due + interval):
             thread.start()
             yield srv
             srv.running = False
