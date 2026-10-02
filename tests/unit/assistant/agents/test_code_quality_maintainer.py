@@ -211,8 +211,8 @@ class TestStepAutoMerge:
     @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 8, 9])
     def test_merges_only_the_prs_confined_to_the_tests_directory(self, mock_candidates, gh, maintainer):
         report = maintainer._step_auto_merge()
-        assert self._merges(gh) == [["gh", "pr", "merge", "7", "--rebase", "--delete-branch"],
-                                    ["gh", "pr", "merge", "9", "--rebase", "--delete-branch"]]
+        assert self._merges(gh) == [["gh", "pr", "merge", "7", "--rebase", "--delete-branch", "--admin"],
+                                    ["gh", "pr", "merge", "9", "--rebase", "--delete-branch", "--admin"]]
         merged, skipped = report.split("Skipped PRs")
         assert "#7" in merged and "#9" in merged and "#8" not in merged
         assert "#8" in skipped and "src/common/Parser.py" in skipped
@@ -221,7 +221,7 @@ class TestStepAutoMerge:
     def test_merges_with_the_configured_strategy(self, mock_candidates, gh, maintainer):
         gh.config.side_effect = lambda k, default=None: {"self_improvement.merge_strategy": "squash"}.get(k, default)
         maintainer._step_auto_merge()
-        assert self._merges(gh) == [["gh", "pr", "merge", "7", "--squash", "--delete-branch"]]
+        assert self._merges(gh) == [["gh", "pr", "merge", "7", "--squash", "--delete-branch", "--admin"]]
 
     @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
     def test_a_refused_merge_is_reported_and_the_next_pr_still_merges(self, mock_candidates, gh, maintainer):
