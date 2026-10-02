@@ -34,6 +34,23 @@ def draw_card(screen: TUIScreen, cards: List[Card], x: int, y: int, width: int, 
         screen.reset_color()
 
 
+def write_segments(screen: TUIScreen, x: int, y: int, width: int, segments: List[Tuple[str, Color]]):
+    """Coloured pieces of text on one row, a faint dot between them, cut at `width`."""
+    used = 0
+    for i, (text, color) in enumerate(segments):
+        if i and used + 3 + display_width(text) > width:
+            break
+        if i:
+            screen.set_color(Theme.COLOR_FAINT)
+            screen.write_at(x + used, y, " · ")
+            used += 3
+        text = fit(text, width - used)
+        screen.set_color(color)
+        screen.write_at(x + used, y, text)
+        used += display_width(text)
+    screen.reset_color()
+
+
 def tint_cards(screen: TUIScreen, cards: List[Card]):
     for x, y, width, height in cards:
         screen.tint_row(x, y, width, Theme.COLOR_TITLE_BG)

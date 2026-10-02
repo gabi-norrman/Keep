@@ -7,6 +7,9 @@ from assistant import Procedures
 class ProceduresTab(MemoryTab):
     """Every procedure in full, each under its name."""
 
+    TITLE = "Procedures"
+    SECTIONS_LABEL = "Procedures"
+
     def _live_text(self) -> str:
         names = Procedures.names()
         if not names:

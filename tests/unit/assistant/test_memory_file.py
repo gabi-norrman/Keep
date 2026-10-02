@@ -125,3 +125,41 @@ class TestSplit:
     def test_a_missing_bank_splits_into_nothing_and_creates_nothing(self, tmp_path):
         assert MemoryFile.split(str(tmp_path / "bank.md")) == ("", "")
         assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.unit
+class TestCuratedLength:
+    """`curated_length` is `split` for a reader that only looks — the console's Bank tab: it
+    says where the curated part ends and never marks anything."""
+
+    def test_it_is_where_the_notes_start(self, tmp_path):
+        bank = str(tmp_path / "bank.md")
+        MemoryFile.write("# The Family\n", bank)
+        MemoryFile.append("Ingeborg prefers tea", bank)
+        text = MemoryFile.read(bank)
+        offset = MemoryFile.curated_length(bank)
+        assert (text[:offset], text[offset:]) == MemoryFile.split(bank)
+
+    def test_a_bank_never_written_here_has_none_and_gets_no_mark(self, tmp_path):
+        bank = tmp_path / "bank.md"
+        bank.write_text("# The Family\n* Charlotte plays the cello\n")
+        assert MemoryFile.curated_length(str(bank)) is None
+        assert [p.name for p in tmp_path.iterdir()] == ["bank.md"]
+
+    def test_a_hand_edit_of_the_curated_part_has_none_and_leaves_the_mark_alone(self, tmp_path):
+        bank = tmp_path / "bank.md"
+        MemoryFile.write("# The Family\n* Charlotte plays the cello\n", str(bank))
+        mark = (tmp_path / "bank.md.curated").read_text()
+        bank.write_text("# The Family\n* Charlotte plays the violin\n")
+        assert MemoryFile.curated_length(str(bank)) is None
+        assert (tmp_path / "bank.md.curated").read_text() == mark
+
+    def test_a_bank_cut_shorter_than_its_mark_has_none(self, tmp_path):
+        bank = tmp_path / "bank.md"
+        MemoryFile.write("# The Family\n* Charlotte plays the cello\n", str(bank))
+        bank.write_text("# The Family\n")
+        assert MemoryFile.curated_length(str(bank)) is None
+
+    def test_a_missing_bank_has_none_and_creates_nothing(self, tmp_path):
+        assert MemoryFile.curated_length(str(tmp_path / "bank.md")) is None
+        assert list(tmp_path.iterdir()) == []

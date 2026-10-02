@@ -114,6 +114,18 @@ def _read_mark(path: str) -> dict | None:
         return None
 
 
+def curated_length(path: str = MEMORY_FILE) -> int | None:
+    """Where the curated part of the bank ends, for a reader that only looks (the console's
+    Bank tab): None for a bank without a valid mark, which `split` would count as curated
+    whole. Unlike `split` it marks nothing."""
+    with lock:
+        text = read(path)
+        mark = _read_mark(path)
+    if mark is None or _digest(text[:mark["length"]]) != mark["sha256"]:
+        return None
+    return mark["length"]
+
+
 def split(path: str = MEMORY_FILE) -> tuple[str, str]:
     """The bank as (curated, appended since): the text the last `write` left, and what
     `append` added after it. A bank without a valid mark — never curated here, or edited by

@@ -257,23 +257,6 @@ class WatchListTab(MarkdownTabView):
                    value: str = "", value_color: Optional[Color] = None):
         Tile.draw_card(screen, self._cards, x, y, width, height, label, value, value_color)
 
-    @staticmethod
-    def _write_segments(screen: TUIScreen, x: int, y: int, width: int, segments: List[Tuple[str, Color]]):
-        """Coloured pieces of text on one row, a faint dot between them, cut at `width`."""
-        used = 0
-        for i, (text, color) in enumerate(segments):
-            if i and used + 3 + display_width(text) > width:
-                break
-            if i:
-                screen.set_color(Theme.COLOR_FAINT)
-                screen.write_at(x + used, y, " · ")
-                used += 3
-            text = fit(text, width - used)
-            screen.set_color(color)
-            screen.write_at(x + used, y, text)
-            used += display_width(text)
-        screen.reset_color()
-
     # --- Summary tiles ---
 
     def _draw_summary(self, screen: TUIScreen, y: int, entries: List[Entry], now: datetime):
@@ -285,7 +268,7 @@ class WatchListTab(MarkdownTabView):
             x = self.LEFT + i * (width + self.GAP)
             tile_w = width if i < 3 else available - (width + self.GAP) * 3
             self._draw_card(screen, x, y, tile_w, self.SUMMARY_H, label, value, color)
-            self._write_segments(screen, x + 2, y + Tile.CARD_TOP, tile_w - 4, segments)
+            Tile.write_segments(screen, x + 2, y + Tile.CARD_TOP, tile_w - 4, segments)
 
     @staticmethod
     def _counts(entries: List[Entry], kinds: Tuple[Kind, ...]) -> List[Tuple[str, Color]]:

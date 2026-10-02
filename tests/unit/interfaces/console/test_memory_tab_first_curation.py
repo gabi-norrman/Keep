@@ -1,5 +1,5 @@
 """While the first-run pipeline curates the first bank, the Memory tab puts a two-row orange
-heads-up band above the text — the label centred on one row, the sentence on the next, what it
+heads-up band above its tiles — the label centred on one row, the sentence on the next, what it
 shows is a work in progress — and takes it down when the curation ends."""
 import pytest
 
@@ -41,6 +41,14 @@ def row(screen: TUIScreen, y: int) -> str:
     return screen.row_text(1, y, WIDTH).rstrip()
 
 
+def find(screen: TUIScreen, needle: str) -> int:
+    """The first content row that shows nothing but `needle`; -1 when none does."""
+    for y in range(SUB_CONTENT_TOP, screen.height):
+        if screen.row_text(1, y, screen.width).strip() == needle:
+            return y
+    return -1
+
+
 def cells(screen: TUIScreen, y: int, needle: str):
     start = screen.row_text(1, y, WIDTH).index(needle)
     return [screen.next_frame[y - 1][x] for x in range(start, start + len(needle))]
@@ -50,14 +58,15 @@ class TestFirstCurationNotice:
     def test_no_band_on_an_established_install(self, tab, monkeypatch):
         monkeypatch.setattr(FirstRun.Pipeline, "curation", None)
         screen = draw(tab)
-        assert row(screen, SUB_CONTENT_TOP) == "# Memory"
+        assert find(screen, FIRST_CURATION_LABEL) == -1
+        assert find(screen, "Marcus likes tea.") > SUB_CONTENT_TOP
 
     def test_the_band_sits_above_the_text_while_the_first_curation_runs(self, tab, curating):
         screen = draw(tab)
         assert row(screen, SUB_CONTENT_TOP).strip() == FIRST_CURATION_LABEL
         assert row(screen, SUB_CONTENT_TOP + 1).strip() == FIRST_CURATION_NOTICE
-        assert row(screen, SUB_CONTENT_TOP + 2) == "# Memory"
-        assert "Marcus likes tea." in row(screen, SUB_CONTENT_TOP + 4)
+        assert find(screen, "Memory") > SUB_CONTENT_TOP + 1
+        assert find(screen, "Marcus likes tea.") > find(screen, "Memory")
 
     def test_both_rows_are_centred(self, tab, curating):
         screen = draw(tab)
@@ -83,4 +92,4 @@ class TestFirstCurationNotice:
         tab.draw(screen, 0)
         assert screen.row_text(1, SUB_CONTENT_TOP, 40).strip() == FIRST_CURATION_LABEL
         assert screen.row_text(1, SUB_CONTENT_TOP + 1, 40).strip().startswith("Keep is building")
-        assert row(screen, SUB_CONTENT_TOP + 2) == "# Memory"
+        assert find(screen, "Marcus likes tea.") > SUB_CONTENT_TOP + 1
