@@ -159,7 +159,9 @@ class DashboardTab(TabView):
         for draw_row in (self._draw_charts_row, self._draw_ttft_charts_row, self._draw_bottom_charts_row):
             draw_row(screen, thirds, y, chart_height)
             y += chart_height + self.CARD_CHROME + 1
-        self._draw_status_panel(screen, y, panel_h)
+        # On a screen too short for it the tiles end at the last row and clip their rows:
+        # a write past the screen lands on its last row, on top of whatever is there.
+        self._draw_status_panel(screen, y, min(panel_h, screen.height - y + 1))
         self._tint_cards(screen)
 
     @classmethod
@@ -229,7 +231,7 @@ class DashboardTab(TabView):
     def _draw_utilization_panel(self, screen: TUIScreen, x: int, y: int, panel_w: int, panel_h: int):
         self._draw_card(screen, x, y, panel_w, panel_h, "Utilization")
         cpu = int(self.console.system_cpu_percent)
-        self._draw_meter_rows(screen, x, y, panel_w, [
+        self._draw_meter_rows(screen, x, y, panel_w, panel_h, [
             MeterRow("Device", f"{self.device_util:>3}%", self.device_util / 100.0, self.COLOR_CYAN),
             MeterRow("Tiler", f"{self.tiler_util:>3}%", self.tiler_util / 100.0, self.COLOR_GREEN),
             MeterRow("Renderer", f"{self.renderer_util:>3}%", self.renderer_util / 100.0, self.COLOR_YELLOW),
@@ -546,9 +548,11 @@ class DashboardTab(TabView):
             screen.write_at(x + i, y, char)
         screen.reset_color()
 
-    def _draw_meter_rows(self, screen: TUIScreen, x: int, y: int, width: int, rows: List[MeterRow]):
+    def _draw_meter_rows(self, screen: TUIScreen, x: int, y: int, width: int, height: int, rows: List[MeterRow]):
         """A tile's body as aligned rows of label, meter, value and note. The meter takes
-        every cell the longest label and value leave it, and goes when that is too few."""
+        every cell the longest label and value leave it, and goes when that is too few.
+        Rows the tile's `height` has no room for are not drawn."""
+        rows = rows[:max(0, height - self.CARD_CHROME)]
         if not rows:
             return
         label_w = max(display_width(row.label) for row in rows)
@@ -782,7 +786,7 @@ class DashboardTab(TabView):
         self._draw_integrations(screen, ix, y, iw, height)
         self._draw_timing(screen, tx, y, tw, height)
         self._draw_card(screen, rx, y, rw, height, "Resources")
-        self._draw_meter_rows(screen, rx, y, rw, self._resource_rows())
+        self._draw_meter_rows(screen, rx, y, rw, height, self._resource_rows())
         self._draw_prompt_sections(screen, px, y, pw, height)
 
     def _draw_integrations(self, screen: TUIScreen, x: int, y: int, width: int, height: int):
@@ -794,9 +798,12 @@ class DashboardTab(TabView):
 
         columns, rows = self._integration_grid(len(enabled), inner_w)
         column_w = inner_w // columns
+        bottom = y + height - 2     # the last content row
         for i, status in enumerate(enabled):
             cx = x + 2 + (i // rows) * column_w
             cy = y + self.CARD_TOP + i % rows
+            if cy > bottom:
+                continue
             healthy = status["state"] == IntegrationState.OK.value
             state_color = self.STATUS_STATE_COLORS.get(status["state"], self.COLOR_DIM)
             screen.set_color(state_color)
@@ -805,7 +812,8 @@ class DashboardTab(TabView):
             screen.write_at(cx + 2, cy, fit(status["name"], column_w - 3))
         screen.set_color(self.COLOR_DIM)
         for i, line in enumerate(disabled_lines):
-            screen.write_at(x + 2, y + self.CARD_TOP + rows + 1 + i, line)
+            if y + self.CARD_TOP + rows + 1 + i <= bottom:
+                screen.write_at(x + 2, y + self.CARD_TOP + rows + 1 + i, line)
         screen.reset_color()
 
     def _draw_timing(self, screen: TUIScreen, x: int, y: int, width: int, height: int):
@@ -837,7 +845,7 @@ class DashboardTab(TabView):
 
         self._draw_card(screen, x, y, width, height, "Last request",
                         f"{round(total, 2)}s" if complete else "", self.COLOR_YELLOW)
-        self._draw_meter_rows(screen, x, y, width, rows)
+        self._draw_meter_rows(screen, x, y, width, height, rows)
 
     def _resource_rows(self) -> List[MeterRow]:
         console = self.console
@@ -884,6 +892,14 @@ class DashboardTab(TabView):
             rows.append(row(f"Outpost {ip_only}", f"{latency_ms:.1f} ms", latency_ms / 200.0))
         return rows
 
+    @staticmethod
+    def _fit_prompt_stats(stats: list, room: int) -> list:
+        """The sections a tile with `room` rows shows: all of them when they fit, else the
+        empty ones go first and only then the tail."""
+        if len(stats) > room:
+            stats = [stat for stat in stats if stat[1] > 0]
+        return stats[:max(0, room)]
+
     def _draw_prompt_sections(self, screen: TUIScreen, x: int, y: int, width: int, height: int):
         pm = self.console.prompt_manager
         stats = pm.get_section_stats() if pm else []
@@ -891,7 +907,8 @@ class DashboardTab(TabView):
             self._draw_card(screen, x, y, width, height, "Prompt")
             return
 
-        max_size = max(size for _, size, _ in stats) or 1
+        stats = self._fit_prompt_stats(stats, height - self.CARD_CHROME)
+        max_size = max((size for _, size, _ in stats), default=0) or 1
         quiet = self._lerp_color(self.COLOR_PANEL_BG, self.COLOR_PURPLE, 0.6)
         now = time.time()
 
@@ -914,7 +931,7 @@ class DashboardTab(TabView):
             total = f"{total_kb:.1f} KB"
 
         self._draw_card(screen, x, y, width, height, "Prompt", total, self.COLOR_RED if over else self.COLOR_PURPLE)
-        self._draw_meter_rows(screen, x, y, width, rows)
+        self._draw_meter_rows(screen, x, y, width, height, rows)
 
     # --- Anthropic Cost Chart ---
 

@@ -314,7 +314,7 @@ class TestDrawMeterRows:
     @staticmethod
     def draw(width):
         screen = TUIScreen(80, 6)
-        make_tab()._draw_meter_rows(screen, 1, 1, width, TestDrawMeterRows.ROWS)
+        make_tab()._draw_meter_rows(screen, 1, 1, width, 2 + DashboardTab.CARD_CHROME, TestDrawMeterRows.ROWS)
         return ["".join(c.char for c in screen.next_frame[r]).rstrip() for r in (DashboardTab.CARD_TOP, DashboardTab.CARD_TOP + 1)]
 
     def test_the_meter_takes_the_cells_the_label_and_value_leave(self):
@@ -327,6 +327,33 @@ class TestDrawMeterRows:
         lines = self.draw(26)
         assert not set("".join(lines)) & set(BLOCKS.strip())
         assert lines[0].split() == ["Database", "0.3/1", "GB"]
+
+    def test_rows_the_tile_has_no_room_for_are_not_drawn(self):
+        screen = TUIScreen(80, 6)
+        make_tab()._draw_meter_rows(screen, 1, 1, 40, 1 + DashboardTab.CARD_CHROME, self.ROWS)
+        text = "".join(c.char for row in screen.next_frame for c in row)
+        assert "Database" in text and "Open FDs" not in text
+
+
+@pytest.mark.unit
+class TestFitPromptStats:
+    STATS = [("rules", 900, 0.0), ("calendar", 0, 0.0), ("memory", 4000, 0.0), ("music", 0, 0.0), ("history", 120, 0.0)]
+
+    @staticmethod
+    def names(room):
+        return [name for name, _, _ in DashboardTab._fit_prompt_stats(TestFitPromptStats.STATS, room)]
+
+    def test_everything_shows_when_it_fits_empty_sections_included(self):
+        assert self.names(5) == ["rules", "calendar", "memory", "music", "history"]
+
+    def test_a_short_tile_drops_the_empty_sections_before_any_with_content(self):
+        assert self.names(4) == ["rules", "memory", "history"]
+
+    def test_only_when_the_non_empty_ones_do_not_fit_either_is_the_tail_cut(self):
+        assert self.names(2) == ["rules", "memory"]
+
+    def test_no_room_is_no_rows(self):
+        assert self.names(0) == []
 
 
 @pytest.mark.unit
