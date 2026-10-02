@@ -153,9 +153,10 @@ class WatchListTab(MarkdownTabView):
     NAME_MAX_W = 40
     METER_W = 10
     METER_GROW = 20
+    NEXT_TEXT_W = 12            # "23h 59m late", the longest a span gets
     FACT_LABEL_W = 12
     # The table's columns after the name, and the order they go in on a narrow tile.
-    COLUMNS = (("status", "Status", 10), ("next", "Next check", METER_W + 11), ("last", "Last check", 11),
+    COLUMNS = (("status", "Status", 10), ("next", "Next check", METER_W + 1 + NEXT_TEXT_W), ("last", "Last check", 11),
                ("every", "Every", 8), ("due", "Due", 17))
     DROP_ORDER = ("every", "last", "status", "due")
 

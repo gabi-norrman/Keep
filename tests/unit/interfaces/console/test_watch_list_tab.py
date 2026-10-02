@@ -129,3 +129,9 @@ class TestBoard:
     @pytest.mark.parametrize("width,height", [(60, 12), (30, 8), (250, 14)])
     def test_a_cramped_screen_still_draws(self, width, height):
         self.tab.draw(TUIScreen(width, height), 0)
+
+    def test_the_longest_lateness_is_shown_whole(self):
+        late = item("router-firmware", every="1d", checked=timedelta(days=1, hours=23, minutes=59))
+        (WatchList.WATCHLIST_DIR / "router-firmware.md").write_text(late.text())
+        for width in (WIDTH, WatchListTab.SIDE_BY_SIDE_MIN + 40):
+            assert any("router-firmware" in row and "23h 59m late" in row for row in self.rows(width))
