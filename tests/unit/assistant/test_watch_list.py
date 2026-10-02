@@ -362,3 +362,22 @@ class TestRun:
     def test_a_foreign_command_is_refused(self, wl, log):
         assert WatchList.run("save_procedure", ["a", "b", "c"], wl, log)
         assert WatchList.run("watch_close", ["parcel"], wl, log)
+
+
+@pytest.mark.unit
+class TestCadence:
+    @pytest.mark.parametrize("every,hours", [
+        ("6h", 6), ("1d", 24), ("30m", 0.5), ("weekly", 168), ("every 2 days", 48), ("1d 12h", 36),
+        ("every day", 24), ("hourly", 1), ("2w", 336), ("1.5 hours", 1.5),
+    ])
+    def test_a_cadence_is_read_as_the_time_between_checks(self, every, hours):
+        assert WatchList.interval(every).total_seconds() == hours * 3600
+
+    @pytest.mark.parametrize("every", ["", "when the courier answers", "0h"])
+    def test_a_cadence_that_names_no_length_has_no_interval(self, every):
+        assert WatchList.interval(every) is None
+
+    def test_a_stamp_is_read_with_or_without_its_time(self):
+        assert WatchList.stamp("2026-03-12 07:45").hour == 7
+        assert WatchList.stamp("2026-03-12").date().isoformat() == "2026-03-12"
+        assert WatchList.stamp("next week") is None and WatchList.stamp("2026-13-40") is None

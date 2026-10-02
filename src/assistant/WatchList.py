@@ -13,18 +13,20 @@ moves when the state changes, `checked` whenever someone looks (the assistant's 
 look; the curator's nightly rewrite is not). A check that finds nothing
 stamps `checked` with `checked_watch` and leaves the note alone, so the note never turns into
 a trail again. Whether a check is due is the LLM's arithmetic, not the code's: the prompt shows
-the cadence and the stamp side by side.
+the cadence and the stamp side by side. `interval` and `stamp` read the two for the TUI alone,
+which draws when the next check falls; nothing the LLM is told depends on them.
 
 The `save_watch`, `checked_watch` and `delete_watch` commands and the memory curator's command
 block all go through `run`. The prompt's watch-list section is only an index (`render_index`: a
 line per item); `load_watch` returns whole items (`load`), and the readers that work through the
-whole list — the autonomous check, the curator, the TUI — get `render`.
+whole list — the autonomous check, the curator — get `render`. The TUI's Watch list tab draws
+the items themselves (`items`).
 """
 import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from common.logging import info, trace
@@ -198,6 +200,36 @@ def _days_since(text: str, today: date) -> int | None:
         return None
     try:
         return (today - date.fromisoformat(match.group(0))).days
+    except ValueError:
+        return None
+
+
+_UNIT_SECONDS = {"m": 60, "h": 3600, "d": 86400, "w": 7 * 86400, "mo": 30 * 86400}
+_UNIT_WORDS = (("mo", "mo|months?"), ("m", "m|mins?|minutes?"), ("h", "h|hrs?|hours?"), ("d", "d|days?"),
+               ("w", "w|wks?|weeks?"))
+_UNIT_PATTERN = "|".join(f"(?P<{unit}>{words})" for unit, words in _UNIT_WORDS)
+_AMOUNT = re.compile(rf"(\d+(?:\.\d+)?)\s*(?:{_UNIT_PATTERN})\b")
+_BARE_UNIT = re.compile(r"\b(?:(?P<h>hour(?:ly)?)|(?P<d>da(?:il)?y|night(?:ly)?)|(?P<w>week(?:ly)?)|(?P<mo>month(?:ly)?))\b")
+
+
+def interval(every: str) -> timedelta | None:
+    """The time between two checks a cadence asks for: "6h", "1d 12h", "weekly", "every 2 days",
+    "every day". None for an empty cadence or one this cannot read — it is free text."""
+    text = every.strip().lower()
+    seconds = sum(float(m.group(1)) * _UNIT_SECONDS[m.lastgroup] for m in _AMOUNT.finditer(text))
+    if not seconds and (bare := _BARE_UNIT.search(text)):
+        seconds = _UNIT_SECONDS[bare.lastgroup]
+    return timedelta(seconds=seconds) if seconds > 0 else None
+
+
+def stamp(text: str) -> datetime | None:
+    """The moment a header value names: `checked`'s date and time, or a bare date (midnight).
+    None when it opens with neither."""
+    match = re.match(r"(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?", text.strip())
+    if not match:
+        return None
+    try:
+        return datetime.fromisoformat(f"{match.group(1)} {match.group(2) or '00:00'}")
     except ValueError:
         return None
 
