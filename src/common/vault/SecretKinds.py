@@ -91,6 +91,8 @@ _NORMALIZERS = {
     "api_key": _normalize_verbatim,
     "text": _normalize_verbatim,
 }
+# The kinds found only where they appear exactly as typed; the others are matched however they are written.
+VERBATIM_KINDS = tuple(kind for kind, normalizer in _NORMALIZERS.items() if normalizer is _normalize_verbatim)
 
 
 def normalize(kind: str, value: str, country_code: int = DEFAULT_COUNTRY_CODE, today: date | None = None) -> str:
