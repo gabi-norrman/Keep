@@ -87,6 +87,7 @@ class MemoryTab(TabView):
     OUTLINE_SIZE_W = 5
     TEXT_MAX_W = 120                     # a line longer than this is hard to read back from its end
     SCAN_EVERY = 30                      # frames between looks at the snapshot directory
+    END = 1 << 30                        # a scroll position past any document: `_settle` brings it to the last page
     CHANGE_LEAD = 3                      # rows of context above the first change a snapshot opens on
 
     def __init__(self, redactor: Optional[Redactor] = None):
@@ -191,7 +192,7 @@ class MemoryTab(TabView):
             self._top += self._room if key == 'pagedown' else -self._room
             return True
         if key in ('home', 'end'):
-            self._top = 0 if key == 'home' else len(self._doc.rows) if self._doc else 0
+            self._top = 0 if key == 'home' else self.END
             return True
         if key in ('n', 'p'):
             self._jump(1 if key == 'n' else -1)
