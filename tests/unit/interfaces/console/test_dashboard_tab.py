@@ -347,10 +347,15 @@ class TestFitPromptStats:
         assert self.names(5) == ["rules", "calendar", "memory", "music", "history"]
 
     def test_a_short_tile_drops_the_empty_sections_before_any_with_content(self):
-        assert self.names(4) == ["rules", "memory", "history"]
+        assert self.names(3) == ["rules", "memory", "history"]
 
-    def test_only_when_the_non_empty_ones_do_not_fit_either_is_the_tail_cut(self):
+    def test_a_tile_shorter_still_drops_the_smallest_and_keeps_the_order(self):
         assert self.names(2) == ["rules", "memory"]
+        assert self.names(1) == ["memory"]
+
+    def test_a_large_section_at_the_end_of_the_list_outlives_small_ones_before_it(self):
+        stats = [("phones", 20, 0.0), ("weather", 1400, 0.0), ("static", 12000, 0.0)]
+        assert [name for name, _, _ in DashboardTab._fit_prompt_stats(stats, 2)] == ["weather", "static"]
 
     def test_no_room_is_no_rows(self):
         assert self.names(0) == []

@@ -894,11 +894,12 @@ class DashboardTab(TabView):
 
     @staticmethod
     def _fit_prompt_stats(stats: list, room: int) -> list:
-        """The sections a tile with `room` rows shows: all of them when they fit, else the
-        empty ones go first and only then the tail."""
-        if len(stats) > room:
-            stats = [stat for stat in stats if stat[1] > 0]
-        return stats[:max(0, room)]
+        """The sections a tile with `room` rows shows, in their order: all of them when they
+        fit, else the smallest go first — the ones reading 0.0 KB before any other."""
+        if len(stats) <= room:
+            return stats
+        kept = sorted(range(len(stats)), key=lambda i: -stats[i][1])[:max(0, room)]
+        return [stats[i] for i in sorted(kept)]
 
     def _draw_prompt_sections(self, screen: TUIScreen, x: int, y: int, width: int, height: int):
         pm = self.console.prompt_manager
