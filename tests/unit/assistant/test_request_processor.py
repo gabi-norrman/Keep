@@ -34,6 +34,7 @@ def handler():
     h = RequestProcessor.__new__(RequestProcessor)
     h.is_killed = False
     h.events = queue.SimpleQueue()
+    h._tts_events = queue.SimpleQueue()
     h.turn_gate = None
     h.text_stream = None
     h.playback = None
@@ -122,6 +123,7 @@ class TestHandleBackgroundCommands:
         h = RequestProcessor.__new__(RequestProcessor)
         h.is_killed = False
         h.events = queue.SimpleQueue()
+        h._tts_events = queue.SimpleQueue()
         h.turn_gate = None
         h.text_stream = None
         h.audio_queue = queue.Queue()
@@ -698,6 +700,7 @@ def full_handler():
     h = RequestProcessor.__new__(RequestProcessor)
     h.is_killed = False
     h.events = queue.SimpleQueue()
+    h._tts_events = queue.SimpleQueue()
     h.turn_gate = None
     h.text_stream = None
     h.playback = Mock()
@@ -911,7 +914,36 @@ class TestTextOnlyOutage:
         out = list(full_handler._text_only(iter(["Hello ", event, "world"])))
 
         assert out == ["Hello ", "world"]
-        assert full_handler.events.get_nowait() is event
+        # Parked on the side queue, not on `events`: the LLM stream the feeder consumes
+        # drains `events`, and putting the event back there spun the feeder thread forever.
+        assert full_handler._tts_events.get_nowait() is event
+        assert full_handler.events.empty()
+
+    def test_an_event_in_the_stream_it_feeds_from_does_not_loop(self, full_handler):
+        """The LLM stream drains `events` between tokens (DialogManager.drain_events).
+        Before the side queue, _text_only put each event back there, the stream popped it
+        again and the feeder thread spun at 100% until the request's own loop took it —
+        never, once the request was killed. The stream must end with the event seen once."""
+        event = Thinking("hmm")
+        full_handler.emit(event)
+        seen = []
+
+        def llm_stream():
+            yield "Hello "
+            while True:  # DialogManager.drain_events, with the one event ever yielded counted
+                try:
+                    e = full_handler.events.get_nowait()
+                except queue.Empty:
+                    break
+                seen.append(e)
+                yield e
+            yield "world"
+
+        out = list(full_handler._text_only(llm_stream()))
+
+        assert out == ["Hello ", "world"]
+        assert seen == [event]
+        assert list(full_handler._drain_events()) == [event]
 
     def test_llm_error_becomes_spoken_failure_notice(self, full_handler):
         dm = self._outage_dm(full_handler)

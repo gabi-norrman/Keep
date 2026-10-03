@@ -157,6 +157,11 @@ class RequestProcessor:
         # processor, CommandRan from the command worker thread); drained into the event stream
         # at every yield point. Shared with the dialog managers this handler builds.
         self.events: "queue.SimpleQueue[AssistantEvent]" = queue.SimpleQueue()
+        # Events the TTS feeder (_text_only) pulls out of the LLM stream, parked here for the
+        # audio loop. Never `events`: the stream it feeds from drains that very queue, and
+        # putting the event back there made the feeder thread spin at 100% — pull, put, pull —
+        # for as long as nobody else drained it, i.e. forever once the request was killed.
+        self._tts_events: "queue.SimpleQueue[AssistantEvent]" = queue.SimpleQueue()
         self.dialog_manager = self._new_dialog_manager()
         self.first_sound_chunk = True
         self.is_killed = False
@@ -200,11 +205,12 @@ class RequestProcessor:
         self.events.put(event)
 
     def _drain_events(self) -> Generator[AssistantEvent, None, None]:
-        while True:
-            try:
-                yield self.events.get_nowait()
-            except queue.Empty:
-                return
+        for q in (self._tts_events, self.events):
+            while True:
+                try:
+                    yield q.get_nowait()
+                except queue.Empty:
+                    break
 
     def publish_text_event(self, request_id: str | None, event: dict):
         """Mirror a reply event ({"type": "token"|"user", ...}) to the iOS text overlay for
@@ -396,7 +402,7 @@ class RequestProcessor:
         try:
             for item in llm_stream:
                 if isinstance(item, AssistantEvent):
-                    self.events.put(item)
+                    self._tts_events.put(item)
                 else:
                     yield item
         except RequestKilledException:
