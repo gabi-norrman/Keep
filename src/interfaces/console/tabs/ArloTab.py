@@ -1,8 +1,9 @@
 import time
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
-from interfaces.console.framework.TUIScreen import TUIScreen, Color
-from interfaces.console.tabs.AuthTab import AuthTab, COLOR_GRAY, COLOR_WHITE, COLOR_YELLOW
+from interfaces.console import Theme
+from interfaces.console.framework.TUIScreen import Color
+from interfaces.console.tabs.AuthTab import AuthTab, COLOR_GREEN, COLOR_YELLOW, PENDING, SummaryTile, Table
 from assistant.integration.integrations.cameras.ArloCameraIntegration import ArloCamera, ArloAuthenticationError
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
 
@@ -11,8 +12,6 @@ VERIFY_POLL_SECONDS = 30   # pyaarlo processes the code on its own thread; poll 
 
 class ArloTab(AuthTab):
     """Arlo login with its 2FA, and the cameras the account has."""
-
-    TITLE = "Arlo Cameras"
 
     def __init__(self):
         super().__init__()
@@ -29,21 +28,25 @@ class ArloTab(AuthTab):
             except Exception:
                 self._camera_names = []
 
-    def _draw_section(self, screen: TUIScreen, y: int) -> int:
-        y += 2
-        screen.set_color(COLOR_WHITE)
-        screen.write_at(2, y, "Cameras:")
-        screen.reset_color()
-        if self.status == "authenticated" and self._camera_names:
-            for cam_name in self._camera_names:
-                y += 1
-                screen.set_color(COLOR_GRAY)
-                screen.write_at(4, y, cam_name[:screen.width - 6])
-        else:
-            y += 1
-            screen.set_color(COLOR_GRAY)
-            screen.write_at(4, y, "(connect to see cameras)")
-        return y
+    def _table(self) -> Table:
+        names = self._camera_names if self.status == "authenticated" else []
+        return Table("Cameras", [("Camera", None)],
+                     [(COLOR_GREEN, [(name, Theme.COLOR_TEXT)]) for name in names], "connect to see the cameras")
+
+    def _tiles(self) -> List[SummaryTile]:
+        count = len(self._camera_names) if self.status == "authenticated" else 0
+        cameras: SummaryTile = ("Cameras", str(count), Theme.COLOR_BRIGHT, [("on the account", Theme.COLOR_LABEL)])
+        if not count:
+            cameras = ("Cameras", PENDING, Theme.COLOR_DIM, [("connect to see them", Theme.COLOR_DIM)])
+        remaining = self._rate_limit_remaining()
+        if remaining <= 0:
+            return [cameras]
+        mins, secs = divmod(int(remaining), 60)
+        return [cameras, ("Rate limited", f"{mins:02d}:{secs:02d}", Theme.COLOR_ORANGE,
+                          [("until the next attempt is allowed", Theme.COLOR_LABEL)])]
+
+    def _rate_limit_remaining(self) -> float:
+        return self._rate_limit_until - time.time() if self._rate_limit_until > 0 else 0.0
 
     def _entry_hint(self) -> Optional[Tuple[str, Color]]:
         if self.status == "error" and "2FA" in self._auth_status.get("message", "").upper():

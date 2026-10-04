@@ -1,24 +1,23 @@
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from interfaces.console import Theme
-from interfaces.console.framework.TUIScreen import TUIScreen, Color
-from interfaces.console.tabs.AuthTab import AuthTab, COLOR_GRAY, COLOR_GREEN, COLOR_WHITE, COLOR_YELLOW
+from interfaces.console.framework.TUIScreen import Color
+from interfaces.console.tabs.AuthTab import AuthTab, COLOR_GREEN, COLOR_YELLOW, PENDING, SummaryTile, Table
 from assistant.integration.integrations.ICloudIntegration import iCloudAPI, iCloudAuthenticationError
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
 
-COLOR_DEVICE_ID = Theme.COLOR_DIM
-DEVICE_ID_X = 60
+DEVICE_WIDTH, MODEL_WIDTH, CONFIGURED_WIDTH = 30, 22, 18
+NONE_CONFIGURED = "none yet — ask Keep to set one up, or copy an id into icloud.devices"
 VERIFIED_STATES = ("authenticated", "partial_auth")   # partial_auth still serves Find My
 
 
 class iCloudTab(AuthTab):
     """iCloud login with its 2FA, and the Find My devices the session sees."""
 
-    TITLE = "iCloud / Find My iPhone"
     SUBMITTING_MESSAGE = "Verifying 2FA code..."
     STATUS_LABELS = {
         **AuthTab.STATUS_LABELS,
-        "partial_auth": ("Connected (login not fully verified)", COLOR_GREEN),
+        "partial_auth": ("Partly verified", COLOR_GREEN),
         "needs_2fa": ("2FA Required", COLOR_YELLOW),
     }
 
@@ -52,34 +51,32 @@ class iCloudTab(AuthTab):
             self._input_text = ""
             self._check_auth_status_async()
 
-    def _draw_section(self, screen: TUIScreen, y: int) -> int:
-        y += 2
-        screen.set_color(COLOR_WHITE)
-        screen.write_at(2, y, "iCloud Devices:")
-        screen.reset_color()
-        if self.status in VERIFIED_STATES and self._icloud_devices:
+    def _table(self) -> Table:
+        """Every device the account sees: a green dot and the name it answers to in voice
+        commands, Find My pings and location detection when icloud.devices lists it."""
+        rows = []
+        if self.status in VERIFIED_STATES:
             for device in self._icloud_devices:
-                y += 1
-                screen.set_color(COLOR_GRAY)
-                name = device.get("name", "Unknown")
-                model = device.get("model", "")
-                device_str = f"  {name}" + (f" ({model})" if model else "")
-                screen.write_at(2, y, device_str[:screen.width - 4])
-                screen.set_color(COLOR_DEVICE_ID)
-                screen.write_at(DEVICE_ID_X, y, f"{device.get('id', '')}")
-        else:
-            y += 1
-            screen.set_color(COLOR_GRAY)
-            screen.write_at(4, y, "(authenticate to see devices)")
+                configured = device.get("configured_as")
+                rows.append((COLOR_GREEN if configured else Theme.COLOR_FAINT, [
+                    (device.get("name", "Unknown"), Theme.COLOR_TEXT),
+                    (device.get("model") or PENDING, Theme.COLOR_LABEL),
+                    (configured, Theme.COLOR_TEAL) if configured else (PENDING, Theme.COLOR_FAINT),
+                    (str(device.get("id", "")), Theme.COLOR_DIM)]))
+        return Table("Find My devices",
+                     [("Device", DEVICE_WIDTH), ("Model", MODEL_WIDTH), ("Configured as", CONFIGURED_WIDTH), ("Id", None)],
+                     rows, "sign in to see the devices")
 
-        y += 2
-        screen.set_color(COLOR_WHITE)
-        screen.write_at(2, y, "Configured for voice commands, Find My pings and location detection:")
-        screen.reset_color()
-        y += 1
-        screen.set_color(COLOR_GRAY)
-        screen.write_at(4, y, self._devices_list or "(none yet — ask Keep to set one up, or copy an id above into icloud.devices)")
-        return y
+    def _tiles(self) -> List[SummaryTile]:
+        devices = self._icloud_devices if self.status in VERIFIED_STATES else []
+        seen: SummaryTile = ("Devices", str(len(devices)), Theme.COLOR_BRIGHT, [("seen by the account", Theme.COLOR_LABEL)])
+        if not devices:
+            seen = ("Devices", PENDING, Theme.COLOR_DIM, [("sign in to see them", Theme.COLOR_DIM)])
+        if not self._devices_list:
+            return [seen, ("Configured", "none", Theme.COLOR_DIM, [(NONE_CONFIGURED, Theme.COLOR_DIM)])]
+        configured = sum(1 for device in devices if device.get("configured_as"))
+        return [seen, ("Configured", str(configured) if devices else "", Theme.COLOR_TEAL,
+                       [(self._devices_list, Theme.COLOR_LABEL)])]
 
     def _entry_hint(self) -> Optional[Tuple[str, Color]]:
         if self.status == "partial_auth":

@@ -273,7 +273,7 @@ class VaultTab(TabView):
 
         description_w = max(DESCRIPTION_MIN_WIDTH, min(DESCRIPTION_WIDTH,
                                                        inner_w - 2 - ID_WIDTH - KIND_WIDTH - 6 - VALUE_MIN_WIDTH))
-        self._write_cells(screen, x + 4, header_y, inner_w - 2,
+        Tile.write_cells(screen, x + 4, header_y, inner_w - 2,
                           [(title, column_w, Theme.COLOR_DIM, False) for title, column_w in
                            (("Id", ID_WIDTH), ("Kind", KIND_WIDTH), ("Description", description_w), ("Value", None))])
         for i, secret in enumerate(rows[self._top:self._top + room]):
@@ -283,7 +283,7 @@ class VaultTab(TabView):
             screen.reset_color()
             screen.set_color(kind_color(secret.kind))
             screen.write_at(x + 2, row_y, "●")
-            self._write_cells(screen, x + 4, row_y, inner_w - 2, [
+            Tile.write_cells(screen, x + 4, row_y, inner_w - 2, [
                 (secret.id, ID_WIDTH, Theme.COLOR_BRIGHT if chosen else Theme.COLOR_TEXT, chosen),
                 (secret.kind, KIND_WIDTH, kind_color(secret.kind), False),
                 (secret.description, description_w, Theme.COLOR_TEXT if chosen else Theme.COLOR_LABEL, False),
@@ -293,23 +293,6 @@ class VaultTab(TabView):
             if chosen:
                 screen.tint_row(x, row_y, width, Theme.COLOR_SELECTED_BG)
         draw_scrollbar(screen, x + width - 1, header_y + 1, count, room, count - room - self._top)
-        screen.reset_color()
-
-    @staticmethod
-    def _write_cells(screen: TUIScreen, x: int, y: int, width: int, cells: list[tuple[str, Optional[int], Color, bool]]):
-        """One table row: each (text, width, fg, bold) cell in turn, two columns apart, the
-        last one (width None) taking what is left of `width`."""
-        remaining = width
-        for text, cell_w, fg, bold in cells:
-            cell_w = remaining if cell_w is None else min(cell_w, remaining)
-            if cell_w <= 0:
-                break
-            screen.reset_color()
-            screen.set_color(fg)
-            if bold:
-                screen.bold()
-            screen.write_at(x + width - remaining, y, fit(text, cell_w))
-            remaining -= cell_w + 2
         screen.reset_color()
 
     # --- the selected secret and the flows' form -----------------------------------------------

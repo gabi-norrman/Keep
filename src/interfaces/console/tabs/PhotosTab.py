@@ -1,19 +1,42 @@
+"""The Photos tab: the indexed photo library, one photo at a time, as a board in the Dashboard's
+tiles — summary tiles (how much of the library is indexed, where the browsing stands, what the
+indexing last did), the photo's description and its details with the two scores as meters. From
+150 columns the details sit beside the description, under it on a narrower screen."""
 import os
 import sqlite3
 import subprocess
 import threading
 import time
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional, Tuple
 
+from .ScrollableTabView import COLOR_HINT
 from .TabView import TabView, SUB_CONTENT_TOP
 from interfaces.console import Theme
-from interfaces.console.framework.TUIScreen import TUIScreen
-from interfaces.console.framework.TextWidth import clip, display_width
+from interfaces.console.framework.TUIScreen import TUIScreen, Color
+from interfaces.console.framework.TextWidth import display_width, fit
+from interfaces.console.widgets import Tile
 from common.FloxyDatabase import FloxyDatabase
 from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor, PHOTOS_SQLITE_PATH
 
-SCORE_BAR_WIDTH = 20
+LEFT = 3
+RIGHT_MARGIN = 2
+GAP = 2
+SUMMARY_H = 1 + Tile.CARD_CHROME
+SIDE_BY_SIDE_MIN = 150      # screen columns from which the details sit beside the description
+DETAILS_MIN_W = 60
+FACT_LABEL_W = 14
+SCORE_METER_MAX_W = 40
+DESCRIPTION_MIN_ROWS = 2
+NONE = "\u2014"
+HINTS = "\u2191\u2193 prev/next  PgUp/PgDn \u00b110  Home/End  Ctrl-S sort  Ctrl-O open  Ctrl-P process  Ctrl-B bulk"
+# The colour of an indexing outcome by PhotoProcessor's status
+PROCESS_COLORS = {"ok": Theme.COLOR_GREEN, "none": Theme.COLOR_LABEL, "error": Theme.COLOR_RED}
+
+# A summary tile: its label, the value in its title strip, the value's colour, the row under it.
+SummaryTile = Tuple[str, str, Color, List[Tuple[str, Color]]]
+# A row of the Details tile: its label and its value, or a score (0..100) drawn as a meter in the colour.
+Fact = Tuple[str, object, Color]
 
 SORT_MODES = [
     ("creation_date", False, "Date (oldest)"),
@@ -27,17 +50,6 @@ SORT_MODES = [
 class PhotosTab(TabView):
     """Tab for browsing the indexed photo library and triggering photo processing."""
 
-    COLOR_WHITE = Theme.COLOR_BRIGHT
-    COLOR_GRAY = Theme.COLOR_LABEL
-    COLOR_DIM = Theme.COLOR_DIM
-    COLOR_ACCENT = Theme.COLOR_BLUE
-    COLOR_BAR_FILLED = Theme.COLOR_BLUE
-    COLOR_BAR_EMPTY = Theme.COLOR_BLUE_DIM
-    COLOR_LABEL = Theme.COLOR_LABEL
-    COLOR_GREEN = Theme.COLOR_GREEN
-    COLOR_YELLOW = Theme.COLOR_YELLOW
-    COLOR_RED = Theme.COLOR_RED
-
     def __init__(self):
         self._index: int = 0
         self._count: int = 0
@@ -50,6 +62,7 @@ class PhotosTab(TabView):
         self._processing: bool = False
         self._process_status: str = ""
         self._process_status_type: str = ""
+        self._cards: List[Tile.Card] = []
 
     def _current_sort(self):
         return SORT_MODES[self._sort_mode_idx]
@@ -97,148 +110,141 @@ class PhotosTab(TabView):
             self._load_data()
 
     def draw(self, screen: TUIScreen, frame: int):
-        now = time.time()
-        if now - self._last_load_time > self._reload_interval:
+        if time.time() - self._last_load_time > self._reload_interval:
             self._load_data()
 
-        screen.reset_color()
+        self._cards = []
+        available = screen.width - LEFT - RIGHT_MARGIN
+        bottom = screen.height - 1                # the last row is the key hints'
         y = SUB_CONTENT_TOP
-        _, _, sort_label = self._current_sort()
+        self._draw_summary(screen, y, available)
+        y += SUMMARY_H + 1
+        height = bottom - y
 
-        # Header line
-        if self._count == 0:
-            left = "No photos indexed"
+        photo = self._photo
+        if photo is None:
+            Tile.draw_card(screen, self._cards, LEFT, y, available, min(height, Tile.CARD_CHROME + 1), "Photo")
+            screen.set_color(Theme.COLOR_DIM)
+            screen.write_at(LEFT + 2, y + Tile.CARD_TOP,
+                            "Loading..." if self._loading else "No photos to display \u2014 Ctrl-P indexes the next one")
+        elif screen.width >= SIDE_BY_SIDE_MIN:
+            details_w = max(DETAILS_MIN_W, available * 36 // 100)
+            description_w = available - GAP - details_w
+            facts = self._facts(photo)
+            self._draw_description(screen, LEFT, y, description_w, height, photo)
+            self._draw_details(screen, LEFT + description_w + GAP, y, details_w,
+                               min(height, len(facts) + Tile.CARD_CHROME), facts)
         else:
-            left = f"Photo {self._index + 1:,} of {self._count:,}"
-        if self._total_apple > 0:
-            left += f"  ({self._total_apple:,} in iCloud library)"
-        right = f"Sort: {sort_label}"
-        screen.set_color(self.COLOR_WHITE)
-        screen.bold()
-        screen.write_at(2, y, left)
+            facts = self._facts(photo)
+            details_h = len(facts) + Tile.CARD_CHROME
+            lines = self._wrap(photo.get("detailed_description") or "", available - 4)
+            description_h = Tile.CARD_CHROME + max(DESCRIPTION_MIN_ROWS, min(len(lines), height - 1 - details_h - Tile.CARD_CHROME))
+            self._draw_description(screen, LEFT, y, available, description_h, photo)
+            y += description_h + 1
+            self._draw_details(screen, LEFT, y, available, min(details_h, bottom - y), facts)
+        Tile.tint_cards(screen, self._cards)
+
         screen.reset_color()
-        screen.set_color(self.COLOR_DIM)
-        screen.write_at(max(len(left) + 4, screen.width - len(right) - 1), y, right)
+        screen.set_color(COLOR_HINT)
+        screen.write_at(LEFT, screen.height - 1, fit(HINTS, max(0, available)))
         screen.reset_color()
 
-        # Separator
-        y += 1
-        screen.set_color(self.COLOR_DIM)
-        screen.write_at(2, y, "\u2500" * (screen.width - 3))
-        screen.reset_color()
+    # --- summary tiles -----------------------------------------------------------------------
 
-        if self._photo is None:
-            y += 2
-            screen.set_color(self.COLOR_GRAY)
-            if self._loading:
-                screen.write_at(2, y, "Loading...")
-            else:
-                screen.write_at(2, y, "No photos to display.")
-            self._draw_footer(screen)
+    def _draw_summary(self, screen: TUIScreen, y: int, available: int):
+        tiles = (self._indexed_tile(), self._browsing_tile(), self._indexing_tile())
+        count = len(tiles)
+        width = (available - GAP * (count - 1)) // count
+        for i, (label, value, color, segments) in enumerate(tiles):
+            x = LEFT + i * (width + GAP)
+            tile_w = width if i < count - 1 else available - (width + GAP) * (count - 1)
+            Tile.draw_card(screen, self._cards, x, y, tile_w, SUMMARY_H, label, value, color)
+            Tile.write_segments(screen, x + 2, y + Tile.CARD_TOP, tile_w - 4, segments)
+
+    def _indexed_tile(self) -> SummaryTile:
+        if not self._count:
+            return "Indexed", "0", Theme.COLOR_DIM, [("no photos indexed", Theme.COLOR_DIM)]
+        if self._total_apple <= 0:
+            return "Indexed", f"{self._count:,}", Theme.COLOR_BRIGHT, [("photos described", Theme.COLOR_LABEL)]
+        share = min(100, round(100 * self._count / self._total_apple))
+        return ("Indexed", f"{self._count:,}", Theme.COLOR_BRIGHT,
+                [(f"{share}% of the library", Theme.COLOR_LABEL), (f"{self._total_apple:,} in iCloud", Theme.COLOR_DIM)])
+
+    def _browsing_tile(self) -> SummaryTile:
+        sort = (f"sorted by {self._current_sort()[2].lower()}", Theme.COLOR_LABEL)
+        if not self._count:
+            return "Browsing", NONE, Theme.COLOR_DIM, [sort]
+        return "Browsing", f"{self._index + 1:,} of {self._count:,}", Theme.COLOR_CYAN, [sort, ("Ctrl-S changes it", Theme.COLOR_DIM)]
+
+    def _indexing_tile(self) -> SummaryTile:
+        if self._processing:
+            return ("Indexing", "running", Theme.COLOR_YELLOW,
+                    [(self._process_status or "Processing...", Theme.COLOR_YELLOW)])
+        if not self._process_status:
+            return "Indexing", "idle", Theme.COLOR_DIM, [("Ctrl-P the next photo, Ctrl-B a batch", Theme.COLOR_DIM)]
+        color = PROCESS_COLORS.get(self._process_status_type, Theme.COLOR_LABEL)
+        value = {"ok": "done", "error": "failed"}.get(self._process_status_type, "idle")
+        return "Indexing", value, color, [(self._process_status, color)]
+
+    # --- the photo ---------------------------------------------------------------------------
+
+    def _draw_description(self, screen: TUIScreen, x: int, y: int, width: int, height: int, photo: dict):
+        """The photo's short description as the tile's title, the detailed one wrapped under it."""
+        if height <= Tile.CARD_CHROME:
             return
-
-        p = self._photo
-        max_w = screen.width - 4
-
-        # Short description (title)
-        y += 1
-        screen.set_color(self.COLOR_ACCENT)
-        screen.bold()
-        screen.write_at(2, y, clip(p.get("short_description") or "", max_w))
+        Tile.draw_card(screen, self._cards, x, y, width, height, photo.get("short_description") or "Photo",
+                       self._type_label(photo), Theme.COLOR_BLUE)
+        room = height - Tile.CARD_CHROME
+        lines = self._wrap(photo.get("detailed_description") or "", width - 4)
+        if len(lines) > room:
+            lines = lines[:room - 1] + [fit(" ".join(lines[room - 1:]), width - 4)]
+        screen.set_color(Theme.COLOR_TEXT)
+        for i, line in enumerate(lines):
+            screen.write_at(x + 2, y + Tile.CARD_TOP + i, line)
         screen.reset_color()
 
-        # Detailed description (word-wrapped)
-        y += 2
-        detail = p.get("detailed_description") or ""
-        for line in self._wrap(detail, max_w):
-            screen.set_color(self.COLOR_GRAY)
-            screen.write_at(2, y, line)
-            y += 1
+    def _facts(self, photo: dict) -> List[Fact]:
+        location = []
+        if photo.get("location_text"):
+            location.append(photo["location_text"].replace("/", ", "))
+        if photo.get("latitude") is not None and photo.get("longitude") is not None:
+            location.append(f"({photo['latitude']:.4f}, {photo['longitude']:.4f})")
 
-        label_x = 2
-        value_x = 23
+        def text(label: str, value: Optional[str]) -> Fact:
+            return (label, value, Theme.COLOR_TEXT) if value and value != NONE else (label, NONE, Theme.COLOR_FAINT)
 
-        # Date
-        y += 1
-        self._draw_field(screen, y, label_x, value_x, "Date:", self._format_date(p.get("creation_date")))
+        return [text("Date", self._format_date(photo.get("creation_date"))),
+                text("Location", "  ".join(location)),
+                text("Albums", photo.get("albums")),
+                text("Persons", photo.get("persons")),
+                ("", "", Theme.COLOR_FAINT),
+                ("Pretty score", photo.get("pretty_score") or 0, Theme.COLOR_PINK),
+                ("Family score", photo.get("family_importance_score") or 0, Theme.COLOR_CYAN),
+                ("", "", Theme.COLOR_FAINT),
+                ("Indexed", self._format_date(photo.get("indexed_at")), Theme.COLOR_LABEL),
+                ("Id", str(photo.get("asset_guid") or NONE), Theme.COLOR_DIM)]
 
-        # Location
-        y += 1
-        loc_parts = []
-        if p.get("location_text"):
-            loc_parts.append(p["location_text"].replace("/", ", "))
-        if p.get("latitude") is not None and p.get("longitude") is not None:
-            loc_parts.append(f"({p['latitude']:.4f}, {p['longitude']:.4f})")
-        self._draw_field(screen, y, label_x, value_x, "Location:", "  ".join(loc_parts) if loc_parts else "\u2014")
-
-        # Albums
-        y += 1
-        self._draw_field(screen, y, label_x, value_x, "Albums:", p.get("albums") or "\u2014")
-
-        # Persons
-        y += 1
-        self._draw_field(screen, y, label_x, value_x, "Persons:", p.get("persons") or "\u2014")
-
-        # Type
-        y += 1
-        self._draw_field(screen, y, label_x, value_x, "Type:", self._type_label(p))
-
-        # Score bars
-        y += 2
-        self._draw_score_bar(screen, y, label_x, value_x, "Pretty score:", p.get("pretty_score", 0))
-        y += 1
-        self._draw_score_bar(screen, y, label_x, value_x, "Family score:", p.get("family_importance_score", 0))
-
-        # Indexed at
-        y += 2
-        self._draw_field(screen, y, label_x, value_x, "Indexed at:", self._format_date(p.get("indexed_at")))
-
-        # ID
-        y += 1
-        screen.set_color(self.COLOR_DIM)
-        screen.write_at(label_x, y, clip(f"ID: {p.get('asset_guid', '')}", max_w))
-
-        # Processing status
-        if self._processing or self._process_status:
-            y += 2
-            max_w = screen.width - 4
-            if self._processing:
-                screen.set_color(self.COLOR_YELLOW)
-                screen.write_at(2, y, "Processing...")
-            elif self._process_status_type == "ok":
-                screen.set_color(self.COLOR_GREEN)
-                screen.write_at(2, y, clip(self._process_status, max_w))
-            elif self._process_status_type == "none":
-                screen.set_color(self.COLOR_GRAY)
-                screen.write_at(2, y, clip(self._process_status, max_w))
-            elif self._process_status_type == "error":
-                screen.set_color(self.COLOR_RED)
-                screen.write_at(2, y, clip(self._process_status, max_w))
-
-        self._draw_footer(screen)
-
-    def _draw_footer(self, screen: TUIScreen):
+    def _draw_details(self, screen: TUIScreen, x: int, y: int, width: int, height: int, facts: List[Fact]):
+        if height <= Tile.CARD_CHROME:
+            return
+        Tile.draw_card(screen, self._cards, x, y, width, height, "Details")
+        value_x = x + 2 + FACT_LABEL_W
+        value_w = max(1, width - 4 - FACT_LABEL_W)
+        for i, (label, value, color) in enumerate(facts[:height - Tile.CARD_CHROME]):
+            row_y = y + Tile.CARD_TOP + i
+            screen.reset_color()
+            screen.set_color(Theme.COLOR_DIM)
+            screen.write_at(x + 2, row_y, label)
+            if isinstance(value, str):
+                screen.set_color(color)
+                screen.write_at(value_x, row_y, fit(value, value_w))
+            else:
+                meter_w = max(1, min(SCORE_METER_MAX_W, value_w - 4))
+                Tile.draw_meter(screen, value_x, row_y, meter_w, value / 100, color)
+                screen.set_color(Theme.COLOR_BRIGHT)
+                screen.bold()
+                screen.write_at(value_x + meter_w + 1, row_y, str(value))
         screen.reset_color()
-        screen.set_color(self.COLOR_DIM)
-        screen.write_at(2, screen.height - 1,
-                        " \u2191\u2193 prev/next  PgUp/PgDn \u00b110  Home/End  Ctrl-S sort  Ctrl-O open  Ctrl-P process  Ctrl-B bulk ")
-
-    def _draw_field(self, screen: TUIScreen, y: int, label_x: int, value_x: int, label: str, value: str):
-        screen.set_color(self.COLOR_LABEL)
-        screen.write_at(label_x, y, label)
-        screen.set_color(self.COLOR_WHITE)
-        screen.write_at(value_x, y, value[:screen.width - value_x - 1])
-
-    def _draw_score_bar(self, screen: TUIScreen, y: int, label_x: int, value_x: int, label: str, score: int):
-        screen.set_color(self.COLOR_LABEL)
-        screen.write_at(label_x, y, label)
-        filled = round(score / 100 * SCORE_BAR_WIDTH)
-        screen.set_color(self.COLOR_BAR_FILLED)
-        screen.write_at(value_x, y, "\u2588" * filled)
-        screen.set_color(self.COLOR_BAR_EMPTY)
-        screen.write_at(value_x + filled, y, "\u2591" * (SCORE_BAR_WIDTH - filled))
-        screen.set_color(self.COLOR_WHITE)
-        screen.write_at(value_x + SCORE_BAR_WIDTH + 1, y, str(score))
 
     @staticmethod
     def _wrap(text: str, width: int) -> list:

@@ -1,25 +1,32 @@
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
-from interfaces.console.framework.TUIScreen import TUIScreen, Color
-from interfaces.console.tabs.AuthTab import (AuthTab, BACKSPACE_KEYS, COLOR_YELLOW, ENTER_KEYS, STANDARD_ENTRY_HINT,
-                                             code_display)
+from interfaces.console import Theme
+from interfaces.console.framework.TUIScreen import Color
+from interfaces.console.tabs.AuthTab import (AuthTab, BACKSPACE_KEYS, COLOR_GREEN, COLOR_RED, COLOR_YELLOW, ENTER_KEYS,
+                                             Field, PENDING, STANDARD_ENTRY_HINT, SummaryTile, code_display)
 from common.logging import trace
 
 INPUT_PHONE = "phone"
 INPUT_CODE = "code"
 INPUT_PASSWORD = "password"
 
+STEPS = (INPUT_PHONE, INPUT_CODE, INPUT_PASSWORD)
+
 CODE_LENGTH = 5
 PHONE_MAX = 16
 PHONE_MIN = 8
+MASK = "•"
+CURSOR = "▏"
+
+# The Feed tile's value colour per FeedState value; any other state is dim
+FEED_COLORS = {"live": COLOR_GREEN, "catching_up": COLOR_YELLOW, "starting": COLOR_YELLOW, "failed": COLOR_RED}
 
 
 class TelegramTab(AuthTab):
     """The Telegram feed's login: phone number, the code Telegram sends, and the account's
     2FA password when it has one."""
 
-    TITLE = "Telegram Feed"
-    HELP = " Ctrl-R reconnect  Ctrl-P authenticate "
+    HELP = "Ctrl-R reconnect  Ctrl-P authenticate"
     STATUS_LABELS = {
         **AuthTab.STATUS_LABELS,
         "needs_auth": ("Not authenticated", COLOR_YELLOW),
@@ -29,26 +36,58 @@ class TelegramTab(AuthTab):
     def __init__(self):
         super().__init__()
         self._phone_number = ""
+        self._feed: Optional[dict] = None
 
     def _connect(self):
         from assistant.integration.integrations.TelegramFeedIntegration import TelegramFeedIntegration
         return TelegramFeedIntegration.get_instance()
 
-    def _draw_entry(self, screen: TUIScreen, y: int) -> int:
+    def _on_status(self, api):
+        from assistant.integration.FeedRunner import Feeds
+        try:
+            self._feed = Feeds.get_instance().status(api.feed_name)
+        except Exception as e:
+            trace(f"TelegramTab: no feed status: {e}")
+            self._feed = None
+
+    def _tiles(self) -> List[SummaryTile]:
+        feed = self._feed
+        if not feed:
+            return [("Feed", PENDING, Theme.COLOR_DIM, [("not running", Theme.COLOR_DIM)])]
+        state = feed["state"]
+        segments = [(f"{feed['stored']:,} {feed['items']} stored", Theme.COLOR_LABEL)]
+        if feed.get("remaining"):
+            segments.append((f"{feed['remaining']:,} to go", Theme.COLOR_DIM))
+        if feed.get("last_error"):
+            segments = [(str(feed["last_error"]), COLOR_RED)]
+        return [("Feed", "paused" if feed.get("paused") else state.replace("_", " "),
+                 FEED_COLORS.get(state, Theme.COLOR_DIM), segments)]
+
+    def _fields(self) -> List[Field]:
+        """The login's three steps: the one being typed bright under a yellow label, the
+        answered ones above it, the ones to come faint. The password is never drawn."""
+        mode, text = self._input_mode, self._input_text
+        if mode not in STEPS:
+            hint = self._entry_hint()
+            return [("Phone", hint[0], hint[1], False) if hint else ("Phone", PENDING, Theme.COLOR_FAINT, False),
+                    ("Code", PENDING, Theme.COLOR_FAINT, False),
+                    ("Password", PENDING, Theme.COLOR_FAINT, False)]
+        step = STEPS.index(mode)
+        values = [text + CURSOR if step == 0 else self._phone_number,
+                  code_display(text, CODE_LENGTH) if step == 1 else "sent" if step > 1 else PENDING,
+                  MASK * len(text) + CURSOR if step == 2 else PENDING]
+        colors = (Theme.COLOR_TEXT, Theme.COLOR_BRIGHT, Theme.COLOR_FAINT)   # answered, waited on, to come
+        return [(label, value, colors[(i >= step) + (i > step)], i == step)
+                for i, (label, value) in enumerate(zip(("Phone", "Code", "Password"), values))]
+
+    def _hints(self) -> str:
         if self._input_mode == INPUT_PHONE:
-            return self._draw_prompt(screen, y, "Enter phone number (with country code): ", self._input_text or "_",
-                                     "e.g. +48123456789  |  Enter to submit, Esc to cancel")
-        if self._input_mode == INPUT_CODE:
-            return self._draw_prompt(screen, y, "Enter verification code: ", code_display(self._input_text, CODE_LENGTH),
-                                     STANDARD_ENTRY_HINT)
-        if self._input_mode == INPUT_PASSWORD:
-            return self._draw_prompt(screen, y, "Enter 2FA password: ", "*" * len(self._input_text) or "_",
-                                     STANDARD_ENTRY_HINT)
-        return super()._draw_entry(screen, y)
+            return f"With the country code, e.g. +48123456789  {STANDARD_ENTRY_HINT}"
+        return super()._hints()
 
     def _entry_hint(self) -> Optional[Tuple[str, Color]]:
         if self.status == "needs_auth":
-            return "Press Ctrl+P to start authentication", COLOR_YELLOW
+            return "Ctrl-P starts the login", COLOR_YELLOW
         return None
 
     def _handle_key(self, key: str) -> bool:

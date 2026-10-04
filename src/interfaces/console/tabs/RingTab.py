@@ -1,15 +1,14 @@
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
-from interfaces.console.framework.TUIScreen import TUIScreen, Color
-from interfaces.console.tabs.AuthTab import AuthTab, COLOR_GRAY, COLOR_WHITE, COLOR_YELLOW
+from interfaces.console import Theme
+from interfaces.console.framework.TUIScreen import Color
+from interfaces.console.tabs.AuthTab import AuthTab, COLOR_GREEN, COLOR_YELLOW, PENDING, SummaryTile, Table
 from assistant.integration.integrations.cameras.RingIntegration import RingIntegration, RingAuthenticationError
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
 
 
 class RingTab(AuthTab):
     """Ring login with its 2FA, and the doorbells the account has."""
-
-    TITLE = "Ring Cameras"
 
     def __init__(self):
         super().__init__()
@@ -35,21 +34,16 @@ class RingTab(AuthTab):
             self._input_text = ""
             self._check_auth_status_async()
 
-    def _draw_section(self, screen: TUIScreen, y: int) -> int:
-        y += 2
-        screen.set_color(COLOR_WHITE)
-        screen.write_at(2, y, "Doorbells:")
-        screen.reset_color()
-        if self.status == "authenticated" and self._doorbell_names:
-            for name in self._doorbell_names:
-                y += 1
-                screen.set_color(COLOR_GRAY)
-                screen.write_at(4, y, name[:screen.width - 6])
-        else:
-            y += 1
-            screen.set_color(COLOR_GRAY)
-            screen.write_at(4, y, "(connect to see doorbells)")
-        return y
+    def _table(self) -> Table:
+        names = self._doorbell_names if self.status == "authenticated" else []
+        return Table("Doorbells", [("Doorbell", None)],
+                     [(COLOR_GREEN, [(name, Theme.COLOR_TEXT)]) for name in names], "connect to see the doorbells")
+
+    def _tiles(self) -> List[SummaryTile]:
+        count = len(self._doorbell_names) if self.status == "authenticated" else 0
+        if not count:
+            return [("Doorbells", PENDING, Theme.COLOR_DIM, [("connect to see them", Theme.COLOR_DIM)])]
+        return [("Doorbells", str(count), Theme.COLOR_BRIGHT, [("on the account", Theme.COLOR_LABEL)])]
 
     def _entry_hint(self) -> Optional[Tuple[str, Color]]:
         if self.status == "error" and "2FA" in self._auth_status.get("message", "").upper():
