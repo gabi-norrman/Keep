@@ -166,14 +166,16 @@ class TestOutline:
         assert any(row.startswith("● A") for row in shown) and any(row.startswith("● B") for row in shown)
         assert not any(row.startswith(("A1", "B1")) for row in shown)
 
-    def test_a_part_is_metered_as_its_share_of_its_section(self, tab):
+    def test_a_part_is_metered_on_its_sections_scale(self, tab):
         MemoryFile.write("# A\n## A1\n" + "x" * 300 + "\n## A2\n" + "x" * 100 + "\n# B\n- b\n", tab.memory_file_path)
         screen = draw(tab, width=WIDE)
-        a1, a2 = (row_with(screen, name)[:40] for name in ("A1", "A2"))
+        a, a1, a2, b = (row_with(screen, name)[:40] for name in ("● A", "A1", "A2", "● B"))
         size = lambda row: int(row.split()[-1])
         filled = lambda row: sum(ch in "▏▎▍▌▋▊▉█" for ch in row)
         assert size(a1) > 300 > size(a2) > 100
-        assert filled(a1) > filled(a2) > 0
+        assert filled(a) >= filled(a1) > filled(a2) > 0
+        assert filled(a1) + filled(a2) <= filled(a) + 1
+        assert filled(a) > filled(b)
 
     def test_the_section_being_read_is_the_highlighted_one(self, tab):
         MemoryFile.write("# First\n" + numbered(80) + "# Second\n" + numbered(80), tab.memory_file_path)
