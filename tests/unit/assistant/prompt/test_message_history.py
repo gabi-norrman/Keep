@@ -318,6 +318,24 @@ class TestHysteresisTrim:
         logs = [str(c) for c in mock_info.call_args_list if "window hit" in str(c)]
         return msgs, logs
 
+    def test_trim_records_the_sections_whose_delta_notes_it_evicted(self):
+        """A prompt-delta note is the only thing telling the LLM a section moved on from the
+        system prompt's baseline. When the window trims it away, PromptManager has to put a
+        fresh one back — so the trim must say which sections lost theirs, and only those."""
+        section = _make_history_section()
+        section.trim_high_bytes = 2_000
+        section.trim_low_bytes = 1_000
+        section.history = self._entries(30)
+        section.add_transient_entry("system", "Prompt section `weather` updated:\n-a\n+b",
+                                    timestamp=1000.5, source="prompt_delta", section="weather")
+        section.add_transient_entry("system", "Prompt section `home` updated:\n-x\n+y",
+                                    timestamp=1029.5, source="prompt_delta", section="home")
+
+        joined = "\n".join(m["content"] for m in section.get_history_messages())
+
+        assert "`weather` updated" not in joined and "`home` updated" in joined
+        assert section.dropped_delta_sections == {"weather"}
+
     def test_trim_never_cuts_inside_a_timestamp_tie(self):
         """The cutoff is a bare timestamp, so a cut inside a tied batch would be
         undone by the `>=` filter on the next call — the trim would fire (and log)

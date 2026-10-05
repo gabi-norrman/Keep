@@ -479,6 +479,8 @@ def test_get_messages_merges_thinking_into_trailing_user_history(prompt_test_env
     manager.test_suite = False  # enable the live-history append path in get_messages
 
     mock_history = Mock()
+
+    mock_history.dropped_delta_sections = set()
     mock_history.get_history_messages.return_value = [
         {"role": "user", "content": "Bob (iMessage): you up?"},
     ]
@@ -506,6 +508,8 @@ def test_get_messages_keeps_thinking_separate_after_assistant_history(prompt_tes
     manager.test_suite = False
 
     mock_history = Mock()
+
+    mock_history.dropped_delta_sections = set()
     mock_history.get_history_messages.return_value = [
         {"role": "user", "content": "what time is it?"},
         {"role": "assistant", "content": "3pm"},
@@ -539,6 +543,8 @@ def test_get_messages_appends_current_time_note_in_production_mode(prompt_test_e
     manager.test_suite = False
 
     mock_history = Mock()
+
+    mock_history.dropped_delta_sections = set()
     mock_history.get_history_messages.return_value = [
         {"role": "user", "content": "earlier"},
         {"role": "assistant", "content": "ok"},
@@ -904,6 +910,7 @@ def test_update_history_fires_pre_heat_with_the_new_exchange(prompt_test_environ
     # singleton (shared across tests, re-homed by other fixtures).
     rendered_turn = {"role": "user", "content": "User (20:30): What time is it?\n\nFloxy (20:30): It's 3pm"}
     manager.message_history = Mock()
+    manager.message_history.dropped_delta_sections = set()
     manager.message_history.get_history_messages.return_value = [rendered_turn]
     received = []
     manager.on_prompt_assembled(lambda msgs: received.append(msgs))
@@ -925,6 +932,7 @@ def test_update_history_pre_heat_false_records_exchange_without_pre_heating(prom
     manager, sections = _seed_full_rebuild(prompt_test_environment)
     manager.test_suite = False
     manager.message_history = Mock()
+    manager.message_history.dropped_delta_sections = set()
     received = []
     manager.on_prompt_assembled(lambda msgs: received.append(msgs))
 
@@ -968,6 +976,67 @@ def test_delta_pre_heat_messages_include_the_transient_note(prompt_test_environm
     assert messages[0]["role"] == "system"
     rendered_tail = "".join(m["content"] for m in messages[1:])
     assert "weather" in rendered_tail, "pre-heat payload must contain the delta note"
+
+
+def _trim_away_the_notes(manager):
+    """Make the history window evict every transient note: date the notes before a run of
+    large turns and set the watermarks so the trim cuts between them. The returned
+    messages are what the next request would send."""
+    now = time.time()
+    for entry in manager.message_history.transient_entries:
+        entry["timestamp"] = now - 100
+    manager.message_history.history = [
+        {"role": "Marcus", "content": f"m{i:03d}" + "x" * 100, "timestamp": now - 50 + i,
+         "source": None, "location": None}
+        for i in range(30)
+    ]
+    manager.message_history.trim_high_bytes = 2_000
+    manager.message_history.trim_low_bytes = 1_000
+    with manager._prompt_lock:
+        return manager._resolved_messages_locked()
+
+
+@pytest.mark.unit
+def test_a_trim_that_evicts_the_delta_notes_leaves_one_note_restating_the_section(prompt_test_environment):
+    """The live failure: an hour-old system prompt said the car was driving, the notes that
+    said it had parked were trimmed out by a burst of browser output, and the model
+    reported the driver mid-commute. After such a trim the window must carry one note
+    diffing the baseline against the section's current state — not the chain of
+    intermediate notes, and not nothing."""
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+    manager.test_suite = False
+    for state in ("weather_rain", "weather_sun"):
+        sections["weather"] = DummySection(state)
+        manager.sections = sections
+        manager.on_section_updated("weather")
+    assert len(manager.message_history.transient_entries) == 2
+
+    messages = _trim_away_the_notes(manager)
+
+    notes = [e for e in manager.message_history.transient_entries if e.get("section") == "weather"]
+    assert len(notes) == 1
+    assert "-weather_content" in notes[0]["content"] and "+weather_sun" in notes[0]["content"]
+    assert "weather_rain" not in notes[0]["content"], "the intermediate state is history, not current"
+    rendered = "".join(m["content"] for m in messages[1:])
+    assert "+weather_sun" in rendered, "the fresh note must be inside the window the request sends"
+    assert manager.message_history.dropped_delta_sections == set()
+
+
+@pytest.mark.unit
+def test_a_section_back_at_its_baseline_gets_no_note_after_a_trim(prompt_test_environment):
+    """Baseline → A → baseline: the system prompt is right again, so restating would only
+    tell the LLM about a change that is not there."""
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+    manager.test_suite = False
+    for state in ("weather_rain", "weather_content"):
+        sections["weather"] = DummySection(state)
+        manager.sections = sections
+        manager.on_section_updated("weather")
+
+    messages = _trim_away_the_notes(manager)
+
+    assert not [e for e in manager.message_history.transient_entries if e.get("section") == "weather"]
+    assert "weather_rain" not in "".join(m["content"] for m in messages[1:])
 
 
 @pytest.mark.unit

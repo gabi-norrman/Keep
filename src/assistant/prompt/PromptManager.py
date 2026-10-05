@@ -494,8 +494,49 @@ class PromptManager:
             messages[0] = {"role": "system", "content": content}
 
         if not self.test_suite:
-            messages.extend(self.message_history.get_history_messages())
+            history = self.message_history.get_history_messages()
+            if self._restate_trimmed_sections_locked():
+                history = self.message_history.get_history_messages()
+            messages.extend(history)
         return messages
+
+    def _restate_trimmed_sections_locked(self) -> bool:
+        """Put one fresh note back for every section whose delta notes a trim just evicted.
+
+        The system prompt still carries the section's baseline, and the notes were the only
+        thing telling the LLM it moved on since — on 2026-10-05 a burst of browser output
+        evicted them and the model reported the car still driving, 40 minutes after it
+        parked. One note diffing the baseline against the last state the LLM was told
+        about, stamped now so it sits inside the kept window, restores the chain without
+        touching the cached system prompt. A carried section has no baseline in the prompt;
+        its notes have their own pointer fallback, so it is left alone here. Caller holds
+        _prompt_lock; returns whether a note was added."""
+        dropped = self.message_history.dropped_delta_sections
+        if not dropped:
+            return False
+        self.message_history.dropped_delta_sections = set()
+        from assistant.commands import Toolkits
+        added = False
+        for key in sorted(dropped):
+            if key in Toolkits.CARRIED_SECTIONS:
+                trace(f"Section '{key}' lost its notes to a trim — carried, left to its pointer")
+                continue
+            baseline = self._section_baselines.get(key)
+            current = self._section_current.get(key)
+            if baseline is None or current is None:
+                trace(f"Section '{key}' lost its notes to a trim but has no baseline — nothing to restate")
+                continue
+            self.message_history.clear_transient_entries_for_section(key)
+            diff = self._compute_section_delta(baseline, current)
+            if not diff:
+                trace(f"Section '{key}' lost its notes to a trim but is back at its baseline — nothing to restate")
+                continue
+            section = self.sections.get(key)
+            name = getattr(section, "section_name", "") or key
+            info(f"Section '{name}' lost its notes to a trim — one fresh note restates its current state")
+            self._emit_transient_section_update_locked(name, key, diff)
+            added = True
+        return added
 
     def _fire_prompt_callbacks(self, messages: list[dict]):
         """Invoke the registered pre-heat callbacks. Never called under _prompt_lock —

@@ -75,6 +75,10 @@ class MessageHistory:
         # are hidden from get_history_messages even if they'd fit. Only advances
         # when the window exceeds trim_high_bytes (see _hysteresis_trim).
         self._trim_cutoff = 0.0
+        # Section keys whose prompt-delta notes a trim evicted. The notes are the only
+        # thing telling the LLM the section moved on from the system prompt's baseline, so
+        # PromptManager drains this set before every send and puts one fresh note back.
+        self.dropped_delta_sections: set[str] = set()
         self._compressor = HistoryCompressor()
         self._load_history()
 
@@ -272,10 +276,12 @@ class MessageHistory:
              f"(high {self.trim_high_bytes // 1024}KB) — trimmed {len(dropped)} entries, "
              f"kept {len(kept)} ({kept_bytes / 1024:.1f}KB), new cutoff "
              f"{datetime.fromtimestamp(self._trim_cutoff).strftime('%H:%M:%S')}")
-        delta_notes = sum(1 for entry, _, _ in dropped if entry.get("source") == "prompt_delta")
-        if delta_notes:
-            info(f"MessageHistory: trim dropped {delta_notes} prompt-delta note(s) — those "
-                 f"section changes are invisible to the LLM until the next full prompt rebuild")
+        dropped_notes = [entry for entry, _, _ in dropped if entry.get("source") == "prompt_delta"]
+        if dropped_notes:
+            sections = {entry.get("section") for entry in dropped_notes} - {None}
+            self.dropped_delta_sections |= sections
+            info(f"MessageHistory: trim dropped {len(dropped_notes)} prompt-delta note(s) of "
+                 f"{sorted(sections)} — PromptManager restates those sections before the next send")
         return self._with_eviction_stubs(stubs, kept, dropped)
 
     # --- toolkit-eviction stubs (see SOURCE_TOOLKIT_EVICTED) ------------------------------
