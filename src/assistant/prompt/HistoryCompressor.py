@@ -46,13 +46,14 @@ class HistoryCompressor:
         return out
 
     def _report(self, collapsed: int, saved: int):
+        """Logs only when the outcome changes: the TUI renders the history many times a second."""
         report = (collapsed, saved)
+        if report == self._last_report:
+            return
         if not collapsed:
             trace("HistoryCompressor: nothing to compress (no superseded snapshot in the history)")
-        elif report != self._last_report:
-            info(f"HistoryCompressor: collapsed {collapsed} superseded snapshot(s), saving {saved / 1024:.1f}KB")
         else:
-            trace(f"HistoryCompressor: {collapsed} superseded snapshot(s) collapsed, {saved / 1024:.1f}KB saved (unchanged)")
+            info(f"HistoryCompressor: collapsed {collapsed} superseded snapshot(s), saving {saved / 1024:.1f}KB")
         self._last_report = report
 
     @staticmethod

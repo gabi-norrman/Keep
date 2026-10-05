@@ -86,6 +86,7 @@ class MessageHistory:
         # are hidden from get_history_messages even if they'd fit. Only advances
         # when the window exceeds trim_high_bytes (see _hysteresis_trim).
         self._trim_cutoff = 0.0
+        self._deferred_trim_at = 0    # window size whose trim was last deferred, so the deferral logs once
         # Section keys whose prompt-delta notes a trim evicted. The notes are the only
         # thing telling the LLM the section moved on from the system prompt's baseline, so
         # PromptManager drains this set before every send and puts one fresh note back.
@@ -285,10 +286,12 @@ class MessageHistory:
         newest_dropped_age = time.time() - kept[keep_from - 1][0]["timestamp"]
         fresh = newest_dropped_age < self.trim_fresh_seconds
         if fresh and total <= self.trim_ceiling_bytes:
-            trace(f"MessageHistory: window at {total / 1024:.1f}KB (high {self.trim_high_bytes // 1024}KB) but "
-                  f"the newest row a trim would drop is {newest_dropped_age / 60:.1f}m old — waiting for it to "
-                  f"age past {self.trim_fresh_seconds // 60}m or the window to hit the "
-                  f"{self.trim_ceiling_bytes // 1024}KB ceiling")
+            if total != self._deferred_trim_at:   # the TUI renders the window many times a second
+                self._deferred_trim_at = total
+                trace(f"MessageHistory: window at {total / 1024:.1f}KB (high {self.trim_high_bytes // 1024}KB) but "
+                      f"the newest row a trim would drop is {newest_dropped_age / 60:.1f}m old — waiting for it to "
+                      f"age past {self.trim_fresh_seconds // 60}m or the window to hit the "
+                      f"{self.trim_ceiling_bytes // 1024}KB ceiling")
             return self._with_eviction_stubs(stubs, kept, dropped=[])
         kept_bytes = sum(len(content.encode("utf-8")) for _, _, content in kept[keep_from:])
 
