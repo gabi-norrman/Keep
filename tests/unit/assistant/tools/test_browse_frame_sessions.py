@@ -654,3 +654,27 @@ class TestSnapshotSkipsHiddenFrames:
 
         assert 'Kortnummer' in result
         assert 'Betala köp' in result
+
+    def test_twins_told_apart_by_fragment(self):
+        # Stripe's express-pay bar renders (616x52) while its autofill twin stays 8px tall;
+        # they share host and path and differ only in the fragment — the twin must still go.
+        shown_twin = self.STRIPE + '#elementId=express'
+        hidden_twin = self.STRIPE + '#elementId=autofill'
+        targets = [FakeTargetInfo('bar', url=shown_twin), FakeTargetInfo('autofill', url=hidden_twin),
+                   FakeTargetInfo('kustom', url=self.KUSTOM)]
+        per_target = {
+            'kustom': ({'shown': [{'src': shown_twin, 'w': 616, 'h': 52}],
+                        'hidden': [{'src': hidden_twin, 'w': 300, 'h': 8}]},
+                       {'records': [{'tag': 'button', 'label': 'Betala köp', 'source': 'kustom'}]}),
+            'bar': ({'shown': [], 'hidden': []},
+                    {'records': [{'tag': 'button', 'label': 'Köpa med GPay', 'source': 'bar'}]}),
+            'autofill': ({'shown': [], 'hidden': []},
+                         {'records': [{'tag': 'input', 'type': 'text', 'label': 'Kortnummer',
+                                       'source': 'autofill'}]}),
+        }
+        result = self._snapshot(self._wa(), {'crossOriginFrames': [self.KUSTOM], 'hiddenFrames': []},
+                                targets, per_target)
+
+        assert 'Kortnummer' not in result
+        assert 'Köpa med GPay' in result
+        assert 'Betala köp' in result

@@ -2186,19 +2186,35 @@ class WebAccess(Integration):
                   f"{len(blank)} without a URL yet")
             await asyncio.sleep(self._OOPIF_SETTLE_POLL)
 
-    async def _async_hidden_frame_labels(self, main_result: dict, frame_targets: list,
-                                         deadline: float) -> set:
-        """Labels of the iframe targets whose hosting <iframe> is collapsed or hidden
-        in the document that embeds it — the main page's own, plus what each iframe
-        target reports about its children (one cheap eval per target, within the
-        snapshot's frame budget). A label that some document shows stays: Stripe
-        mounts several frames under one path and the visible one must survive.
+    async def _async_hidden_frames(self, main_result: dict, frame_targets: list,
+                                   deadline: float) -> tuple[set, set]:
+        """The iframe targets whose hosting <iframe> is collapsed or hidden in the
+        document that embeds it — the main page's own, plus what each iframe target
+        reports about its children (one cheap eval per target, within the snapshot's
+        frame budget). Returns (exact URLs, labels), each minus whatever some document
+        shows. The exact URL tells Stripe's frames apart: it mounts several under one
+        path, differing only in the fragment, and the express-pay bar that renders
+        must not shelter the 8px autofill frame that lists card fields. The label
+        fallback covers a src that does not match its target's URL (a redirect).
         """
-        def labels(srcs) -> set:
-            return {self._frame_label(self._normalize_url(s)) for s in (srcs or []) if s}
+        def src_of(entry) -> str:
+            return entry.get('src', '') if isinstance(entry, dict) else (entry or '')
 
-        shown = labels(main_result.get('crossOriginFrames'))
-        hidden = labels(main_result.get('hiddenFrames'))
+        def urls(entries) -> set:
+            return {self._normalize_url(src_of(e)) for e in (entries or []) if src_of(e)}
+
+        def labels(entries) -> set:
+            return {self._frame_label(u) for u in urls(entries)}
+
+        def sized(entries) -> list[str]:
+            return [f"{self._frame_label(src_of(e))} {e.get('w')}x{e.get('h')}"
+                    + (f" {e.get('display')}" if e.get('display') not in (None, 'block') else '')
+                    + (f" {e.get('visibility')}" if e.get('visibility') not in (None, 'visible') else '')
+                    if isinstance(e, dict) else self._frame_label(src_of(e))
+                    for e in (entries or []) if src_of(e)]
+
+        shown_urls = urls(main_result.get('crossOriginFrames'))
+        hidden_urls = urls(main_result.get('hiddenFrames'))
         if len(frame_targets) > 1:
             loop = asyncio.get_running_loop()
             for ti in frame_targets:
@@ -2213,12 +2229,17 @@ class WebAccess(Integration):
                           f"{type(e).__name__}: {e}")
                     continue
                 if isinstance(children, dict):
-                    shown |= labels(children.get('shown'))
-                    hidden |= labels(children.get('hidden'))
-        result = hidden - shown
-        if result:
-            trace(f"Snapshot: hidden iframe label(s): {sorted(result)}")
-        return result
+                    if children.get('shown') or children.get('hidden'):
+                        trace(f"Snapshot: {self._frame_label(ti.url)} hosts — shown: "
+                              f"{sized(children.get('shown'))}; hidden: {sized(children.get('hidden'))}")
+                    shown_urls |= urls(children.get('shown'))
+                    hidden_urls |= urls(children.get('hidden'))
+        hidden_exact = hidden_urls - shown_urls
+        hidden_labels = {self._frame_label(u) for u in hidden_urls} - {self._frame_label(u) for u in shown_urls}
+        if hidden_exact or hidden_labels:
+            trace(f"Snapshot: hidden iframe(s): {sorted(self._frame_label(u) for u in hidden_exact)}"
+                  + (f"; by label only: {sorted(hidden_labels)}" if hidden_labels - {self._frame_label(u) for u in hidden_exact} else ''))
+        return hidden_exact, hidden_labels
 
     @staticmethod
     def _frame_label(url: str) -> str:
@@ -3338,7 +3359,9 @@ class WebAccess(Integration):
         const rect = f.getBoundingClientRect();
         const shown = style.display !== 'none' && style.visibility !== 'hidden'
             && rect.width > 10 && rect.height > 10;
-        (shown ? out.shown : out.hidden).push(src);
+        (shown ? out.shown : out.hidden).push(
+            { src, w: Math.round(rect.width), h: Math.round(rect.height), display: style.display,
+              visibility: style.visibility });
     }
     return out;
 })()"""
@@ -3528,11 +3551,11 @@ class WebAccess(Integration):
         attached_labels = set()
         frame_targets = await self._async_settled_frame_targets(cross_origin_srcs)
         frame_deadline = asyncio.get_running_loop().time() + self._SNAPSHOT_FRAME_BUDGET
-        hidden_labels = await self._async_hidden_frame_labels(result, frame_targets, frame_deadline)
+        hidden_urls, hidden_labels = await self._async_hidden_frames(result, frame_targets, frame_deadline)
         skipped_hidden: list[str] = []
         for n, ti in enumerate(frame_targets):
             label = self._frame_label(ti.url)
-            if label in hidden_labels:
+            if self._normalize_url(ti.url) in hidden_urls or label in hidden_labels:
                 skipped_hidden.append(label)
                 continue
             if asyncio.get_running_loop().time() > frame_deadline:
