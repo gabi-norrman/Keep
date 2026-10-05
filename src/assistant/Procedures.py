@@ -18,6 +18,7 @@ from pathlib import Path
 
 from common.logging import info, trace
 from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
+from common.vault.Redactor import redact_for_storage
 
 PROCEDURES_DIR = MEMORY_DIR / "procedures"
 LOG_DIR = MEMORY_LOG_DIR / "procedures"
@@ -84,7 +85,8 @@ def save(name: str, when_text: str, text: str, directory: Path = None, log_dir: 
         return "save_procedure failed: the name must contain letters or digits"
     if not text.strip():
         return "save_procedure failed: the procedure text is empty"
-    content = f"# {name.strip()}\n{WHEN_PREFIX} {' '.join(when_text.split())}\n\n{text.strip()}\n"
+    content = redact_for_storage(
+        f"# {name.strip()}\n{WHEN_PREFIX} {' '.join(when_text.split())}\n\n{text.strip()}\n")
     if len(content) > MAX_FILE_CHARS:
         return (f"save_procedure failed: {len(content)} chars, the limit is {MAX_FILE_CHARS} — "
                 "split it into two procedures")
@@ -111,6 +113,7 @@ def note(name: str, text: str, directory: Path = None) -> str:
     directory = directory or PROCEDURES_DIR
     if not text.strip():
         return "procedure_note failed: the note is empty"
+    text = redact_for_storage(text)
     with lock:
         current = read(name, directory)
         if current is None:

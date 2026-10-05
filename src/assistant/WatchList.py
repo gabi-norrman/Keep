@@ -31,6 +31,7 @@ from pathlib import Path
 
 from common.logging import info, trace
 from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
+from common.vault.Redactor import redact_for_storage
 
 WATCHLIST_DIR = MEMORY_DIR / "watchlist"
 LOG_DIR = MEMORY_LOG_DIR / "watchlist"
@@ -138,6 +139,7 @@ def save(name: str, note: str, due: str | None = None, directory: Path = None, l
         return None
     today = date.today().isoformat()
     due, every = _given(due), _given(every)
+    note = redact_for_storage(note)
     with lock:
         item = get(name, directory)
         if item is None:

@@ -268,3 +268,42 @@ class TestMask:
         vault.add("plate", "The Model Y", "KEP47L")
         assert redactor.mask("KEP 47L") == "KEP •••"
         assert redactor.masked_spans("KEP •••") == [(0, 7)]
+
+
+@pytest.fixture
+def stocked_singleton(stocked, monkeypatch):
+    """The stocked vault as the process-wide instance `redact_for_storage` reaches for."""
+    monkeypatch.setattr(Vault, "_instance", stocked)
+    monkeypatch.setattr(redactor_module, "_storage_redactor", None)
+    return stocked
+
+
+@pytest.mark.unit
+class TestRedactForStorage:
+    def test_values_become_placeholders(self, stocked_singleton):
+        out = redactor_module.redact_for_storage("pay with 4111 1111 1111 1111, mail m@mlab.test")
+        assert out == f"pay with {placeholder('marcus-visa')}, mail {placeholder('work-mail')}"
+
+    def test_a_placeholder_already_there_is_left_alone(self, stocked_singleton):
+        text = f"pay with {placeholder('marcus-visa')}"
+        assert redactor_module.redact_for_storage(text) == text
+
+    def test_an_empty_vault_is_an_identity(self, vault, monkeypatch):
+        monkeypatch.setattr(Vault, "_instance", vault)
+        monkeypatch.setattr(redactor_module, "_storage_redactor", None)
+        text = "pay with 4111 1111 1111 1111"
+        assert redactor_module.redact_for_storage(text) is text
+
+    def test_a_vault_that_cannot_open_does_not_block_the_write(self, monkeypatch):
+        monkeypatch.setattr(Vault, "get_instance", classmethod(lambda cls: (_ for _ in ()).throw(RuntimeError("locked"))))
+        monkeypatch.setattr(redactor_module, "_storage_redactor", None)
+        text = "pay with 4111 1111 1111 1111"
+        assert redactor_module.redact_for_storage(text) is text
+
+    def test_a_replaced_vault_instance_is_picked_up(self, stocked_singleton, tmp_path, monkeypatch):
+        assert "marcus-visa" in redactor_module.redact_for_storage("4111 1111 1111 1111")
+        fresh = Vault(tmp_path / "other.bin", KEY)
+        fresh.add("card", "Marcus's Amex", "3782 822463 10005", id="marcus-amex")
+        monkeypatch.setattr(Vault, "_instance", fresh)
+        out = redactor_module.redact_for_storage("4111 1111 1111 1111 and 3782 822463 10005")
+        assert "marcus-visa" not in out and placeholder("marcus-amex") in out

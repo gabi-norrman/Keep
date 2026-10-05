@@ -31,6 +31,34 @@ def normalize_id(raw: str) -> str:
     return re.sub(r"[\s_]+", "-", raw.strip().lower())
 
 
+_storage_redactor: "Redactor | None" = None
+_storage_lock = threading.Lock()
+
+
+def redact_for_storage(text: str) -> str:
+    """`text` with every vault value swapped back for its placeholder — for what the
+    assistant writes to disk out of an LLM reply (`remember`, the watch list, a
+    procedure, the curator's rewritten bank). `VaultLLM` restores placeholders across
+    the whole reply so a browse_act can type the real card, which means a
+    `save_procedure` in the same reply arrives with the real card in it too; the LLM
+    only ever sees the placeholder (the next load is redacted again), the file is
+    where the value would leak. Identity when the vault is off or empty."""
+    global _storage_redactor
+    try:
+        vault = Vault.get_instance()
+        with _storage_lock:
+            if _storage_redactor is None or _storage_redactor.vault is not vault:
+                _storage_redactor = Redactor(vault)
+            redactor = _storage_redactor
+        redacted, count = redactor.redact(text)
+    except Exception as e:  # a vault that cannot be opened must not block a memory write
+        info(f"Vault: storage redaction skipped ({type(e).__name__}: {e})")
+        return text
+    if count:
+        info(f"Vault: {count} value(s) swapped for placeholders before the write to memory")
+    return redacted
+
+
 @dataclass(frozen=True)
 class _Built:
     """What one vault version compiles to. Published whole and never mutated."""

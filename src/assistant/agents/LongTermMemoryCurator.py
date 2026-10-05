@@ -15,6 +15,7 @@ from ..integration.integrations.CalDAVIntegration import CalDAVIntegration, EVEN
 from common.logging import info, error, trace
 from ..llm.AbstractLLM import LLMRefusalError
 from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
+from common.vault.Redactor import redact_for_storage
 
 HISTORY_SOURCE = "memory_curation"   # the `source` of the system row a finished curation leaves
 # A span longer than this is curated in chunks of this many days, one after another, each
@@ -370,6 +371,9 @@ class LongTermMemoryCurator:
         if unsaved:
             new_memory = "\n\n".join([new_memory.rstrip("\n")] + unsaved) + "\n"
             metadata['new_memory_size'] = len(new_memory)
+        # Redacted once here: the bank's write redacts on its own, the debug copy must not
+        # keep what the bank was not allowed to.
+        new_memory = redact_for_storage(new_memory)
         curator.save_memory(new_memory, metadata)
         curator.save_debug_log(new_memory, metadata)
         info(f"Rem: cycle complete — dreamt through {metadata['interaction_count']} interactions, "

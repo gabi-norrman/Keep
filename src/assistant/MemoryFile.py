@@ -23,6 +23,7 @@ import threading
 
 from common.logging import info
 from common.Paths import RES_DIR
+from common.vault.Redactor import redact_for_storage
 
 MEMORY_FILE = os.path.join("memory", "bank.md")
 # Where the bank lived before the memory got a directory of its own; `seed` moves it over.
@@ -74,6 +75,7 @@ def read(path: str = MEMORY_FILE) -> str:
 
 
 def append(text: str, path: str = MEMORY_FILE):
+    text = redact_for_storage(text)
     with lock:
         _ensure_parent(path)
         with open(path, "a") as f:
@@ -83,6 +85,7 @@ def append(text: str, path: str = MEMORY_FILE):
 
 def write(text: str, path: str = MEMORY_FILE):
     """Replace the whole file in one step (write a sibling temp file, then rename over)."""
+    text = redact_for_storage(text)
     with lock:
         _ensure_parent(path)
         tmp = f"{path}.tmp"
