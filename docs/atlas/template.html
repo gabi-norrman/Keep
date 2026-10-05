@@ -9,10 +9,11 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
+/* dark is the TUI's palette (src/interfaces/console/Theme.py); light keeps its hues, deepened for a pale ground */
 :root{
   --ground:#EDF0F5; --surface:#FFFFFF; --surface-2:#F5F7FA; --ink:#141A2B; --muted:#5A6378; --faint:#8A93A8; --line:#D6DBE5;
-  --amber:#B36C05; --teal:#0F7F79; --violet:#5B4BD6; --rose:#BC3F5B; --slate:#5F6E86;
-  --accent:var(--amber); --halo:rgba(237,240,245,.92);
+  --yellow:#A06400; --teal:#0B7D72; --purple:#6A3FD4; --pink:#C2267F; --blue:#2F58C8;
+  --accent:var(--yellow); --halo:rgba(237,240,245,.92);
   --display:"Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --sans:"IBM Plex Sans", "Helvetica Neue", Arial, system-ui, sans-serif;
   --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
@@ -21,14 +22,14 @@
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
     color-scheme:dark;
-    --ground:#0B101B; --surface:#121929; --surface-2:#0F1523; --ink:#E6E9F2; --muted:#8E97AE; --faint:#5E6780; --line:#222B3F;
-    --amber:#F3B541; --teal:#4CC6BD; --violet:#A395FF; --rose:#EE869C; --slate:#98A6BD; --halo:rgba(11,16,27,.9);
+    --ground:#000000; --surface:#0E1018; --surface-2:#181B28; --ink:#E1E6F0; --muted:#8C93A6; --faint:#5C6276; --line:#262A3C;
+    --yellow:#FFCD50; --teal:#46D7C8; --purple:#AF82FF; --pink:#FF69B4; --blue:#6E96FF; --halo:rgba(0,0,0,.9);
   }
 }
 :root[data-theme="dark"]{
   color-scheme:dark;
-  --ground:#0B101B; --surface:#121929; --surface-2:#0F1523; --ink:#E6E9F2; --muted:#8E97AE; --faint:#5E6780; --line:#222B3F;
-  --amber:#F3B541; --teal:#4CC6BD; --violet:#A395FF; --rose:#EE869C; --slate:#98A6BD; --halo:rgba(11,16,27,.9);
+  --ground:#000000; --surface:#0E1018; --surface-2:#181B28; --ink:#E1E6F0; --muted:#8C93A6; --faint:#5C6276; --line:#262A3C;
+  --yellow:#FFCD50; --teal:#46D7C8; --purple:#AF82FF; --pink:#FF69B4; --blue:#6E96FF; --halo:rgba(0,0,0,.9);
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--ground);color:var(--ink);font:15px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
@@ -204,7 +205,7 @@ code.i{font:.9em var(--mono);padding:1px 4px;border-radius:4px;background:var(--
 const DATA = JSON.parse(document.getElementById('atlas-data').textContent);
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const S = 1000;
-const HUE = {'launcher':'--slate','src/interfaces':'--teal','src/assistant':'--amber','src/common':'--violet','res':'--rose'};
+const HUE = {'launcher':'--blue','src/interfaces':'--teal','src/assistant':'--yellow','src/common':'--purple','res':'--pink'};
 const KIND = {system:'System',package:'Package',module:'Module',class:'Class',script:'Script',resource:'Resource'};
 
 const root = d3.hierarchy(DATA)
@@ -532,7 +533,7 @@ function drawWave(t) {
   const dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
   if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
   cx.setTransform(dpr, 0, 0, dpr, 0, 0); cx.clearRect(0, 0, w, h);
-  if (!cols || t % 2000 < 20) cols = [colorOf('--amber'), colorOf('--teal'), colorOf('--violet')];
+  if (!cols || t % 2000 < 20) cols = [colorOf('--yellow'), colorOf('--teal'), colorOf('--purple')];
   energy += (target - energy) * 0.025;
   const mid = h * 0.5, x0 = w * 0.4, x1 = w * 0.7;
   [[1, 0.9, 0, .55], [1.7, 0.55, 1.3, .35], [2.6, 0.35, 2.4, .25]].forEach(([f, a, ph, al], j) => {
