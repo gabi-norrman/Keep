@@ -6,6 +6,7 @@ from typing import Callable
 from common.logging import info, trace
 from common.FloxyDatabase import FloxyDatabase
 from ..tools.MessageFormatter import MessageFormatter
+from .HistoryCompressor import HistoryCompressor
 
 # How a model without thinking of its own reasons before it answers (the tag is stripped before
 # TTS). PromptManager.get_messages merges it into the trailing user turn; a model that handles
@@ -30,7 +31,8 @@ class MessageHistory:
     # ran it, so the next turn still sees what list_integrations / config_help / a search
     # returned instead of only the assistant's reaction to it. Stored capped at this size
     # (a web page read or a log dump is far bigger) and rendered whole — MAX_RENDER_CHARS
-    # would cut a list_integrations table in half.
+    # would cut a list_integrations table in half. Once a later row supersedes it (a newer
+    # browse snapshot) HistoryCompressor collapses it at render time, before the trim.
     ROLE_COMMAND = "command"
     COMMAND_RESULT_CHARS = 6000
     # The clock note a byte-prefix request put in front of its query (PromptManager.get_messages),
@@ -73,6 +75,7 @@ class MessageHistory:
         # are hidden from get_history_messages even if they'd fit. Only advances
         # when the window exceeds trim_high_bytes (see _hysteresis_trim).
         self._trim_cutoff = 0.0
+        self._compressor = HistoryCompressor()
         self._load_history()
 
     def subscribe(self, callback: Callable[[], None]):
@@ -208,20 +211,17 @@ class MessageHistory:
         any leading non-user turns are dropped so the list always starts with a
         user message.
 
-        The window is trimmed with hysteresis (see _hysteresis_trim) so its head
-        stays byte-stable across turns and the message-level KV cache keeps
-        hitting. Passing an explicit max_bytes renders a one-shot view trimmed to
-        that budget instead, without touching the sticky window.
+        Superseded rows are compressed first (HistoryCompressor), then the window is
+        trimmed with hysteresis (see _hysteresis_trim) so its head stays byte-stable
+        across turns and the message-level KV cache keeps hitting. Passing an explicit
+        max_bytes renders a one-shot view trimmed to that budget instead, without
+        touching the sticky window.
         """
         entries = self.get_merged_entries()
         if max_bytes is not None:
             return self.render_messages(entries, max_bytes, self.max_render_chars)
 
-        rendered: list[tuple[dict, str, str]] = []
-        for entry in entries:
-            turn = self._render_entry(entry, self.max_render_chars)
-            if turn is not None:
-                rendered.append((entry, turn[0], turn[1]))
+        rendered = self._compressor.compress(self._render_entries(entries, self.max_render_chars))
         kept = self._hysteresis_trim(rendered)
         return self._finalize_messages([(role, content) for _, role, content in kept])
 
@@ -376,6 +376,16 @@ class MessageHistory:
         return keep_from
 
     @staticmethod
+    def _render_entries(entries: list[dict], max_render_chars: int) -> list[tuple[dict, str, str]]:
+        """Every entry rendered to (entry, role, content), blank turns left out."""
+        rendered = []
+        for entry in entries:
+            turn = MessageHistory._render_entry(entry, max_render_chars)
+            if turn is not None:
+                rendered.append((entry, turn[0], turn[1]))
+        return rendered
+
+    @staticmethod
     def _render_entry(entry: dict, max_render_chars: int) -> tuple[str, str] | None:
         """Render one history entry into a (role, content) turn; None for blank turns."""
         role = entry["role"]
@@ -445,16 +455,14 @@ class MessageHistory:
         Used by the prompt test suite's fixed fixture (load_fixture_messages) and by
         explicit-budget callers. The live LLM path goes through get_history_messages,
         which trims with hysteresis instead — but both render each turn through
-        _render_entry, so equivalent entries produce byte-identical turns.
+        _render_entry and HistoryCompressor, so equivalent entries produce
+        byte-identical turns.
         """
         if not entries:
             return []
 
-        rendered: list[tuple[str, str]] = []
-        for entry in entries:
-            turn = MessageHistory._render_entry(entry, max_render_chars)
-            if turn is not None:
-                rendered.append(turn)
+        rendered = [(role, content) for _, role, content in
+                    HistoryCompressor().compress(MessageHistory._render_entries(entries, max_render_chars))]
 
         # Keep newest turns that fit within the byte budget (oldest dropped first).
         kept_reversed: list[tuple[str, str]] = []

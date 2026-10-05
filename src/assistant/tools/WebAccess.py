@@ -16,7 +16,7 @@ import requests
 from typing import Optional, ClassVar, List
 from urllib.parse import urljoin, urlparse, parse_qs, parse_qsl
 
-from . import PdfExtractor
+from . import PdfExtractor, SnapshotFormat
 
 import cloudscraper
 from curl_cffi import requests as cffi_requests
@@ -3351,7 +3351,7 @@ class WebAccess(Integration):
             out += 'Alerts: ' + ' | '.join(f'"{a}"' for a in alerts) + '\n'
         text = context.get('text')
         if text:
-            out += f"Text: {text}\n"
+            out += f"{SnapshotFormat.TEXT_PREFIX}{text}\n"
         return out
 
     def _render_snapshot_lines(self, records: list) -> list[str]:
@@ -3378,8 +3378,8 @@ class WebAccess(Integration):
 
         lines = main_lines
         if groups:
-            lines = lines + (['', '--- header/nav/footer (collapsed) ---'] if lines
-                             else ['--- header/nav/footer (collapsed) ---'])
+            lines = lines + ([SnapshotFormat.GROUP_SEPARATOR] if not lines
+                             else ['', SnapshotFormat.GROUP_SEPARATOR])
             ordered = [r for r in self._SNAPSHOT_REGION_ORDER if r in groups]
             ordered += [r for r in groups if r not in self._SNAPSHOT_REGION_ORDER]
             for region in ordered:
@@ -3451,7 +3451,7 @@ class WebAccess(Integration):
         if not result or not isinstance(result, dict):
             self._browse_snapshot_frame_ids = []
             self._browse_snapshot_labels = []
-            return "(no interactive elements found on this page)"
+            return SnapshotFormat.NO_ELEMENTS
 
         records = result.get('records', []) or []
         cross_origin_srcs = result.get('crossOriginFrames', []) or []
@@ -3529,14 +3529,22 @@ class WebAccess(Integration):
             warning = (f"WARNING: the browser ended up on {url} — NOT the requested "
                        f"{requested_url} (silent redirect?). The snapshot below shows the actual page.\n")
 
-        header = (self._consume_target_notes() + warning
-                  + f"URL: {url}\nTitle: {title}\n" + self._format_page_context(context)
-                  + "\nInteractive elements (indices reset every snapshot):\n")
-        body = '\n'.join(lines) if lines else "(no interactive elements found on this page)"
+        return self._assemble_snapshot(self._consume_target_notes() + warning, url, title,
+                                       self._format_page_context(context), lines, hidden_frames)
+
+    @staticmethod
+    def _assemble_snapshot(notes: str, url: str, title: str, page_context: str, lines: list[str],
+                           hidden_frames: list[str]) -> str:
+        """The snapshot text in the shape SnapshotFormat documents: `notes` (target notes and
+        the redirect warning, each already newline-terminated) in front of the header, the
+        element list below ELEMENTS_MARKER."""
+        header = (notes + f"{SnapshotFormat.URL_PREFIX}{url}\nTitle: {title}\n" + page_context
+                  + f"\n{SnapshotFormat.ELEMENTS_MARKER}\n")
+        body = '\n'.join(lines) if lines else SnapshotFormat.NO_ELEMENTS
         if hidden_frames:
             frame_lines = '\n'.join(f'  - {s}' for s in hidden_frames)
             body += (
-                "\n\nCross-origin iframes on this page (their contents are NOT in the "
+                f"\n\n{SnapshotFormat.IFRAMES_NOTE} (their contents are NOT in the "
                 "snapshot above — if the frame was just inserted, browse_snapshot() re-reads the page "
                 "once it has loaded; otherwise call browse_open() on the iframe URL directly):\n"
                 + frame_lines
