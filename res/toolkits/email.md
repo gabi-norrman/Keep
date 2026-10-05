@@ -33,7 +33,8 @@ You can send a plain-text email from the user's iCloud address using:
 `send_email(to: str, subject: str, body: str)`
 
 `to` must be a raw email address (e.g. `someone@example.com`). Wrap each argument in quotes so commas
-inside the quoted body are preserved as part of the body.
+inside the quoted body are preserved as part of the body. A copy of every sent email is filed in the
+account's Sent folder, so the user finds it in their mail client.
 
 ### Stop-and-wait
 `latest_email()`, `search_email()`, `read_email()`, `move_email()`, `list_folders()` return data: emit them and stop generating; the result arrives in the next round.

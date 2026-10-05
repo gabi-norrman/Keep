@@ -752,37 +752,37 @@ class TestMarkdownToHtml:
 
 @pytest.mark.unit
 class TestSendEmail:
-    @patch('assistant.agents.CodeQualityMaintainer.smtplib.SMTP')
+    """The report goes out through the Gmail integration, so it gets the same SMTP handling and
+    Sent-folder treatment as every other mail the server sends."""
+
     @patch('assistant.agents.CodeQualityMaintainer.ConfigManager')
-    def test_sends_via_the_configured_smtp_server(self, mock_cm_class, mock_smtp_class, maintainer):
-        configured = {"email.address": "me@example.com", "email.password": "pw",
-                      "email.smtp_host": "smtp.example.com", "email.smtp_port": "2525"}
-        mock_cm_class.return_value.get.side_effect = lambda k, default=None: configured.get(k, default)
+    def test_report_is_handed_to_the_gmail_integration(self, mock_cm_class, maintainer):
+        mock_cm_class.return_value.get.side_effect = lambda k, default=None: {
+            "email.address": "me@example.com", "email.password": "pw"}.get(k, default)
+        with patch('assistant.integration.integrations.email.GmailIntegration.GmailIntegration.get_instance') as get_instance:
+            get_instance.return_value.send_message.return_value = ""
+            CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
+            msg, recipients = get_instance.return_value.send_message.call_args[0]
+        assert recipients == ["me@example.com"]
+        assert msg["To"] == "me@example.com"
+        assert msg["Subject"] == "Subject"
+        assert "<p>Body</p>" in msg.get_payload()[0].get_payload()
 
-        CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
-
-        mock_smtp_class.assert_called_once_with("smtp.example.com", 2525)
-
-    @patch('assistant.agents.CodeQualityMaintainer.smtplib.SMTP')
     @patch('assistant.agents.CodeQualityMaintainer.ConfigManager')
-    def test_sends_via_gmail_smtp(self, mock_cm_class, mock_smtp_class, maintainer):
-        mock_cfg = mock_cm_class.return_value
-        mock_cfg.get.side_effect = lambda k, default=None: {"email.address": "me@gmail.com", "email.password": "pw123"}.get(k, default)
-        mock_server = MagicMock()
-        mock_smtp_class.return_value.__enter__ = Mock(return_value=mock_server)
-        mock_smtp_class.return_value.__exit__ = Mock(return_value=False)
+    def test_a_refused_send_raises(self, mock_cm_class, maintainer):
+        mock_cm_class.return_value.get.side_effect = lambda k, default=None: {
+            "email.address": "me@example.com", "email.password": "pw"}.get(k, default)
+        with patch('assistant.integration.integrations.email.GmailIntegration.GmailIntegration.get_instance') as get_instance:
+            get_instance.return_value.send_message.return_value = "SMTP error: boom"
+            with pytest.raises(RuntimeError, match="boom"):
+                CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
 
-        CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
-
-        mock_smtp_class.assert_called_once_with("smtp.gmail.com", 587)
-        mock_server.starttls.assert_called_once()
-        mock_server.login.assert_called_once_with("me@gmail.com", "pw123")
-        mock_server.sendmail.assert_called_once()
-        send_args = mock_server.sendmail.call_args[0]
-        assert send_args[0] == "me@gmail.com"
-        assert send_args[1] == "me@gmail.com"
-        assert "Subject" in send_args[2]
-        assert "<p>Body</p>" in send_args[2]
+    @patch('assistant.agents.CodeQualityMaintainer.ConfigManager')
+    def test_without_credentials_nothing_is_sent(self, mock_cm_class, maintainer):
+        mock_cm_class.return_value.get.side_effect = lambda k, default=None: None
+        with patch('assistant.integration.integrations.email.GmailIntegration.GmailIntegration.get_instance') as get_instance:
+            CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
+            get_instance.assert_not_called()
 
 @pytest.mark.unit
 class TestNightlySkipReason:

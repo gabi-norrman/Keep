@@ -1,18 +1,28 @@
+import re
+import smtplib
 import threading
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, date
+from email.message import Message
+from email.mime.text import MIMEText
+from email.utils import formatdate, make_msgid
 from typing import Dict, List, Optional
 
-from imap_tools import MailBox, AND
+from imap_tools import MailBox, AND, MailMessageFlags
 from imap_tools.errors import MailboxFolderSelectError
 
 from common.logging import trace, info, error
+from common.RateLimiter import RateLimiter
 from ....tools import PdfExtractor
 from ....tools.MediaAnalyzer import media_analyzer, media_kind, KIND_VIDEO
 
 
 MIN_MEDIA_SIZE = 10 * 1024
+SMTP_TIMEOUT = 20
+SEND_RATE_LIMIT_WINDOW = 60.0
+SEND_RATE_LIMIT_MAX = 5
+EMAIL_ADDRESS_PATTERN = re.compile(r"^[^@\s,]+@[^@\s,]+\.[^@\s,]+$")
 
 
 def _is_junk_media(att) -> bool:
@@ -34,7 +44,12 @@ def _analyze_media(payload: bytes, content_type: str, filename: str) -> str:
 
 
 class EmailProvider(ABC):
-    """Base class that lists, searches, reads and moves IMAP mail for one account.
+    """Base class that lists, searches, reads, moves and sends mail for one account.
+
+    Sending goes over SMTP and then files a copy in the account's Sent folder over IMAP
+    (`SENT_FOLDER`), so what the assistant sends shows up in the user's mail client like
+    anything they sent themselves. A provider whose server files SMTP sends on its own
+    leaves `SENT_FOLDER` as None.
 
     Emails are exposed to the LLM through short ids (prefix + counter) that are cached
     per listing; IMAP UIDs are folder-scoped, so the cache remembers its source folder.
@@ -64,6 +79,7 @@ class EmailProvider(ABC):
         # parallel); rebuilding the id-cache is a multi-step write, so it happens
         # under this lock and the readers take it too. The last listing to finish wins.
         self._cache_lock = threading.Lock()
+        self._rate_limiter = RateLimiter(SEND_RATE_LIMIT_MAX, SEND_RATE_LIMIT_WINDOW)
 
     @property
     @abstractmethod
@@ -75,9 +91,101 @@ class EmailProvider(ABC):
 
     IMAP_HOST: str
     IMAP_FOLDER: str
+    SMTP_HOST: str
+    SMTP_PORT: int = 587
+    # Where a sent copy is filed; None when the server does that itself.
+    SENT_FOLDER: Optional[str] = None
+    AUTH_HELP = "check the account password"
 
     @abstractmethod
     def _get_credentials(self) -> tuple[str, str]: ...
+
+    def send(self, to: str, subject: str, body: str) -> str:
+        """Sends a plain-text email. Returns "" on success or a short error string on
+        failure (the convention the LLM relies on to detect and surface send failures)."""
+        recipient = (to or "").strip()
+        subject = (subject or "").strip()
+        body = (body or "").strip()
+        if not recipient:
+            info("Email send skipped: empty recipient")
+            return "empty recipient"
+        if not subject:
+            info("Email send skipped: empty subject")
+            return "empty subject"
+        if not body:
+            info("Email send skipped: empty body")
+            return "empty body"
+        if not EMAIL_ADDRESS_PATTERN.match(recipient):
+            info(f"Email send blocked: invalid recipient '{recipient}'")
+            return f"invalid recipient: {recipient}"
+
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["To"] = recipient
+        return self.send_message(msg, [recipient])
+
+    def send_message(self, msg: Message, recipients: List[str]) -> str:
+        """Sends a prepared message over SMTP, then files a copy in the Sent folder.
+        Fills in From, Date and Message-ID when the caller left them out. Returns "" on
+        success or a short error string; a failed Sent copy is logged but is not a failure,
+        the mail is already out."""
+        rate_err = self._rate_limiter.check()
+        if rate_err:
+            info(f"Email send blocked: {rate_err}")
+            return rate_err
+
+        try:
+            address, password = self._get_credentials()
+        except KeyError as e:
+            error(f"Email send: {self.name} credentials not configured: {e}")
+            return f"{self.name} credentials not configured"
+        if not address or not password:
+            error(f"Email send: {self.name} credentials not configured")
+            return f"{self.name} credentials not configured"
+
+        if "From" not in msg:
+            msg["From"] = address
+        if "Date" not in msg:
+            msg["Date"] = formatdate(localtime=True)
+        if "Message-ID" not in msg:
+            msg["Message-ID"] = make_msgid(domain=address.rsplit("@", 1)[-1])
+
+        subject = msg.get("Subject", "")
+        try:
+            with smtplib.SMTP(self.SMTP_HOST, self.SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
+                server.starttls()
+                server.login(address, password)
+                server.sendmail(address, list(recipients), msg.as_string())
+        except smtplib.SMTPAuthenticationError as e:
+            error(f"Email send auth failed: {e}")
+            return f"{self.name} SMTP auth failed — {self.AUTH_HELP}"
+        except smtplib.SMTPRecipientsRefused as e:
+            error(f"Email send: recipient refused: {e}")
+            return f"recipient refused: {', '.join(recipients)}"
+        except smtplib.SMTPException as e:
+            error(f"Email send SMTP error: {e}")
+            return f"SMTP error: {e}"
+        except (TimeoutError, OSError) as e:
+            error(f"Email send network error: {e}")
+            return f"network error sending email: {e}"
+
+        self._rate_limiter.record()
+        info(f"Email sent from {self.name} to {', '.join(recipients)}: subject={subject!r}")
+        self._save_to_sent(msg, address, password)
+        return ""
+
+    def _save_to_sent(self, msg: Message, address: str, password: str) -> bool:
+        if not self.SENT_FOLDER:
+            trace(f"{self.name}: the server files sent mail itself — no Sent copy to save")
+            return True
+        try:
+            with MailBox(self.IMAP_HOST, timeout=self.IMAP_TIMEOUT).login(address, password) as mailbox:
+                mailbox.append(msg.as_bytes(), self.SENT_FOLDER, flag_set=[MailMessageFlags.SEEN])
+            info(f"{self.name}: copy of {msg.get('Subject', '')!r} filed in '{self.SENT_FOLDER}'")
+            return True
+        except Exception as e:
+            error(f"{self.name}: the mail went out but filing a copy in '{self.SENT_FOLDER}' failed: {e}")
+            return False
 
     def fetch_latest(self, folder=None, unread_only=False) -> str:
         # `folder`, when a non-empty string, names an IMAP folder/label to list

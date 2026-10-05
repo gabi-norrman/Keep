@@ -3,7 +3,6 @@ import json
 import os
 import re
 import shutil
-import smtplib
 import subprocess
 import threading
 import time
@@ -874,12 +873,11 @@ class CodeQualityMaintainer:
 
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
-        msg["From"] = address
         msg["To"] = address
         msg.attach(MIMEText(full_html, "html"))
 
-        with smtplib.SMTP(cfg.get('email.smtp_host', 'smtp.gmail.com'), int(cfg.get('email.smtp_port', 587))) as server:
-            server.starttls()
-            server.login(address, password)
-            server.sendmail(address, address, msg.as_string())
+        from ..integration.integrations.email.GmailIntegration import GmailIntegration
+        err = GmailIntegration.get_instance().send_message(msg, [address])
+        if err:
+            raise RuntimeError(f"report email not sent: {err}")
         info(f"CodeQualityMaintainer: email sent to {address}")

@@ -4,10 +4,8 @@ from unittest.mock import patch, Mock, MagicMock
 
 import pytest
 
-from assistant.integration.integrations.email.ICloudEmailIntegration import (
-    ICloudEmailAccess,
-    SEND_RATE_LIMIT_MAX,
-)
+from assistant.integration.integrations.email.ICloudEmailIntegration import ICloudEmailAccess
+from assistant.integration.integrations.email.EmailProvider import SEND_RATE_LIMIT_MAX
 
 
 def _make_message(uid="123", from_="sender@test.com", to=("me@test.com",),
@@ -110,17 +108,26 @@ class TestFormatEmailBody:
 
 @pytest.fixture
 def mock_smtp():
-    with patch('assistant.integration.integrations.email.ICloudEmailIntegration.smtplib.SMTP') as MockSMTP:
+    with patch('assistant.integration.integrations.email.EmailProvider.smtplib.SMTP') as MockSMTP:
         server = MagicMock()
         MockSMTP.return_value.__enter__.return_value = server
         MockSMTP.return_value.__exit__.return_value = False
         yield MockSMTP, server
 
 
+@pytest.fixture
+def mock_imap():
+    with patch('assistant.integration.integrations.email.EmailProvider.MailBox') as MockMailBox:
+        mailbox = MagicMock()
+        MockMailBox.return_value.login.return_value.__enter__.return_value = mailbox
+        MockMailBox.return_value.login.return_value.__exit__.return_value = False
+        yield MockMailBox, mailbox
+
+
 @pytest.mark.unit
 class TestICloudSend:
 
-    def test_successful_send_returns_empty_string(self, icloud, mock_config, mock_smtp):
+    def test_successful_send_returns_empty_string(self, icloud, mock_config, mock_smtp, mock_imap):
         import email as email_pkg
         MockSMTP, server = mock_smtp
         result = icloud.send("alice@example.com", "Hi", "Hello there")
@@ -176,10 +183,53 @@ class TestICloudSend:
         result = icloud.send("alice@example.com", "Hi", "body")
         assert "network error" in result.lower()
 
-    def test_rate_limit_blocks_after_max_sends(self, icloud, mock_config, mock_smtp):
+    def test_rate_limit_blocks_after_max_sends(self, icloud, mock_config, mock_smtp, mock_imap):
         MockSMTP, server = mock_smtp
         for _ in range(SEND_RATE_LIMIT_MAX):
             assert icloud.send("alice@example.com", "Hi", "body") == ""
         result = icloud.send("alice@example.com", "Hi", "body")
         assert "rate limit" in result
         assert MockSMTP.call_count == SEND_RATE_LIMIT_MAX
+
+
+@pytest.mark.unit
+class TestSentCopy:
+    """iCloud's SMTP server does not file what it sends, so the sent mail is appended to the
+    Sent folder over IMAP after the SMTP handoff — that is how it reaches the user's mail client."""
+
+    def test_sent_mail_is_filed_in_the_icloud_sent_folder(self, icloud, mock_config, mock_smtp, mock_imap):
+        import email as email_pkg
+        MockMailBox, mailbox = mock_imap
+        assert icloud.send("alice@example.com", "Hi", "Hello there") == ""
+        MockMailBox.assert_called_once_with("imap.mail.me.com", timeout=icloud.IMAP_TIMEOUT)
+        MockMailBox.return_value.login.assert_called_once_with("user@icloud.com", "icloud_app_pw")
+        mailbox.append.assert_called_once()
+        raw, folder = mailbox.append.call_args[0]
+        assert folder == "Sent Messages"
+        assert "SEEN" in str(mailbox.append.call_args.kwargs["flag_set"]).upper()
+        filed = email_pkg.message_from_bytes(raw)
+        _, _, sent_payload = mock_smtp[1].sendmail.call_args[0]
+        sent = email_pkg.message_from_string(sent_payload)
+        assert filed["Message-ID"] == sent["Message-ID"]
+        assert filed["Date"] and filed["Date"] == sent["Date"]
+        assert filed["To"] == "alice@example.com"
+
+    def test_copy_is_filed_only_after_a_successful_send(self, icloud, mock_config, mock_smtp, mock_imap):
+        _, server = mock_smtp
+        server.sendmail.side_effect = smtplib.SMTPRecipientsRefused({"alice@example.com": (550, b"no such user")})
+        icloud.send("alice@example.com", "Hi", "body")
+        mock_imap[1].append.assert_not_called()
+
+    def test_failed_copy_does_not_fail_the_send(self, icloud, mock_config, mock_smtp, mock_imap):
+        mock_imap[1].append.side_effect = OSError("imap down")
+        assert icloud.send("alice@example.com", "Hi", "body") == ""
+
+    def test_gmail_leaves_filing_to_the_server(self, mock_smtp, mock_imap):
+        from assistant.integration.integrations.email.GmailIntegration import GmailAccess
+        gmail = GmailAccess()
+        with patch('assistant.integration.integrations.email.GmailIntegration.ConfigManager') as MockCM:
+            MockCM.return_value.get.side_effect = lambda key, default=None: {
+                "email.address": "user@gmail.com", "email.password": "gmail_app_pw"}.get(key, default)
+            assert gmail.send("alice@example.com", "Hi", "body") == ""
+        mock_smtp[0].assert_called_once_with("smtp.gmail.com", 587, timeout=20)
+        mock_imap[0].assert_not_called()

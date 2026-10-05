@@ -25,10 +25,21 @@ class GmailIntegration(Integration, EmailProvider):
 
     IMAP_HOST = "imap.gmail.com"
     IMAP_FOLDER = "[Gmail]/All Mail"
+    # Gmail files SMTP sends in "[Gmail]/Sent Mail" itself; an IMAP copy would duplicate them.
+    SENT_FOLDER = None
+    AUTH_HELP = "regenerate the app password at myaccount.google.com/apppasswords"
 
     def __init__(self):
         Integration.__init__(self)
         EmailProvider.__init__(self)
+
+    @property
+    def SMTP_HOST(self) -> str:
+        return ConfigManager().get("email.smtp_host", "smtp.gmail.com")
+
+    @property
+    def SMTP_PORT(self) -> int:
+        return int(ConfigManager().get("email.smtp_port", 587))
 
     @property
     def name(self) -> str:
