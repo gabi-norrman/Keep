@@ -83,7 +83,8 @@ h1 em{font-style:normal;font-weight:400;color:var(--accent)}
 #chart text{font-family:var(--mono);fill:var(--ink);paint-order:stroke;stroke:var(--halo);stroke-width:3px;stroke-linejoin:round;pointer-events:none;text-anchor:middle;dominant-baseline:central;transition:opacity .35s}
 #chart text.pkg{font-family:var(--display);font-weight:700;letter-spacing:.01em}
 #chart text.dim{fill:var(--muted)}
-#chart .labels.fading text{opacity:0;transition:opacity .12s}
+#chart .labels{transition:opacity .35s}
+#chart .labels.fading{opacity:0;transition:opacity .12s}
 .pulse circle{fill:none;stroke:var(--accent);stroke-width:2.5px;transform-box:fill-box;transform-origin:center;animation:ping 1.6s cubic-bezier(.2,.7,.3,1) infinite}
 .pulse circle+circle{animation-delay:.8s}
 @keyframes ping{from{transform:scale(1);opacity:.9}to{transform:scale(1.45);opacity:0}}
