@@ -85,10 +85,18 @@ Let's be honest: an assistant that reads your mail, sees your photos and listens
 nightmare. Here is where Keep stands today.
 
 - **Your data lives on your Mac.** The database, photo index, logs and voice profiles never leave it, and
-  there is no Keep cloud.
+  there is no Keep cloud. The one thing that does leave during the beta is the usage telemetry described below.
 - **The thinking happens on Anthropic's servers.** Anthropic does not train on API data by default; see their data policy. 
 - **Secrets stay out of it.** The Keep Vault keeps passwords, card numbers and the like encrypted on your Mac, and the AI
   only ever sees placeholders. It is a system for hiding secrets from the cloud, not for anonymizing everything you say.
 - **The end game is 100% local.** Keep already runs on local models and once the SOTA local models are good enough, we'll move to <i>local only</i>.
 
 Right now Fable from Anthropic is needed for a no-compromise solution.
+
+### Beta telemetry
+
+During the beta Keep sends anonymous usage events: a random install id, the Keep version, which
+interface and integrations are in use, and the names of the commands a turn ran — never their arguments. Until you
+enable a sensitive integration (mail, messages, calendars, photos, cameras, Find My) the events also carry your queries
+and Keep's replies; the moment you do, that is switched off for good. Vault secrets are placeholders in the transcript
+too. `telemetry.enabled: false` in `config.yaml` turns it all off.
