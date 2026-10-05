@@ -2210,11 +2210,14 @@ class WebAccess(Integration):
             return [f"{self._frame_label(src_of(e))} {e.get('w')}x{e.get('h')}"
                     + (f" {e.get('display')}" if e.get('display') not in (None, 'block') else '')
                     + (f" {e.get('visibility')}" if e.get('visibility') not in (None, 'visible') else '')
+                    + (f" ({e.get('why')})" if e.get('why') else '')
                     if isinstance(e, dict) else self._frame_label(src_of(e))
                     for e in (entries or []) if src_of(e)]
 
         shown_urls = urls(main_result.get('crossOriginFrames'))
         hidden_urls = urls(main_result.get('hiddenFrames'))
+        if hidden_urls:
+            trace(f"Snapshot: the page hides iframe(s): {sized(main_result.get('hiddenFrames'))}")
         if len(frame_targets) > 1:
             loop = asyncio.get_running_loop()
             for ti in frame_targets:
@@ -2915,6 +2918,53 @@ class WebAccess(Integration):
     # Interactive browse session
     # ------------------------------------------------------------------
 
+    # Why an <iframe> shows nothing, '' when it renders. Shared by the collector
+    # (the page's own iframes) and the per-target pre-pass (an iframe's children):
+    # the frame's own style and box, then its ancestors — a frame whose own style
+    # says display:block still shows nothing inside an opacity-0 wrapper (Kustom's
+    # wallet buttons), when an overflow-clipping ancestor's box does not reach it,
+    # or inside a collapsed 0px row (Kustom's unselected "Betala med kort" card
+    # form: the row has overflow visible, the form spills out of it and the rows
+    # below paint on top). The last case is settled by hit-testing the frame's
+    # centre when it is on screen — a 0px float container is the same shape with
+    # the frame painted — and is taken as collapsed when it is not. Inline
+    # ancestors have no box of their own and are skipped.
+    _IFRAME_HIDDEN_BY_JS = r"""
+    function iframePainted(f, win) {
+        // true/false when the frame's centre is on screen, null when it is not.
+        const r = f.getBoundingClientRect();
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+        if (x < 0 || y < 0 || x >= win.innerWidth || y >= win.innerHeight) return null;
+        try { return f.ownerDocument.elementFromPoint(x, y) === f; } catch (e) { return null; }
+    }
+
+    function iframeHiddenBy(f, win) {
+        const style = win.getComputedStyle(f);
+        if (style.display === 'none') return 'display:none';
+        if (style.visibility === 'hidden') return 'visibility:hidden';
+        const rect = f.getBoundingClientRect();
+        if (!(rect.width > 10 && rect.height > 10)) return Math.round(rect.width) + 'x' + Math.round(rect.height);
+        const body = f.ownerDocument.body;
+        for (let p = f.parentElement; p && p !== body; p = p.parentElement) {
+            const ps = win.getComputedStyle(p);
+            const tag = p.tagName.toLowerCase();
+            if (parseFloat(ps.opacity) === 0) return 'inside opacity:0 ' + tag;
+            if (ps.display === 'inline' || ps.display === 'contents') continue;
+            const pr = p.getBoundingClientRect();
+            if (pr.height < 2) {
+                const painted = iframePainted(f, win);
+                if (painted === true) return '';
+                return 'inside collapsed ' + tag + (painted === false ? ', covered' : '');
+            }
+            if (ps.overflowX === 'visible' && ps.overflowY === 'visible') continue;
+            const w = Math.min(rect.right, pr.right) - Math.max(rect.left, pr.left);
+            const h = Math.min(rect.bottom, pr.bottom) - Math.max(rect.top, pr.top);
+            if (w <= 10 || h <= 10) return 'clipped by ' + tag + ' ' + Math.round(pr.width) + 'x' + Math.round(pr.height);
+        }
+        return '';
+    }
+"""
+
     _BROWSE_COLLECT_JS = r"""
 (function(startIdx, sourceLabel) {
     // Walk this document and (best-effort) any same-origin iframes, tagging each
@@ -2952,12 +3002,22 @@ class WebAccess(Integration):
         return true;
     }
 
-    function iframeShown(f, win) {
-        const style = win.getComputedStyle(f);
-        if (style.display === 'none' || style.visibility === 'hidden') return false;
-        const rect = f.getBoundingClientRect();
-        return rect.width > 10 && rect.height > 10;
+    function hiddenChoiceHost(el, win) {
+        // A radio or checkbox parked off-screen (sr-only, 1x1) behind a styled
+        // <label> — Kustom's payment methods, most card pickers. The label is
+        // what the user clicks, so it takes the index; the record still
+        // describes the input (type, checked).
+        if (el.tagName.toLowerCase() !== 'input' || el.disabled) return null;
+        const type = (el.getAttribute('type') || '').toLowerCase();
+        if (type !== 'radio' && type !== 'checkbox') return null;
+        let host = el.closest('label');
+        if (!host && el.id) {
+            try { host = el.ownerDocument.querySelector('label[for="' + CSS.escape(el.id) + '"]'); } catch (e) {}
+        }
+        return host && isInteractive(host, win) ? host : null;
     }
+
+/*IFRAME_HIDDEN_BY*/
 
     function ancestorContext(el, ownLabel) {
         const HEADING_SEL = 'h1, h2, h3, h4, h5, h6, legend, [class*="heading" i], [class*="title" i], [class*="month" i][class*="head" i]';
@@ -3004,9 +3064,15 @@ class WebAccess(Integration):
             const lbl = el.ownerDocument.querySelector('label[for="' + CSS.escape(el.id) + '"]');
             if (lbl && lbl.innerText && lbl.innerText.trim()) return lbl.innerText.trim();
         }
-        const parentLabel = el.closest('label');
-        if (parentLabel && parentLabel.innerText && parentLabel.innerText.trim()) {
-            return parentLabel.innerText.trim();
+        // A wrapping <label> names the control it wraps, not a link or button
+        // that merely sits inside it (Kustom's payment rows are labels holding a
+        // "köparskydd" link — that link keeps its own text).
+        const tagName = el.tagName.toLowerCase();
+        if (tagName === 'input' || tagName === 'select' || tagName === 'textarea') {
+            const parentLabel = el.closest('label');
+            if (parentLabel && parentLabel.innerText && parentLabel.innerText.trim()) {
+                return parentLabel.innerText.trim();
+            }
         }
         const txt = (el.innerText || el.textContent || '').trim();
         if (txt) return txt;
@@ -3089,7 +3155,11 @@ class WebAccess(Integration):
         for (const el of handlerEls) els.push(el);
         const records = [];
         for (const el of els) {
-            if (!isInteractive(el, win)) continue;
+            let target = el;
+            if (!isInteractive(el, win)) {
+                target = hiddenChoiceHost(el, win);
+                if (!target) continue;
+            }
             const tag = el.tagName.toLowerCase();
             const role = el.getAttribute('role') || '';
             const type = (el.getAttribute('type') || '').toLowerCase();
@@ -3132,7 +3202,7 @@ class WebAccess(Integration):
             } else if (tag === 'a') {
                 rec.href = el.getAttribute('href') || '';
             }
-            records.push({ rec, el });
+            records.push({ rec, el: target });
         }
         return records;
     }
@@ -3312,7 +3382,8 @@ class WebAccess(Integration):
             if (!rawSrc) continue;
             let abs = rawSrc;
             try { abs = f.src || rawSrc; } catch (e) {}
-            (iframeShown(f, window) ? crossOriginFrames : hiddenFrames).push(abs);
+            const why = iframeHiddenBy(f, window);
+            if (why) hiddenFrames.push({ src: abs, why }); else crossOriginFrames.push(abs);
             continue;
         }
         try { clearTags(doc); } catch (e) { continue; }
@@ -3343,13 +3414,14 @@ class WebAccess(Integration):
         records.push(r.rec);
     });
     return { records, crossOriginFrames, hiddenFrames, context: pageContext(document) };
-})"""
+})""".replace('/*IFRAME_HIDDEN_BY*/', _IFRAME_HIDDEN_BY_JS)
 
     # Runs inside an iframe target before the collector: which cross-origin iframes
     # it hosts, split by whether they render. A nested frame (Stripe's helpers inside
     # a Kustom checkout) is only known to be collapsed by its parent — from inside,
     # a 0px-tall frame's inputs pass every visibility test.
     _FRAME_CHILD_IFRAMES_JS = r"""(() => {
+/*IFRAME_HIDDEN_BY*/
     const out = { shown: [], hidden: [] };
     for (const f of document.querySelectorAll('iframe')) {
         let src = '';
@@ -3357,14 +3429,13 @@ class WebAccess(Integration):
         if (!src) continue;
         const style = getComputedStyle(f);
         const rect = f.getBoundingClientRect();
-        const shown = style.display !== 'none' && style.visibility !== 'hidden'
-            && rect.width > 10 && rect.height > 10;
-        (shown ? out.shown : out.hidden).push(
+        const why = iframeHiddenBy(f, window);
+        (why ? out.hidden : out.shown).push(
             { src, w: Math.round(rect.width), h: Math.round(rect.height), display: style.display,
-              visibility: style.visibility });
+              visibility: style.visibility, why });
     }
     return out;
-})()"""
+})()""".replace('/*IFRAME_HIDDEN_BY*/', _IFRAME_HIDDEN_BY_JS)
 
     # Wording coordinated with the browse_act \n suffix / browse_key command docs.
     _SEARCH_FIELD_HINT = (' (search field: filling does not submit — '

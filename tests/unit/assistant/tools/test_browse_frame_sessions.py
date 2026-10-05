@@ -678,3 +678,18 @@ class TestSnapshotSkipsHiddenFrames:
         assert 'Kortnummer' not in result
         assert 'Köpa med GPay' in result
         assert 'Betala köp' in result
+
+    def test_frame_the_page_reports_covered_is_left_out(self):
+        # The collector reports its own hidden iframes with a reason (Kustom's unselected
+        # card form: display:block, 494x130, but in a 0px row with the next row painted
+        # over it) — a dict entry hides the target the same as a bare src did.
+        targets = [FakeTargetInfo('stripe', url=self.STRIPE)]
+        per_target = {'stripe': ({'shown': [], 'hidden': []},
+                                 {'records': [{'tag': 'input', 'type': 'text', 'label': 'Kortnummer',
+                                               'source': 'stripe'}]})}
+        result = self._snapshot(self._wa(),
+                                {'crossOriginFrames': [],
+                                 'hiddenFrames': [{'src': self.STRIPE, 'why': 'inside collapsed div, covered'}]},
+                                targets, per_target)
+
+        assert 'Kortnummer' not in result
