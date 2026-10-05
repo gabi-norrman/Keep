@@ -426,6 +426,69 @@ class TestHysteresisTrim:
         assert "m000" not in joined
 
 
+class TestFreshRowsDeferTheTrim:
+    """Between the high watermark and the ceiling a trim waits while the newest row it would
+    drop is younger than trim_fresh_seconds: a burst must not evict the rows the task is
+    using. At the ceiling it trims regardless. The other trim tests date their rows in 1970,
+    so the gate never opens there."""
+
+    @staticmethod
+    def _section(high=2_000, low=1_000, ceiling=4_000, fresh=900):
+        section = _make_history_section()
+        section.trim_high_bytes = high
+        section.trim_low_bytes = low
+        section.trim_ceiling_bytes = ceiling
+        section.trim_fresh_seconds = fresh
+        return section
+
+    @staticmethod
+    def _rows(n, age_of_newest, size=100, prefix="m"):
+        start = time.time() - age_of_newest - n
+        return [{"role": "Marcus", "content": f"{prefix}{i:03d}" + "x" * size, "timestamp": start + i,
+                 "source": None, "location": None} for i in range(n)]
+
+    def test_fresh_rows_between_high_and_ceiling_are_kept(self):
+        section = self._section()
+        section.history = self._rows(30, age_of_newest=60)      # ~3.1KB, all within the last few minutes
+        joined = "\n".join(m["content"] for m in section.get_history_messages())
+        assert "m000" in joined and section._trim_cutoff == 0.0
+
+    def test_stale_rows_between_high_and_ceiling_are_trimmed_as_before(self):
+        section = self._section()
+        section.history = self._rows(30, age_of_newest=2_000)   # the whole burst is older than fresh
+        joined = "\n".join(m["content"] for m in section.get_history_messages())
+        assert "m000" not in joined and section._trim_cutoff > 0.0
+
+    def test_the_ceiling_trims_fresh_rows(self):
+        section = self._section()
+        section.history = self._rows(45, age_of_newest=60)      # ~4.7KB > ceiling
+        msgs = section.get_history_messages()
+        joined = "\n".join(m["content"] for m in msgs)
+        assert "m000" not in joined and "m044" in joined
+        assert len(joined.encode("utf-8")) <= 1_000 + len(msgs) * 2, "a ceiling trim still cuts back to low"
+
+    def test_it_is_the_dropped_rows_age_that_counts_not_the_kept_ones(self):
+        """Old rows ahead of a fresh burst: the cut drops only old rows, so it goes ahead even
+        though the window is full of fresh ones."""
+        section = self._section()
+        old = self._rows(20, age_of_newest=3_000)
+        fresh = self._rows(8, age_of_newest=30, prefix="f")
+        section.history = old + fresh
+        joined = "\n".join(m["content"] for m in section.get_history_messages())
+        assert "m000" not in joined
+        assert all(f"f{i:03d}" in joined for i in range(8)), "every fresh row survives"
+
+    def test_a_deferred_trim_happens_once_the_rows_have_aged(self):
+        section = self._section()
+        section.history = self._rows(30, age_of_newest=60)
+        section.get_history_messages()
+        assert section._trim_cutoff == 0.0
+        for row in section.history:
+            row["timestamp"] -= 1_000
+        section.get_history_messages()
+        assert section._trim_cutoff > 0.0
+
+
 # ===========================================================================
 # TestLoadSaveHistory
 # ===========================================================================

@@ -992,6 +992,7 @@ def _trim_away_the_notes(manager):
     ]
     manager.message_history.trim_high_bytes = 2_000
     manager.message_history.trim_low_bytes = 1_000
+    manager.message_history.trim_ceiling_bytes = 2_000   # the rows are fresh; the test is about the trim's effect
     with manager._prompt_lock:
         return manager._resolved_messages_locked()
 

@@ -46,6 +46,15 @@ class MessageHistory:
     # re-written on every request (see _hysteresis_trim).
     TRIM_HIGH_BYTES = 25 * 1024
     TRIM_LOW_BYTES = 15 * 1024
+    # A trim at HIGH waits while the newest row it would drop is younger than
+    # TRIM_FRESH_SECONDS: a burst (a checkout, a browsing session) fills the window with
+    # the rows the task is using, and cutting at HIGH evicted the browser toolkit 75 s
+    # after it was loaded and the user's instructions a minute after they were given
+    # (2026-10-05). A quiet afternoon's stale rows still go at HIGH. At TRIM_CEILING_BYTES
+    # the trim happens whatever the rows' age — the ceiling is what the window costs in any
+    # busy period, feed bursts included, so it is a size worth paying always.
+    TRIM_CEILING_BYTES = 35 * 1024
+    TRIM_FRESH_SECONDS = 15 * 60
     # A trim that evicts a toolkit reference row leaves a one-line transient `system` stub
     # at the row's timestamp, exempt from the cutoff, so the LLM knows the commands it saw
     # there are gone and how to get them back — without it the model keeps using the toolkit
@@ -71,6 +80,8 @@ class MessageHistory:
         self.max_render_chars = self.MAX_RENDER_CHARS
         self.trim_high_bytes = self.TRIM_HIGH_BYTES
         self.trim_low_bytes = self.TRIM_LOW_BYTES
+        self.trim_ceiling_bytes = self.TRIM_CEILING_BYTES
+        self.trim_fresh_seconds = self.TRIM_FRESH_SECONDS
         # Timestamp of the oldest entry in the LLM window; entries older than this
         # are hidden from get_history_messages even if they'd fit. Only advances
         # when the window exceeds trim_high_bytes (see _hysteresis_trim).
@@ -246,6 +257,10 @@ class MessageHistory:
         The cutoff is sticky so the rendered prefix — and with it the message-level
         KV cache — survives turn-to-turn: the head only moves once per
         ~(high - low) bytes of new conversation instead of on every exchange.
+
+        Between high and trim_ceiling_bytes the cut waits while the newest row it would
+        drop is younger than trim_fresh_seconds (see TRIM_CEILING_BYTES); the age is
+        checked after snapping, since the snap can move the cut and with it that row.
         """
         stubs = [item for item in rendered if self._is_eviction_stub(item[0])]
         rendered = [item for item in rendered if not self._is_eviction_stub(item[0])]
@@ -267,13 +282,23 @@ class MessageHistory:
         if keep_from == 0:
             trace("MessageHistory: window over high watermark but nothing trimmable — leaving it")
             return self._with_eviction_stubs(stubs, kept, dropped=[])
+        newest_dropped_age = time.time() - kept[keep_from - 1][0]["timestamp"]
+        fresh = newest_dropped_age < self.trim_fresh_seconds
+        if fresh and total <= self.trim_ceiling_bytes:
+            trace(f"MessageHistory: window at {total / 1024:.1f}KB (high {self.trim_high_bytes // 1024}KB) but "
+                  f"the newest row a trim would drop is {newest_dropped_age / 60:.1f}m old — waiting for it to "
+                  f"age past {self.trim_fresh_seconds // 60}m or the window to hit the "
+                  f"{self.trim_ceiling_bytes // 1024}KB ceiling")
+            return self._with_eviction_stubs(stubs, kept, dropped=[])
         kept_bytes = sum(len(content.encode("utf-8")) for _, _, content in kept[keep_from:])
 
         dropped = kept[:keep_from]
         kept = kept[keep_from:]
         self._trim_cutoff = kept[0][0]["timestamp"]
+        why = (f"ceiling {self.trim_ceiling_bytes // 1024}KB, newest dropped row only {newest_dropped_age / 60:.1f}m old"
+               if fresh else f"high {self.trim_high_bytes // 1024}KB")
         info(f"MessageHistory: window hit {total / 1024:.1f}KB "
-             f"(high {self.trim_high_bytes // 1024}KB) — trimmed {len(dropped)} entries, "
+             f"({why}) — trimmed {len(dropped)} entries, "
              f"kept {len(kept)} ({kept_bytes / 1024:.1f}KB), new cutoff "
              f"{datetime.fromtimestamp(self._trim_cutoff).strftime('%H:%M:%S')}")
         dropped_notes = [entry for entry, _, _ in dropped if entry.get("source") == "prompt_delta"]
