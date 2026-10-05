@@ -257,7 +257,7 @@
 <rect x="758" y="126" width="16" height="16" fill="#e1e6f0"/>
 <rect x="758" y="142" width="16" height="16" fill="#e1e6f0"/>
 <rect x="758" y="158" width="16" height="16" fill="#e1e6f0"/>
-<rect x="854" y="62" width="48" height="112" fill="#6dc665"><animate attributeName="opacity" values="1;1;0;0" keyTimes="0;0.5;0.5;1" dur="1.2s" repeatCount="indefinite"/></rect>
+<rect x="854" y="62" width="72" height="112" fill="#6dc665"><animate attributeName="opacity" values="1;1;0;0" keyTimes="0;0.5;0.5;1" dur="1.2s" repeatCount="indefinite"/></rect>
 </g>
 <text x="470" y="236" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="34" letter-spacing="1.5" fill="#8c93a6">personal AI done right</text>
 </svg>
