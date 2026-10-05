@@ -139,39 +139,31 @@ The car lit up like a Christmas tree in northern Germany; he sent a photo of the
 </tr>
 </table>
 
-<p align="center">
-  <img src="docs/images/example_2.png" width="270" alt="Keep finds what a chair cost from a photo of it" valign="top">
-  &nbsp;
-  <img src="docs/images/example_3.png" width="270" alt="Keep finds photos of a wardrobe in the photo library" valign="top">
-  &nbsp;
-  <img src="docs/images/example_1.png" width="270" alt="Keep confirms an order it placed" valign="top">
-</p>
-
 ## Interfaces
 
-| | |
-|---|---|
-| ⌨️ **Terminal UI** | Text chat in a Claude Code-style terminal UI. |
-| 💬 **Telegram** | The same chat on your phone, with images and voice messages. |
-| 🎙️ **Voice-to-voice** | A highly optimized interface for talking to your home. It is tuned for speed and best suited for dimming lights, putting on music and the like. Use text for the complex questions. |
+<table>
+<tr><td>⌨️&nbsp;<b>Terminal&nbsp;UI</b></td><td>Text chat in a Claude Code-style terminal UI.</td></tr>
+<tr><td>💬&nbsp;<b>Telegram</b></td><td>The same chat on your phone, with images and voice messages.</td></tr>
+<tr><td>🎙️&nbsp;<b>Voice-to-voice</b></td><td>A highly optimized interface for talking to your home. It is tuned for speed and best suited for dimming lights, putting on music and the like. Use text for the complex questions.</td></tr>
+</table>
 
 ## Integrations
 
 Every integration is off until you turn it on, and Keep walks you through the setup of each one.
 
-| | |
-|---|---|
-| 🍎 **Apple** | iCloud (Find My for the family's phones), Photos library, iMessage, Reminders, iCloud Mail and CalDAV calendars |
-| ✉️ **Email** | Gmail and iCloud Mail; Keep also uses your inbox to handle 2FA codes on its own |
-| 🏠 **Home** | Home Assistant and Indigo for lights, switches, locks, sensors and scenes |
-| 📹 **Cameras** | Arlo and Ring |
-| 🚗 **Car** | Tesla, through tessie.com |
-| 🎵 **Music** | Sonos and Spotify |
-| 🌦️ **Weather** | YR forecasts and rain radar |
-| 🌐 **Web** | Search, page reading, a real headless browser for sites that need clicking, and X |
-| 💬 **Chat** | Telegram, with a feed of the family's group chats |
-| 🎙️ **Voice** | Fusion of local Whisper transcription and ElevenLabs, for <i>low latency</i> combined with <i>high accuracy</i> |
-| 🛠️ **Self Improvement** | Keep reads its own logs and code through Claude Code, finds bugs and sends you the pull request |
+<table>
+<tr><td>🍎&nbsp;<b>Apple</b></td><td>iCloud (Find My for the family's phones), Photos library, iMessage, Reminders, iCloud Mail and CalDAV calendars</td></tr>
+<tr><td>✉️&nbsp;<b>Email</b></td><td>Gmail and iCloud Mail; Keep also uses your inbox to handle 2FA codes on its own</td></tr>
+<tr><td>🏠&nbsp;<b>Home</b></td><td>Home Assistant and Indigo for lights, switches, locks, sensors and scenes</td></tr>
+<tr><td>📹&nbsp;<b>Cameras</b></td><td>Arlo and Ring</td></tr>
+<tr><td>🚗&nbsp;<b>Car</b></td><td>Tesla, through tessie.com</td></tr>
+<tr><td>🎵&nbsp;<b>Music</b></td><td>Sonos and Spotify</td></tr>
+<tr><td>🌦️&nbsp;<b>Weather</b></td><td>YR forecasts and rain radar</td></tr>
+<tr><td>🌐&nbsp;<b>Web</b></td><td>Search, page reading, a real headless browser for sites that need clicking, and X</td></tr>
+<tr><td>💬&nbsp;<b>Chat</b></td><td>Telegram, with a feed of the family's group chats</td></tr>
+<tr><td>🎙️&nbsp;<b>Voice</b></td><td>Fusion of local Whisper transcription and ElevenLabs, for <i>low latency</i> combined with <i>high accuracy</i></td></tr>
+<tr><td>🛠️&nbsp;<b>Self&nbsp;Improvement</b></td><td>Keep reads its own logs and code through Claude Code, finds bugs and sends you the pull request</td></tr>
+</table>
 
 > [!TIP]
 > Missing something? Ask Keep to write the integration itself: it analyses the code, builds it and opens the pull request for you to review.
