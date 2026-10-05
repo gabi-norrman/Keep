@@ -1,142 +1,156 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Tuple
+
 from .TabView import TabView, SUB_CONTENT_TOP
 from interfaces.console import Theme
-from interfaces.console.Theme import LEFT_MARGIN
-from interfaces.console.framework.TUIScreen import TUIScreen
-from interfaces.console.framework.TextWidth import fit, ljust
+from interfaces.console.framework.TUIScreen import TUIScreen, Color
+from interfaces.console.widgets import Board, Tile
+from interfaces.console.widgets.Board import Meter, SummaryTile, Table
 
 if TYPE_CHECKING:
     from interfaces.console.TUIFloxyConsole import TUIFloxyConsole
     from interfaces.voice.microphones.speech_analysis.SpeechAnalyzer import Phrase
 
-TOP_ROW = SUB_CONTENT_TOP
+PENDING = "–"
+DISABLED = "voice interface disabled (interfaces.voice.enabled: false)"
+HINTS = "Mic: the best microphone  +n more microphones  ·W Whisper  ·S Scribe"
 
-# Column geometry of the three plates, relative to the console's LEFT_MARGIN
-SCORE_WIDTH = 32       # score / votes / confidence / bar
-CANDIDATE_X = 34       # the candidate phrases with their [mic +extra·engine] tag
-CANDIDATE_WIDTH = 55
-ACCEPTED_X = 91        # the phrases the analyzer accepted, to the right edge
+SCORE_METER_W = 10
+SCORE_FULL = 10 / 6            # the score that fills the meter
+SCORE_W = SCORE_METER_W + 5
+VOTES_W, CONFIDENCE_W, MIC_W = 5, 4, 18
+MIC_NAME_MAX = 12
+FULL_VOTES = 15                # a phrase with this many votes is drawn in full text colour
+MIN_TABLE_H = Tile.CARD_CHROME + 2
 
 
 class VoiceTab(TabView):
     """Developer ▸ Voice: the live STT view — the analyzer's candidate phrases with their
-    vote scores on the left, the accepted phrases on the right. Live while an utterance is in
-    flight, otherwise the last utterance's snapshot."""
+    vote scores, and the phrases it accepted in a tile beside them. Live while an utterance
+    is in flight, otherwise the last utterance's snapshot. The newest phrase is the last row."""
 
     def __init__(self, console: 'TUIFloxyConsole'):
         self.console = console
+        self._cards: List[Tile.Card] = []
 
     def draw(self, screen: TUIScreen, frame: int):
-        x0 = LEFT_MARGIN
+        self._cards = []
+        available = screen.width - Board.LEFT - Board.RIGHT_MARGIN
+        bottom = screen.height - 1                # the last row is the key hints'
+        y = SUB_CONTENT_TOP
 
         if self.console.speech_analyzer is None:
-            screen.reset_color()
-            screen.set_color(Theme.COLOR_GREEN)
-            screen.write_at(x0, TOP_ROW, "  voice interface disabled (interfaces.voice.enabled: false)")
-            return
-
-        screen.reset_color()
-        screen.set_color(Theme.COLOR_DIM)
-        screen.write_at(x0, TOP_ROW, f"{' SCORE  VOTES CONF':<{SCORE_WIDTH}}")
-        screen.write_at(x0 + CANDIDATE_X, TOP_ROW, "  CANDIDATES  [mic +extra mics ·W=Whisper ·S=Scribe]")
-        screen.write_at(x0 + ACCEPTED_X, TOP_ROW, "  ACCEPTED")
-
-        top = TOP_ROW + 1
-        rows = screen.height - top - 1
-        if rows <= 0:
+            Board.draw_notice(screen, self._cards, Board.LEFT, y, available, bottom - y, "Voice", DISABLED)
+            Tile.tint_cards(screen, self._cards)
             return
 
         # The analyzer owns the display state: live phrases while an utterance is in
         # flight, otherwise its last-utterance snapshot (preserved by clean(), so it stays
         # correct even when this tab wasn't visible during the utterance).
-        phrases_to_show, accepted_to_show, last_accepted, phrase_scores = \
-            self.console.speech_analyzer.get_display_state()
-        self._draw_accepted(screen, top, rows, accepted_to_show, last_accepted)
-        self._draw_candidates(screen, top, rows, phrases_to_show, last_accepted, phrase_scores)
+        candidates, accepted, last_accepted, scores = self.console.speech_analyzer.get_display_state()
+        candidates, accepted = self._ordered(candidates), self._ordered(accepted)
+
+        side_by_side = screen.width >= Board.SIDE_BY_SIDE_MIN
+        tables_h = MIN_TABLE_H if side_by_side else 2 * MIN_TABLE_H + 1
+        if bottom - y - Board.SUMMARY_H - 1 >= tables_h:
+            Board.draw_summary(screen, self._cards, y, available,
+                               [self._candidates_tile(candidates), self._score_tile(candidates, scores),
+                                self._accepted_tile(accepted, last_accepted)])
+            y += Board.SUMMARY_H + 1
+        height = bottom - y
+
+        candidates_table = self._candidates_table(candidates, accepted, last_accepted, scores)
+        accepted_table = self._accepted_table(accepted, last_accepted)
+        if side_by_side:
+            table_w, side_w = Board.split(available)
+            self._draw_newest(screen, Board.LEFT, y, table_w, height, candidates_table)
+            self._draw_newest(screen, Board.LEFT + table_w + Board.GAP, y, side_w, height, accepted_table)
+        else:
+            accepted_h = min(max(1, len(accepted)) + Tile.CARD_CHROME + 1, max(MIN_TABLE_H, height // 2))
+            candidates_h = height - accepted_h - 1
+            self._draw_newest(screen, Board.LEFT, y, available, candidates_h, candidates_table)
+            self._draw_newest(screen, Board.LEFT, y + candidates_h + 1, available, accepted_h, accepted_table)
+        Tile.tint_cards(screen, self._cards)
+        Board.draw_hints(screen, HINTS)
 
     def handle_input(self, key: str) -> bool:
         return False
 
-    @staticmethod
-    def _newest(phrases: dict, rows: int) -> list:
-        """The newest `rows` phrases, oldest first, so they sit bottom-anchored."""
-        return sorted(phrases.values(), key=lambda pr: pr.timestamp)[-rows:]
-
-    def _draw_accepted(self, screen: TUIScreen, top: int, rows: int, accepted: dict, last_accepted: str):
-        x = LEFT_MARGIN + ACCEPTED_X
-        width = screen.width - x - 3
-        phrases = self._newest(accepted, rows)
-        y_start = top + rows - len(phrases)
-
-        screen.reset_color()
-        screen.set_bg_color(Theme.COLOR_GREEN_DIM)
-        for empty_y in range(top, y_start):
-            screen.write_at(x, empty_y, " " * width)
-
-        y = y_start
-        for p in phrases:
-            p: 'Phrase'
-            f = min(1.0, p.count / 15.0 + 0.25)
-            screen.reset_color()
-            screen.set_bg_color(Theme.COLOR_GREEN_DIM)
-            if last_accepted == p.phrase:
-                screen.set_color(Theme.COLOR_GREEN)
-                screen.bold()
-            else:
-                c = Theme.COLOR_GREEN
-                screen.set_color_rgb(c.r * f, c.g * f, c.b * f)
-            screen.write_at(x, y, self._fit(f"  {p.phrase}", width))
-            y += 1
-
-    def _draw_candidates(self, screen: TUIScreen, top: int, rows: int, candidates: dict,
-                         last_accepted: str, phrase_scores: dict):
-        x = LEFT_MARGIN
-        phrases = self._newest(candidates, rows)
-        y_start = top + rows - len(phrases)
-
-        screen.reset_color()
-        screen.set_bg_color(Theme.COLOR_YELLOW_DIM)
-        for empty_y in range(top, y_start):
-            screen.write_at(x, empty_y, " " * SCORE_WIDTH)
-            screen.write_at(x + CANDIDATE_X, empty_y, " " * CANDIDATE_WIDTH)
-
-        y = y_start
-        for p in phrases:
-            p: 'Phrase'
-            f = min(1.0, p.count / 15.0 + 0.25)
-            score, _ = phrase_scores.get(p.phrase, (0.0, 0.0))
-            bar = '■' * min(10, int(score * 6))
-
-            screen.reset_color()
-            screen.set_color(Theme.mix(Theme.COLOR_YELLOW_DIM, Theme.COLOR_YELLOW, 0.5))
-            screen.set_bg_color(Theme.COLOR_YELLOW_DIM)
-            screen.write_at(x, y, f"{score:6.1f} ({p.count:2.0f}v) {p.confidence * 100:3.0f}% {bar:<10}")
-
-            screen.reset_color()
-            screen.set_bg_color(Theme.COLOR_YELLOW_DIM)
-            if last_accepted == p.phrase:
-                screen.set_color(Theme.COLOR_YELLOW)
-                screen.bold()
-            else:
-                c = Theme.COLOR_YELLOW
-                screen.set_color_rgb(c.r * f, c.g * f, c.b * f)
-
-            if p.source:
-                extra_mics = p.mic_count - 1
-                extra = f" +{extra_mics}" if extra_mics > 0 else ""
-                # Compact STT-engine tag for the winning vote: W=Whisper, S=Scribe
-                # (empty for votes with no engine tag, e.g. phone outposts).
-                engine_tag = f"·{p.best_engine[0].upper()}" if p.best_engine else ""
-                mic_prefix = f"[{p.best_mic[:12]}{extra}{engine_tag}] "
-            else:
-                mic_prefix = ""
-            screen.write_at(x + CANDIDATE_X, y, self._fit(f"  {mic_prefix}{p.phrase}", CANDIDATE_WIDTH))
-            y += 1
+    def _draw_newest(self, screen: TUIScreen, x: int, y: int, width: int, height: int, table: Table):
+        """`table` scrolled to its end: the newest phrases are the ones that stay in view."""
+        Board.draw_table(screen, self._cards, x, y, width, height, table, top=len(table.rows))
 
     @staticmethod
-    def _fit(s: str, width: int) -> str:
-        """`s` truncated with an ellipsis or padded to exactly `width` columns; "" when the
-        plate has no room at all (a client narrower than the fixed column geometry)."""
-        if width <= 0:
-            return ""
-        return ljust(fit(s, width), width)
+    def _ordered(phrases: dict) -> list:
+        """The phrases oldest first."""
+        return sorted(phrases.values(), key=lambda p: p.timestamp)
+
+    @staticmethod
+    def _text_color(phrase: 'Phrase') -> Color:
+        """A phrase's colour by its votes: one heard once is dim, a well-voted one full text."""
+        return Theme.mix(Theme.COLOR_DIM, Theme.COLOR_TEXT, min(1.0, phrase.count / FULL_VOTES + 0.25))
+
+    @staticmethod
+    def _mic(phrase: 'Phrase') -> str:
+        """The microphone behind the winning vote, how many more heard the phrase, and the
+        STT engine's initial (none for a vote without an engine tag, e.g. a phone outpost)."""
+        if not phrase.source:
+            return PENDING
+        extra = f" +{phrase.mic_count - 1}" if phrase.mic_count > 1 else ""
+        engine = f"·{phrase.best_engine[0].upper()}" if phrase.best_engine else ""
+        return f"{phrase.best_mic[:MIC_NAME_MAX]}{extra}{engine}"
+
+    # --- Summary tiles ---
+
+    @staticmethod
+    def _candidates_tile(candidates: List['Phrase']) -> SummaryTile:
+        if not candidates:
+            return "Candidates", PENDING, Theme.COLOR_DIM, [("nothing heard yet", Theme.COLOR_DIM)]
+        votes = sum(p.count for p in candidates)
+        mics = len({p.best_mic for p in candidates if p.source})
+        return ("Candidates", str(len(candidates)), Theme.COLOR_BRIGHT,
+                [(f"{votes:.0f} votes", Theme.COLOR_LABEL), (f"{mics} mic{'' if mics == 1 else 's'}", Theme.COLOR_LABEL)])
+
+    @staticmethod
+    def _score_tile(candidates: List['Phrase'], scores: Dict[str, Tuple[float, float]]) -> SummaryTile:
+        scored = [(scores[p.phrase][0], p.phrase) for p in candidates if p.phrase in scores]
+        if not scored:
+            return "Best score", PENDING, Theme.COLOR_DIM, [("nothing scored yet", Theme.COLOR_DIM)]
+        score, phrase = max(scored)
+        return "Best score", f"{score:.1f}", Theme.COLOR_YELLOW, [(phrase, Theme.COLOR_TEXT)]
+
+    @staticmethod
+    def _accepted_tile(accepted: List['Phrase'], last_accepted: str) -> SummaryTile:
+        if not accepted:
+            return "Accepted", PENDING, Theme.COLOR_DIM, [("nothing accepted yet", Theme.COLOR_DIM)]
+        return "Accepted", str(len(accepted)), Theme.COLOR_GREEN, [(last_accepted or PENDING, Theme.COLOR_GREEN)]
+
+    # --- Tables ---
+
+    def _candidates_table(self, candidates: List['Phrase'], accepted: List['Phrase'], last_accepted: str,
+                          scores: Dict[str, Tuple[float, float]]) -> Table:
+        accepted_phrases = {p.phrase for p in accepted}
+        rows = []
+        for p in candidates:
+            score, _ = scores.get(p.phrase, (0.0, 0.0))
+            is_last = p.phrase == last_accepted
+            is_accepted = is_last or p.phrase in accepted_phrases
+            accent = Theme.COLOR_GREEN if is_accepted else Theme.COLOR_YELLOW
+            rows.append((accent, [
+                Meter(score / SCORE_FULL, accent, SCORE_METER_W, f"{score:.1f}", Theme.COLOR_TEXT),
+                (f"{p.count:.0f}", Theme.COLOR_LABEL),
+                (f"{p.confidence * 100:.0f}%", Theme.COLOR_LABEL),
+                (self._mic(p), Theme.COLOR_TEAL if p.source else Theme.COLOR_FAINT),
+                (p.phrase, Theme.COLOR_BRIGHT, True) if is_last else (p.phrase, self._text_color(p))]))
+        return Table("Candidates",
+                     [("Score", SCORE_W), ("Votes", VOTES_W), ("Conf", CONFIDENCE_W), ("Mic", MIC_W), ("Phrase", None)],
+                     rows, "nothing heard yet")
+
+    def _accepted_table(self, accepted: List['Phrase'], last_accepted: str) -> Table:
+        rows = []
+        for p in accepted:
+            is_last = p.phrase == last_accepted
+            rows.append((Theme.COLOR_GREEN if is_last else Theme.COLOR_FAINT, [
+                (f"{p.count:.0f}", Theme.COLOR_LABEL),
+                (p.phrase, Theme.COLOR_GREEN, True) if is_last else (p.phrase, self._text_color(p))]))
+        return Table("Accepted", [("Votes", VOTES_W), ("Phrase", None)], rows, "nothing accepted yet",
+                     value_color=Theme.COLOR_GREEN)
