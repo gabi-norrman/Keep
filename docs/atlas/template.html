@@ -102,6 +102,13 @@ h1 em{font-style:normal;font-weight:400;color:var(--accent)}
 .panel h2{font:750 clamp(24px,2.6vw,32px)/1.05 var(--display);letter-spacing:-.025em;margin:8px 0 6px;overflow-wrap:anywhere;text-wrap:balance}
 .path{font:12.5px var(--mono);color:var(--muted);overflow-wrap:anywhere}
 .desc{font:400 18px/1.45 var(--sans);margin:0;text-wrap:pretty}
+.more summary{display:inline-block;list-style:none;cursor:pointer;font:500 12.5px var(--mono);color:var(--h);text-decoration:underline;text-underline-offset:3px}
+.more summary::-webkit-details-marker{display:none}
+.more summary::after{content:"More info…"}
+.more[open] summary::after{content:"Less"}
+.more .body{display:grid;gap:10px;margin-top:10px;padding-left:12px;border-left:2px solid color-mix(in oklab,var(--h) 45%,transparent)}
+.more p,.more pre{margin:0;font:400 14px/1.5 var(--sans);color:var(--muted);text-wrap:pretty;overflow-wrap:anywhere}
+.more pre{font:12px/1.5 var(--mono);white-space:pre-wrap}
 .meta{display:flex;flex-wrap:wrap;gap:8px}
 .meta span{font:12px var(--mono);padding:4px 9px;border-radius:6px;background:var(--surface-2);border:1px solid var(--line);color:var(--muted)}
 .meta b{color:var(--ink);font-weight:500}
@@ -346,6 +353,7 @@ svg.on('pointerleave', () => { tip.hidden = true; });
 const panel = document.getElementById('panel');
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmt = s => esc(s).replace(/`([^`]+)`/g, '<code class="i">$1</code>');
+const prose = s => s.split(/\n[ \t]*\n/).map(p => /^([ \t]+|[-*] )/m.test(p) ? `<pre>${fmt(p)}</pre>` : `<p>${fmt(p)}</p>`).join('');
 const nf = d3.format(',');
 
 function kidRow(c, max) {
@@ -377,6 +385,7 @@ function renderPanel() {
         ${x.path ? `<div class="path">${esc(x.path)}</div>` : ''}
       </div>
       <p class="desc">${fmt(x.desc)}</p>
+      ${x.more ? `<details class="more"><summary></summary><div class="body">${prose(x.more)}</div></details>` : ''}
       ${meta.length ? `<div class="meta">${meta.map(m => `<span>${m}</span>`).join('')}</div>` : ''}
       ${x.commands ? `<div><h3>Commands</h3><div class="cmds" style="margin-top:8px">${x.commands.map(c => `<code>${esc(c)}</code>`).join('')}</div></div>` : ''}
       ${list.length ? `<div><h3><span>${listTitle}</span><span>${list.length}</span></h3><ul class="kids" style="margin-top:6px">${list.map(c => kidRow(c, max)).join('')}</ul></div>` : ''}

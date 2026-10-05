@@ -1,5 +1,5 @@
 """Builds the Keep Atlas: docs/atlas/out/index.html, a zoomable map of the source tree with one sentence per package,
-module and class. Standard library only, so CI runs it without the venv.
+module and class and the rest of the docstring behind a "More info" link. Standard library only, so CI runs it without the venv.
 
     python3 docs/atlas/build.py [--out PATH]
 
@@ -23,12 +23,23 @@ TOP_ORDER = ["launcher", "src/interfaces", "src/assistant", "src/common", "res"]
 MAX_SENTENCE = 230
 
 
-def first_sentence(text: str) -> str:
+SENTENCE_END = re.compile(r"(?<=[^\s.])\.(\s+(?=[A-Z`(])|$)")
+
+
+def _without_plan_references(text: str) -> str:
     text = re.sub(r"\s*\((?:see )?plans/[^)]*\)", "", text)
-    text = re.sub(r"\s*\([A-Z_]+_PLAN[^)]*\)", "", text)
-    text = " ".join(text.split())
-    m = re.search(r"(?<=[^\s.])\.(\s+(?=[A-Z`(])|$)", text)
-    if m and not text[:m.start()].endswith(("e.g", "i.e", "etc")):
+    return re.sub(r"\s*\([A-Z_]+_PLAN[^)]*\)", "", text)
+
+
+def _sentence_end(text: str) -> re.Match | None:
+    m = SENTENCE_END.search(text)
+    return m if m and not text[:m.start()].endswith(("e.g", "i.e", "etc")) else None
+
+
+def first_sentence(text: str) -> str:
+    text = " ".join(_without_plan_references(text).split())
+    m = _sentence_end(text)
+    if m:
         text = text[:m.start() + 1]
     if len(text) > MAX_SENTENCE:
         cut = text[:MAX_SENTENCE]
@@ -42,6 +53,19 @@ def first_sentence(text: str) -> str:
     if text and not text.endswith((".", "…", "?")):
         text += "."
     return text
+
+
+def more_info(doc: str, desc: str) -> str:
+    """What the docstring says beyond the description: the rest of it when the description is its first sentence,
+    all of it when the description was shortened or comes from descriptions.py."""
+    doc = _without_plan_references(doc or "").strip()
+    m = _sentence_end(doc)
+    head = doc[:m.start() + 1] if m else doc
+    if " ".join(head.split()) == desc.rstrip("."):
+        head = head + "."
+    if " ".join(head.split()) == desc:
+        return doc[m.end():].strip("\n") if m else ""
+    return doc
 
 
 def _line_count(path: Path) -> int:
@@ -64,13 +88,17 @@ def _module(path: Path) -> dict:
             cid = f"{rel}::{n.name}"
             classes.append({"id": cid, "name": n.name, "kind": "class", "path": rel,
                             "lines": max(n.end_lineno - n.lineno + 1, 5),
-                            "desc": CLASSES.get(cid) or first_sentence(doc),
+                            "desc": CLASSES.get(cid) or first_sentence(doc), "doc": doc,
                             "bases": [ast.unparse(b) for b in n.bases]})
     main = next((c for c in classes if c["name"] == path.stem), None)
     desc = (MODULES.get(rel) or (main and main["desc"]) or first_sentence(ast.get_docstring(tree) or "")
             or (classes[0]["desc"] if classes else ""))
     name = path.name if path.name != "__init__.py" else f"{path.parent.name}/__init__.py"
-    node = {"id": rel, "name": name, "kind": "module", "path": rel, "lines": len(source.splitlines()), "desc": desc}
+    doc = (main and main["doc"]) or ast.get_docstring(tree) or (classes[0]["doc"] if classes else "")
+    node = {"id": rel, "name": name, "kind": "module", "path": rel, "lines": len(source.splitlines()), "desc": desc,
+            "more": more_info(doc, desc)}
+    for c in classes:
+        c["more"] = more_info(c.pop("doc"), c["desc"])
     if main:
         node["bases"] = main["bases"]
     if len(classes) >= 2:

@@ -108,3 +108,26 @@ class Shelf:
 ''')
     assert node["desc"] == "Keeps things."
     assert [c["name"] for c in node["children"]] == ["Store", "Shelf"]
+
+
+def test_more_info_is_the_docstring_after_its_first_sentence(module_in):
+    node = module_in("Widget.py", '''class Widget:
+    """Draws one widget. It is redrawn
+    on every frame.
+
+    Sizes:
+      - small
+    """
+''')
+    assert node["desc"] == "Draws one widget."
+    assert node["more"] == "It is redrawn\non every frame.\n\nSizes:\n  - small"
+
+
+def test_a_one_sentence_docstring_has_no_more_info(module_in):
+    assert module_in("lamp.py", '"""Dims the lamp, e.g. at night."""\n')["more"] == ""
+
+
+def test_more_info_keeps_the_whole_docstring_when_the_description_is_an_override(atlas, module_in, monkeypatch):
+    monkeypatch.setitem(atlas.MODULES, "src/pkg/lamp.py", "Runs the lamp.")
+    node = module_in("lamp.py", '"""Dims the lamp. Slowly."""\n')
+    assert (node["desc"], node["more"]) == ("Runs the lamp.", "Dims the lamp. Slowly.")
