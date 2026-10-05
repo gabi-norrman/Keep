@@ -525,12 +525,15 @@ class TestRenderForDisplay:
         assert "### System (14:40)" in out
         assert "iMessage received: hi" in out
 
-    def test_shows_full_content_without_truncation(self):
+    def test_shows_the_bytes_the_llm_gets_so_a_long_turn_shows_cut(self):
         section = _make_history_section()
-        section.max_render_chars = 50  # the LLM rendering would truncate here; this must not.
+        section.max_render_chars = 50
         long_text = "z" * 500
         section.history = [{"role": "user", "content": long_text, "timestamp": 1000.0}]
-        assert long_text in section.render_for_display()
+        out = section.render_for_display()
+        sent = section.get_history_messages()[0]["content"]
+        assert long_text not in out
+        assert sent in out
 
     def test_hides_entries_before_trim_cutoff_with_note(self):
         section = _make_history_section()

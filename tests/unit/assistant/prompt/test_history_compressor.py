@@ -142,6 +142,16 @@ class TestInTheHistoryWindow:
         assert "please buy the radon kit" in messages[0]["content"]
         assert messages[-1]["content"].count("Item 29") == 1, "only the newest snapshot carries its elements"
 
+    def test_the_prompt_tab_shows_the_window_the_request_sends(self):
+        section = self._history()
+        section.history = self._browse_session(snapshots=3)
+        shown = section.render_for_display()
+        sent = "\n\n".join(m["content"] for m in section.get_history_messages())
+        assert shown.count(SnapshotFormat.ELEMENTS_MARKER) == 1
+        assert shown.count("interactive elements omitted") == 2
+        for row in sent.split("\n\n"):
+            assert row in shown
+
     def test_one_shot_render_compresses_the_same_way(self):
         entries = self._browse_session(snapshots=3)
         messages = MessageHistory.render_messages(entries, 100_000, MessageHistory.MAX_RENDER_CHARS)

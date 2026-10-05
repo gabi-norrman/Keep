@@ -233,13 +233,16 @@ class MessageHistory:
         max_bytes renders a one-shot view trimmed to that budget instead, without
         touching the sticky window.
         """
-        entries = self.get_merged_entries()
         if max_bytes is not None:
-            return self.render_messages(entries, max_bytes, self.max_render_chars)
+            return self.render_messages(self.get_merged_entries(), max_bytes, self.max_render_chars)
+        return self._finalize_messages([(role, content) for _, role, content in self._window()])
 
-        rendered = self._compressor.compress(self._render_entries(entries, self.max_render_chars))
-        kept = self._hysteresis_trim(rendered)
-        return self._finalize_messages([(role, content) for _, role, content in kept])
+    def _window(self) -> list[tuple[dict, str, str]]:
+        """The live history window as (entry, role, content) rows: every entry rendered,
+        superseded rows compressed, the hysteresis trim applied. get_history_messages sends
+        it and render_for_display shows it, so the Prompt tab never drifts from the request."""
+        rendered = self._compressor.compress(self._render_entries(self.get_merged_entries(), self.max_render_chars))
+        return self._hysteresis_trim(rendered)
 
     def trim_window(self):
         """Advance the sticky trim cutoff the way the next get_history_messages() would, so a
@@ -539,44 +542,39 @@ class MessageHistory:
     def render_for_display(self) -> str:
         """Render the LLM history window as markdown for the console PromptTab viewer.
 
-        Shows only the entries inside the current hysteresis window (at or after
-        _trim_cutoff) — i.e. what the LLM actually receives — with full content
-        (no per-entry truncation) so the operator can read it. Older entries are
-        summarised in a single leading note. Each turn becomes an h3 header
-        (name/time/source) plus the message body, so MarkdownTabView colours the
-        headers.
+        The rows are the window get_history_messages() sends (_window: rendered,
+        compressed, trimmed), so every body is byte for byte what the LLM receives —
+        a superseded browse snapshot shows collapsed, a long turn shows cut. Each row
+        gets an h3 header (name/time/source) so MarkdownTabView colours it; the
+        entries before the trim cutoff are summarised in a single leading note.
         """
         entries = self.get_merged_entries()
         if not entries:
             return "_No conversation history yet._"
 
-        window = [e for e in entries if e["timestamp"] >= self._trim_cutoff or self._is_eviction_stub(e)]
-        trimmed = len(entries) - len(window)
+        window = self._window()
+        trimmed = sum(1 for e in entries if e["timestamp"] < self._trim_cutoff and not self._is_eviction_stub(e))
         blocks = []
         if trimmed:
             cutoff = datetime.fromtimestamp(self._trim_cutoff).strftime('%H:%M:%S')
             blocks.append(f"_{trimmed} older entries (before {cutoff}) trimmed from the window — not sent._")
-        entries = window
-        for entry in entries:
-            role = entry["role"]
-            content = entry["content"]
-            timestamp = entry["timestamp"]
-
-            if role == "assistant":
-                header = MessageFormatter.format_assistant_header(timestamp)
-            elif role == "system":
-                header = f"System ({MessageFormatter.format_timestamp(timestamp)})"
-            elif role == self.ROLE_COMMAND:
-                header = f"Command result ({MessageFormatter.format_timestamp(timestamp)})"
-            elif role == self.ROLE_NOTE:
-                header = f"Note ({MessageFormatter.format_timestamp(timestamp)})"
-            else:
-                header = MessageFormatter.format_header(
-                    role.capitalize(), timestamp, entry.get("source"), entry.get("location"))
-
-            blocks.append(f"### {header}\n{content}")
-
+        for entry, _, content in window:
+            blocks.append(f"### {self._display_header(entry)}\n{content}")
         return "\n\n".join(blocks)
+
+    @classmethod
+    def _display_header(cls, entry: dict) -> str:
+        role = entry["role"]
+        timestamp = entry["timestamp"]
+        if role == "assistant":
+            return MessageFormatter.format_assistant_header(timestamp)
+        if role == "system":
+            return f"System ({MessageFormatter.format_timestamp(timestamp)})"
+        if role == cls.ROLE_COMMAND:
+            return f"Command result ({MessageFormatter.format_timestamp(timestamp)})"
+        if role == cls.ROLE_NOTE:
+            return f"Note ({MessageFormatter.format_timestamp(timestamp)})"
+        return MessageFormatter.format_header(role.capitalize(), timestamp, entry.get("source"), entry.get("location"))
 
     @staticmethod
     def append_user_turn(messages: list[dict], content: str) -> None:
