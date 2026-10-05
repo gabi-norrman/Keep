@@ -143,7 +143,7 @@ The car lit up like a Christmas tree in northern Germany; he sent a photo of the
 
 <table>
 <tr><td>⌨️&nbsp;<b>Terminal&nbsp;UI</b></td><td>Text chat in a Claude Code-style terminal UI.</td></tr>
-<tr><td>💬&nbsp;<b>Telegram</b></td><td>The same chat on your phone, with images and voice messages.</td></tr>
+<tr><td><img src="docs/images/telegram.svg" width="18" height="18" alt="" valign="middle">&nbsp;<b>Telegram</b></td><td>The same chat on your phone, with images and voice messages.</td></tr>
 <tr><td>🎙️&nbsp;<b>Voice-to-voice</b></td><td>A highly optimized interface for talking to your home. It is tuned for speed and best suited for dimming lights, putting on music and the like. Use text for the complex questions.</td></tr>
 </table>
 
