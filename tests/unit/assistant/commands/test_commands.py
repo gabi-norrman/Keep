@@ -995,9 +995,15 @@ class TestCmdSendEmail:
             MockCls.get_instance.return_value = inst
             result = commands_instance.cmd_send_email("alice@example.com", "Hi", "Hello there")
         assert result == ""
-        inst.send.assert_called_once_with(
-            "alice@example.com", "Hi", f"Hello there\n\n{commands_instance.AI_MESSAGE_SUFFIX}"
-        )
+        inst.send.assert_called_once_with("alice@example.com", "Hi", "Hello there")
+
+    def test_email_body_carries_no_ai_footer(self, commands_instance):
+        with patch("assistant.commands.Commands.ICloudEmailAccess") as MockCls:
+            inst = Mock()
+            inst.send.return_value = ""
+            MockCls.get_instance.return_value = inst
+            commands_instance.cmd_send_email("alice@example.com", "Hi", "Hello there")
+        assert commands_instance.AI_MESSAGE_SUFFIX not in inst.send.call_args[0][2]
 
     def test_missing_parts_returns_error_without_calling_send(self, commands_instance):
         with patch("assistant.commands.Commands.ICloudEmailAccess") as MockCls:

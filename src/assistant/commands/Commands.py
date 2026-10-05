@@ -896,7 +896,6 @@ class Commands:
 
         # LLM emits literal "\n" escape sequences — turn them into real newlines.
         body = normalize_llm_escapes(body)
-        body = f"{body}\n\n{self.AI_MESSAGE_SUFFIX}"
         return ICloudEmailAccess.get_instance().send(to, subject, body)
 
     def cmd_fetch_camera_images(self, parameter_string: str):
