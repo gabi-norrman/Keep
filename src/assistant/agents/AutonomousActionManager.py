@@ -28,8 +28,12 @@ USER_INTERACTION_STALE_COUNTER_SECONDS = 10 * 60
 # How often the background thread performs an autonomous activity check. The LLM
 # is told about this cadence (see AUTONOMOUS_ACTION_PROMPT) so it can reason about
 # how long until its next opportunity to act.
-PERIODIC_CHECK_INTERVAL_SECONDS = 55 * 60  # 55 minutes — stays under the 1h cache TTL
+PERIODIC_CHECK_INTERVAL_SECONDS = 55 * 60  # 55 minutes start to start — stays under the 1h cache TTL
 PERIODIC_CHECK_INTERVAL_MINUTES = PERIODIC_CHECK_INTERVAL_SECONDS / 60
+# A check that finds the user busy is tried again this much later, not a whole interval
+# later: waiting the full interval stretched the gap between checks to 110 minutes, past
+# the hour Anthropic keeps the prompt prefix cached, and the next check re-wrote it all.
+POSTPONED_CHECK_RETRY_SECONDS = 3 * 60
 
 # caffeinate(): how often the tight loop checks, and for how long when the LLM gives no duration.
 CAFFEINE_INTERVAL_MINUTES = 3
@@ -249,8 +253,9 @@ class AutonomousActionManager:
         from datetime import datetime
         last_memory_curation_date = None
 
+        next_check_at = time.time() + PERIODIC_CHECK_INTERVAL_SECONDS
         while self.running:
-            time.sleep(PERIODIC_CHECK_INTERVAL_SECONDS)
+            time.sleep(max(0.0, next_check_at - time.time()))
 
             # Check if it's 04:00 and we haven't run curation today
             now = datetime.now()
@@ -266,13 +271,25 @@ class AutonomousActionManager:
                 last_memory_curation_date = now.date()
 
             if self.prompt_manager.is_night_mode_active():
+                next_check_at = time.time() + PERIODIC_CHECK_INTERVAL_SECONDS
                 continue
 
             if self.is_user_interaction_active():
-                info("Skipping periodic activity check — user interaction active or recent.")
+                next_check_at = time.time() + POSTPONED_CHECK_RETRY_SECONDS
+                info(f"Postponing periodic activity check {POSTPONED_CHECK_RETRY_SECONDS // 60} min "
+                     f"— user interaction active or recent.")
                 continue
 
-            self.activity_check()
+            # Timed from the start of the check, so its own duration does not stretch the
+            # cadence past the hour the prompt prefix stays cached.
+            next_check_at = time.time() + PERIODIC_CHECK_INTERVAL_SECONDS
+            try:
+                self.activity_check()
+            except Exception as e:
+                # One failed check (the API out of credits, say) must not end the periodic
+                # loop: on 2026-10-04 it did, and no check ran again until the next restart.
+                error(f"Periodic activity check failed: {type(e).__name__}: {e}")
+            trace(f"Next periodic activity check at {time.strftime('%H:%M', time.localtime(next_check_at))}")
 
     def activity_check(self, prompt: str | None = None, wakeup: dict | None = None) -> str:
         """One autonomous check. *wakeup* is the schedule-file entry when the check is a

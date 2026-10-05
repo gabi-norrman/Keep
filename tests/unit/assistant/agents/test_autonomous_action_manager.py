@@ -12,6 +12,8 @@ from assistant.agents.AutonomousActionManager import (
     AutonomousActionManager,
     AUTONOMOUS_ACTION_PROMPT,
     PERIODIC_CHECK_INTERVAL_MINUTES,
+    PERIODIC_CHECK_INTERVAL_SECONDS,
+    POSTPONED_CHECK_RETRY_SECONDS,
     THINKING_TAG_INSTRUCTION,
 )
 
@@ -543,6 +545,75 @@ class TestAutonomousActionManager:
 
         assert call_count[0] == 0
         mgr.running = True  # restore
+
+    @staticmethod
+    def _run_loop(mgr, iterations: int, check=None, interaction_active: bool = False, check_seconds: float = 0.0):
+        """Run the periodic loop for `iterations` sleeps on a fake clock that advances by
+        every sleep and by `check_seconds` per check; returns (sleep lengths, the check mock)."""
+        from assistant.agents import AutonomousActionManager as module
+        clock = [1_000_000.0]
+        sleeps = []
+
+        def patched_sleep(seconds):
+            sleeps.append(seconds)
+            clock[0] += seconds
+            if len(sleeps) >= iterations:
+                mgr.running = False
+
+        def patched_check(**kwargs):
+            clock[0] += check_seconds
+            if check is not None:
+                return check()
+            return "NO"
+
+        with patch.object(module.time, 'time', side_effect=lambda: clock[0]), \
+             patch.object(module.time, 'sleep', side_effect=patched_sleep), \
+             patch.object(mgr, 'is_user_interaction_active', return_value=interaction_active), \
+             patch.object(mgr, 'activity_check', side_effect=patched_check) as activity:
+            mgr._run_periodic_check()
+        mgr.running = True  # restore
+        return sleeps, activity
+
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_a_checks_own_duration_does_not_stretch_the_cadence(self, mock_claude):
+        """Start to start stays at the interval: a 10-minute check is followed by a 45-minute
+        sleep, so two checks never sit more than the interval (under the 1h cache TTL) apart."""
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(), test_mode=True)
+
+        sleeps, activity = self._run_loop(mgr, iterations=3, check_seconds=10 * 60)
+
+        assert activity.call_count == 3
+        assert sleeps[0] == PERIODIC_CHECK_INTERVAL_SECONDS
+        assert sleeps[1] == sleeps[2] == PERIODIC_CHECK_INTERVAL_SECONDS - 10 * 60
+
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_a_check_postponed_for_user_activity_is_retried_soon_not_an_interval_later(self, mock_claude):
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(), test_mode=True)
+
+        sleeps, activity = self._run_loop(mgr, iterations=3, interaction_active=True)
+
+        activity.assert_not_called()
+        assert sleeps[1] == sleeps[2] == POSTPONED_CHECK_RETRY_SECONDS
+        assert POSTPONED_CHECK_RETRY_SECONDS < PERIODIC_CHECK_INTERVAL_SECONDS / 5
+
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_a_failing_check_does_not_end_the_loop(self, mock_claude):
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(), test_mode=True)
+        outcomes = iter([RuntimeError("credit balance too low"), "NO", "NO"])
+
+        def check():
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        sleeps, activity = self._run_loop(mgr, iterations=3, check=check)
+
+        assert activity.call_count == 3, "the checks after the failed one still ran"
+        assert sleeps[1] == PERIODIC_CHECK_INTERVAL_SECONDS
 
     @staticmethod
     def _run_two_iterations_at_four(mgr, curation_pending: bool):
