@@ -53,7 +53,7 @@ class MessageHistory:
     # (2026-10-05). A quiet afternoon's stale rows still go at HIGH. At TRIM_CEILING_BYTES
     # the trim happens whatever the rows' age — the ceiling is what the window costs in any
     # busy period, feed bursts included, so it is a size worth paying always.
-    TRIM_CEILING_BYTES = 35 * 1024
+    TRIM_CEILING_BYTES = 50 * 1024
     TRIM_FRESH_SECONDS = 15 * 60
     # A trim that evicts a toolkit reference row leaves a one-line transient `system` stub
     # at the row's timestamp, exempt from the cutoff, so the LLM knows the commands it saw
