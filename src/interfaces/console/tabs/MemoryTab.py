@@ -53,8 +53,9 @@ class MemoryTab(TabView):
     """Base of the Memory group's document sub-tabs (`BankTab`, `ProceduresTab`): one part of the
     long-term memory, `_live_text` being the part, read as a document in the Dashboard's tiles.
     Summary tiles on top (how much there is, how it is divided, and what the tab adds), an
-    outline of the sections on the left from 110 columns — each with a meter of its share and
-    the one being read highlighted — and the text itself, laid out by `widgets/Markdown`: no
+    outline of the sections on the left from 110 columns — each with a meter of its share, its
+    parts with a gray one of their share of the section, and the one being read highlighted —
+    and the text itself, laid out by `widgets/Markdown`: no
     markdown marker is shown, each section has its own accent. ↑↓ and PgUp/PgDn scroll, n/p
     jump a section.
     A tab with `HAS_HISTORY` also browses the snapshots in `log_dir` with ←→ (the bank's: what
@@ -319,11 +320,14 @@ class MemoryTab(TabView):
         largest = max((entry.size for entry in sections), default=0) or 1
         has_diff = self._has_diff
         right_edge = x + width - 2
+        section_size = largest
 
         for k, entry in enumerate(entries[self._outline_top:self._outline_top + room]):
             row_y = y + Tile.CARD_TOP + k
             current = self._outline_top + k == chosen
             part = entry.depth > 0
+            if not part:
+                section_size = entry.size or 1
             right_w = 0
             screen.reset_color()
             if has_diff:
@@ -337,9 +341,12 @@ class MemoryTab(TabView):
                     screen.set_color(color)
                     screen.write_at(at, row_y, text)
                     at += len(text) + 1
-            elif not part:
+            else:
+                # A section's meter is its share of the largest section; a part's, in gray, its
+                # share of the section it belongs to — how the section divides between its parts.
                 right_w = self.OUTLINE_METER_W + 1 + self.OUTLINE_SIZE_W
-                Tile.draw_meter(screen, right_edge - right_w, row_y, self.OUTLINE_METER_W, entry.size / largest, entry.accent)
+                fraction, color = (entry.size / section_size, Theme.COLOR_LABEL) if part else (entry.size / largest, entry.accent)
+                Tile.draw_meter(screen, right_edge - right_w, row_y, self.OUTLINE_METER_W, min(1.0, fraction), color)
                 screen.set_color(Theme.COLOR_DIM)
                 screen.write_at(right_edge - self.OUTLINE_SIZE_W, row_y, amount(entry.size).rjust(self.OUTLINE_SIZE_W))
             screen.reset_color()

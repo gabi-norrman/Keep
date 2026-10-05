@@ -159,12 +159,21 @@ class TestOutline:
 
         MemoryFile.write("# A\n## A1\n- one\n# B\n## B1\n- two\n", tab.memory_file_path)
         shown = outline(draw(tab, width=WIDE))
-        assert "A1" in shown and "B1" in shown
+        assert any(row.startswith("A1") for row in shown) and any(row.startswith("B1") for row in shown)
         parts = "".join(f"## A{n}\ntext {n}\n" for n in range(1, HEIGHT + 1))
         MemoryFile.write(f"# A\n{parts}# B\n## B1\n- two\n", tab.memory_file_path)
         shown = outline(draw(tab, width=WIDE))
         assert any(row.startswith("● A") for row in shown) and any(row.startswith("● B") for row in shown)
-        assert not any(row in ("A1", "B1") for row in shown)
+        assert not any(row.startswith(("A1", "B1")) for row in shown)
+
+    def test_a_part_is_metered_as_its_share_of_its_section(self, tab):
+        MemoryFile.write("# A\n## A1\n" + "x" * 300 + "\n## A2\n" + "x" * 100 + "\n# B\n- b\n", tab.memory_file_path)
+        screen = draw(tab, width=WIDE)
+        a1, a2 = (row_with(screen, name)[:40] for name in ("A1", "A2"))
+        size = lambda row: int(row.split()[-1])
+        filled = lambda row: sum(ch in "▏▎▍▌▋▊▉█" for ch in row)
+        assert size(a1) > 300 > size(a2) > 100
+        assert filled(a1) > filled(a2) > 0
 
     def test_the_section_being_read_is_the_highlighted_one(self, tab):
         MemoryFile.write("# First\n" + numbered(80) + "# Second\n" + numbered(80), tab.memory_file_path)
