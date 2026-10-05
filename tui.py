@@ -113,9 +113,13 @@ def handle_connection():
         connected = True
 
         # Send initial terminal dimensions, plus the terminal program so the server can
-        # pick a rendering the terminal copes with (Terminal.app gets no half-block pixels)
+        # pick a rendering the terminal copes with (Terminal.app gets no half-block pixels,
+        # Ghostty, iTerm2, WezTerm and kitty get pictures through the kitty graphics
+        # protocol). kitty sets no TERM_PROGRAM; its TERM names it.
         initial_dims = get_terminal_dimensions()
         terminal = os.environ.get("TERM_PROGRAM", "").split(" ")[0]
+        if not terminal and "kitty" in os.environ.get("TERM", ""):
+            terminal = "kitty"
         sock.send((f"{initial_dims} {terminal}".rstrip() + "\n").encode())
         last_dimensions = initial_dims
 

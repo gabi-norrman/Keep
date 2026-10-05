@@ -99,14 +99,6 @@ class Commands:
     PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch", "load_calendar"})
     AI_MESSAGE_SUFFIX = "[Sent with the help of AI 🤖]"
 
-    # Looked up by the portable iCloud asset GUID; ZUUID is resolved here because
-    # AppleScript ("spotlight media item id") only understands the machine-local UUID.
-    _PHOTO_ASSET_SQL = """SELECT a.ZUUID, a.ZFILENAME, a.ZDIRECTORY, m.ZCLOUDMASTERGUID,
-                                 a.ZCLOUDASSETGUID, a.ZLIBRARYSCOPE
-                          FROM ZASSET a
-                          LEFT JOIN ZCLOUDMASTER m ON m.Z_PK = a.ZMASTER
-                          WHERE a.ZCLOUDASSETGUID = ?"""
-
     music_manager = None
 
     @classmethod
@@ -478,9 +470,10 @@ class Commands:
 
         return _sqlite3.connect(f"file:{PHOTOS_SQLITE_PATH}?mode=ro", uri=True)
 
-    @classmethod
-    def _fetch_photo_asset_row(cls, cursor, asset_guid: str):
-        cursor.execute(cls._PHOTO_ASSET_SQL, (asset_guid,))
+    @staticmethod
+    def _fetch_photo_asset_row(cursor, asset_guid: str):
+        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
+        cursor.execute(PhotoProcessor.ASSET_FILE_SQL, (asset_guid,))
         return cursor.fetchone()
 
     # Telegram's bot upload limit; the 720p iCloud rendition of a clip under ~2 min fits.

@@ -1,7 +1,10 @@
 """The Photos tab: the indexed photo library, one photo at a time, as a board in the Dashboard's
 tiles — summary tiles (how much of the library is indexed, where the browsing stands, what the
-indexing last did), the photo's description and its details with the two scores as meters. From
-150 columns the details sit beside the description, under it on a narrower screen."""
+indexing last did), the photo itself, its description and its details with the two scores as
+meters. From 150 columns the picture stands at the left with the description over the details
+beside it; a narrower screen stacks the three. The picture is fetched in the background as the
+browsing moves (`PhotoProcessor.image_bytes_for_asset`, iCloud included) and drawn through
+`TUIScreen.image`; a video has no preview."""
 import os
 import sqlite3
 import subprocess
@@ -11,7 +14,9 @@ from datetime import datetime
 from typing import List, Optional
 
 from .TabView import TabView, SUB_CONTENT_TOP
+from common.logging import info, trace
 from interfaces.console import Theme
+from interfaces.console.framework.Pictures import CELL_ASPECT, Picture
 from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.framework.TextWidth import wrap
 from interfaces.console.widgets import Board, Tile
@@ -22,6 +27,11 @@ from assistant.integration.integrations.photos.PhotoProcessor import PhotoProces
 DETAILS_MIN_W = 60
 FACT_LABEL_W = 14
 DESCRIPTION_MIN_ROWS = 2
+PICTURE_MIN_ROWS = 4         # fewer rows of picture than this is not worth a card
+PICTURE_SHARE_H = 45         # percent of the board's height the picture takes when the three are stacked
+PICTURE_SHARE_W = 50         # percent of the width the picture card may take beside the text
+DEFAULT_ASPECT = 1.5         # a 3:2 photo: what the card is sized for while the picture is still loading
+NO_PREVIEW = {"loading": "Loading…", "video": "Video — no preview", "none": "No preview"}
 NONE = "\u2014"
 HINTS = "\u2191\u2193 prev/next  PgUp/PgDn \u00b110  Home/End  Ctrl-S sort  Ctrl-O open  Ctrl-P process  Ctrl-B bulk"
 # The colour of an indexing outcome by PhotoProcessor's status
@@ -52,9 +62,81 @@ class PhotosTab(TabView):
         self._process_status: str = ""
         self._process_status_type: str = ""
         self._cards: List[Tile.Card] = []
+        self._picture: Optional[Picture] = None       # the current photo's picture, once fetched
+        self._picture_guid: Optional[str] = None      # the asset the picture (or its absence) is for
+        self._picture_state: str = "none"             # a NO_PREVIEW key while there is no picture
+        self._picture_pending: set = set()            # asset guids a fetch is running for
 
     def _current_sort(self):
         return SORT_MODES[self._sort_mode_idx]
+
+    # --- the picture -------------------------------------------------------------------------
+
+    def _request_picture(self, photo: Optional[dict]):
+        """Fetch the photo's picture in the background unless it is the one already shown or
+        being fetched; a video gets no preview. The card shows "Loading…" meanwhile, and a
+        fetch that finishes after the browsing has moved on is dropped."""
+        guid = (photo or {}).get("asset_guid") or None
+        if guid == self._picture_guid:
+            return
+        self._picture, self._picture_guid = None, guid
+        if guid is None:
+            self._picture_state = "none"
+            return
+        if (photo.get("photo_type") or "").startswith("video"):
+            self._picture_state = "video"
+            trace(f"Photos tab: {guid} is a video, no preview")
+            return
+        self._picture_state = "loading"
+        if guid in self._picture_pending:
+            trace(f"Photos tab: picture for {guid} is already being fetched")
+            return
+        self._picture_pending.add(guid)
+
+        def fetch():
+            try:
+                picture = Picture.decode(PhotoProcessor.image_bytes_for_asset(guid))
+            except Exception as e:
+                info(f"Photos tab: fetching the picture for {guid} failed: {e}")
+                picture = None
+            finally:
+                self._picture_pending.discard(guid)
+            if self._picture_guid != guid:
+                trace(f"Photos tab: picture for {guid} arrived after the browsing moved on, dropped")
+                return
+            self._picture = picture
+            self._picture_state = "none"
+            if picture is None:
+                info(f"Photos tab: no picture for {guid}")
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _picture_card_width(self, available: int, height: int) -> int:
+        """The columns the picture card takes beside the text: what the picture (or a 3:2
+        frame while it loads) needs at the card's height, at most PICTURE_SHARE_W percent."""
+        inner_rows = max(1, height - Tile.CARD_CHROME)
+        max_cols = max(1, available * PICTURE_SHARE_W // 100 - 4)
+        if self._picture is not None:
+            cols, _ = self._picture.fit(max_cols, inner_rows)
+        else:
+            cols = min(max_cols, round(inner_rows * DEFAULT_ASPECT / CELL_ASPECT))
+        return cols + 4
+
+    def _draw_picture(self, screen: TUIScreen, x: int, y: int, width: int, height: int):
+        """The picture card: the picture centred in the card's body, or why there is none."""
+        if height <= Tile.CARD_CHROME:
+            return
+        picture = self._picture
+        value = f"{picture.width} × {picture.height}" if picture is not None else ""
+        Tile.draw_card(screen, self._cards, x, y, width, height, "Photo", value, Theme.COLOR_LABEL)
+        inner_x, inner_y, inner_w, inner_h = x + 2, y + Tile.CARD_TOP, width - 4, height - Tile.CARD_CHROME
+        if picture is None:
+            screen.set_color(Theme.COLOR_DIM)
+            screen.write_at(inner_x, inner_y, NO_PREVIEW[self._picture_state])
+            screen.reset_color()
+            return
+        cols, rows = picture.fit(inner_w, inner_h)
+        screen.image(inner_x + (inner_w - cols) // 2, inner_y + (inner_h - rows) // 2, picture, cols, rows)
 
     def _load_data(self):
         if self._loading:
@@ -76,6 +158,7 @@ class PhotosTab(TabView):
                     offset=self._index, limit=1,
                     sort_by=sort_col, sort_desc=sort_desc)
                 self._photo = results[0] if results else None
+                self._request_picture(self._photo)
             finally:
                 self._last_load_time = time.time()
                 self._loading = False
@@ -116,21 +199,38 @@ class PhotosTab(TabView):
             Board.draw_notice(screen, self._cards, Board.LEFT, y, available, height, "Photo",
                               "Loading..." if self._loading else "No photos to display \u2014 Ctrl-P indexes the next one")
         elif screen.width >= Board.SIDE_BY_SIDE_MIN:
-            description_w, details_w = Board.split(available, DETAILS_MIN_W)
-            facts = self._facts(photo)
-            self._draw_description(screen, Board.LEFT, y, description_w, height, photo)
-            self._draw_details(screen, Board.LEFT + description_w + Board.GAP, y, details_w,
-                               min(height, len(facts) + Tile.CARD_CHROME), facts)
+            picture_w = self._picture_card_width(available, height)
+            self._draw_picture(screen, Board.LEFT, y, picture_w, height)
+            text_x = Board.LEFT + picture_w + Board.GAP
+            self._draw_text_column(screen, text_x, y, available - picture_w - Board.GAP, bottom, photo)
         else:
+            # The picture takes its share of the height but yields to the text: the details
+            # whole and the description at its shortest come first, and a board too short
+            # for PICTURE_MIN_ROWS of picture above them shows no picture at all.
             facts = self._facts(photo)
-            details_h = len(facts) + Tile.CARD_CHROME
-            lines = wrap(photo.get("detailed_description") or "", available - 4)
-            description_h = Tile.CARD_CHROME + max(DESCRIPTION_MIN_ROWS, min(len(lines), height - 1 - details_h - Tile.CARD_CHROME))
-            self._draw_description(screen, Board.LEFT, y, available, description_h, photo)
-            y += description_h + 1
-            self._draw_details(screen, Board.LEFT, y, available, min(details_h, bottom - y), facts)
+            text_min = Tile.CARD_CHROME + DESCRIPTION_MIN_ROWS + 1 + len(facts) + Tile.CARD_CHROME
+            picture_h = min(height * PICTURE_SHARE_H // 100, height - 1 - text_min)
+            if picture_h >= PICTURE_MIN_ROWS + Tile.CARD_CHROME:
+                self._draw_picture(screen, Board.LEFT, y, available, picture_h)
+                y += picture_h + 1
+            else:
+                trace(f"Photos tab: no room for the picture over the text on a {height}-row board")
+            self._draw_text_column(screen, Board.LEFT, y, available, bottom, photo, facts)
         Tile.tint_cards(screen, self._cards)
         Board.draw_hints(screen, HINTS)
+
+    def _draw_text_column(self, screen: TUIScreen, x: int, y: int, width: int, bottom: int, photo: dict,
+                          facts: Optional[List[Fact]] = None):
+        """The description over the details in one column from row `y` down to `bottom`; the
+        details keep their rows and the description gets the rest, at least DESCRIPTION_MIN_ROWS."""
+        height = bottom - y
+        facts = self._facts(photo) if facts is None else facts
+        details_h = len(facts) + Tile.CARD_CHROME
+        lines = wrap(photo.get("detailed_description") or "", width - 4)
+        description_h = Tile.CARD_CHROME + max(DESCRIPTION_MIN_ROWS, min(len(lines), height - 1 - details_h - Tile.CARD_CHROME))
+        self._draw_description(screen, x, y, width, description_h, photo)
+        y += description_h + 1
+        self._draw_details(screen, x, y, width, min(details_h, bottom - y), facts)
 
     # --- summary tiles -----------------------------------------------------------------------
 

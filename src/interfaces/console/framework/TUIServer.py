@@ -30,6 +30,9 @@ class TUIServer:
     """
 
     FULL_BLOCK_TERMINALS = {"Apple_Terminal"}   # TERM_PROGRAM values whose `▀` rendering breaks the Crystal
+    # TERM_PROGRAM values (tui.py says "kitty" for kitty, which sets none) that draw pictures
+    # through the kitty graphics protocol; tmux and screen hide the terminal, so none there.
+    GRAPHICS_TERMINALS = {"ghostty", "iTerm.app", "WezTerm", "kitty"}
 
     def __init__(self, draw_screen_callback, host: str = '0.0.0.0', port: int = 5151,
                  input_callback: Optional[Callable[[str, tuple], None]] = None):
@@ -141,7 +144,8 @@ class TUIServer:
                 self.wake()
 
                 info(f"Client connected to TUI server: {addr} ({cols} x {rows}, terminal "
-                     f"{terminal or 'unknown'}{'' if self.half_blocks_for(terminal) else ', full blocks'}), "
+                     f"{terminal or 'unknown'}{'' if self.half_blocks_for(terminal) else ', full blocks'}, "
+                     f"pictures as {'graphics' if self.graphics_for(terminal) else 'half-block pixels'}), "
                      f"forcing full redraw")
 
                 # Start input handler thread if callback is provided
@@ -230,6 +234,12 @@ class TUIServer:
         does not (gaps between the halves, no true color), so it gets full cells instead."""
         return terminal not in TUIServer.FULL_BLOCK_TERMINALS
 
+    @staticmethod
+    def graphics_for(terminal: str) -> bool:
+        """Whether a client's terminal shows pictures through the kitty graphics protocol; the
+        others get them as half-block pixels."""
+        return terminal in TUIServer.GRAPHICS_TERMINALS
+
     def _drop_client(self, client: socket.socket, why: str):
         """Forget and close a client; the caller holds clients_lock."""
         self.clients.discard(client)
@@ -298,7 +308,9 @@ class TUIServer:
                         client_to_use = next(iter(self.clients))
                         self.last_resized_client = client_to_use
                     cols, rows = self.client_dimensions.get(client_to_use, (80, 24))
-                    half_blocks = self.half_blocks_for(self.client_terminals.get(client_to_use, ""))
+                    terminal = self.client_terminals.get(client_to_use, "")
+                    half_blocks = self.half_blocks_for(terminal)
+                    graphics = self.graphics_for(terminal)
 
             if not has_clients:
                 self._wake.wait(0.5)   # a connecting client wakes the loop
@@ -311,7 +323,12 @@ class TUIServer:
                 screen.half_blocks = half_blocks
                 self.force_full_redraw = True
                 info(f"TUI Server: Crystal pixels are {'half' if half_blocks else 'full'} blocks now, "
-                     f"for {self.client_terminals.get(client_to_use) or 'an unknown terminal'}")
+                     f"for {terminal or 'an unknown terminal'}")
+            if screen.graphics != graphics:
+                screen.graphics = graphics
+                self.force_full_redraw = True
+                info(f"TUI Server: pictures are {'graphics' if graphics else 'half-block pixels'} now, "
+                     f"for {terminal or 'an unknown terminal'}")
             screen.link_status = self.link_status() if self.probing else NO_LINK_STATUS
             screen.link_probe_wanted = False
 
@@ -386,6 +403,8 @@ class TUIServer:
     # ESC followed by one of these is an Alt/Meta key chord (readline's word keys, and
     # Alt+Enter as a legacy terminal sends it), not a bare Escape followed by the character.
     _ESC_CHORDS = ("b", "f", "\x7f", "\r", "\n")
+    _APC_END = "\x1b\\"
+    _APC_MAX = 4096   # an APC reply longer than this is not one; the buffer is dropped rather than kept forever
 
     def _emit_key(self, key: str, addr):
         self.wake()
@@ -407,7 +426,9 @@ class TUIServer:
         arrows, Home/End, Delete, PgUp/PgDn, modifier+arrow, paste markers), `ESC O x` (SS3:
         Home/End on some terminals) and the `ESC b/f/DEL/CR` chords. A bare Escape ahead of
         any other character is the Escape key; a lone trailing Escape is kept until the
-        next read (or flushed by the input loop when nothing follows)."""
+        next read (or flushed by the input loop when nothing follows). An APC string
+        (`ESC _ … ESC \\`) is a terminal's answer to a graphics command — asked to keep quiet,
+        but not every terminal does — and is dropped, never a key."""
         while buf:
             if buf[0] != '\x1b':
                 self._emit_key(buf[0], addr)
@@ -438,6 +459,16 @@ class TUIServer:
                     return buf
                 self._emit_key(buf[:3], addr)
                 buf = buf[3:]
+                continue
+            if nxt == '_':
+                end = buf.find(self._APC_END, 2)
+                if end < 0:
+                    if len(buf) > self._APC_MAX:
+                        trace(f"Dropping an unterminated APC string of {len(buf)} chars from {addr}")
+                        return ""
+                    return buf
+                trace(f"Dropping a graphics reply from {addr}: {buf[2:end][:40]!r}")
+                buf = buf[end + len(self._APC_END):]
                 continue
             if nxt in self._ESC_CHORDS:
                 self._emit_key(buf[:2], addr)

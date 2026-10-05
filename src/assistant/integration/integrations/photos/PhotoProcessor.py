@@ -1041,6 +1041,33 @@ class PhotoProcessor:
         except Exception as e:
             trace(f"Photos: brctl download failed for {path}: {e}")
 
+    # Where a library asset's file is and what iCloud knows it as, by its cloud asset GUID
+    ASSET_FILE_SQL = """SELECT a.ZUUID, a.ZFILENAME, a.ZDIRECTORY, m.ZCLOUDMASTERGUID,
+                               a.ZCLOUDASSETGUID, a.ZLIBRARYSCOPE
+                        FROM ZASSET a
+                        LEFT JOIN ZCLOUDMASTER m ON m.Z_PK = a.ZMASTER
+                        WHERE a.ZCLOUDASSETGUID = ?"""
+
+    @staticmethod
+    def image_bytes_for_asset(asset_guid: str) -> Optional[bytes]:
+        """The JPEG of library asset `asset_guid` (1024 px, fetched from iCloud when it is not
+        on disk), or None when the library does not know the asset or its bytes cannot be had."""
+        try:
+            conn = sqlite3.connect(f"file:{PHOTOS_SQLITE_PATH}?mode=ro", uri=True)
+            try:
+                row = conn.execute(PhotoProcessor.ASSET_FILE_SQL, (asset_guid,)).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            info(f"Photos: could not look up asset {asset_guid}: {e}")
+            return None
+        if not row:
+            info(f"Photos: asset {asset_guid} is not in the library")
+            return None
+        _uuid, filename, directory, cloud_master_guid, cloud_asset_guid, library_scope = row
+        return PhotoProcessor._get_image_bytes(directory, filename, cloud_master_guid=cloud_master_guid,
+                                               cloud_asset_guid=cloud_asset_guid, library_scope=library_scope or 0)
+
     @staticmethod
     def _get_image_bytes(directory: str, filename: str,
                          cloud_master_guid: str = None, cloud_asset_guid: str = None,

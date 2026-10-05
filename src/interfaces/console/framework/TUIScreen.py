@@ -1,9 +1,16 @@
 import zlib
-from typing import Optional, List
+from typing import Dict, Optional, List, Tuple
+
 from urllib.parse import quote
 
+from common.logging import trace
+from interfaces.console.framework import Pictures
 from interfaces.console.framework.LinkProbe import LinkStatus, NO_LINK_STATUS
+from interfaces.console.framework.Pictures import Picture
 from interfaces.console.framework.TextWidth import _NARROW_LIMIT, _widths, char_width, drawable
+
+# (x, y, cols, rows, first_row, visible_rows): where a picture is on screen and which band of it
+Placement = Tuple[int, int, int, int, int, int]
 
 
 class Color:
@@ -99,7 +106,17 @@ class Cell:
 
 
 class TUIScreen:
-    """Double-buffered character screen that emits only the ANSI diff needed to update a terminal."""
+    """Double-buffered character screen that emits only the ANSI diff needed to update a terminal.
+
+    Pictures are a layer over the cells (`image`). With `graphics` on — the client's terminal
+    speaks the kitty graphics protocol — a picture is sent once (`Pictures.transmit`, re-sent
+    when its box changes) and placed over blank cells; the frame carries a placement only
+    when it is new or moved, and a delete when one has gone, so a still picture costs nothing
+    per frame. `MAX_TRANSMITTED` pictures stay in the terminal for scrolling back; the oldest
+    off-screen one is freed past that. Without `graphics` a picture is half-block pixels in
+    the cells themselves (`Pixels.blit`), through the ordinary diff."""
+
+    MAX_TRANSMITTED = 32
 
     # ANSI Escape sequences
     ESC = "\033"
@@ -158,6 +175,10 @@ class TUIScreen:
         self.link_status: LinkStatus = NO_LINK_STATUS   # set by TUIServer before each frame: how far behind the terminal is
         self.link_probe_wanted = False   # a tab that shows link_status sets this while drawing; probes only ride frames when one did
         self.half_blocks = True   # set by TUIServer from the client's terminal: False where `▀` renders badly (Terminal.app)
+        self.graphics = False     # set by TUIServer from the client's terminal: True where it speaks the kitty graphics protocol
+        self._placements: Dict[int, Tuple[Picture, Placement]] = {}   # the pictures of the frame being drawn, by image id
+        self._shown: Dict[int, Placement] = {}                        # the pictures on the terminal's screen
+        self._transmitted: Dict[int, Tuple[int, int]] = {}            # the boxes the terminal holds pictures for, oldest first
 
     def resize(self, width: int, height: int):
         """Resize buffers and reset state."""
@@ -175,6 +196,7 @@ class TUIScreen:
     def clear_terminal(self):
         """Wipe the client's screen and start both buffers afresh, so the next frame is drawn
         from scratch: after a resize, or to get rid of raw ANSI output the diff cannot see."""
+        self._forget_images()
         self.control_sequences.append(self.CLEAR_SCREEN)
         self.control_sequences.append(self.CURSOR_HOME)
         self.control_sequences.append(self.paint_background())
@@ -213,8 +235,18 @@ class TUIScreen:
         it must receive every non-empty cell, not just the cells changing this frame — and
         the empty ones as one background paint, since the diff never emits those.
         """
+        self._forget_images()
         self.control_sequences.append(self.paint_background())
         self.front_buffer = self._create_buffer()
+
+    def _forget_images(self):
+        """The terminal holds no pictures any more — a new client, a resize, a wipe: take
+        down whatever the previous screen showed and send everything afresh next frame."""
+        if self.graphics and (self._shown or self._transmitted):
+            self.control_sequences.append(Pictures.delete_all())
+            trace(f"TUIScreen: dropped {len(self._transmitted)} picture(s) from the terminal for a fresh screen")
+        self._shown = {}
+        self._transmitted = {}
 
     # Buffer management
     def clear_buffer(self):
@@ -223,6 +255,7 @@ class TUIScreen:
             for cell in row:
                 cell.char = " "
                 cell.style.reset()
+        self._placements = {}
         self.cursor_x = 1
         self.cursor_y = 1
         self.current_style = Style()
@@ -311,10 +344,62 @@ class TUIScreen:
                                       .replace("\x1b[m", "\x1b[m" + self.BACKGROUND_SEQ))
         self.control_sequences.append(self.RESET)
 
+    def image(self, x: int, y: int, picture: Picture, cols: int, rows: int,
+              first_row: int = 0, visible_rows: Optional[int] = None):
+        """Draw `picture` fitted to a `cols` × `rows` box with its top-left cell at (x, y) — or,
+        with `first_row` and `visible_rows`, only that band of the box's rows, at (x, y): a
+        picture partly scrolled out of a pane. The box is clipped to the screen."""
+        visible = rows - first_row if visible_rows is None else visible_rows
+        visible = min(visible, self.height - y + 1)
+        cols = min(cols, self.width - x + 1)
+        if visible <= 0 or cols <= 0 or not 1 <= y <= self.height or not 1 <= x <= self.width:
+            return
+        if not self.graphics:
+            from interfaces.console.framework import Pixels
+            surface = picture.pixels(cols, rows)[2 * first_row:2 * (first_row + visible)]
+            Pixels.blit(self, x, y, surface)
+            return
+        blank = " " * cols
+        self.current_style = Style()
+        for row in range(visible):
+            self.write_at(x, y + row, blank)
+        self._placements[picture.id] = (picture, (x, y, cols, rows, first_row, visible))
+
+    def _image_commands(self) -> Tuple[List[str], List[str]]:
+        """What this frame's pictures need from the terminal: (deletes, transmits and
+        placements). A picture shown where it was costs nothing; one that moved or whose
+        visible band changed is taken down and placed again; one off the screen is taken
+        down and kept for a later frame, until MAX_TRANSMITTED others have come after it."""
+        before: List[str] = []
+        after: List[str] = []
+        for image_id, shown in self._shown.items():
+            placed = self._placements.get(image_id)
+            if placed is None or placed[1] != shown:
+                before.append(Pictures.delete_placements(image_id))
+        for image_id, (picture, placement) in self._placements.items():
+            if self._shown.get(image_id) == placement:
+                continue
+            x, y, cols, rows, first_row, visible = placement
+            png, png_size = picture.png(cols, rows)
+            if self._transmitted.get(image_id) != (cols, rows):
+                after.append(Pictures.transmit(image_id, png))
+                trace(f"TUIScreen: sending picture {image_id} ({len(png) // 1024} kB) for a {cols}x{rows} box")
+            self._transmitted.pop(image_id, None)
+            self._transmitted[image_id] = (cols, rows)
+            after.append(f"{self.CSI}{y};{x}H" + Pictures.place(image_id, cols, rows, png_size, first_row, visible))
+        for image_id in [i for i in self._transmitted if i not in self._placements][
+                :max(0, len(self._transmitted) - self.MAX_TRANSMITTED)]:
+            del self._transmitted[image_id]
+            after.append(Pictures.free(image_id))
+            trace(f"TUIScreen: freed picture {image_id} in the terminal, {self.MAX_TRANSMITTED} newer ones are kept")
+        self._shown = {image_id: placement for image_id, (_, placement) in self._placements.items()}
+        return before, after
+
     def get_frame(self, use_sync: bool = True) -> bytes:
         """Generate diff output between the back and front buffers."""
         changes: List[str] = []
-        has_diff = bool(self.control_sequences)
+        images_before, images_after = self._image_commands()
+        has_diff = bool(self.control_sequences or images_before or images_after)
         CSI = self.CSI
         next_frame = self.next_frame
         front_buffer = self.front_buffer
@@ -410,7 +495,9 @@ class TUIScreen:
             output.extend(self.control_sequences)
             self.control_sequences = []
 
+        output.extend(images_before)
         output.extend(changes)
+        output.extend(images_after)
         output.append(self.RESET)
 
         if use_sync:

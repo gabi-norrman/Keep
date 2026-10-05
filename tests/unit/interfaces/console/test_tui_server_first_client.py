@@ -173,6 +173,8 @@ class TestTerminalProgram:
             assert srv.client_terminals[registered] == "Apple_Terminal"
             assert not srv.half_blocks_for("Apple_Terminal")
             assert srv.half_blocks_for("iTerm.app") and srv.half_blocks_for("")
+            assert not srv.graphics_for("Apple_Terminal") and not srv.graphics_for("") and not srv.graphics_for("tmux")
+            assert srv.graphics_for("ghostty") and srv.graphics_for("iTerm.app") and srv.graphics_for("kitty")
             client.close()
         finally:
             srv.running = False

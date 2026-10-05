@@ -1,5 +1,8 @@
 """ChatPane: the transcript model, the Codex-style rendering and the key handling."""
+import io
+
 import pytest
+from PIL import Image
 
 from interfaces.chat.ChatTypes import PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING, PHASE_WAITING, Progress
 from interfaces.console.framework.TUIScreen import TUIScreen
@@ -17,6 +20,12 @@ def row(screen: TUIScreen, y: int) -> str:
 
 def rows(screen: TUIScreen) -> list[str]:
     return [row(screen, y) for y in range(1, screen.height + 1)]
+
+
+def jpeg(width: int, height: int) -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", (width, height), (200, 40, 40)).save(out, format="JPEG")
+    return out.getvalue()
 
 
 def reveal_all(pane: ChatPane):
@@ -215,6 +224,68 @@ class TestTranscript:
         assert lines[1] == BULLET + "let me see"
         assert screen.next_frame[1][len(BULLET)].style.fg == ChatPane.COLOR_THINKING
         assert screen.next_frame[1][len(BULLET)].style.italic
+
+    def test_a_photo_that_decodes_is_drawn_over_its_caption(self, pane, screen):
+        pane.add_media("photo", "the garden", 2048, jpeg(300, 200))
+        screen.graphics = True
+        lines = draw(pane, screen)
+        picture = pane.entries[0].picture
+        rows_ = ChatPane.IMAGE_ROWS_MIN
+        placement = screen._placements[picture.id][1]
+        assert placement[:2] == (1 + len(BULLET), 1)                  # under the bullet, top of the transcript
+        assert placement[2:4] == picture.fit(WIDTH - 3, rows_)
+        assert lines[0] == BULLET.rstrip()
+        assert lines[placement[3]] == "  the garden"
+        assert screen.next_frame[placement[3]][2].style.italic
+
+    def test_a_blank_line_separates_a_picture_from_what_follows(self, pane, screen):
+        pane.add_media("photo", "the garden", 2048, jpeg(300, 200))
+        pane.add_media("photo", "the house", 2048, jpeg(300, 200))
+        lines = draw(pane, screen)
+        caption = lines.index("  the garden")
+        assert lines[caption + 1] == "" and lines[caption + 2] == BULLET.rstrip()
+
+    def test_a_photo_without_a_caption_says_what_it_is(self, pane, screen):
+        pane.add_media("photo", "", 2048, jpeg(300, 200))
+        lines = draw(pane, screen)
+        assert any(l.strip() == "photo, 2 kB" for l in lines)
+
+    def test_bytes_that_are_not_a_picture_fall_back_to_the_label(self, pane, screen):
+        pane.add_media("photo", "the garden", 2048, b"not a picture")
+        assert pane.entries[0].picture is None
+        assert draw(pane, screen)[0] == BULLET + "[photo, 2 kB] the garden"
+
+    def test_a_video_poster_is_drawn_like_a_photo(self, pane, screen):
+        pane.add_media("video", "the clip", 500000, jpeg(300, 200))
+        assert pane.entries[0].picture is not None
+        assert pane.entries[0].body.text == "the clip"
+
+    def test_a_picture_scrolled_half_away_shows_its_lower_band(self, pane, screen):
+        pane.add_media("photo", "the garden", 2048, jpeg(300, 200))
+        for i in range(8):
+            pane.add_user(f"line {i}")
+        screen.graphics = True
+        draw(pane, screen)
+        picture = pane.entries[0].picture
+        rows_ = picture.fit(WIDTH - 3, ChatPane.IMAGE_ROWS_MIN)[1]
+        pane.scroll_offset = pane._total_lines - pane._last_transcript_rows - (rows_ - 2)   # two rows of it left on top
+        draw(pane, screen)
+        x, y, cols, rows__, first, visible = screen._placements[picture.id][1]
+        assert (y, first, visible) == (1, rows_ - 2, 2)
+
+    def test_a_picture_scrolled_off_leaves_no_placement(self, pane, screen):
+        pane.add_media("photo", "the garden", 2048, jpeg(300, 200))
+        for i in range(20):
+            pane.add_user(f"line {i}")
+        screen.graphics = True
+        draw(pane, screen)
+        assert screen._placements == {}
+
+    def test_without_graphics_the_picture_is_pixels_in_the_cells(self, pane, screen):
+        pane.add_media("photo", "the garden", 2048, jpeg(300, 200))
+        draw(pane, screen)
+        cell = screen.next_frame[0][len(BULLET)]
+        assert cell.style.bg is not None and cell.style.bg.r > 150
 
     def test_thinking_is_hidden_unless_show_debug(self, pane, screen):
         pane.set_thinking(None, "let me see", done=True)
@@ -578,12 +649,12 @@ class TestHistoryEntries:
 
     def test_layout_is_cached_per_entry_until_text_or_width_changes(self, pane):
         entry = pane.insert(KIND_ASSISTANT, "one <b>two</b> three", 1000.0)
-        first = pane._entry_lines(entry, 40)
-        assert pane._entry_lines(entry, 40) is first
-        assert pane._entry_lines(entry, 5) is not first
+        first = pane._entry_lines(entry, 40, 8)
+        assert pane._entry_lines(entry, 40, 8) is first
+        assert pane._entry_lines(entry, 5, 8) is not first
         pane.update_entry(entry, "one two three four")
-        assert pane._entry_lines(entry, 5) is not first
-        assert "".join(s.text for s in pane._entry_lines(entry, 40)[0].spans) == "one two three four"
+        assert pane._entry_lines(entry, 5, 8) is not first
+        assert "".join(s.text for s in pane._entry_lines(entry, 40, 8)[0].spans) == "one two three four"
 
 
 class TestApproval:

@@ -1,9 +1,13 @@
 """PhotosTab's board: the summary tiles, the photo's description and its details, the scores
 drawn as meters. The library is never read: the tab's state is set by hand and the reload
 pinned off."""
+import io
+
 import pytest
+from PIL import Image
 
 from interfaces.console import Theme
+from interfaces.console.framework.Pictures import Picture
 from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.tabs.PhotosTab import PhotosTab
 from interfaces.console.widgets.Board import SIDE_BY_SIDE_MIN
@@ -25,10 +29,17 @@ def make_tab(photo=PHOTO, count=1234, total=20000, index=11):
     return tab
 
 
-def draw(tab, width=110, height=40):
+def draw(tab, width=110, height=40, graphics=False):
     screen = TUIScreen(width, height)
+    screen.graphics = graphics
     tab.draw(screen, 0)
     return screen
+
+
+def with_picture(tab, width=300, height=200):
+    image = Image.new("RGB", (width, height), (200, 40, 40))
+    tab._picture, tab._picture_guid = Picture(image), tab._photo["asset_guid"]
+    return tab
 
 
 def rows(screen):
@@ -82,12 +93,14 @@ class TestPhoto:
         # both numbers sit in the same column, after meters of equal length
         assert len(pretty) - 2 == len(family) - 1
 
-    def test_the_details_are_beside_the_description_on_a_wide_screen_and_under_it_on_a_narrow_one(self):
+    def test_the_text_stands_beside_the_picture_on_a_wide_screen_and_under_it_on_a_narrow_one(self):
         wide = rows(draw(make_tab(), width=SIDE_BY_SIDE_MIN))
-        line = row_with(wide, "Details")
-        assert line.index("Charlotte and Frances") < line.index("Details")
+        line = row_with(wide, "Charlotte and Frances on")
+        assert line.index("Photo") < line.index("Charlotte and Frances")          # the picture card at the left
+        assert wide.index(line) < wide.index(row_with(wide, "Details"))             # the details under the description
         narrow = rows(draw(make_tab(), width=SIDE_BY_SIDE_MIN - 1))
-        assert narrow.index(row_with(narrow, "Charlotte and Frances on")) < narrow.index(row_with(narrow, "Details"))
+        assert narrow.index(row_with(narrow, "Photo")) < narrow.index(row_with(narrow, "Charlotte and Frances on")) \
+            < narrow.index(row_with(narrow, "Details"))
 
     def test_nothing_runs_past_the_right_edge(self):
         for width in (80, 110, 170):
@@ -116,3 +129,67 @@ class TestNarrowLayout:
         lines = rows(draw(make_tab(photo=photo), width=SIDE_BY_SIDE_MIN - 1, height=36))
         assert "0A1B2C3D-FAKE-GUID-0001" in row_with(lines, "Id ")
         assert DESCRIPTION_MIN_ROWS <= description_rows(36) < whole
+
+
+@pytest.mark.unit
+class TestPicture:
+    def test_the_picture_stands_left_of_the_text_on_a_wide_screen(self):
+        tab = with_picture(make_tab())
+        screen = draw(tab, width=170, graphics=True)
+        lines = rows(screen)
+        x, y, cols, rows_, _, _ = screen._placements[tab._picture.id][1]
+        photo_title = row_with(lines, "300 × 200")
+        assert photo_title.index("Photo") < x < photo_title.index("Charlotte and Frances")
+        assert cols + 4 <= 165 * 50 // 100          # the card keeps within half the width
+        assert any("wooden jetty" in l for l in lines) and "Charlotte, Frances" in row_with(lines, "Persons")
+
+    def test_the_picture_sits_over_the_text_on_a_narrow_screen(self):
+        tab = with_picture(make_tab())
+        screen = draw(tab, width=110, graphics=True)
+        lines = rows(screen)
+        _, y, _, rows_, _, _ = screen._placements[tab._picture.id][1]
+        assert y + rows_ <= lines.index(row_with(lines, "Charlotte and Frances on the jetty"))
+
+    def test_a_tall_picture_is_fitted_to_the_card_rather_than_stretched(self):
+        tab = with_picture(make_tab(), width=200, height=300)
+        screen = draw(tab, width=170, graphics=True)
+        _, _, cols, rows_, _, _ = screen._placements[tab._picture.id][1]
+        assert cols < rows_ * 2                      # taller than wide in cells too
+
+    def test_without_graphics_the_picture_is_drawn_into_the_cells(self):
+        tab = with_picture(make_tab())
+        screen = draw(tab, width=170)
+        assert any(c.style.bg is not None and c.style.bg.r > 150 for line in screen.next_frame for c in line)
+
+    def test_the_card_says_why_there_is_no_picture(self):
+        tab = make_tab()
+        tab._picture_guid, tab._picture_state = tab._photo["asset_guid"], "loading"
+        assert any("Loading" in l for l in rows(draw(tab, width=170)))
+        tab._picture_state = "video"
+        assert any("no preview" in l for l in rows(draw(tab, width=170)))
+
+    def test_a_video_asks_for_no_picture(self):
+        tab = make_tab(photo=dict(PHOTO, photo_type="video", asset_guid="0A1B2C3D-FAKE-GUID-0002"))
+        tab._request_picture(tab._photo)
+        assert tab._picture is None and tab._picture_state == "video" and not tab._picture_pending
+
+    def test_a_picture_arriving_after_the_browsing_moved_on_is_dropped(self, monkeypatch):
+        import threading
+        from interfaces.console.tabs import PhotosTab as module
+        started = []
+        monkeypatch.setattr(threading, "Thread", lambda target, daemon: started.append(target) or type("T", (), {"start": lambda self: None})())
+        monkeypatch.setattr(module.PhotoProcessor, "image_bytes_for_asset", staticmethod(lambda guid: jpeg_bytes()))
+        tab = make_tab()
+        tab._request_picture(tab._photo)
+        assert tab._picture_state == "loading" and tab._picture_pending == {PHOTO["asset_guid"]}
+        tab._request_picture(dict(PHOTO, asset_guid="0A1B2C3D-FAKE-GUID-0002"))
+        started[0]()                                 # the first fetch finishes now
+        assert tab._picture is None and tab._picture_pending == {"0A1B2C3D-FAKE-GUID-0002"}
+        started[1]()
+        assert tab._picture is not None and tab._picture_guid == "0A1B2C3D-FAKE-GUID-0002"
+
+
+def jpeg_bytes() -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", (30, 20), (200, 40, 40)).save(out, format="JPEG")
+    return out.getvalue()

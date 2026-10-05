@@ -1,41 +1,15 @@
 import math
-from typing import Dict, NamedTuple, Optional, Sequence, Tuple
+from typing import NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 
-from interfaces.console.framework.TUIScreen import TUIScreen, Color
+from interfaces.console.framework import Pixels
+from interfaces.console.framework.Pixels import LEVELS, UPPER_HALF, terminal_color   # noqa: F401 — the renderer's palette lives in Pixels
+from interfaces.console.framework.TUIScreen import TUIScreen
 
 Point = Tuple[float, float]
 Vec = Tuple[float, float, float]
 RGB = Tuple[int, int, int]
-
-# Each channel defaults to this many levels on the way to the terminal: identical colors
-# share one Color object (the screen diff's identity fast path), and a face whose lighting
-# drifts a hair between frames is not re-sent. The coarser the steps the longer the runs and
-# the fewer the cells that change, at the price of banding in the gradients.
-LEVELS = 64
-_PALETTE: Dict[Tuple[int, int], Color] = {}
-UPPER_HALF = "▀"
-
-
-def _pack(r: int, g: int, b: int, levels: int = LEVELS) -> int:
-    """One int per palette entry, from a triple of quantization levels."""
-    return (r * levels + g) * levels + b
-
-
-def _color(packed: int, levels: int = LEVELS) -> Color:
-    """The Color for a packed triple of quantization levels."""
-    key = (levels, packed)
-    color = _PALETTE.get(key)
-    if color is None:
-        channels = (packed // (levels * levels), packed // levels % levels, packed % levels)
-        color = _PALETTE[key] = Color(*(round(channel * 255 / (levels - 1)) for channel in channels))
-    return color
-
-
-def terminal_color(r: int, g: int, b: int, levels: int = LEVELS) -> Color:
-    """The one Color object a pixel of this color is blitted with."""
-    return _color(_pack(*(int(c / 255 * (levels - 1) + 0.5) for c in (r, g, b)), levels=levels), levels)
 
 
 def focal_length(width: int, height: int) -> float:
@@ -158,34 +132,5 @@ class Framebuffer:
         target.color[:] = blocks.mean(axis=(1, 3))
 
     def blit(self, screen: TUIScreen, x: int, y: int, levels: int = LEVELS):
-        """Draw the surface with its top-left pixel at cell (x, y). Neighbouring cells showing
-        the same pixel pair go out as one run, and a cell whose two pixels match is a plain
-        space with a background, which is half the escape bytes of a half-block. A screen
-        without `half_blocks` (Terminal.app draws `▀` with gaps and the wrong colors) gets
-        every pixel pair averaged into one plain cell: half the vertical resolution, but
-        the picture holds together."""
-        color = np.clip(self.color, 0, 1)
-        if not screen.half_blocks:
-            rows = self.height // 2
-            color = color[:2 * rows].reshape(rows, 2, self.width, 3).mean(axis=1).repeat(2, axis=0)
-        quantized = (color * (levels - 1) + 0.5).astype(np.int32)
-        packed = _pack(quantized[..., 0], quantized[..., 1], quantized[..., 2], levels)
-        width = self.width
-        for row in range(self.height // 2):
-            top = packed[2 * row].tolist()
-            bottom = packed[2 * row + 1].tolist()
-            col = 0
-            while col < width:
-                t, b = top[col], bottom[col]
-                end = col + 1
-                while end < width and top[end] == t and bottom[end] == b:
-                    end += 1
-                screen.reset_color()
-                screen.set_bg_color(_color(b, levels))
-                if t == b:
-                    screen.write_at(x + col, y + row, " " * (end - col))
-                else:
-                    screen.set_color(_color(t, levels))
-                    screen.write_at(x + col, y + row, UPPER_HALF * (end - col))
-                col = end
-        screen.reset_color()
+        """Draw the surface with its top-left pixel at cell (x, y) — see `Pixels.blit`."""
+        Pixels.blit(screen, x, y, self.color, levels)

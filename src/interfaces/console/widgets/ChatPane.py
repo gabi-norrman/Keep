@@ -5,7 +5,11 @@ The pane is the screen side of `ConsoleTransport`: the transport (called from Ch
 worker threads) writes entries into the model here, and the TUI loop draws them. The model
 is guarded by a lock; an entry's text lives in a `TypewriterText`, and only what the assistant
 emits — its replies and its thinking — reveals with the CRT sweep; everything else (the user's
-turns, command echoes, media labels, prompts, history) shows up at once. `HistoryFeed` fills the same transcript with the
+turns, command echoes, media labels, prompts, history) shows up at once. A photo (or a video's
+poster frame) the assistant sends is drawn in the transcript — `IMAGE_ROWS` of the pane's height,
+fitted to the picture's proportions — with its caption under it (`TUIScreen.image`: the
+terminal's graphics protocol where it has one, half-block pixels where not), and scrolls with
+the text a row at a time. `HistoryFeed` fills the same transcript with the
 day's dialog history — other channels' turns, system events — inserted by timestamp and
 shown at once, each under a dim header saying who and when. Assistant, notice and system
 entries hold the chat HTML subset; user text is plain; a diff entry is a `-`/`+` listing.
@@ -39,6 +43,7 @@ from interfaces.chat.ChatTypes import (DECISION_APPROVE, DECISION_DENY, PHASE_CO
                                        Progress)
 from interfaces.console import Theme
 from interfaces.console.SystemEvents import CLASS_DESCRIPTION
+from interfaces.console.framework.Pictures import Picture
 from interfaces.console.framework.TUIScreen import Color, TUIScreen
 from interfaces.console.framework.TextWidth import cells, char_width, chunks, clip, column, display_width, normalize
 from interfaces.console.tabs.ScrollableTabView import draw_scrollbar
@@ -81,16 +86,27 @@ class Entry:
     header: Optional[str] = None      # dim line above the body (who, when) for history entries
     detail: Optional[str] = None      # command echoes: the dim "(done after 4s, …)" note after the body
     history: bool = False             # a `HistoryFeed` backfill row, not something this console produced live
+    picture: Optional[Picture] = None  # media: the photo itself (or a video's poster frame), when it decoded
     _layout: Optional[tuple] = field(default=None, repr=False, compare=False)
+
+
+class ImageRow(NamedTuple):
+    """One row of a picture laid out in a `cols` × `rows` box: the line shows row `row` of it."""
+    picture: Picture
+    row: int
+    cols: int
+    rows: int
 
 
 class Line(NamedTuple):
     """One display line of the transcript. `prefix` is the bullet/prompt on an entry's first
-    line and blank on its continuation lines; `entry` is None for the working line."""
+    line and blank on its continuation lines; `entry` is None for the working line; `image`
+    makes the line a row of a picture instead of text."""
     prefix: str
     spans: List[StyledSpan]
     entry: Optional[Entry]
     header: bool = False
+    image: Optional[ImageRow] = None
 
 
 class ChatPane:
@@ -117,6 +133,9 @@ class ChatPane:
     MASK = "•"
     SHOW_ELAPSED_AFTER = 2.5   # seconds a request runs before the working line counts them
     PREFILL_BAR_WIDTH = 12     # cells of the working line's prompt-prefill bar
+    IMAGE_ROWS = 3             # a picture takes the transcript's rows divided by this…
+    IMAGE_ROWS_MIN = 4         # …but no fewer rows than this
+    IMAGE_ROWS_MAX = 16        # …and no more than this
 
     # The chat speaks in the Theme's green and yellow; everything else is one of its text levels.
     COLOR_USER = Theme.COLOR_GREEN
@@ -245,11 +264,18 @@ class ChatPane:
     def add_notice(self, html: str) -> Entry:
         return self._add(Entry(KIND_NOTICE, TypewriterText(html, reveal=False)))
 
-    def add_media(self, label: str, caption: str, size: int) -> Entry:
-        text = f"[{label}, {size / 1024:.0f} kB]"
-        if caption:
-            text += f" {caption}"
-        return self._add(Entry(KIND_MEDIA, TypewriterText(text, reveal=False)))
+    def add_media(self, label: str, caption: str, size: int, data: Optional[bytes] = None) -> Entry:
+        """A photo or video the assistant sent: the picture (`data`, the photo or a video's
+        poster frame) over its caption, or the `[label, size]` line alone when there is no
+        picture or it does not decode."""
+        picture = Picture.decode(data) if data else None
+        if picture is not None:
+            text = caption or f"{label}, {size / 1024:.0f} kB"
+        else:
+            text = f"[{label}, {size / 1024:.0f} kB]"
+            if caption:
+                text += f" {caption}"
+        return self._add(Entry(KIND_MEDIA, TypewriterText(text, reveal=False), picture=picture))
 
     def add_assistant(self, html: str, final: bool = False) -> Entry:
         return self._add(Entry(KIND_ASSISTANT, TypewriterText(html), final=final))
@@ -463,7 +489,8 @@ class ChatPane:
     def _draw_transcript(self, screen: TUIScreen, frame: int, x: int, y: int, width: int, rows: int):
         content_w = max(1, width - 3)   # bullet indent and the scrollbar column
         entries = [e for e in self.entries if self.show_debug or e.kind != KIND_THINKING]
-        lines = self._layout(entries, content_w)
+        image_rows = max(self.IMAGE_ROWS_MIN, min(self.IMAGE_ROWS_MAX, rows // self.IMAGE_ROWS))
+        lines = self._layout(entries, content_w, image_rows)
         total = len(lines)
         self._total_lines = total
         if rows <= 0:
@@ -496,6 +523,7 @@ class ChatPane:
             screen.write_at(x, y + row, " " * width)
         for i, line in enumerate(visible):
             self._draw_line(screen, frame, x, y + i, line, width)
+        self._draw_images(screen, x + 2, y, visible)
         if self.redactor.active:
             for i in range(len(visible)):
                 mark_masks(screen, self.redactor, x + 2, y + i, width - 3)
@@ -503,17 +531,39 @@ class ChatPane:
         draw_scrollbar(screen, x + width - 1, y, total, rows, self.scroll_offset)
         self._draw_stream_cursors(screen, frame, x, y, visible, entries)
 
-    def _layout(self, entries: List[Entry], width: int) -> List[Line]:
-        """Flatten the transcript to display lines."""
+    @staticmethod
+    def _draw_images(screen: TUIScreen, x: int, y: int, visible: List[Line]):
+        """The pictures among the visible lines: each run of a picture's rows is one band of
+        it, drawn at the run's first row."""
+        band_start: Optional[ImageRow] = None   # the first row of the band being collected
+        band_y = 0                              # the screen row that first row is on
+        band_rows = 0
+        for i, line in enumerate(visible):
+            image = line.image
+            continues = (band_start is not None and image is not None and image.picture is band_start.picture
+                         and image.row == band_start.row + band_rows)
+            if continues:
+                band_rows += 1
+                continue
+            if band_start is not None:
+                screen.image(x, band_y, band_start.picture, band_start.cols, band_start.rows,
+                             first_row=band_start.row, visible_rows=band_rows)
+            band_start, band_y, band_rows = image, y + i, 1
+        if band_start is not None:
+            screen.image(x, band_y, band_start.picture, band_start.cols, band_start.rows,
+                         first_row=band_start.row, visible_rows=band_rows)
+
+    def _layout(self, entries: List[Entry], width: int, image_rows: int) -> List[Line]:
+        """Flatten the transcript to display lines; a picture gets `image_rows` rows."""
         lines: List[Line] = []
         for entry in entries:
-            entry_lines = self._entry_lines(entry, width)
+            entry_lines = self._entry_lines(entry, width, image_rows)
             if not entry_lines:
                 continue
             lines.extend(entry_lines)
-            # A media line groups with the turn it belongs to; everything else, the thinking
-            # block included, gets a blank line after it.
-            if entry.kind != KIND_MEDIA:
+            # A media label groups with the turn it belongs to; everything else, the thinking
+            # block and a picture with its caption included, gets a blank line after it.
+            if entry.kind != KIND_MEDIA or entry.picture is not None:
                 lines.append(Line("", [], None))
         while lines and not lines[-1].spans:
             lines.pop()
@@ -523,7 +573,7 @@ class ChatPane:
             lines.append(Line(BULLET, self._working_spans(), None))
         return lines
 
-    def _entry_lines(self, entry: Entry, width: int) -> List[Line]:
+    def _entry_lines(self, entry: Entry, width: int, image_rows: int) -> List[Line]:
         """An entry's display lines, cached on the entry until its text, width, state or the
         vault changes — a day of history must not be re-masked, re-parsed and re-wrapped
         every frame. The key is the unmasked text: the vault's pattern over every entry costs
@@ -531,12 +581,23 @@ class ChatPane:
         visible = entry.body.visible_text()
         if not self.show_debug and entry.kind == KIND_ASSISTANT:
             visible = self._without_fallback_notice(entry.body.text, visible)
-        key = (visible, width, entry.final, entry.detail, self.redactor.vault.version)
+        key = (visible, width, image_rows, entry.final, entry.detail, self.redactor.vault.version)
         cached = entry._layout
         if cached is not None and cached[0] == key:
             return cached[1]
-        lines = self._wrap_entry(entry, normalize(self.redactor.mask(visible)), width)
+        lines = self._wrap_entry(entry, normalize(self.redactor.mask(visible)), width, image_rows)
         entry._layout = (key, lines)
+        return lines
+
+    @staticmethod
+    def _picture_lines(entry: Entry, text: str, width: int, image_rows: int) -> List[Line]:
+        """A media entry with a picture: the picture's rows, the bullet on the first, then the
+        caption dim and italic under it."""
+        cols, rows = entry.picture.fit(width, image_rows)
+        lines = [Line(BULLET if row == 0 else "", [], entry, image=ImageRow(entry.picture, row, cols, rows))
+                 for row in range(rows)]
+        for line_spans in wrap_spans([StyledSpan(text=text, italic=True)], width):
+            lines.append(Line("", line_spans, entry))
         return lines
 
     @classmethod
@@ -549,7 +610,9 @@ class ChatPane:
             return visible
         return visible[:match.start()] + visible[match.end():]
 
-    def _wrap_entry(self, entry: Entry, text: str, width: int) -> List[Line]:
+    def _wrap_entry(self, entry: Entry, text: str, width: int, image_rows: int) -> List[Line]:
+        if entry.picture is not None:
+            return self._picture_lines(entry, text.strip(), width, image_rows)
         if not text.strip() and entry.kind not in (KIND_APPROVAL, KIND_SECRET):
             return []
         # The model opens its <thinking> block with a newline and the fallback notice starts

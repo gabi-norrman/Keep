@@ -196,6 +196,16 @@ class TestNotifierPaths:
         assert pane.entries[0].body.text == "[photo, 3 kB] garden"
         assert pane.entries[-1].body.text == "[video, 5 kB] clip"
 
+    def test_a_photo_that_decodes_reaches_the_pane_as_a_picture(self, hub, pane):
+        import io
+        from PIL import Image
+        out = io.BytesIO()
+        Image.new("RGB", (30, 20), (10, 200, 10)).save(out, format="JPEG")
+        hub.send_photo(out.getvalue(), "garden")
+        hub.send_video(b"v" * 5000, "clip", thumbnail=out.getvalue())
+        assert [e.picture is not None for e in pane.entries] == [True, True]
+        assert [e.body.text for e in pane.entries] == ["garden", "clip"]
+
 class TestApprovals:
     def test_y_in_the_pane_approves_through_the_hub(self, hub, pane):
         result = {}

@@ -162,17 +162,19 @@ class ConsoleTransport(ChatTransport):
         return True
 
     def send_photo(self, conversation, data: bytes, caption: str = "") -> bool:
-        self.pane.add_media("photo", caption, len(data))
+        self.pane.add_media("photo", caption, len(data), data)
         return True
 
     def send_photo_album(self, conversation, photos: list[tuple[bytes, str]]) -> bool:
         for data, caption in photos:
-            self.pane.add_media("photo", caption, len(data))
+            self.pane.add_media("photo", caption, len(data), data)
         return True
 
     def send_video(self, conversation, data: bytes, caption: str = "",
                    thumbnail: Optional[bytes] = None) -> bool:
-        self.pane.add_media("video", caption, len(data))
+        if thumbnail is None:
+            trace("Console chat: video without a poster frame, shown as its caption alone")
+        self.pane.add_media("video", caption, len(data), thumbnail)
         return True
 
     def begin_draft(self, conversation) -> ConsoleDraft:

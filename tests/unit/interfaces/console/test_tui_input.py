@@ -125,6 +125,17 @@ class TestGenericEscapeSequences:
         assert srv._process_input_buffer("\x1bO", ADDR) == "\x1bO"
         assert keys == []
 
+    def test_a_graphics_reply_is_dropped_and_what_follows_is_a_key(self, server_keys):
+        srv, keys = server_keys
+        leftover = srv._process_input_buffer("\x1b_Gi=1;OK\x1b\\a", ADDR)
+        assert keys == ["a"]
+        assert leftover == ""
+
+    def test_an_unfinished_graphics_reply_is_kept_for_the_next_read(self, server_keys):
+        srv, keys = server_keys
+        assert srv._process_input_buffer("\x1b_Gi=1;O", ADDR) == "\x1b_Gi=1;O"
+        assert keys == []
+
     def test_malformed_csi_is_dropped(self, server_keys):
         srv, keys = server_keys
         srv._process_input_buffer("\x1b[\x01q", ADDR)
