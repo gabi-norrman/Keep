@@ -41,6 +41,7 @@ def handler():
     h.voice_factory = None
     h.my_thread_name = "test"
     h.request_context = RequestContext()
+    h._rounds = []
     h.dialog_manager = Mock()
     h.dialog_manager.reply_to_llm = "User: hello how are you"
     h.dialog_manager.reply_text = "User: hello how are you"
@@ -132,6 +133,7 @@ class TestHandleBackgroundCommands:
         h.audio_thread = None
         h._chunks_played = 0
         h.my_thread_name = "test"
+        h._rounds = []
         h.request_context = RequestContext(
             user_input="hello",
             user="User",
@@ -1832,3 +1834,35 @@ class TestCommandResultPersistence:
         persisted = prompt_manager.add_command_result.call_args.args[0]
         assert persisted == dm.reply_to_llm
         assert "boom" in persisted
+
+
+class TestTelemetryReport:
+    def test_the_command_names_of_every_round_without_their_arguments(self, handler):
+        first, second = Mock(), Mock()
+        first.command_processor.executed_commands = ['light_on("kitchen")', "load_toolkit(home)"]
+        second.command_processor.executed_commands = ["light_off(kitchen, 50%)"]
+        handler._rounds = [first, second]
+        assert handler._command_names() == ["light_on", "load_toolkit", "light_off"]
+
+    def test_the_report_carries_the_source_and_the_commands(self, handler):
+        from assistant.Telemetry import Telemetry
+        handler.request_context = RequestContext(source="Telegram", user_input="lights")
+        handler.dialog_manager.command_processor.executed_commands = ["light_on(kitchen)"]
+        handler._rounds = [handler.dialog_manager]
+        with patch.object(Telemetry, "get_instance") as get_instance:
+            handler._report_turn("Done.")
+        get_instance.return_value.assistant_turn.assert_called_once_with("Done.", "Telegram", ["light_on"])
+
+    def test_a_test_request_is_never_reported(self, handler):
+        from assistant.Telemetry import Telemetry
+        handler.request_context = RequestContext(source="Telegram", test=True)
+        with patch.object(Telemetry, "get_instance") as get_instance:
+            handler._report_turn("Done.")
+        get_instance.assert_not_called()
+
+    def test_a_failing_report_never_breaks_the_request(self, handler):
+        from assistant.Telemetry import Telemetry
+        handler.request_context = RequestContext(source="Telegram")
+        handler._rounds = [handler.dialog_manager]   # a Mock: its executed_commands cannot be iterated
+        with patch.object(Telemetry, "get_instance"):
+            handler._report_turn("Done.")

@@ -7,6 +7,7 @@ from ...Integration import Integration
 
 class ICloudEmailIntegration(Integration, EmailProvider):
     """Provides IMAP access to the iCloud mail account and rate-limited SMTP sending."""
+    sensitive = True
 
     IMAP_HOST = "imap.mail.me.com"
     IMAP_FOLDER = "INBOX"

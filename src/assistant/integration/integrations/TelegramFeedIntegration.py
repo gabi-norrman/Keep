@@ -35,6 +35,7 @@ class TelegramFeedIntegration(Integration, Feed):
     Telethon writes a file-backed session the moment its client connects, so a login on the
     file itself made `needs_2fa()` false from the first code request on: the tab said
     "Connected" and the feed opened an unauthorized session."""
+    sensitive = True
 
     poll_interval = POLL_INTERVAL
     item_noun = "messages"

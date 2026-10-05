@@ -8,6 +8,7 @@ from common.logging import error
 
 class RemindersIntegration(Integration):
     """Adds items to Apple Reminders lists (e.g. the shopping list) via AppleScript."""
+    sensitive = True
 
     @property
     def name(self) -> str:

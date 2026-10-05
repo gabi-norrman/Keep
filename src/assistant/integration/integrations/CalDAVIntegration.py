@@ -19,6 +19,7 @@ EVENTS_UNAVAILABLE = "(Calendar events could not be loaded)"
 
 class CalDAVIntegration(Integration):
     """Reads and creates calendar events on the iCloud CalDAV server."""
+    sensitive = True
 
     @property
     def name(self) -> str:

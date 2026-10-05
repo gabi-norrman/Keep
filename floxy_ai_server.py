@@ -150,6 +150,11 @@ class Server:
                 StartupTracker.record_shutdown()
             except Exception:
                 pass
+            try:
+                from assistant.Telemetry import Telemetry
+                Telemetry.get_instance().stop()
+            except Exception as e:
+                trace(f"Telemetry stop failed: {e}")
         for iface in reversed(self.interfaces):
             try:
                 iface.stop()
@@ -223,6 +228,8 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
             agent.start()
         agents.append(autonomous)  # its constructor already started it; stopped with the rest
         integration_monitor = discover_integrations()
+        from assistant.Telemetry import Telemetry
+        Telemetry.get_instance().start()
 
     # The voice interface (if enabled) supplies the playback/TTS/turn-gate factories; it is
     # started below, before Assistant.start() fills the handler pool.

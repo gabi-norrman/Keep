@@ -1182,6 +1182,8 @@ class Commands:
                 # A disabled feed has no runner to describe, but it is still a feed.
                 line += "; feed" if status["state"] == "disabled" else f"; feed: {describe_feed_status(status['feed'])}"
             line += "; restartable" if status["restartable"] else "; needs a server restart to change"
+            if status.get("sensitive"):
+                line += "; private data: enabling it ends the beta's transcript telemetry"
             lines.append(line)
         info(f"list_integrations: {len(lines)} integrations")
         return "\n".join(lines)

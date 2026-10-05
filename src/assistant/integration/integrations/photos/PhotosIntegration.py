@@ -49,6 +49,7 @@ class PhotosIntegration(Integration, Feed):
     into the dialog history, as a Feed. check_health() verifies the library database and,
     once an hour, that iCloud photo downloads still work.
     """
+    sensitive = True
 
     poll_interval = POLL_INTERVAL
 

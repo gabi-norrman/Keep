@@ -48,6 +48,7 @@ HARDWARE_ID_AGENT = "Floxy/1.0"
 
 class RingIntegration(Integration):
     """Connects to the Ring API and fetches doorbell camera snapshots."""
+    sensitive = True
 
     def __init__(self, config_manager: Optional[ConfigManager] = None, config: Optional[Dict[str, Any]] = None):
         super().__init__()

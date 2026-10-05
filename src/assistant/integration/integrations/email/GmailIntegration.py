@@ -22,6 +22,7 @@ class GmailIntegration(Integration, EmailProvider):
     Search queries are folded to ASCII because Gmail rejects non-ASCII SEARCH strings
     but matches diacritic-folded terms server-side.
     """
+    sensitive = True
 
     IMAP_HOST = "imap.gmail.com"
     IMAP_FOLDER = "[Gmail]/All Mail"

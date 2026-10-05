@@ -34,6 +34,9 @@ class Integration(SingletonMixin, ABC):
     # are Web Access, which needs no credentials and the assistant leans on constantly, and
     # ElevenLabs TTS, the engine voice speaks through unless another one is enabled.
     enabled_by_default: bool = False
+    # Its data is private (messages, mail, calendar, photos, cameras): enabling it ends the
+    # transcript part of the beta telemetry for good — see assistant/Telemetry.py.
+    sensitive: bool = False
 
     @classmethod
     def config_name(cls) -> str:

@@ -33,19 +33,24 @@ def discover_integrations():
     return monitor
 
 
-def feed_classes() -> list[type]:
-    """The Integration classes that are also Feeds, in the package's walk order."""
-    from assistant.integration.Feed import Feed
+def integration_classes() -> list[type]:
+    """Every Integration subclass in the integrations package, in the package's walk order."""
     from assistant.integration.Integration import Integration
     import assistant.integration.integrations as integrations_pkg
     found = []
     for _finder, fqn, _ispkg in pkgutil.walk_packages(integrations_pkg.__path__, integrations_pkg.__name__ + "."):
         module = importlib.import_module(fqn)
         for attr in vars(module).values():
-            if isinstance(attr, type) and issubclass(attr, Integration) and issubclass(attr, Feed) \
+            if isinstance(attr, type) and issubclass(attr, Integration) and attr is not Integration \
                     and attr not in found:
                 found.append(attr)
     return found
+
+
+def feed_classes() -> list[type]:
+    """The Integration classes that are also Feeds, in the package's walk order."""
+    from assistant.integration.Feed import Feed
+    return [cls for cls in integration_classes() if issubclass(cls, Feed)]
 
 
 def start_feeds(message_history):

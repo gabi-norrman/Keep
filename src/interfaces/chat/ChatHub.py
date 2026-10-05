@@ -22,6 +22,7 @@ from html import escape
 from typing import Any, Callable, Optional
 
 from assistant.Notifier import SecretRejected
+from assistant.Telemetry import Telemetry
 from assistant.integration.SingletonMixin import SingletonMixin
 from common.ConfigManager import config
 from common.logging import error, info, trace
@@ -190,7 +191,10 @@ class ChatHub(SingletonMixin):
                 return True
             trace("No chat conversation to send to, message dropped.")
             return False
-        return self._send_text(targets, text, silent=disable_notification, preview=not disable_web_page_preview)
+        accepted = self._send_text(targets, text, silent=disable_notification, preview=not disable_web_page_preview)
+        if accepted:
+            Telemetry.get_instance().assistant_turn(text, "notifier", proactive=True)
+        return accepted
 
     def _send_text(self, targets: list[tuple[ChatTransport, Any]], text: str, *, silent: bool, preview: bool) -> bool:
         accepted = False

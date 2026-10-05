@@ -152,6 +152,7 @@ class ICloudIntegration(Integration):
     Owns the pyicloud session, including automatic SMS 2FA recovery with strict caps on
     code requests and fresh signins so a broken flow can never spam Apple or the phone.
     """
+    sensitive = True
 
     SESSION_EXPIRED_2FA_MESSAGE = (
         "iCloud session expired. Please complete 2FA in the TUI console (iCloud tab)."

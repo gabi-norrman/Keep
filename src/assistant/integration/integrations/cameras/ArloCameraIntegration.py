@@ -162,6 +162,7 @@ class ArloCameraIntegration(Integration):
     Failed logins back off exponentially (persisted across restarts) and lock out for 24h
     after MAX_CONSECUTIVE_FAILURES, so a broken 2FA flow can never hammer Arlo's auth.
     """
+    sensitive = True
 
     REAL_CHECK_EVERY = 4  # do a real health check every Nth call (4 × 15 min = 1 hour)
     BASE_AUTH_COOLDOWN = 10 * 60  # 10 minutes base cooldown

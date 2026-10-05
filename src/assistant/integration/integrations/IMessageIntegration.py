@@ -49,6 +49,7 @@ class IMessageIntegration(Integration, Feed):
     Also sends messages (rate-limited), resolves contact names to handles, forwards detected
     Apple/Ring 2FA codes to their integrations, and dispatches scheduled send-later messages.
     """
+    sensitive = True
 
     poll_interval = POLL_INTERVAL
     item_noun = "messages"

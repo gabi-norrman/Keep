@@ -15,6 +15,7 @@ from assistant.AssistantRequest import RequestContext
 from common.RequestKilledException import RequestKilledException
 from common.logging import info, trace, note, error, fine
 from assistant.PromptInjectionDetector import is_prompt_injection
+from assistant.Telemetry import Telemetry
 from assistant.tools.MessageFormatter import MessageFormatter
 from common.FloxyDatabase import FloxyDatabase
 from assistant.AssistantEvents import (AssistantEvent, AudioChunk, Done, Notice, RoundEnd, Token,
@@ -163,6 +164,9 @@ class RequestProcessor:
         # for as long as nobody else drained it, i.e. forever once the request was killed.
         self._tts_events: "queue.SimpleQueue[AssistantEvent]" = queue.SimpleQueue()
         self.dialog_manager = self._new_dialog_manager()
+        # Every dialog manager this request ran a round on, so the telemetry can name the
+        # commands of the whole request, not only the last round's.
+        self._rounds: list = []
         self.first_sound_chunk = True
         self.is_killed = False
         self.kill_reason = ""  # why kill() fired, so the turn gate can log a truthful abort
@@ -633,6 +637,19 @@ class RequestProcessor:
         trace("")
         return response_text
 
+    def _command_names(self) -> list[str]:
+        """The names of the commands every round of this request ran, in order."""
+        return [c.split("(", 1)[0] for dm in self._rounds for c in dm.command_processor.executed_commands]
+
+    def _report_turn(self, response_text: str):
+        """The beta telemetry's assistant event. Like an observer it must never break a request."""
+        if self.ctx.test:
+            return
+        try:
+            Telemetry.get_instance().assistant_turn(response_text, self.ctx.source, self._command_names())
+        except Exception as e:
+            error(f"Telemetry report failed: {e}")
+
     def _wait_for_audio_and_notify_outposts(self):
         if not self.ctx.text_only and self.ctx.server_sound and self.playback:
             self.playback.finish_reply(self.dialog_manager.llm_response)
@@ -720,6 +737,7 @@ class RequestProcessor:
                 prompt_manager.update_history(None, None, response_text, pre_heat=False)
 
             self.dialog_manager = self._new_dialog_manager(self.ctx.test)
+            self._rounds.append(self.dialog_manager)
             self.dialog_manager.select_ai(self.ctx)
             self.dialog_manager.select_voice(self.ctx)
             self.dialog_manager.messages = old_dialog_manager.messages
@@ -780,6 +798,9 @@ class RequestProcessor:
         denial / failure, and a silent end when killed."""
         try:
             try:
+                self._rounds = [self.dialog_manager]
+                if not self.ctx.test:
+                    Telemetry.get_instance().user_turn(self.ctx.user_input, self.ctx.source)
                 query_key = self._prepare_llm_context(prompt_manager)
 
                 if query_key is None:
@@ -805,6 +826,7 @@ class RequestProcessor:
                     raise RequestKilledException()
 
                 response_text = self._update_history(prompt_manager, user_input_already_reported_on)
+                self._report_turn(response_text)
                 self._wait_for_audio_and_notify_outposts()
 
                 self._save_to_database(query_key, response_text)

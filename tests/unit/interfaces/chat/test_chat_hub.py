@@ -690,3 +690,22 @@ class TestQuestionsReachEveryOwner:
         hub.claim_secret(transport, 222, "value")
         t.join(timeout=2)
         assert not t.is_alive()
+
+
+@pytest.mark.unit
+class TestTelemetry:
+    def test_a_delivered_push_is_a_proactive_assistant_turn(self, hub, transport, monkeypatch):
+        from unittest.mock import Mock
+        from assistant.Telemetry import Telemetry
+        sink = Mock()
+        monkeypatch.setattr(Telemetry, "get_instance", classmethod(lambda cls: sink))
+        assert hub.send_message("The car is charged.") is True
+        sink.assistant_turn.assert_called_once_with("The car is charged.", "notifier", proactive=True)
+
+    def test_a_dropped_push_is_not_reported(self, monkeypatch):
+        from unittest.mock import Mock
+        from assistant.Telemetry import Telemetry
+        sink = Mock()
+        monkeypatch.setattr(Telemetry, "get_instance", classmethod(lambda cls: sink))
+        assert ChatHub().send_message("Nobody to tell.") is False
+        sink.assistant_turn.assert_not_called()

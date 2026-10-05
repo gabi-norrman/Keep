@@ -339,6 +339,7 @@ class IntegrationMonitor:
             "consecutive_failures": integration.consecutive_failures,
             "config_keys": list(integration.config_keys),
             "restartable": restartable,
+            "sensitive": (integration.cls if isinstance(integration, DisabledIntegration) else type(integration)).sensitive,
         }
         if isinstance(integration, Feed):
             # The feed's own axis (catching up / live / stopped), next to the health state.
