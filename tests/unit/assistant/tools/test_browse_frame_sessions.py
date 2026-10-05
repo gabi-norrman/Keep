@@ -575,3 +575,82 @@ class TestBrowseClickAt:
         # each nodriver cdp call is a generator whose first yield is the wire message
         types = [next(g)['params']['type'] for g in sent]
         assert types == ['mouseMoved', 'mousePressed', 'mouseReleased']
+
+
+@pytest.mark.unit
+class TestSnapshotSkipsHiddenFrames:
+    """A frame target whose hosting <iframe> is collapsed in the document that embeds
+    it must not contribute elements: inside the frame its inputs look visible (the
+    Radonova/Kustom checkout listed Stripe's 0px-tall autofill frame as card fields)."""
+
+    KUSTOM = 'https://checkout.kustom.example/kcoc/checkout-template.html#order'
+    STRIPE = 'https://js.stripe.example/v3/elements-inner-accessory-target-abc.html'
+
+    def _snapshot(self, wa, main_extra, frame_targets, per_target):
+        """per_target: target id -> (pre-pass children dict, collector result)."""
+        async def fake_eval(_tab, expr):
+            if 'document.title' in expr:
+                return 'Checkout'
+            return {'records': [{'tag': 'button', 'label': 'Main'}], **main_extra}
+
+        async def frame_eval(_self, target_id, expr):
+            children, collected = per_target[target_id]
+            return children if 'shown' in expr and 'hidden' in expr else collected
+
+        with patch.object(WebAccess, '_evaluate', side_effect=fake_eval), \
+                patch.object(WebAccess, '_async_sync_popup_targets', new=AsyncMock()), \
+                patch.object(WebAccess, '_async_list_frame_targets',
+                             new=AsyncMock(return_value=frame_targets)), \
+                patch.object(WebAccess, '_async_eval_in_frame_target', new=frame_eval):
+            return run(wa._async_take_snapshot())
+
+    def _wa(self):
+        wa = make_wa()
+        wa._tab = SimpleNamespace(target=FakeTargetInfo('main', 'page', 'https://shop.example/kassa'))
+        wa._oopif_settle_giveups = frozenset()
+        wa._blank_frame_target_ids = frozenset()
+        return wa
+
+    def test_frame_collapsed_inside_another_frame_is_left_out(self):
+        targets = [FakeTargetInfo('stripe', url=self.STRIPE), FakeTargetInfo('kustom', url=self.KUSTOM)]
+        per_target = {
+            'kustom': ({'shown': [], 'hidden': [self.STRIPE]},
+                       {'records': [{'tag': 'button', 'label': 'Betala köp', 'source': 'kustom'}]}),
+            'stripe': ({'shown': [], 'hidden': []},
+                       {'records': [{'tag': 'input', 'type': 'text', 'label': 'Kortnummer',
+                                     'source': 'stripe'}]}),
+        }
+        result = self._snapshot(self._wa(), {'crossOriginFrames': [self.KUSTOM], 'hiddenFrames': []},
+                                targets, per_target)
+
+        assert 'Kortnummer' not in result
+        assert 'Betala köp' in result
+        # the kept frame's indices follow the main page's with no gap for the skipped one
+        assert '[1] button "Betala köp"' in result
+
+    def test_frame_collapsed_in_the_main_page_is_left_out(self):
+        targets = [FakeTargetInfo('stripe', url=self.STRIPE)]
+        per_target = {'stripe': ({'shown': [], 'hidden': []},
+                                 {'records': [{'tag': 'input', 'type': 'text', 'label': 'Kortnummer',
+                                               'source': 'stripe'}]})}
+        result = self._snapshot(self._wa(), {'crossOriginFrames': [], 'hiddenFrames': [self.STRIPE]},
+                                targets, per_target)
+
+        assert 'Kortnummer' not in result
+        assert 'Cross-origin iframes on this page' not in result
+
+    def test_frame_shown_somewhere_survives_a_hidden_twin(self):
+        # Stripe mounts several frames under one path: one collapsed, one the real card field.
+        targets = [FakeTargetInfo('stripe', url=self.STRIPE), FakeTargetInfo('kustom', url=self.KUSTOM)]
+        per_target = {
+            'kustom': ({'shown': [self.STRIPE], 'hidden': [self.STRIPE]},
+                       {'records': [{'tag': 'button', 'label': 'Betala köp', 'source': 'kustom'}]}),
+            'stripe': ({'shown': [], 'hidden': []},
+                       {'records': [{'tag': 'input', 'type': 'text', 'label': 'Kortnummer',
+                                     'source': 'stripe'}]}),
+        }
+        result = self._snapshot(self._wa(), {'crossOriginFrames': [self.KUSTOM], 'hiddenFrames': []},
+                                targets, per_target)
+
+        assert 'Kortnummer' in result
+        assert 'Betala köp' in result

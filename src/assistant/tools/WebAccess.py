@@ -2186,6 +2186,40 @@ class WebAccess(Integration):
                   f"{len(blank)} without a URL yet")
             await asyncio.sleep(self._OOPIF_SETTLE_POLL)
 
+    async def _async_hidden_frame_labels(self, main_result: dict, frame_targets: list,
+                                         deadline: float) -> set:
+        """Labels of the iframe targets whose hosting <iframe> is collapsed or hidden
+        in the document that embeds it — the main page's own, plus what each iframe
+        target reports about its children (one cheap eval per target, within the
+        snapshot's frame budget). A label that some document shows stays: Stripe
+        mounts several frames under one path and the visible one must survive.
+        """
+        def labels(srcs) -> set:
+            return {self._frame_label(self._normalize_url(s)) for s in (srcs or []) if s}
+
+        shown = labels(main_result.get('crossOriginFrames'))
+        hidden = labels(main_result.get('hiddenFrames'))
+        if len(frame_targets) > 1:
+            loop = asyncio.get_running_loop()
+            for ti in frame_targets:
+                if loop.time() > deadline:
+                    trace("Snapshot: frame budget spent before the hidden-iframe pre-pass finished")
+                    break
+                try:
+                    children = await self._async_eval_in_frame_target(
+                        ti.target_id, self._FRAME_CHILD_IFRAMES_JS)
+                except Exception as e:
+                    trace(f"Snapshot: child-iframe pre-pass failed in {self._frame_label(ti.url)}: "
+                          f"{type(e).__name__}: {e}")
+                    continue
+                if isinstance(children, dict):
+                    shown |= labels(children.get('shown'))
+                    hidden |= labels(children.get('hidden'))
+        result = hidden - shown
+        if result:
+            trace(f"Snapshot: hidden iframe label(s): {sorted(result)}")
+        return result
+
     @staticmethod
     def _frame_label(url: str) -> str:
         """Short human-readable frame identifier: host + path, no query."""
@@ -2897,6 +2931,13 @@ class WebAccess(Integration):
         return true;
     }
 
+    function iframeShown(f, win) {
+        const style = win.getComputedStyle(f);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        const rect = f.getBoundingClientRect();
+        return rect.width > 10 && rect.height > 10;
+    }
+
     function ancestorContext(el, ownLabel) {
         const HEADING_SEL = 'h1, h2, h3, h4, h5, h6, legend, [class*="heading" i], [class*="title" i], [class*="month" i][class*="head" i]';
         let p = el.parentElement;
@@ -3231,6 +3272,7 @@ class WebAccess(Integration):
     // caller can surface them (the LLM can then browse_open() the iframe URL directly).
     const skipIframePatterns = ['maps.google.com', 'google.com/maps', 'cookiebot.com'];
     const crossOriginFrames = [];
+    const hiddenFrames = [];
     const iframes = Array.from(document.querySelectorAll('iframe'));
     for (let i = 0; i < iframes.length; i++) {
         const f = iframes[i];
@@ -3243,12 +3285,13 @@ class WebAccess(Integration):
             // Cross-origin (or otherwise inaccessible) iframe with a usable URL.
             // Only drop tracking pixels and the like: a Stripe card field is a
             // ~17px-tall iframe, so the threshold must stay far below that.
-            const rect = f.getBoundingClientRect();
-            if (rawSrc && rect.width > 10 && rect.height > 10) {
-                let abs = rawSrc;
-                try { abs = f.src || rawSrc; } catch (e) {}
-                crossOriginFrames.push(abs);
-            }
+            // The collapsed ones are reported too: their contents look visible
+            // from inside (a 0px-tall Stripe autofill frame still holds a
+            // "Kortnummer" input) and the snapshot must not list them.
+            if (!rawSrc) continue;
+            let abs = rawSrc;
+            try { abs = f.src || rawSrc; } catch (e) {}
+            (iframeShown(f, window) ? crossOriginFrames : hiddenFrames).push(abs);
             continue;
         }
         try { clearTags(doc); } catch (e) { continue; }
@@ -3278,8 +3321,27 @@ class WebAccess(Integration):
         try { r.el.setAttribute('data-floxy-snap-idx', String(startIdx + i)); } catch (e) {}
         records.push(r.rec);
     });
-    return { records, crossOriginFrames, context: pageContext(document) };
+    return { records, crossOriginFrames, hiddenFrames, context: pageContext(document) };
 })"""
+
+    # Runs inside an iframe target before the collector: which cross-origin iframes
+    # it hosts, split by whether they render. A nested frame (Stripe's helpers inside
+    # a Kustom checkout) is only known to be collapsed by its parent — from inside,
+    # a 0px-tall frame's inputs pass every visibility test.
+    _FRAME_CHILD_IFRAMES_JS = r"""(() => {
+    const out = { shown: [], hidden: [] };
+    for (const f of document.querySelectorAll('iframe')) {
+        let src = '';
+        try { src = f.src || f.getAttribute('src') || ''; } catch (e) {}
+        if (!src) continue;
+        const style = getComputedStyle(f);
+        const rect = f.getBoundingClientRect();
+        const shown = style.display !== 'none' && style.visibility !== 'hidden'
+            && rect.width > 10 && rect.height > 10;
+        (shown ? out.shown : out.hidden).push(src);
+    }
+    return out;
+})()"""
 
     # Wording coordinated with the browse_act \n suffix / browse_key command docs.
     _SEARCH_FIELD_HINT = (' (search field: filling does not submit — '
@@ -3466,8 +3528,13 @@ class WebAccess(Integration):
         attached_labels = set()
         frame_targets = await self._async_settled_frame_targets(cross_origin_srcs)
         frame_deadline = asyncio.get_running_loop().time() + self._SNAPSHOT_FRAME_BUDGET
+        hidden_labels = await self._async_hidden_frame_labels(result, frame_targets, frame_deadline)
+        skipped_hidden: list[str] = []
         for n, ti in enumerate(frame_targets):
             label = self._frame_label(ti.url)
+            if label in hidden_labels:
+                skipped_hidden.append(label)
+                continue
             if asyncio.get_running_loop().time() > frame_deadline:
                 note(f"Snapshot: OOPIF budget ({self._SNAPSHOT_FRAME_BUDGET:.0f}s) spent — "
                      f"skipping the remaining {len(frame_targets) - n} frame(s), starting with {label}")
@@ -3518,6 +3585,9 @@ class WebAccess(Integration):
         lines = self._render_snapshot_lines(records)
 
         info(f"Snapshot: {len(records)} interactive elements at {url}")
+        if skipped_hidden:
+            info(f"Snapshot: left out {len(skipped_hidden)} collapsed/hidden iframe target(s) "
+                 f"whose contents the page does not show: {sorted(set(skipped_hidden))}")
         if hidden_frames:
             info(f"Snapshot: {len(hidden_frames)} cross-origin iframe(s) "
                  f"with hidden contents: {hidden_frames}")
