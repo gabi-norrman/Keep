@@ -1,10 +1,12 @@
-# Builds the Keep Atlas (docs/atlas/build.py) from master and publishes it to GitHub Pages.
-name: Atlas
+# Builds the public GitHub Pages site from master: the readme (docs/site/build.py) at the root — the repository is
+# private, the page is not — and the Keep Atlas (docs/atlas/build.py) under atlas/.
+name: Pages
 
 on:
   push:
     branches: [master]
-    paths: ["src/**", "res/**", "docs/atlas/**", "*.py", "*.sh", ".github/workflows/atlas.yml"]
+    paths: ["src/**", "res/**", "docs/atlas/**", "docs/site/**", "docs/images/**", "readme.md", "*.py", "*.sh",
+            ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
@@ -27,7 +29,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python docs/atlas/build.py --out _site/index.html
+      - run: python docs/site/build.py --out _site
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - run: python docs/atlas/build.py --out _site/atlas/index.html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

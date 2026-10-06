@@ -54,3 +54,6 @@ docs/chatgif/out/
 
 # built Keep Atlas (docs/atlas/build.py)
 docs/atlas/out/
+
+# built public readme page (docs/site/build.py)
+docs/site/out/

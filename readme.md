@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/runs_on-Apple_Silicon-40c8ff?style=flat-square&labelColor=181b28&logo=apple&logoColor=white" alt="Runs on Apple Silicon">
   <img src="https://img.shields.io/badge/powered_by-Fable-af82ff?style=flat-square&labelColor=181b28&logo=anthropic&logoColor=white" alt="Powered by Fable">
   <img src="https://img.shields.io/badge/self--hosted-on_your_Mac-46e696?style=flat-square&labelColor=181b28" alt="Self-hosted on your Mac">
-  <a href="https://maciekd.github.io/Keep/"><img src="https://img.shields.io/badge/architecture-Keep_Atlas-ffcd50?style=flat-square&labelColor=181b28" alt="Architecture: Keep Atlas"></a>
+  <a href="https://maciekd.github.io/Keep/atlas/"><img src="https://img.shields.io/badge/architecture-Keep_Atlas-ffcd50?style=flat-square&labelColor=181b28" alt="Architecture: Keep Atlas"></a>
 </p>
 
 <table>
@@ -170,9 +170,9 @@ Every integration is off until you turn it on, and Keep walks you through the se
 
 ## Architecture
 
-<a href="https://maciekd.github.io/Keep/"><img src="docs/images/atlas.png" width="840" alt="The Keep Atlas"></a>
+<a href="https://maciekd.github.io/Keep/atlas/"><img src="docs/images/atlas.png" width="840" alt="The Keep Atlas"></a>
 
-Curious how it fits together? The **[Keep Atlas](https://maciekd.github.io/Keep/)** is a zoomable map of the whole
+Curious how it fits together? The **[Keep Atlas](https://maciekd.github.io/Keep/atlas/)** is a zoomable map of the whole
 server: every package, module and class with a one-line description, and a walk through one spoken request from the
 microphone to the speaker.
 

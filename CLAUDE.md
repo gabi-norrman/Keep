@@ -154,12 +154,20 @@ source .venv/bin/activate && python -m pytest tests/ --override-ini="log_cli=fal
 ## Architecture Atlas
 
 `docs/atlas/` builds the Keep Atlas, the zoomable architecture map the readme links to: `python3 docs/atlas/build.py`
-(stdlib only) writes `docs/atlas/out/index.html`, and `.github/workflows/atlas.yml` publishes it to GitHub Pages on every
-push to master. A module's description is the first sentence of its docstring (its main class's when it has one), so a
+(stdlib only) writes `docs/atlas/out/index.html`, and `.github/workflows/pages.yml` publishes it to GitHub Pages
+(under `atlas/`) on every push to master. A module's description is the first sentence of its docstring (its main class's when it has one), so a
 new module needs a docstring that opens with one plain sentence. `docs/atlas/descriptions.py` holds the package blurbs,
 overrides for missing or overlong docstrings, and the "Follow a request" tour; **add a package blurb to `GROUPS` when you
 create a package, and update `TOUR` when a module it names moves**. `tests/unit/test_architecture_atlas.py` fails on
 either omission.
+
+## Public readme page
+
+The repository is private; the readme is not. `docs/site/build.py` (stdlib only, renders through GitHub's Markdown API)
+writes `docs/site/out/index.html` and the same workflow publishes it as the root of the Pages site,
+https://maciekd.github.io/Keep/, with `docs/images/` beside it. Nothing else of the tree is published, so **the readme
+may only show or link local files under `docs/images/`** — the build and `tests/unit/test_readme_site.py` fail otherwise.
+Everything in `readme.md` and `docs/images/` is public the moment it reaches master.
 
 ## Dependencies
 
