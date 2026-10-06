@@ -3,6 +3,7 @@ import os
 import re
 import threading
 import time
+from datetime import timedelta
 from typing import Optional
 
 from .LongTermMemoryCurator import LongTermMemoryCurator
@@ -30,6 +31,9 @@ USER_INTERACTION_STALE_COUNTER_SECONDS = 10 * 60
 # how long until its next opportunity to act.
 PERIODIC_CHECK_INTERVAL_SECONDS = 55 * 60  # 55 minutes start to start — stays under the 1h cache TTL
 PERIODIC_CHECK_INTERVAL_MINUTES = PERIODIC_CHECK_INTERVAL_SECONDS / 60
+# A watch item is polled by the check nearest its cadence: without the half interval an
+# "every 1h" item is 53 minutes old at the next check, not due, and polled every 110 minutes.
+WATCH_POLL_TOLERANCE = timedelta(seconds=PERIODIC_CHECK_INTERVAL_SECONDS / 2)
 # A check that finds the user busy is tried again this much later, not a whole interval
 # later: waiting the full interval stretched the gap between checks to 110 minutes, past
 # the hour Anthropic keeps the prompt prefix cached, and the next check re-wrote it all.
@@ -182,7 +186,7 @@ class AutonomousActionManager:
             trace(f"Autonomous prompt without the <thinking> tag paragraph: {llm.name()} thinks on its own")
         return AUTONOMOUS_ACTION_PROMPT.format(
             interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES,
-            watch_list=WatchList.render_due(),
+            watch_list=WatchList.render_due(tolerance=WATCH_POLL_TOLERANCE),
             thinking_tag_instruction="" if internal else THINKING_TAG_INSTRUCTION)
 
     def _llm_for(self, messages):

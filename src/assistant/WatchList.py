@@ -14,7 +14,8 @@ look; the curator's nightly rewrite is not). A check that finds nothing
 stamps `checked` with `checked_watch` and leaves the note alone, so the note never turns into
 a trail again. `interval` and `stamp` read the cadence and the stamp: `due_for_poll` is the
 code's arithmetic on the two (the autonomous check gets only the items it names in full, which
-keeps that prompt small), and the TUI draws when the next check falls from them.
+keeps that prompt small; it passes half its own interval as the tolerance, so an item is polled
+by the check that falls nearest its cadence), and the TUI draws when the next check falls from them.
 
 The `save_watch`, `checked_watch` and `delete_watch` commands and the memory curator's command
 block all go through `run`. The prompt's watch-list section is only an index (`render_index`: a
@@ -184,15 +185,15 @@ def check(name: str, directory: Path = None) -> Item | None:
 def delete(name: str, outcome: str = "", directory: Path = None, log_dir: Path = None) -> Item | None:
     """Remove the item's file, its last state and the outcome kept in the log; None when there is no such item."""
     directory = directory or WATCHLIST_DIR
+    outcome = redact_for_storage(outcome).strip()
     with lock:
         item = get(name, directory)
         if item is None:
             info(f"Watch list: no item '{slug(name) or name.strip()}' to delete")
             return None
-        _log_copy(item, log_dir or LOG_DIR,
-                  closing=f"Closed: {date.today().isoformat()}\nOutcome: {outcome.strip() or '-'}")
+        _log_copy(item, log_dir or LOG_DIR, closing=f"Closed: {date.today().isoformat()}\nOutcome: {outcome or '-'}")
         _path(name, directory).unlink()
-    info(f"Watch list: '{item.name}' deleted" + (f" — {outcome.strip()}" if outcome.strip() else ""))
+    info(f"Watch list: '{item.name}' deleted" + (f" — {outcome}" if outcome else ""))
     return item
 
 
@@ -266,23 +267,26 @@ def render(directory: Path = None, today: date = None) -> str:
     return "\n\n".join(_block(item, today) for item in items(directory)) or EMPTY
 
 
-def due_for_poll(item: Item, now: datetime = None) -> bool:
+def due_for_poll(item: Item, now: datetime = None, tolerance: timedelta = timedelta(0)) -> bool:
     """Whether the item's check cadence has elapsed since it was last checked. An item without
     a cadence is never polled; one never checked, or whose cadence or stamp cannot be read, is
-    due — the LLM is the one to make sense of it."""
+    due — the LLM is the one to make sense of it. `tolerance` is how much short of the cadence
+    still counts (never more than half the cadence): a caller that looks every 55 minutes and
+    stamps `checked` a few minutes into the look would otherwise find an hourly item not yet
+    due and poll it every other time."""
     if not item.every.strip():
         return False
     every, checked = interval(item.every), stamp(item.checked)
     if every is None or checked is None:
         return True
-    return (now or datetime.now()) - checked >= every
+    return (now or datetime.now()) - checked >= every - min(tolerance, every / 2)
 
 
-def render_due(directory: Path = None, now: datetime = None) -> str:
+def render_due(directory: Path = None, now: datetime = None, tolerance: timedelta = timedelta(0)) -> str:
     """The items whose poll is due, in full, as the autonomous check reads them: the check
     carries only what it must act on and reads anything else with `load_watch`."""
     open_items = items(directory)
-    due = [item for item in open_items if due_for_poll(item, now)]
+    due = [item for item in open_items if due_for_poll(item, now, tolerance)]
     if not due:
         trace(f"Watch list: none of the {len(open_items)} open items is due for a poll")
         return NOTHING_DUE

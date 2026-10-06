@@ -104,6 +104,14 @@ class TestLifecycle:
         assert len(texts) == 1
         assert "shipped" in texts[0] and "delivered to the door" in texts[0]
 
+    def test_a_vault_value_in_the_outcome_reaches_the_log_as_its_placeholder(self, wl, log, monkeypatch):
+        monkeypatch.setattr(WatchList, "redact_for_storage",
+                            lambda text: text.replace("4111 1111 1111 1111", "{{secret:marcus-visa}}"))
+        WatchList.save("Invoice", "due Friday", None, wl, log)
+        WatchList.delete("invoice", "paid with 4111 1111 1111 1111", wl, log)
+        [text] = log_texts(log)
+        assert "4111" not in text and "paid with {{secret:marcus-visa}}" in text
+
     def test_deleting_an_unknown_item_does_nothing(self, wl, log):
         WatchList.save("Parcel", "shipped", None, wl, log)
         assert WatchList.delete("dentist", "x", wl, log) is None
@@ -404,6 +412,28 @@ class TestDue:
         assert "parcel" in due and "tickets" not in due
         both = WatchList.render_due(wl, now + timedelta(hours=25))
         assert "parcel" in both and "tickets" in both
+
+    def test_a_check_every_55_minutes_polls_an_hourly_item_every_time(self, wl, log):
+        """The stamp is written a few minutes into a check, so at the next one the item is short
+        of its hour: without the check's tolerance it is polled every other time."""
+        WatchList.save("Parcel", "in transit", None, wl, log, every="1h")
+        next_check = WatchList.stamp(WatchList.get("parcel", wl).checked) + timedelta(minutes=53)
+        assert WatchList.render_due(wl, next_check) == WatchList.NOTHING_DUE
+        assert "parcel" in WatchList.render_due(wl, next_check, tolerance=timedelta(minutes=27.5))
+
+    def test_a_daily_item_is_polled_by_the_check_nearest_its_cadence(self, wl, log):
+        WatchList.save("Tickets", "not yet", None, wl, log, every="1d")
+        checked = WatchList.stamp(WatchList.get("tickets", wl).checked)
+        tolerance = timedelta(minutes=27.5)
+        assert WatchList.render_due(wl, checked + timedelta(hours=23), tolerance=tolerance) == WatchList.NOTHING_DUE
+        assert "tickets" in WatchList.render_due(wl, checked + timedelta(hours=23, minutes=40), tolerance=tolerance)
+
+    def test_the_tolerance_never_eats_more_than_half_a_short_cadence(self, wl, log):
+        WatchList.save("Oven", "preheating", None, wl, log, every="20m")
+        checked = WatchList.stamp(WatchList.get("oven", wl).checked)
+        tolerance = timedelta(minutes=27.5)
+        assert WatchList.render_due(wl, checked + timedelta(minutes=9), tolerance=tolerance) == WatchList.NOTHING_DUE
+        assert "oven" in WatchList.render_due(wl, checked + timedelta(minutes=10), tolerance=tolerance)
 
     def test_a_due_item_comes_whole(self, wl, log):
         WatchList.save("Parcel", "order 4711, left the depot", "2026-03-12", wl, log, every="1d")
