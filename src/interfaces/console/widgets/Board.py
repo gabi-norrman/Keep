@@ -76,8 +76,9 @@ Cell = Union[Tuple[str, Color], Tuple[str, Color, bool], Meter]
 
 class Table(NamedTuple):
     """A tab's list in a tile: the title, the columns as (title, width) with the last width
-    None for what is left, the rows as (dot colour, a cell per column), what to say while
-    there are none, and the title strip's value — the row count unless given."""
+    None for what is left, the rows as (dot colour, a cell per column) — a row without cells
+    is a blank one, parting two groups —, what to say while there are none, and the title
+    strip's value — the row count unless given."""
     title: str
     columns: Sequence[Tuple[str, Optional[int]]]
     rows: Sequence[Tuple[Color, Sequence[Cell]]]
@@ -161,6 +162,8 @@ def draw_table(screen: TUIScreen, cards: List[Tile.Card], x: int, y: int, width:
     _write_cells(screen, x + 4, header_y, inner_w - 2, [(title, Theme.COLOR_DIM) for title, _ in table.columns], widths)
     for i, (dot, cells) in enumerate(table.rows[top:top + room]):
         row_y = header_y + 1 + i
+        if not cells:
+            continue
         screen.reset_color()
         screen.set_color(dot)
         screen.write_at(x + 2, row_y, "●")

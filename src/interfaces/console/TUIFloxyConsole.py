@@ -36,7 +36,7 @@ class TUIFloxyConsole(AssistantObserver):
     Tab selection and the Shift+arrow / Tab navigation live in TabNavigator; Memory, Integrations
     and Developer are TabGroups with their own row of sub-tabs. The Integrations row is not
     fixed: IntegrationsGroup shows the tab of each enabled integration that brings one (found in
-    the integration folders) and a Disabled tab listing the rest.
+    the integration folders) after the Catalog tab, which lists them all, enabled or not.
 
     The first frames after the first client connects are the startup intro (`StartupIntro`):
     the Crystal scene's flight over the whole screen and the title typing out beside the

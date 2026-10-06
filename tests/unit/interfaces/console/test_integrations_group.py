@@ -28,26 +28,26 @@ def names(group):
     return [tab.name for tab in group.tabs]
 
 
-def test_a_console_built_before_the_integrations_register_has_the_disabled_tab_alone(monitor):
+def test_a_console_built_before_the_integrations_register_has_the_catalog_alone(monitor):
     group = make_group()
 
-    assert names(group) == ["Disabled"]
-    assert group.content_tab().name == "Disabled"
+    assert names(group) == ["Catalog"]
+    assert group.content_tab().name == "Catalog"
     assert FakeTab.built == []
 
 
-def test_the_row_follows_the_monitor_in_alphabetical_order_with_disabled_last(monitor):
+def test_the_row_follows_the_monitor_in_alphabetical_order_after_the_catalog(monitor):
     group = make_group()
     enable(monitor, RadioIntegration)
     enable(monitor, LampIntegration)
     disable(monitor, KettleIntegration)
-    assert names(group) == ["Lamp", "Radio", "Disabled"]
+    assert names(group) == ["Catalog", "Lamp", "Radio"]
 
     enable(monitor, KettleIntegration)
-    assert names(group) == ["Kettle", "Lamp", "Radio", "Disabled"]
+    assert names(group) == ["Catalog", "Kettle", "Lamp", "Radio"]
 
     disable(monitor, LampIntegration)
-    assert names(group) == ["Kettle", "Radio", "Disabled"]
+    assert names(group) == ["Catalog", "Kettle", "Radio"]
 
 
 def test_the_tab_of_a_disabled_integration_is_never_built(monitor):
@@ -68,24 +68,24 @@ def test_an_enabled_integration_keeps_its_tab_whatever_its_health(monitor, state
     monitor.register(lamp)
     lamp.state = state
 
-    assert names(group) == ["Lamp", "Disabled"]
+    assert names(group) == ["Catalog", "Lamp"]
 
 
 def test_an_integration_whose_constructor_failed_still_has_its_tab(monitor):
     group = make_group()
     monitor.register(UnavailableIntegration(KettleIntegration, RuntimeError("no kettle section")))
 
-    assert names(group) == ["Kettle", "Disabled"]
+    assert names(group) == ["Catalog", "Kettle"]
 
 
-def test_the_first_tab_is_selected_until_the_user_picks_one(monitor):
+def test_the_catalog_stays_selected_while_tabs_join_the_row(monitor):
     group = make_group()
-    assert names(group) == ["Disabled"]
+    assert names(group) == ["Catalog"]
     enable(monitor, LampIntegration)
 
     group.refresh()
 
-    assert group.content_tab().name == "Lamp"
+    assert group.content_tab().name == "Catalog"
 
 
 def test_the_selected_tab_stays_selected_when_the_row_changes_around_it(monitor):
@@ -93,7 +93,7 @@ def test_the_selected_tab_stays_selected_when_the_row_changes_around_it(monitor)
     enable(monitor, LampIntegration)
     enable(monitor, RadioIntegration)
     group.on_activate()
-    group.select(1)
+    group.select(2)
     radio = group.content_tab()
     assert radio.name == "Radio"
     seen = list(radio.events)
@@ -111,6 +111,7 @@ def test_the_tab_on_screen_gives_way_to_its_neighbour_when_its_integration_is_di
     enable(monitor, LampIntegration)
     enable(monitor, RadioIntegration)
     group.on_activate()
+    group.select(1)
     lamp = group.content_tab()
 
     disable(monitor, LampIntegration)
@@ -126,6 +127,7 @@ def test_a_tab_dropped_off_screen_is_not_told_twice_that_it_left(monitor):
     group = make_group()
     enable(monitor, LampIntegration)
     group.on_activate()
+    group.select(1)
     lamp = group.content_tab()
     group.on_deactivate()
 
@@ -139,14 +141,14 @@ def test_an_integration_enabled_again_gets_a_fresh_tab(monitor):
     group = make_group()
     enable(monitor, LampIntegration)
     group.refresh()
-    first = group.content_tab()
+    first = group.tabs[1]
 
     disable(monitor, LampIntegration)
     group.refresh()
     enable(monitor, LampIntegration)
     group.refresh()
 
-    assert group.tabs[0].name == "Lamp" and group.tabs[0] is not first
+    assert group.tabs[1].name == "Lamp" and group.tabs[1] is not first
 
 
 def test_the_tab_walk_enters_the_row_as_it_is_now_not_as_last_drawn(monitor):
@@ -156,11 +158,11 @@ def test_the_tab_walk_enters_the_row_as_it_is_now_not_as_last_drawn(monitor):
     enable(monitor, KettleIntegration)
 
     nav.handle_key('shift_tab')
-    assert nav.path == "Integrations/Disabled"
-    nav.handle_key('shift_tab')
     assert nav.path == "Integrations/Lamp"
+    nav.handle_key('shift_tab')
+    assert nav.path == "Integrations/Kettle"
 
     nav.handle_key('tab')
     nav.handle_key('tab')
     nav.handle_key('tab')
-    assert nav.path == "Integrations/Kettle"
+    assert nav.path == "Integrations/Catalog"
