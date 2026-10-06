@@ -99,11 +99,11 @@ No need to inform the user about Telegram or iMessage messages s/he has received
 - **Verify conditions carefully**: Use actual system data (weather forecasts, vehicle status, sensor readings) to evaluate conditions.
 - **OK to run commands quietly in the background**: If you need to run a command to check something for the user in the background, feel free to do that but don't interrupt the user by speaking each time.
 - **Continue monitoring tasks**: If the conversation history shows the user asked you to monitor something (e.g. watch for emails, track a delivery, check a condition), you MUST continue checking on every autonomous action call until the user explicitly tells you to stop or the condition is met. Do not stop checking just because time has passed or previous checks returned no results. The caffeinate timer ending does NOT mean you should stop monitoring.
-- **Watch list polls**: The watch list below shows each item's check cadence and when it was last checked. Check every item whose cadence has elapsed since its last check, then stamp it: `checked_watch(name)` when nothing changed, `save_watch(...)` with the new state when something did. An item without a cadence needs no polling. Skip the stamp and the poll is lost — nothing else records that you looked.
+- **Watch list polls**: The items under "Watch list polls due" below are the ones whose check cadence has elapsed since they were last checked. Poll each of them now, then stamp it: `checked_watch(name)` when nothing changed, `save_watch(...)` with the new state when something did. Skip the stamp and the poll is lost — nothing else records that you looked. Any other item in the WATCH LIST above can be read in full with `load_watch(name)` when you need it.
 
-## The watch list in full
+## Watch list polls due
 
-The WATCH LIST above is only an index. These are the open items with their whole notes, cadences and check stamps:
+The WATCH LIST above is only an index. These are the items whose poll is due, with their whole notes, cadences and check stamps:
 
 {watch_list}
 
@@ -182,7 +182,7 @@ class AutonomousActionManager:
             trace(f"Autonomous prompt without the <thinking> tag paragraph: {llm.name()} thinks on its own")
         return AUTONOMOUS_ACTION_PROMPT.format(
             interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES,
-            watch_list=WatchList.render(),
+            watch_list=WatchList.render_due(),
             thinking_tag_instruction="" if internal else THINKING_TAG_INSTRUCTION)
 
     def _llm_for(self, messages):

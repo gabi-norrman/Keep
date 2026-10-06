@@ -381,3 +381,41 @@ class TestCadence:
         assert WatchList.stamp("2026-03-12 07:45").hour == 7
         assert WatchList.stamp("2026-03-12").date().isoformat() == "2026-03-12"
         assert WatchList.stamp("next week") is None and WatchList.stamp("2026-13-40") is None
+
+
+@pytest.mark.unit
+class TestDue:
+    """What the autonomous check is handed: the items whose poll is due, nothing else."""
+
+    def test_empty_list_says_nothing_is_due(self, wl):
+        assert WatchList.render_due(wl) == WatchList.NOTHING_DUE
+
+    def test_an_item_without_a_cadence_is_never_polled(self, wl, log):
+        WatchList.save("Dentist", "12:30", "2026-03-12", wl, log)
+        backdate(wl, "dentist", "Checked", date.today() - timedelta(days=30))
+        assert WatchList.render_due(wl) == WatchList.NOTHING_DUE
+
+    def test_an_item_just_checked_is_not_due_and_one_past_its_cadence_is(self, wl, log):
+        WatchList.save("Tickets", "not yet", None, wl, log, every="1d")
+        WatchList.save("Parcel", "in transit", None, wl, log, every="6h")
+        now = datetime.now()
+        assert WatchList.render_due(wl, now) == WatchList.NOTHING_DUE
+        due = WatchList.render_due(wl, now + timedelta(hours=7))
+        assert "parcel" in due and "tickets" not in due
+        both = WatchList.render_due(wl, now + timedelta(hours=25))
+        assert "parcel" in both and "tickets" in both
+
+    def test_a_due_item_comes_whole(self, wl, log):
+        WatchList.save("Parcel", "order 4711, left the depot", "2026-03-12", wl, log, every="1d")
+        text = WatchList.render_due(wl, datetime.now() + timedelta(days=2))
+        assert "order 4711, left the depot" in text and "2026-03-12" in text and "1d" in text
+
+    def test_a_cadence_the_code_cannot_read_leaves_the_call_to_the_llm(self, wl, log):
+        WatchList.save("Tickets", "x", None, wl, log, every="when the tour is announced")
+        assert "tickets" in WatchList.render_due(wl)
+
+    def test_an_item_never_checked_is_due(self, wl, log):
+        WatchList.save("Tickets", "x", None, wl, log, every="1d")
+        path = wl / "tickets.md"
+        path.write_text("\n".join(l for l in path.read_text().splitlines() if not l.startswith("Checked:")) + "\n")
+        assert "tickets" in WatchList.render_due(wl)

@@ -20,7 +20,7 @@ from assistant.agents.AutonomousActionManager import (
 # What a model without thinking of its own receives (a bare Mock LLM counts as one).
 FORMATTED_AUTONOMOUS_ACTION_PROMPT = AUTONOMOUS_ACTION_PROMPT.format(
     interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES,
-    watch_list=WatchList.EMPTY,
+    watch_list=WatchList.NOTHING_DUE,
     thinking_tag_instruction=THINKING_TAG_INSTRUCTION,
 )
 
@@ -1295,9 +1295,17 @@ class TestThinkingTagInstruction:
 
 @pytest.mark.unit
 class TestWatchListInTheInstruction:
-    def test_the_check_reads_every_item_whole_with_its_cadence_and_stamp(self):
+    def test_only_an_item_whose_poll_is_due_comes_whole_with_its_cadence_and_stamp(self):
         note = "order 4711 with the courier, " + "tracking page shows no movement yet, " * 4 + "door code needed"
         WatchList.save("Parcel from shop.example", note, "2026-03-12", every="6h")
+        assert note not in AutonomousActionManager._action_prompt(Mock()), "just checked — not due yet"
+        path = WatchList.WATCHLIST_DIR / "parcel-from-shop-example.md"
+        path.write_text(path.read_text().replace(
+            f"Checked: {WatchList.get('parcel-from-shop-example').checked}", "Checked: 2026-03-10 08:00"))
         prompt = AutonomousActionManager._action_prompt(Mock())
-        assert note in prompt and "6h" in prompt
-        assert WatchList.get("parcel-from-shop-example").checked in prompt
+        assert note in prompt and "6h" in prompt and "2026-03-10 08:00" in prompt
+
+    def test_an_item_without_a_cadence_is_left_to_load_watch(self):
+        WatchList.save("Dentist for Charlotte", "12:30, bring the referral", "2026-03-12")
+        prompt = AutonomousActionManager._action_prompt(Mock())
+        assert "bring the referral" not in prompt and WatchList.NOTHING_DUE in prompt

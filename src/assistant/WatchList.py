@@ -12,15 +12,15 @@ and always carries when it was last looked at (`checked`, with the time of day):
 moves when the state changes, `checked` whenever someone looks (the assistant's `save_watch` is a
 look; the curator's nightly rewrite is not). A check that finds nothing
 stamps `checked` with `checked_watch` and leaves the note alone, so the note never turns into
-a trail again. Whether a check is due is the LLM's arithmetic, not the code's: the prompt shows
-the cadence and the stamp side by side. `interval` and `stamp` read the two for the TUI alone,
-which draws when the next check falls; nothing the LLM is told depends on them.
+a trail again. `interval` and `stamp` read the cadence and the stamp: `due_for_poll` is the
+code's arithmetic on the two (the autonomous check gets only the items it names in full, which
+keeps that prompt small), and the TUI draws when the next check falls from them.
 
 The `save_watch`, `checked_watch` and `delete_watch` commands and the memory curator's command
 block all go through `run`. The prompt's watch-list section is only an index (`render_index`: a
-line per item); `load_watch` returns whole items (`load`), and the readers that work through the
-whole list — the autonomous check, the curator — get `render`. The TUI's Watch list tab draws
-the items themselves (`items`).
+line per item); `load_watch` returns whole items (`load`); the curator, which works through the
+whole list, gets `render`, and the autonomous check `render_due` — the items whose poll is due.
+The TUI's Watch list tab draws the items themselves (`items`).
 """
 import re
 import threading
@@ -41,6 +41,7 @@ COMMANDS = ("save_watch", "checked_watch", "delete_watch")
 STALE_AFTER_DAYS = 14
 OVERDUE_AFTER_DAYS = 2
 EMPTY = "Nothing is being watched."
+NOTHING_DUE = "No item is due for a poll."
 # The header of a loaded item, as `load_watch(name)` returns it.
 HEADER_PREFIX = "# Watch item: "
 # How much of an item's note its index line carries.
@@ -261,8 +262,34 @@ def _block(item: Item, today: date = None) -> str:
 
 
 def render(directory: Path = None, today: date = None) -> str:
-    """The open items in full, as the autonomous check and the curator read them."""
+    """The open items in full, as the curator reads them."""
     return "\n\n".join(_block(item, today) for item in items(directory)) or EMPTY
+
+
+def due_for_poll(item: Item, now: datetime = None) -> bool:
+    """Whether the item's check cadence has elapsed since it was last checked. An item without
+    a cadence is never polled; one never checked, or whose cadence or stamp cannot be read, is
+    due — the LLM is the one to make sense of it."""
+    if not item.every.strip():
+        return False
+    every, checked = interval(item.every), stamp(item.checked)
+    if every is None or checked is None:
+        return True
+    return (now or datetime.now()) - checked >= every
+
+
+def render_due(directory: Path = None, now: datetime = None) -> str:
+    """The items whose poll is due, in full, as the autonomous check reads them: the check
+    carries only what it must act on and reads anything else with `load_watch`."""
+    open_items = items(directory)
+    due = [item for item in open_items if due_for_poll(item, now)]
+    if not due:
+        trace(f"Watch list: none of the {len(open_items)} open items is due for a poll")
+        return NOTHING_DUE
+    info(f"Watch list: {len(due)} of {len(open_items)} open items due for a poll: "
+         + ", ".join(item.name for item in due))
+    today = (now or datetime.now()).date()
+    return "\n\n".join(_block(item, today) for item in due)
 
 
 def _note_start(note: str) -> str:
