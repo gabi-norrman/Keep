@@ -204,7 +204,6 @@ class Server:
 def build(port: int, running_as_testsuite: bool = False) -> Server:
     """Construct the assistant and start every enabled interface; nothing serves yet."""
     from assistant.Assistant import Assistant
-    from assistant.commands.Commands import Commands
     from assistant.prompt.PromptManager import PromptManager
     from assistant.RequestProcessor import RequestProcessor
     from assistant import SystemNote
@@ -213,6 +212,7 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
     from common.logging import set_log_masker
     from common.vault.Redactor import Redactor
     from common.vault.Vault import Vault
+    from integrations.music.MusicCommands import MusicCommands
 
     info(f"Version {Version.detail()}")
     TempMonitor.check_installed()
@@ -229,7 +229,7 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
     SystemNote.set_history(prompt_manager.message_history)   # integrations' notes land in the dialog
     if running_as_testsuite:
         prompt_manager.load_test_suite_history("res/testsuite_history.json")
-    Commands.get_music_manager().prompt_manager = prompt_manager
+    MusicCommands.get_music_manager().prompt_manager = prompt_manager
 
     agents = []
     integration_monitor = None

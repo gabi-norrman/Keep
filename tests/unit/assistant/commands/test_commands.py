@@ -8,7 +8,6 @@ import pytest
 from assistant.ChannelProfile import profile_for
 from assistant.commands.Commands import Commands, MediaPayload
 from integrations.photos.ICloudPhotoDownloader import NoVideoRenditionError, PhotoNotInCloudError
-from integrations.icloud.ICloudIntegration import iCloudAPI
 from assistant.tools.WebAccess import WebAccess
 
 
@@ -44,12 +43,6 @@ def mock_home():
 @pytest.fixture(autouse=True)
 def mock_web_access():
     with patch.object(WebAccess, "get_instance", return_value=Mock()) as get_instance:
-        yield get_instance.return_value
-
-
-@pytest.fixture
-def icloud_api():
-    with patch.object(iCloudAPI, "get_instance", return_value=Mock()) as get_instance:
         yield get_instance.return_value
 
 
@@ -664,38 +657,6 @@ class TestCmdWebAccess:
 
 
 # ---------------------------------------------------------------------------
-# TestCmdMusicPlayback
-# ---------------------------------------------------------------------------
-
-class TestCmdMusicPlayback:
-    def test_volume_up(self, commands_instance):
-        commands_instance.music_manager = Mock()
-        commands_instance.cmd_volume_up("Living Room")
-        commands_instance.music_manager.adjust_volume.assert_called_once_with("Living Room", 4)
-
-    def test_volume_down(self, commands_instance):
-        commands_instance.music_manager = Mock()
-        commands_instance.cmd_volume_down("Living Room")
-        commands_instance.music_manager.adjust_volume.assert_called_once_with("Living Room", -4)
-
-    def test_play_music_splits_and_delegates(self, commands_instance):
-        commands_instance.music_manager = Mock()
-        commands_instance.cmd_play_music("Living Room", "spotify:track:123")
-        commands_instance.music_manager.play_in_zone.assert_called_once_with("spotify:track:123", "Living Room")
-
-    def test_sonos_enqueue_favorite(self, commands_instance):
-        Commands.music_manager = Mock()
-        Commands.music_manager.get_favorites.return_value = ["My Fav"]
-        commands_instance.cmd_sonos_enqueue_and_play("Kitchen", "My Fav")
-        Commands.music_manager.play_favorite.assert_called_once_with("Kitchen", "My Fav")
-
-    def test_sonos_enqueue_playlist(self, commands_instance):
-        Commands.music_manager = Mock()
-        Commands.music_manager.get_favorites.return_value = ["Other Fav"]
-        commands_instance.cmd_sonos_enqueue_and_play("Kitchen", "My Playlist")
-        Commands.music_manager.play_playlist.assert_called_once_with("Kitchen", "My Playlist", shuffle=True)
-
-# ---------------------------------------------------------------------------
 # TestCmdRemember
 # ---------------------------------------------------------------------------
 
@@ -862,79 +823,6 @@ class TestCmdFindPhone:
             assert "boom" in str(mock_error.call_args)
 
 
-class TestCmdIcloudDevices:
-    def test_lists_ids_slots_and_the_next_index(self, commands_instance, icloud_api):
-        icloud_api.get_icloud_devices.return_value = [
-            {"id": "uuid-dad", "name": "Dad's iPhone", "model": "iPhone 15", "class": "iPhone", "configured_as": "dad", "slot": 0},
-            {"id": "uuid-anna", "name": "Anna's iPad", "model": "", "class": "iPad", "configured_as": None, "slot": None},
-        ]
-        icloud_api.configured_device_count.return_value = 1
-        text = commands_instance._run_icloud_devices()
-        lines = text.splitlines()
-        assert lines[0] == "Dad's iPhone (iPhone 15) — id uuid-dad — configured as 'dad' (icloud.devices[0])"
-        assert lines[1] == "Anna's iPad — id uuid-anna — not configured"
-        assert lines[-1] == "icloud.devices has 1 entry; the next one is icloud.devices[1] (keys id and display_name)."
-
-    def test_empty_listing_points_at_the_login(self, commands_instance, icloud_api):
-        icloud_api.get_icloud_devices.return_value = []
-        assert "login may be incomplete" in commands_instance._run_icloud_devices()
-
-# ---------------------------------------------------------------------------
-# TestCmdLocatePhone
-# ---------------------------------------------------------------------------
-
-class TestCmdSendImessage:
-    def test_returns_send_result_synchronously(self, commands_instance):
-        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
-            inst = Mock()
-            inst.send.return_value = ""
-            MockCls.get_instance.return_value = inst
-            result = commands_instance.cmd_send_imessage("Charlotte", "On my way home")
-        assert result == ""
-        inst.send.assert_called_once_with(
-            "Charlotte", f"On my way home\n\n{commands_instance.AI_MESSAGE_SUFFIX}"
-        )
-
-    def test_empty_recipient_returns_error_without_calling_send(self, commands_instance):
-        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
-            result = commands_instance.cmd_send_imessage("", "just a body")
-            MockCls.get_instance.assert_not_called()
-        assert "send_imessage failed" in result
-
-    def test_empty_body_returns_error_without_calling_send(self, commands_instance):
-        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
-            result = commands_instance.cmd_send_imessage("Alice", "  ")
-            MockCls.get_instance.assert_not_called()
-        assert "send_imessage failed" in result
-
-    def test_literal_backslash_n_converted_to_newline(self, commands_instance):
-        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
-            inst = Mock()
-            inst.send.return_value = ""
-            MockCls.get_instance.return_value = inst
-            commands_instance.cmd_send_imessage("Bob", "line one\\nline two")
-        sent = inst.send.call_args[0][1]
-        assert "line one\nline two" in sent
-        assert "\\n" not in sent.split(commands_instance.AI_MESSAGE_SUFFIX)[0]
-
-    def test_literal_crlf_and_tab_escapes_converted(self, commands_instance):
-        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
-            inst = Mock()
-            inst.send.return_value = ""
-            MockCls.get_instance.return_value = inst
-            commands_instance.cmd_send_imessage("Bob", "a\\r\\nb\\tc")
-        sent = inst.send.call_args[0][1]
-        assert "a\nb\tc" in sent
-        assert "\\r" not in sent and "\\t" not in sent
-
-    def test_real_newlines_in_body_preserved(self, commands_instance):
-        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
-            inst = Mock()
-            inst.send.return_value = ""
-            MockCls.get_instance.return_value = inst
-            commands_instance.cmd_send_imessage("Bob", "line one\nline two")
-        sent = inst.send.call_args[0][1]
-        assert "line one\nline two" in sent
 
 
 class TestCmdSendEmail:
@@ -1028,26 +916,6 @@ class TestCmdTurnOnOff:
         with patch("assistant.commands.Commands.home.active", return_value=NotConfiguredHome("Enable Indigo.")):
             assert commands_instance.cmd_turn_on("Lamp") == "Enable Indigo."
 
-# ---------------------------------------------------------------------------
-# TestCmdCreateEvent
-# ---------------------------------------------------------------------------
-
-class TestCmdCreateEvent:
-    def test_run_create_event_title_with_commas(self, commands_instance):
-        # Simulates LLM under-quoting: a title containing a comma got split into
-        # multiple tokens at parse time. The handler re-joins leading tokens.
-        with patch("assistant.commands.Commands.CalDAVIntegration.create_calendar_event") as mock_create:
-            result = commands_instance._run_create_event(
-                "Dinner with John", "Sarah", "2025-10-28", "18:00", "19:00"
-            )
-            mock_create.assert_called_once_with("Dinner with John, Sarah", "2025-10-28", "18:00", "19:00")
-            assert result == ""
-
-    def test_run_create_event_exception_from_calendar(self, commands_instance):
-        with patch("assistant.commands.Commands.CalDAVIntegration.create_calendar_event", side_effect=ValueError("bad date")):
-            result = commands_instance._run_create_event("Dentist", "bad-date", "10:00", "11:00")
-            assert "create_event failed" in result
-            assert "bad date" in result
 
 # ---------------------------------------------------------------------------
 # TestCmdSearchPhotos
@@ -2569,81 +2437,7 @@ class TestCmdRestartIntegration:
             assert commands_instance._run_restart_integration("gmial") == \
                 "No integration named 'gmial'. Known: Gmail, Tesla"
 
-class TestCmdTelegramLogin:
-    """`telegram_login(phone)`: console only, the login itself on the integration."""
-
-    @staticmethod
-    def _monitor(integration, restart=None):
-        monitor = Mock()
-        monitor.find.return_value = integration
-        monitor.restart.return_value = restart
-        return monitor
-
-    def test_runs_in_the_background_from_the_console(self, commands_instance):
-        commands_instance._current_context = Mock(source="Console", conversation="tui")
-        with patch.object(commands_instance, "background_command") as bg:
-            assert commands_instance.run("telegram_login", ['"+46 70 123 45 67"']) == ""
-        bg.assert_called_once_with(commands_instance._run_telegram_login, ("+46701234567", "Console", "tui"),
-                                   lane=Commands.CONFIG_LANE)
-
-    def test_refused_from_telegram_and_without_a_chat(self, commands_instance):
-        with patch.object(commands_instance, "background_command") as bg:
-            commands_instance._current_context = Mock(source="Telegram", conversation=123)
-            text = commands_instance.cmd_telegram_login("+46701234567")
-            assert text.startswith("telegram_login failed: it only works from the console chat")
-            assert "invalidates a login code" in text
-            commands_instance._current_context = None
-            assert commands_instance.cmd_telegram_login("+46701234567").startswith("telegram_login failed")
-        bg.assert_not_called()
-
-    def test_phone_needs_a_country_code(self, commands_instance):
-        commands_instance._current_context = Mock(source="Console", conversation="tui")
-        with patch.object(commands_instance, "background_command") as bg:
-            for bad in ("0701234567", "+46", "", "+46abc"):
-                assert commands_instance.cmd_telegram_login(bad).startswith(
-                    "telegram_login failed: expected the phone number with its country code")
-        bg.assert_not_called()
-
-    def test_run_signs_in_then_restarts_the_integration(self, commands_instance):
-        integration = Mock(name="Telegram Feed")
-        integration.name = "Telegram Feed"
-        integration.login.return_value = None
-        status = {"name": "Telegram Feed", "state": "ok", "last_error": None, "config_keys": []}
-        monitor = self._monitor(integration, {"restartable": True, "status": status})
-        fake = Mock()
-        fake.request_secret.return_value = "accepted"
-        with patch.object(Commands, "_integration_monitor", return_value=monitor), \
-             patch("assistant.commands.Commands.notifier", return_value=fake):
-            reply = commands_instance._run_telegram_login("+46701234567", "Console", "tui")
-            phone, ask = integration.login.call_args.args
-            # The prompt the integration opens is addressed to the asking chat.
-            ask("Telegram login code", "details", lambda v: "ok")
-        assert reply == "Telegram Feed signed in. Telegram Feed restarted: ok"
-        assert phone == "+46701234567"
-        fake.request_secret.assert_called_once()
-        assert fake.request_secret.call_args.kwargs["source"] == "Console"
-        assert fake.request_secret.call_args.kwargs["conversation"] == "tui"
-        monitor.restart.assert_called_once_with("Telegram Feed")
-
-    def test_run_reports_a_failed_login_without_restarting(self, commands_instance):
-        integration = Mock()
-        integration.login.return_value = "Telegram Feed login failed: the user cancelled the code prompt — nothing was signed in"
-        monitor = self._monitor(integration)
-        with patch.object(Commands, "_integration_monitor", return_value=monitor):
-            assert commands_instance._run_telegram_login("+46701234567") == integration.login.return_value
-        monitor.restart.assert_not_called()
-
-    def test_run_on_a_disabled_or_missing_integration(self, commands_instance):
-        from assistant.integration.Integration import IntegrationState
-        placeholder = Mock(spec=["state"])
-        placeholder.state = IntegrationState.DISABLED
-        with patch.object(Commands, "_integration_monitor", return_value=self._monitor(placeholder)):
-            assert commands_instance._run_telegram_login("+46701234567") == \
-                'Telegram Feed is disabled — enable_integration("Telegram Feed") first.'
-        with patch.object(Commands, "_integration_monitor", return_value=self._monitor(None)):
-            assert commands_instance._run_telegram_login("+46701234567") == \
-                "Telegram Feed is not available — set telegram_feed.api_id and api_hash and enable it first."
-
+class TestRestartNamesTheTelegramLogin:
     def test_restart_needs_2fa_names_the_command(self, commands_instance):
         status = {"name": "Telegram Feed", "state": "needs_2fa", "last_error": None, "config_keys": []}
         assert commands_instance._describe_restart(status, True) == \

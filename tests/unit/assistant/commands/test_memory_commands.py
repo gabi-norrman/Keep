@@ -69,9 +69,9 @@ class TestWatchCommands:
         assert commands.is_pure("load_calendar")
 
     def test_loading_a_calendar_without_a_name_or_with_a_broken_account_is_a_failure_message(self, commands):
-        assert "failed" in commands._run_load_calendar()
-        with patch("assistant.commands.Commands.CalDAVIntegration.load_calendars", side_effect=ValueError("no login")):
-            assert "no login" in commands._run_load_calendar("Work")
+        assert "failed" in commands._owner("load_calendar")._run_load_calendar()
+        with patch("integrations.caldav.CalDAVCommands.CalDAVIntegration.load_calendars", side_effect=ValueError("no login")):
+            assert "no login" in commands._owner("load_calendar")._run_load_calendar("Work")
 
     def test_a_watch_without_a_name_is_an_error(self, commands):
         assert run(commands, "save_watch()")

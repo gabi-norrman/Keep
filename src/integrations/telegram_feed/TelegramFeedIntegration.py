@@ -412,7 +412,7 @@ class TelegramFeedIntegration(Integration, Feed):
         return False
 
 
-    # --- The login as one conversation, for the chat (Commands.cmd_telegram_login) ---------
+    # --- The login as one conversation, for the chat (TelegramFeedCommands.cmd_telegram_login) ---
 
     def login(self, phone: str, ask: Callable[[str, str, Callable[[str], str]], str]) -> Optional[str]:
         """Signs the account in: sends the code to *phone*, asks for it through *ask* (the

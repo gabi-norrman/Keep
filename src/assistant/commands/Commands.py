@@ -18,18 +18,15 @@ from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import CommandSet, Toolkits, ToolkitPreloader
 from assistant import MemoryFile, Procedures, WatchList
 from common.logging import trace, info, note, error, fine
-from integrations.music.MusicIntegration import MusicManager
-from integrations.caldav.CalDAVIntegration import CalDAVIntegration
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from common.ConfigManager import ConfigManager
 from common import ConfigSchema, ConfigStore
 from common.ConfigStore import ConfigStoreError
-from assistant.ChannelProfile import AUTONOMOUS, PHOTO_TARGET_KITCHEN_TV, SOURCE_CONSOLE
+from assistant.ChannelProfile import AUTONOMOUS, PHOTO_TARGET_KITCHEN_TV
 from assistant.Notifier import SecretRejected, notifier
 from assistant.SystemNote import system_note
 from assistant.Telemetry import Telemetry
 from .CommandEcho import describe_completion
-from integrations.icloud.ICloudIntegration import iCloudAPI
 from integrations.arlo.ArloCameraIntegration import ArloCamera
 from integrations.ring.RingIntegration import RingIntegration
 from common.FloxyDatabase import FloxyDatabase
@@ -73,7 +70,7 @@ class Commands:
     derived from the `cmd_` method names of all of them; SENSITIVE_COMMANDS go through the
     notifier's approval gate before running.
     """
-    SENSITIVE_COMMANDS = frozenset({"send_imessage", "send_email", "restart_server"})
+    SENSITIVE_COMMANDS = frozenset({"send_email", "restart_server"})
     # What the approval prompt shows under the title when the command has no parameters
     # to preview — the user should know what saying yes does before the screen goes blank.
     APPROVAL_NOTES = {
@@ -83,31 +80,22 @@ class Commands:
     }
     # Commands whose handler accepts multiple positional arguments. The dispatcher
     # splats the parsed parameter list (`f(*params)`); the handler decides how to
-    # interpret arity (e.g. send_imessage merges trailing tokens into the body so
-    # under-quoted LLM output like `send_imessage(John, Hi, friend)` still works).
+    # interpret arity (e.g. the iMessage set's send_imessage merges trailing tokens into the body
+    # so under-quoted LLM output like `send_imessage(John, Hi, friend)` still works).
     # Anything not in this set gets `f(params[0] if params else "")` for compat
     # with the historical single-string signature.
     MULTI_PARAM_COMMANDS = frozenset({
-        "send_imessage", "send_email", "dim", "play_music",
-        "sonos_enqueue_and_play", "show_photo",
+        "send_email", "dim", "show_photo",
         "search_photos", "search_history", "show_history",
-        "create_event", "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
+        "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
         "vault_request", "config_set", "load_toolkit", "schedule_wakeup",
-        "load_watch", "save_watch", "delete_watch", "load_calendar",
+        "load_watch", "save_watch", "delete_watch",
         "load_procedure", "save_procedure", "delete_procedure",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
-    PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch", "load_calendar"})
+    PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch"})
     AI_MESSAGE_SUFFIX = "[Sent with the help of AI 🤖]"
-
-    music_manager = None
-
-    @classmethod
-    def get_music_manager(cls) -> 'MusicManager':
-        if cls.music_manager is None:
-            cls.music_manager = MusicManager.get_instance()
-        return cls.music_manager
 
     # Integrations are looked up per call: get_instance() is the cache, so a restarted
     # integration (restart_integration) is what the next command uses.
@@ -784,90 +772,6 @@ class Commands:
         info(f"show_history({from_str} -> {to_str}) returned {len(lines)} entries")
         return "\n".join(lines)
 
-    def _run_create_event(self, *args: str) -> str:
-        try:
-            if len(args) < 4:
-                return "create_event failed: expected 4 parameters (title, date, start_time, end_time)"
-            # If the LLM under-quoted and produced extra tokens, the title may have
-            # been split at internal commas — re-join leading tokens into the title
-            # and pull the last 3 tokens as date/start/end.
-            title = ", ".join(a.strip() for a in args[:-3])
-            date_str = args[-3].strip()
-            start_time = args[-2].strip()
-            end_time = args[-1].strip()
-            CalDAVIntegration.create_calendar_event(title, date_str, start_time, end_time)
-            return ""
-        except Exception as e:
-            return f"create_event failed: {e}"
-
-    def cmd_create_event(self, *args: str):
-        self.background_command(self._run_create_event, list(args))
-
-    def cmd_load_calendar(self, *names: str):
-        self.background_command(self._run_load_calendar, list(names))
-
-    @staticmethod
-    def _run_load_calendar(*names: str) -> str:
-        """The named calendars over the window the prompt's calendar section covers."""
-        names = [n for n in names if n and n.strip()]
-        if not names:
-            return "load_calendar failed: expected a calendar's name"
-        try:
-            return CalDAVIntegration.load_calendars(names)
-        except Exception as e:
-            return f"load_calendar failed: {e}"
-
-    @staticmethod
-    def _get_icloud_api() -> iCloudAPI:
-        return iCloudAPI.get_instance()
-
-    def cmd_find_phone(self, parameter_string: str):
-        self.fire_and_forget(self._get_icloud_api().play_sound, parameter_string)
-
-    def cmd_locate_user(self, parameter_string: str):
-        self.background_command(self._get_icloud_api().get_location, parameter_string)
-
-    def cmd_icloud_devices(self, parameter_string: str = ""):
-        self.background_command(self._run_icloud_devices, "")
-
-    def _run_icloud_devices(self, _="") -> str:
-        """Every device the iCloud account sees, with its id and the icloud.devices entry it
-        is configured in — the material for finishing the setup with config_set."""
-        api = self._get_icloud_api()
-        devices = api.get_icloud_devices()
-        if not devices:
-            info("icloud_devices: the account listed no devices")
-            return ("iCloud listed no devices — the login may be incomplete (list_integrations shows the "
-                    "iCloud state; a 2FA code is entered in the console's iCloud tab).")
-        lines = []
-        for d in devices:
-            model = f" ({d['model']})" if d.get("model") else ""
-            if d.get("configured_as"):
-                status = f"configured as '{d['configured_as']}' (icloud.devices[{d['slot']}])"
-            else:
-                status = "not configured"
-            lines.append(f"{d['name']}{model} — id {d['id']} — {status}")
-        n = api.configured_device_count()
-        info(f"icloud_devices: {len(lines)} device(s), {n} configured")
-        return "\n".join(lines) + (f"\n\nicloud.devices has {n} entr{'y' if n == 1 else 'ies'}; the next one is "
-                                    f"icloud.devices[{n}] (keys id and display_name).")
-
-    def cmd_send_imessage(self, *args: str) -> str:
-        if len(args) < 2:
-            return "send_imessage failed: expected 'recipient, message' parameters"
-        recipient = args[0].strip()
-        # If the LLM didn't quote the body, trailing tokens are body fragments;
-        # re-join them so commas in the message survive.
-        body = ", ".join(a for a in args[1:]).strip()
-        if not recipient or not body:
-            return "send_imessage failed: expected 'recipient, message' parameters"
-
-        # LLM emits literal "\n" escape sequences — turn them into real newlines.
-        body = normalize_llm_escapes(body)
-        body = f"{body}\n\n{self.AI_MESSAGE_SUFFIX}"
-        from integrations.imessage.IMessageIntegration import IMessageIntegration
-        return IMessageIntegration.get_instance().send(recipient, body)
-
     def cmd_send_email(self, *args: str) -> str:
         if len(args) < 3:
             return "send_email failed: expected 'to, subject, body' parameters"
@@ -994,46 +898,6 @@ class Commands:
     def cmd_execute(self, parameter_string: str) -> str:
         return home.active().execute(self._home_name(parameter_string))
 
-    def cmd_search_music(self, parameter_string: str):
-        self.background_command(self.music_manager.search_spotify, parameter_string)
-
-    def cmd_play_music(self, *args: str):
-        if len(args) < 2:
-            return "play_music failed: expected 'zone, id' parameters"
-        room = args[0].strip()
-        id = args[1].strip()
-        self.music_manager.play_in_zone(id, room)
-
-    def cmd_play(self, parameter_string: str):
-        self.music_manager.play(parameter_string)
-
-    def cmd_pause(self, parameter_string: str):
-        self.music_manager.pause(parameter_string)
-
-    def cmd_next(self, parameter_string: str):
-        self.music_manager.next_track(parameter_string)
-
-    def cmd_volume_up(self, parameter_string: str):
-        self.music_manager.adjust_volume(parameter_string, 4)
-
-    def cmd_volume_down(self, parameter_string: str):
-        self.music_manager.adjust_volume(parameter_string, -4)
-
-    #  todo: this is not in the prompt, do we still want it?
-    def cmd_sonos_enqueue_and_play(self, *args: str):
-        if len(args) < 2:
-            return "sonos_enqueue_and_play failed: expected 'zone, playlist' parameters"
-        room = args[0].strip()
-        playlist = args[1].strip()
-
-        favorites = Commands.music_manager.get_favorites(room)
-        if playlist in favorites:
-            trace("Sonos favorite, playing.")
-            Commands.music_manager.play_favorite(room, playlist)
-        else:
-            trace("Sonos playlist, playing.")
-            Commands.music_manager.play_playlist(room, playlist, shuffle=True)
-
     def cmd_vault_add(self, *args: str) -> str:
         """Files a value the user has already said out loud into the vault, so every later
         request (and the history that already holds it) is redacted from here on."""
@@ -1137,6 +1001,20 @@ class Commands:
     def _integration_monitor():
         from assistant.integration.IntegrationMonitor import IntegrationMonitor
         return IntegrationMonitor.get_instance()
+
+    # What a command set in an integration folder (telegram_login, load_calendar) uses of the
+    # setup commands' helpers; it reaches them through its host.
+    def integration_monitor(self):
+        return self._integration_monitor()
+
+    def state_label(self, state, default: str) -> str:
+        return self._STATE_LABELS.get(state, default)
+
+    def describe_restart(self, status: dict, restartable: bool) -> str:
+        return self._describe_restart(status, restartable)
+
+    def first_argument(self, p: str) -> str:
+        return self._first_argument(p)
 
     @staticmethod
     def _keys_summary(keys: list[dict]) -> str:
@@ -1317,47 +1195,6 @@ class Commands:
         return f"{key} saved. {self._restart_hint(key)}"
 
     TELEGRAM_FEED = "Telegram Feed"
-
-    def cmd_telegram_login(self, parameter_string: str):
-        """Signs the Telegram Feed's account in from the chat: the code Telegram sends and
-        the account's 2FA password come in through the masked prompt, so the LLM sees neither.
-        Console only — Telegram invalidates a login code that is sent as a Telegram message,
-        so the bot chat cannot carry it."""
-        phone = parameter_string.strip().strip('"\'').replace(" ", "")
-        if not phone.startswith("+") or not phone[1:].isdigit() or len(phone) < 8:
-            return ('telegram_login failed: expected the phone number with its country code, '
-                    'e.g. telegram_login("+46701234567")')
-        ctx = self._current_context
-        source = getattr(ctx, "source", None)
-        if source != SOURCE_CONSOLE:
-            info(f"telegram_login: refused from {source or 'no chat'} — console only")
-            return ("telegram_login failed: it only works from the console chat — Telegram invalidates a login "
-                    "code that is sent as a Telegram message, so the code cannot be typed into this chat. "
-                    "Ask the user to open the console and say it there.")
-        conversation = getattr(ctx, "conversation", None)
-        self.background_command(self._run_telegram_login, (phone, source, conversation), lane=self.CONFIG_LANE)
-
-    def _run_telegram_login(self, phone: str, source=None, conversation=None) -> str:
-        monitor = self._integration_monitor()
-        integration = monitor.find(self.TELEGRAM_FEED)
-        if integration is None or not hasattr(integration, "login"):
-            state = getattr(integration, "state", None)
-            label = self._STATE_LABELS.get(getattr(state, "value", state), "not available")
-            info(f"telegram_login: Telegram Feed is {label}, no login possible")
-            if label == "disabled":
-                return f'Telegram Feed is disabled — enable_integration("{self.TELEGRAM_FEED}") first.'
-            return f"Telegram Feed is {label} — set telegram_feed.api_id and api_hash and enable it first."
-
-        def ask(title: str, details: str, accept) -> str:
-            return notifier().request_secret(title=title, details=details, accept=accept,
-                                             source=source, conversation=conversation)
-
-        failure = integration.login(phone, ask)
-        if failure:
-            info(f"telegram_login: {failure}")
-            return failure
-        result = monitor.restart(integration.name)
-        return f"Telegram Feed signed in. {self._describe_restart(result['status'], result['restartable'])}"
 
     def cmd_restart_integration(self, parameter_string: str):
         name = parameter_string.strip().strip('"\'')
@@ -1901,23 +1738,6 @@ class Commands:
         return f"Scheduling wakeup in {minutes.strip()} min" + (f": {reason.strip()}" if reason.strip() else "")
     def describe_caffeinate(self, p):             return "Staying awake"
     def describe_show_photo(self, p):             return f"Showing photo {p.strip()}"
-    def describe_find_phone(self, p):             return "Pinging phone"
-    def describe_locate_user(self, p):            return f"Locating {p.strip()}" if p.strip() else "Locating user"
-    def describe_icloud_devices(self, p):         return "Listing iCloud devices"
-    def describe_send_imessage(self, p):
-        recipient = p.split(",", 1)[0].strip() if p else ""
-        if not recipient:
-            return "Sending iMessage"
-        try:
-            from integrations.imessage.IMessageIntegration import IMessageIntegration
-            imessage = IMessageIntegration.get_instance()
-            handle, err = imessage.resolve_recipient(recipient)
-            if handle and not err and handle.lower() != recipient.lower():
-                display = imessage.display_name_for_handle(handle) or recipient
-                return f"Sending iMessage to {display} ({handle})"
-        except Exception as e:
-            trace(f"describe_send_imessage: handle lookup failed for '{recipient}': {e}")
-        return f"Sending iMessage to {recipient}"
     def describe_send_email(self, p):
         recipient = p.split(",", 1)[0].strip() if p else ""
         return f"Sending email to {recipient}" if recipient else "Sending email"
@@ -1926,12 +1746,6 @@ class Commands:
     def describe_self_improvement(self, p):       return "Running self-improvement"
     def describe_restart_server(self, p):         return "Restarting server"
     def describe_execute(self, p):                return f"Running action {p.strip()}"
-    def describe_search_music(self, p):           return f"Searching music for {p.strip()}"
-    def describe_play(self, p):                   return f"Playing in {p.strip()}" if p.strip() else "Playing"
-    def describe_pause(self, p):                  return f"Pausing in {p.strip()}" if p.strip() else "Pausing"
-    def describe_next(self, p):                   return f"Skipping to next track in {p.strip()}" if p.strip() else "Skipping to next track"
-    def describe_volume_up(self, p):              return f"Turning up the volume in {p.strip()}" if p.strip() else "Turning up the volume"
-    def describe_volume_down(self, p):            return f"Turning down the volume in {p.strip()}" if p.strip() else "Turning down the volume"
     def describe_vault_add(self, p):
         # Never the value: the notification is exactly where a secret must not be echoed.
         parts = [x.strip() for x in p.split(",")]
@@ -1942,7 +1756,6 @@ class Commands:
     def describe_list_integrations(self, p):  return "Listing integrations"
     def describe_config_help(self, p):        return f"Reading the settings for {p.strip()}" if p.strip() else "Listing the settings sections"
     def describe_config_request(self, p):     return f"Asking for setting {p.strip()}" if p.strip() else "Asking for a setting"
-    def describe_telegram_login(self, p):     return "Signing the Telegram account in"
     def describe_config_set(self, p):
         key = p.split(",", 1)[0].strip().strip('"\'')
         return f"Setting {key}" if key else "Setting a value"
@@ -1950,7 +1763,6 @@ class Commands:
     def describe_enable_integration(self, p):  return f"Enabling {p.strip()}" if p.strip() else "Enabling an integration"
     def describe_disable_integration(self, p): return f"Disabling {p.strip()}" if p.strip() else "Disabling an integration"
     def describe_remember(self, p):               return f"Saving to memory: {p.strip()}" if p.strip() else "Saving to memory"
-    def describe_load_calendar(self, p):          return f"Looking at the calendar: {self._first_argument(p)}" if p.strip() else "Looking at a calendar"
     def describe_load_watch(self, p):             return f"Looking at: {self._first_argument(p)}" if p.strip() else "Looking at a watch item"
     def describe_save_watch(self, p):             return f"Watching: {self._first_argument(p)}" if p.strip() else "Saving a watch item"
     def describe_checked_watch(self, p):          return f"Checked: {self._first_argument(p)}" if p.strip() else "Marking a watch item checked"
@@ -2040,20 +1852,6 @@ class Commands:
         if len(parts) == 2:
             return f"Reading history from {parts[0]} to {parts[1]}"
         return "Reading history"
-
-    def describe_create_event(self, p):
-        title = p.split(",", 1)[0].strip()
-        return f"Creating calendar event '{title}'" if title else "Creating calendar event"
-
-    def describe_play_music(self, p):
-        room = p.split(",", 1)[0].strip()
-        return f"Playing music in {room}" if room else "Playing music"
-
-    def describe_sonos_enqueue_and_play(self, p):
-        parts = [x.strip() for x in p.split(",", 1)]
-        if len(parts) == 2:
-            return f"Playing {parts[1]} in {parts[0]}"
-        return "Playing music"
 
     # Runs on: command worker thread (called from CommandProcessor._command_worker)
     def run(self, command: str, params: list[str]) -> str:

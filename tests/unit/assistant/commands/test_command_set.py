@@ -147,3 +147,11 @@ def test_every_command_module_of_this_repository_is_discovered():
     from common.Paths import INTEGRATIONS_DIR
     modules = {f"integrations.{path.parent.name}.{path.stem}" for path in INTEGRATIONS_DIR.glob("*/*Commands.py")}
     assert modules and {cls.__module__ for cls in command_set_module.discover()} == modules
+
+
+@pytest.mark.parametrize("owner", [Commands, *command_set_module.discover()], ids=lambda owner: owner.__name__)
+def test_a_flag_names_only_a_command_its_owner_implements(owner):
+    # The flags are asked of the command's owner, so one left behind when a command moves
+    # to another owner is never read: a sensitive command would run without approval.
+    flagged = owner.MULTI_PARAM_COMMANDS | owner.SENSITIVE_COMMANDS | owner.PURE_COMMANDS | set(owner.APPROVAL_NOTES)
+    assert flagged - set(command_set_module.command_names(owner)) == set()
