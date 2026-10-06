@@ -167,7 +167,8 @@ The repository is private; the readme is not. `docs/site/build.py` (stdlib only,
 writes `docs/site/out/index.html` and the same workflow publishes it as the root of the Pages site,
 https://maciekd.github.io/Keep/, with `docs/images/` beside it. Nothing else of the tree is published, so **the readme
 may only show or link local files under `docs/images/`** — the build and `tests/unit/test_readme_site.py` fail otherwise.
-Everything in `readme.md` and `docs/images/` is public the moment it reaches master.
+Everything in `readme.md` and `docs/images/` is public the moment it reaches master. `docs/site/preview.sh` builds the
+page locally and opens it in the browser — the way to look at a readme change before pushing it.
 
 ## Dependencies
 
