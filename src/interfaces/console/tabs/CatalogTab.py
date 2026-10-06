@@ -9,14 +9,13 @@ from assistant.integration.IntegrationMonitor import IntegrationMonitor
 from common.logging import trace
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
-from interfaces.console.framework.TextWidth import display_width
 from interfaces.console.tabs.TabView import TabView, SUB_CONTENT_TOP
 from interfaces.console.tabs.WatchListTab import span
 from interfaces.console.widgets import Board, Tile
 from interfaces.console.widgets.Board import Fact, SummaryTile, Table
 
 NAME_W, STATUS_W = 22, 14
-DESCRIPTION_MIN_W = 24                   # a narrower table drops the notes, then the description
+DESCRIPTION_MIN_W = 24                   # a narrower table drops the description
 STACKED_DETAIL_H = Tile.CARD_CHROME + 4
 STACKED_TABLE_MIN_ROWS = 4               # a screen too short for these and the detail shows the table alone
 DESCRIPTION_MAX_ROWS = 4
@@ -70,8 +69,8 @@ class CatalogTab(TabView):
     A board in the Dashboard's tiles: summary tiles (how many are enabled, which of those need
     attention, how many are disabled), a table of them all — enabled in their health colour,
     disabled dimmed under them — and the selected one in full beside it (under it on a narrow
-    screen): its description, its health, the config keys it misses and the words that turn it
-    on or off. Read from the IntegrationMonitor, placeholders included, so it lists the
+    screen): its description, its health, the config keys it misses, what it brings (a feed,
+    private data, a tab of its own) and the words that turn it on or off. Read from the IntegrationMonitor, placeholders included, so it lists the
     integrations without a tab of their own too (and the voice engines and the Telegram bot
     when their interface registers them). Read-only: enabling and disabling are the
     assistant's `enable_integration` / `disable_integration`."""
@@ -179,24 +178,19 @@ class CatalogTab(TabView):
         else:
             attention_tile = ("Needs attention", "–", Theme.COLOR_DIM, [("nothing is enabled", Theme.COLOR_DIM)])
         return [("Enabled", str(len(enabled)), Theme.COLOR_GREEN if enabled else Theme.COLOR_DIM,
-                 [(f"of {len(entries)} integrations", Theme.COLOR_LABEL)]),
+                 [(f"{len(enabled)} of {len(entries)} integrations", Theme.COLOR_LABEL)]),
                 attention_tile,
                 ("Disabled", str(disabled), Theme.COLOR_BRIGHT if disabled else Theme.COLOR_DIM,
-                 [("ready to be turned on", Theme.COLOR_LABEL) if disabled else (ALL_ENABLED, Theme.COLOR_DIM)])]
+                 [(f"{disabled} ready to be turned on", Theme.COLOR_LABEL) if disabled else (ALL_ENABLED, Theme.COLOR_DIM)])]
 
     # --- The table ---
 
     @staticmethod
-    def _columns(inner_w: int, notes_w: int) -> List[Tuple[str, Optional[int]]]:
-        """The columns a table `inner_w` wide has room for, the notes `notes_w` wide; the last
-        one takes what is left."""
-        columns = [("Integration", NAME_W), ("Status", STATUS_W), ("Notes", notes_w), ("What it is", None)]
-        left = inner_w - 2 - sum(column_w + 2 for _, column_w in columns[:-1])
-        if left < DESCRIPTION_MIN_W:
-            del columns[2]
-            if left + notes_w + 2 < DESCRIPTION_MIN_W:
-                columns = [("Integration", NAME_W), ("Status", None)]
-        return columns
+    def _columns(inner_w: int) -> List[Tuple[str, Optional[int]]]:
+        """The columns a table `inner_w` wide has room for; the last one takes what is left."""
+        if inner_w - 2 - (NAME_W + 2) - (STATUS_W + 2) < DESCRIPTION_MIN_W:
+            return [("Integration", NAME_W), ("Status", None)]
+        return [("Integration", NAME_W), ("Status", STATUS_W), ("What it is", None)]
 
     def _cells(self, entry: Entry, chosen: bool) -> Dict[str, Board.Cell]:
         if chosen:
@@ -205,12 +199,10 @@ class CatalogTab(TabView):
             name_color = Theme.COLOR_TEXT if entry.enabled else Theme.COLOR_LABEL
         return {"Integration": (entry.name, name_color, chosen),
                 "Status": (entry.status.label, entry.status.color),
-                "Notes": (self._tags(entry), Theme.COLOR_TEAL if entry.enabled else Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_TEAL, 0.55)),
                 "What it is": (self._description(entry.cls), Theme.COLOR_LABEL if entry.enabled else Theme.COLOR_DIM)}
 
     def _draw_table(self, screen: TUIScreen, x: int, y: int, width: int, height: int, entries: List[Entry], selected: int):
-        notes_w = max(display_width("Notes"), max(display_width(self._tags(entry)) for entry in entries))
-        columns = self._columns(width - 4, notes_w)
+        columns = self._columns(width - 4)
         enabled = sum(1 for entry in entries if entry.enabled)
         gap = 0 < enabled < len(entries)        # a blank row parts the enabled from the disabled
         rows = []

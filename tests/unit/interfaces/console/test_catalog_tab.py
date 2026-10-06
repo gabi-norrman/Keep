@@ -63,18 +63,35 @@ def test_a_row_says_whether_the_integration_is_enabled(monitor):
     assert DISABLED in kettle and ENABLED not in kettle
 
 
-def test_a_row_says_what_the_integration_is_and_what_it_brings(monitor):
+def test_a_row_says_what_the_integration_is(monitor):
     disable(monitor, KettleIntegration)
-    disable(monitor, RadioIntegration)
     working(monitor, LampIntegration)
 
-    lines = rows(CatalogTab(frozenset({LampIntegration})))
+    lines = rows(CatalogTab())
 
-    kettle, radio, lamp = row_of(lines, "Kettle"), row_of(lines, "Radio"), row_of(lines, "Lamp")
+    kettle, lamp = row_of(lines, "Kettle"), row_of(lines, "Lamp")
     assert "Boils water on request." in kettle and "second paragraph" not in kettle
+    assert "Switches the reading lamp." in lamp and "how long" not in lamp
+
+
+def test_the_selected_integration_says_what_it_brings(monitor):
+    working(monitor, LampIntegration)
+    disable(monitor, KettleIntegration)
+    disable(monitor, RadioIntegration)
+    tab = CatalogTab(frozenset({LampIntegration}))
+
+    def brings():
+        return next(line.split("Brings")[1] for line in rows(tab, width=180, height=40) if "Brings" in line)
+
+    lamp = brings()
+    tab.handle_input('down')
+    kettle = brings()
+    tab.handle_input('down')
+    radio = brings()
+
+    assert "own tab" in lamp and "feed" not in lamp and "private data" not in lamp
     assert "private data" in kettle and "feed" not in kettle and "own tab" not in kettle
     assert "feed" in radio and "private data" not in radio
-    assert "own tab" in lamp and "Switches the reading lamp." in lamp and "how long" not in lamp
 
 
 def test_a_row_follows_its_integration_being_enabled(monitor):
