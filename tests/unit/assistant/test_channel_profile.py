@@ -1,5 +1,5 @@
 """The ChannelProfile table and every call site that used to compare `source ==`."""
-from assistant.commands.Commands import MediaPayload
+from integrations.photos.PhotosCommands import MediaPayload
 from unittest.mock import Mock, patch
 
 import pytest
@@ -139,10 +139,10 @@ class TestCommandsReadProfile:
     @pytest.mark.parametrize("source", ["VoiceToVoice", "TextChat", "Telegram"])
     def test_show_photo_target_follows_profile(self, commands, source):
         commands._current_profile = profile_for(source)
-        with patch.object(commands, "_prepare_photo_send_payload", return_value=(MediaPayload(b"jpg", "cap", "uuid", "photo"), None)), \
-             patch.object(commands, "_show_photo_on_kitchen_tv", return_value="tv") as tv, \
+        with patch.object(commands._owner("show_photo"), "_prepare_photo_send_payload", return_value=(MediaPayload(b"jpg", "cap", "uuid", "photo"), None)), \
+             patch.object(commands._owner("show_photo"), "_show_photo_on_kitchen_tv", return_value="tv") as tv, \
              patch("assistant.Notifier._notifier", Mock()) as bot:
-            result = commands._run_show_single_photo(1)
+            result = commands._owner("show_photo")._run_show_single_photo(1)
         on_tv = profile_for(source).photo_target == PHOTO_TARGET_KITCHEN_TV
         assert tv.called is on_tv
         assert bot.send_photo.called is not on_tv
@@ -150,6 +150,6 @@ class TestCommandsReadProfile:
 
     def test_album_collapses_to_first_photo_on_the_tv(self, commands):
         commands._current_profile = VOICE_TO_VOICE
-        with patch.object(commands, "_run_show_single_photo", return_value="") as single:
-            assert commands._run_show_photo_album([7, 8, 9]) == ""
+        with patch.object(commands._owner("show_photo"), "_run_show_single_photo", return_value="") as single:
+            assert commands._owner("show_photo")._run_show_photo_album([7, 8, 9]) == ""
         single.assert_called_once_with(7, route=None)
