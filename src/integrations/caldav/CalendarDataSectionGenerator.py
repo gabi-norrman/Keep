@@ -1,12 +1,13 @@
 from datetime import date, timedelta
 
-from ..PromptSectionGenerator import PromptSectionGenerator
+from assistant.prompt.PromptSectionGenerator import PromptSectionGenerator
 from common.logging import info, trace
 from integrations.caldav.CalDAVIntegration import CalDAVIntegration, CALENDAR_DAYS_AHEAD
 
 
 class CalendarDataSectionGenerator(PromptSectionGenerator):
     """Refreshes the upcoming-week calendar section from iCloud CalDAV every 15 minutes."""
+    key = "calendar"
 
     UPDATE_INTERVAL = 15 * 60
 

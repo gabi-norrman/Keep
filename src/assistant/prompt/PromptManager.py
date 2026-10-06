@@ -7,23 +7,17 @@ import traceback
 import uuid
 from datetime import datetime
 
+from . import PromptSectionGenerator as SectionGenerators
 from .TimeOfDay import TimeOfDay
-from .sections.MusicZonesSectionGenerator import MusicZonesSectionGenerator
 from .sections.MemorySectionGenerator import MemorySectionGenerator
 from .sections.ProceduresSectionGenerator import ProceduresSectionGenerator
 from .sections.WatchListSectionGenerator import WatchListSectionGenerator
 from .sections.VaultSectionGenerator import VaultSectionGenerator
-from .sections.WeatherSectionGenerator import WeatherSectionGenerator
-from .sections.PrecipitationSectionGenerator import PrecipitationSectionGenerator
 from .sections.HomeSectionGenerator import HomeSectionGenerator
-from .sections.CalendarDataSectionGenerator import CalendarDataSectionGenerator
-from .sections.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
 from .MessageHistory import MessageHistory, THINKING_TAG_INSTRUCTION
-from .sections.TeslaSectionGenerator import TeslaSectionGenerator
-from .sections.iCloudSectionGenerator import iCloudSectionGenerator
 from common.FloxyDatabase import FloxyDatabase
 from common.ConfigManager import config
-from common.logging import info, trace, fine
+from common.logging import error, info, trace, fine
 from common.Paths import SRC_DIR
 
 # Frames from these AIServer/src packages count as "ours" in the section-update trigger trace.
@@ -59,7 +53,9 @@ class PromptManager:
     # prefix since the value is approximate between refreshes.
     _PHOTO_COUNT_REFRESH_S = 24 * 3600
 
-    def __init__(self, test_suite: bool = False):
+    def __init__(self, test_suite: bool = False, section_generators=None):
+        """`section_generators` are the integration folders' generator classes to run beside the
+        core's; the discovered ones (PromptSectionGenerator.discover) when None."""
         self.prompt = ""
         self._messages = None
         self.test_suite = test_suite
@@ -86,22 +82,8 @@ class PromptManager:
         # cache on every turn. It's now appended to the trailing user message in
         # get_messages() instead, where it lives in the uncached suffix and never
         # invalidates anything.
-        memory = MemorySectionGenerator(self)
-        self.sections = {
-            'memory': memory,
-            'memory_recent': memory.recent,
-            'procedures': ProceduresSectionGenerator(self),
-            'watchlist': WatchListSectionGenerator(self),
-            'vault': VaultSectionGenerator(self),
-            'weather': WeatherSectionGenerator(self),
-            'precipitation': PrecipitationSectionGenerator(self),
-            'home': HomeSectionGenerator(self),
-            'calendar': CalendarDataSectionGenerator(self),
-            'sonos': SonosFavoritesSectionGenerator(self),
-            'music_zones': MusicZonesSectionGenerator(self),
-            'car_info': TeslaSectionGenerator(self),
-            'phones': iCloudSectionGenerator(self),
-        }
+        self.sections = self._build_sections(
+            SectionGenerators.discover() if section_generators is None else section_generators)
         self._assert_unique_section_names(self.sections)
 
         # Conversation history is no longer a prompt section — it's appended as
@@ -128,6 +110,41 @@ class PromptManager:
                 section.start()
             self._assemble_prompt()
 
+    # Where each section stands in `self.sections`: the order they are started and stopped in.
+    # A section a new folder brings comes after these, by key.
+    SECTION_ORDER = ("memory", "memory_recent", "procedures", "watchlist", "vault", "weather", "precipitation",
+                     "home", "calendar", "sonos", "music_zones", "car_info", "phones")
+
+    def _build_sections(self, generator_classes) -> dict:
+        """The core's generators plus one of each integration folder's, under the key the class
+        declares. A key with two owners is an error naming both; a folder's generator without
+        a key, or whose constructor raises, is logged and left out."""
+        memory = MemorySectionGenerator(self)
+        sections = {
+            'memory': memory,
+            'memory_recent': memory.recent,
+            'procedures': ProceduresSectionGenerator(self),
+            'watchlist': WatchListSectionGenerator(self),
+            'vault': VaultSectionGenerator(self),
+            'home': HomeSectionGenerator(self),
+        }
+        for cls in generator_classes:
+            if not cls.key:
+                error(f"Section generator {cls.__module__}.{cls.__name__} declares no key, left out")
+                continue
+            if cls.key in sections:
+                owner = type(sections[cls.key])
+                raise ValueError(f"Prompt section '{cls.key}' has two owners: "
+                                 f"{owner.__module__}.{owner.__name__} and {cls.__module__}.{cls.__name__}")
+            try:
+                sections[cls.key] = cls(self)
+            except Exception as e:
+                error(f"Section generator {cls.__module__}.{cls.__name__} could not be built, left out: {type(e).__name__}: {e}")
+        order = {key: index for index, key in enumerate(self.SECTION_ORDER)}
+        ordered = dict(sorted(sections.items(), key=lambda item: (order.get(item[0], len(order)), item[0])))
+        trace(f"Prompt sections: {', '.join(ordered)}")
+        return ordered
+
     def _compute_section_positions(self) -> dict[str, int]:
         """Map of section_key -> placeholder position in the prompt template.
         Sections whose placeholder is missing are omitted (callers fall back to alpha order)."""
@@ -145,8 +162,13 @@ class PromptManager:
             if idx >= 0:
                 positions[section_key] = idx
         if absent := [key for key in self.sections if key not in positions]:
+            from assistant.commands import Toolkits
             info(f"Sections without a placeholder in {template_path} (they reach the LLM through a toolkit, "
                  f"see Toolkits.CARRIED_SECTIONS): {', '.join(absent)}")
+            # The test suite's own template is static: it places no section at all.
+            if unreachable := [] if self.test_suite else [key for key in absent if key not in Toolkits.CARRIED_SECTIONS]:
+                error(f"Sections that reach the LLM nowhere — no {{KEY}} placeholder in {template_path} and no toolkit "
+                      f"carries them (`sections:` in a toolkit.md): {', '.join(unreachable)}")
         return positions
 
     @staticmethod

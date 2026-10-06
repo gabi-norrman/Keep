@@ -1,9 +1,10 @@
-from ..PromptSectionGenerator import PromptSectionGenerator
+from assistant.prompt.PromptSectionGenerator import PromptSectionGenerator
 from integrations.weather.WeatherIntegration import WeatherIntegration
 
 
 class WeatherSectionGenerator(PromptSectionGenerator):
     """Refreshes the weather forecast section every 15 minutes."""
+    key = "weather"
 
     UPDATE_INTERVAL = 15 * 60
 

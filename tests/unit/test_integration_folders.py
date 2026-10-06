@@ -1,30 +1,30 @@
 """The integration folders (src/integrations/<name>/) keep their sides apart: the file suffix is
 the role, a `*Tab.py` being the console's and everything else the assistant's, and core finds a
 folder by discovery or through a contract. The two allowlists are the by-name imports still
-left — an entry goes when its import does, and none is added."""
+left — an entry goes when its import does, and none is added. Each wants a contract of its own."""
 import ast
 from pathlib import Path
 
 import pytest
 
-from common.Paths import SRC_DIR
+from common.Paths import AISERVER_DIR, SRC_DIR
 
 CORE_PACKAGES = ("assistant", "common")
 
 # core module -> the integration folders it still imports by name
 CORE_IMPORTS_BY_NAME = {
+    # mails the nightly report through Gmail; Self Improvement is the integration that switches it on
     "assistant/agents/CodeQualityMaintainer.py": {"gmail", "self_improvement"},
+    # the nightly curation reads the calendar's coming events to judge what in the bank is still current
     "assistant/agents/LongTermMemoryCurator.py": {"caldav"},
+    # fetch_camera_images asks Arlo and Ring; the mail commands build their providers from Gmail and iCloud Email
     "assistant/commands/Commands.py": {"arlo", "gmail", "icloud_email", "ring"},
+    # //wipe logs the Telegram Feed session out on the account before its file is deleted
     "assistant/commands/DebugCommands.py": {"telegram_feed"},
-    "assistant/prompt/sections/CalendarDataSectionGenerator.py": {"caldav"},
-    "assistant/prompt/sections/MusicZonesSectionGenerator.py": {"music"},
-    "assistant/prompt/sections/PrecipitationSectionGenerator.py": {"weather"},
-    "assistant/prompt/sections/SonosFavoritesSectionGenerator.py": {"music"},
-    "assistant/prompt/sections/TeslaSectionGenerator.py": {"tesla"},
-    "assistant/prompt/sections/WeatherSectionGenerator.py": {"weather"},
-    "assistant/prompt/sections/iCloudSectionGenerator.py": {"icloud"},
 }
+
+# the folders the launcher (floxy_ai_server.py) imports by name: it hands the PromptManager to the music manager
+LAUNCHER_IMPORTS_BY_NAME = {"music"}
 
 # (folder, the folder it imports): the cameras' 2FA codes arrive by mail or iMessage, iMessage
 # hands the codes it sees to iCloud and Ring, Photos downloads through the iCloud session
@@ -92,6 +92,13 @@ def test_core_never_imports_a_tab_module(tree):
 
 def test_core_imports_a_folder_by_name_only_where_listed(tree):
     assert tree["core_by_name"] == CORE_IMPORTS_BY_NAME
+
+
+def test_the_launcher_imports_a_folder_by_name_only_where_listed():
+    launcher = AISERVER_DIR / "floxy_ai_server.py"
+    folders = {module.split(".")[1] for module in imported_modules(launcher, launcher.parent)
+               if module.startswith("integrations.")}
+    assert folders == LAUNCHER_IMPORTS_BY_NAME
 
 
 def test_a_folder_imports_another_folder_only_where_listed(tree):

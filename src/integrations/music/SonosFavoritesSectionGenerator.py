@@ -1,11 +1,12 @@
 import time
-from ..PromptSectionGenerator import PromptSectionGenerator
+from assistant.prompt.PromptSectionGenerator import PromptSectionGenerator
 from common.logging import trace, info, error
 from integrations.music.MusicIntegration import MusicManager
 
 
 class SonosFavoritesSectionGenerator(PromptSectionGenerator):
     """Refreshes the Sonos favorites and playlists section every 30 minutes once Sonos has loaded."""
+    key = "sonos"
 
     def __init__(self, prompt_manager):
         super().__init__(prompt_manager, "SonosFavorites")

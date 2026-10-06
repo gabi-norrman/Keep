@@ -5,10 +5,10 @@ from unittest.mock import patch, Mock
 
 def _make_tesla_section(tesla_api=None):
     """Create a TeslaSectionGenerator with mocked config."""
-    with patch('assistant.prompt.sections.TeslaSectionGenerator.config') as mock_config:
+    with patch('integrations.tesla.TeslaSectionGenerator.config') as mock_config:
         mock_config.get_home_latitude.return_value = 57.7089
         mock_config.get_home_longitude.return_value = 11.9746
-        from assistant.prompt.sections.TeslaSectionGenerator import TeslaSectionGenerator
+        from integrations.tesla.TeslaSectionGenerator import TeslaSectionGenerator
         section = TeslaSectionGenerator(None)
     section.tesla_api = tesla_api
     return section
@@ -20,7 +20,7 @@ def _make_tesla_section(tesla_api=None):
 
 class TestHaversineDistance:
     def _haversine(self, *args):
-        from assistant.prompt.sections.TeslaSectionGenerator import TeslaSectionGenerator
+        from integrations.tesla.TeslaSectionGenerator import TeslaSectionGenerator
         return TeslaSectionGenerator._haversine_distance(*args)
 
     def test_known_distance(self):
@@ -95,8 +95,8 @@ class TestReverseGeocode:
 # ===========================================================================
 
 class TestGetEtaToHome:
-    @patch('assistant.prompt.sections.TeslaSectionGenerator.config')
-    @patch('assistant.prompt.sections.TeslaSectionGenerator.requests')
+    @patch('integrations.tesla.TeslaSectionGenerator.config')
+    @patch('integrations.tesla.TeslaSectionGenerator.requests')
     def test_returns_none_on_error(self, mock_requests, mock_config):
         mock_config.get.return_value = "fake-api-key"
         mock_requests.get.side_effect = Exception("network error")
@@ -104,8 +104,8 @@ class TestGetEtaToHome:
         result = section._get_eta_to_home(57.5, 12.0)
         assert result is None
 
-    @patch('assistant.prompt.sections.TeslaSectionGenerator.config')
-    @patch('assistant.prompt.sections.TeslaSectionGenerator.requests')
+    @patch('integrations.tesla.TeslaSectionGenerator.config')
+    @patch('integrations.tesla.TeslaSectionGenerator.requests')
     def test_prefers_duration_in_traffic(self, mock_requests, mock_config):
         mock_config.get.return_value = "fake-api-key"
         mock_response = Mock()
@@ -152,7 +152,7 @@ class TestGetVehicleInfo:
             "climate_state": {}
         }
         # Away from home with no route: the ETA lookup would be a real Distance Matrix request.
-        with patch('assistant.prompt.sections.TeslaSectionGenerator.reverse_geocode', return_value="E6 Highway, Mellanstad"), \
+        with patch('integrations.tesla.TeslaSectionGenerator.reverse_geocode', return_value="E6 Highway, Mellanstad"), \
              patch.object(section, '_get_eta_to_home', return_value=None):
             result = section._get_vehicle_info("VIN123", "Model 3", "car1")
         assert "Driving" in result
@@ -169,7 +169,7 @@ class TestGetVehicleInfo:
             "charge_state": {"usable_battery_level": 60},
             "climate_state": {}
         }
-        with patch('assistant.prompt.sections.TeslaSectionGenerator.reverse_geocode', return_value="Some Road"):
+        with patch('integrations.tesla.TeslaSectionGenerator.reverse_geocode', return_value="Some Road"):
             result = section._get_vehicle_info("VIN123", "Model 3", "car1")
         assert "Navigating to IKEA" in result
         assert "ETA 15 min" in result
@@ -204,7 +204,7 @@ class TestGetVehicleInfo:
             "charge_state": {"usable_battery_level": 60},
             "climate_state": {}
         }
-        with patch('assistant.prompt.sections.TeslaSectionGenerator.reverse_geocode', return_value="Some Road"):
+        with patch('integrations.tesla.TeslaSectionGenerator.reverse_geocode', return_value="Some Road"):
             result = section._get_vehicle_info("VIN123", "Model 3", "car1")
         assert "Navigating to IKEA" in result
         assert "ETA 13 min" in result  # float ETA is rounded
@@ -338,7 +338,7 @@ class TestGetUpdateInterval:
     def test_driving_after_fetch_returns_60(self):
         section, mock_api = self._make_section_with_one_car(
             {"latitude": 57.5, "longitude": 12.0, "speed": 80, "shift_state": "D"})
-        with patch('assistant.prompt.sections.TeslaSectionGenerator.reverse_geocode', return_value="Some Road"), \
+        with patch('integrations.tesla.TeslaSectionGenerator.reverse_geocode', return_value="Some Road"), \
              patch.object(section, '_get_eta_to_home', return_value=None):
             section._fetch_content()
         assert section._get_update_interval() == 60

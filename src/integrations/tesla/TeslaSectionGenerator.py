@@ -4,15 +4,16 @@ import requests
 from datetime import datetime
 from typing import Optional
 
-from ..PromptSectionGenerator import PromptSectionGenerator
+from assistant.prompt.PromptSectionGenerator import PromptSectionGenerator
 from common.logging import info, trace
 from integrations.tesla.TeslaIntegration import TeslaIntegration
 from common.ConfigManager import config
-from ...tools.Geocoding import reverse_geocode
+from assistant.tools.Geocoding import reverse_geocode
 
 
 class TeslaSectionGenerator(PromptSectionGenerator):
     """Refreshes the Tesla vehicle section every minute while driving, every 5 minutes when parked."""
+    key = "car_info"
 
     HOME_RADIUS_METERS = 500
     UPDATE_INTERVAL_DRIVING = 60  # 1 minute when driving

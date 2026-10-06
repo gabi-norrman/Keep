@@ -21,14 +21,14 @@ def memory(tmp_path, monkeypatch):
 
 
 def sonos(tmp_path, monkeypatch):
-    from assistant.prompt.sections import SonosFavoritesSectionGenerator as module
+    from integrations.music import SonosFavoritesSectionGenerator as module
     loaded = Mock(get_playlists=Mock(return_value=["p"]), get_favorites=Mock(return_value=[]))
     monkeypatch.setattr(module.MusicManager, "get_instance", lambda: loaded)
     return module.SonosFavoritesSectionGenerator(None)
 
 
 def tesla(tmp_path, monkeypatch):
-    from assistant.prompt.sections import TeslaSectionGenerator as module
+    from integrations.tesla import TeslaSectionGenerator as module
     monkeypatch.setattr(module, "config", Mock(get_home_latitude=Mock(return_value=57.0),
                                                get_home_longitude=Mock(return_value=12.0)))
     monkeypatch.setattr(module, "TeslaIntegration", Mock())
@@ -36,7 +36,7 @@ def tesla(tmp_path, monkeypatch):
 
 
 def icloud(tmp_path, monkeypatch):
-    from assistant.prompt.sections.iCloudSectionGenerator import iCloudSectionGenerator
+    from integrations.icloud.iCloudSectionGenerator import iCloudSectionGenerator
     return iCloudSectionGenerator(None)
 
 

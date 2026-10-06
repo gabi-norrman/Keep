@@ -1,4 +1,4 @@
-from ..PromptSectionGenerator import PromptSectionGenerator
+from assistant.prompt.PromptSectionGenerator import PromptSectionGenerator
 from integrations.icloud.ICloudIntegration import iCloudAPI, iCloudConfigurationError
 
 NO_DEVICES = ("none configured yet — icloud_devices() lists the devices the iCloud account sees "
@@ -8,6 +8,7 @@ NO_DEVICES = ("none configured yet — icloud_devices() lists the devices the iC
 class iCloudSectionGenerator(PromptSectionGenerator):
     """The configured iCloud devices available to Find My iPhone. Re-read every minute so a
     device configured through config_set shows up once iCloud is restarted."""
+    key = "phones"
 
     def __init__(self, prompt_manager):
         super().__init__(prompt_manager, "iCloud Devices")

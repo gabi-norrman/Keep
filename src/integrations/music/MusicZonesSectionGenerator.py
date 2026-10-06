@@ -1,4 +1,4 @@
-from ..PromptSectionGenerator import PromptSectionGenerator
+from assistant.prompt.PromptSectionGenerator import PromptSectionGenerator
 from integrations.music.MusicIntegration import MusicManager
 
 
@@ -11,6 +11,7 @@ class MusicZonesSectionGenerator(PromptSectionGenerator):
     one made externally in the Sonos app — is reflected in the prompt within 3s
     while a steady state costs only a cheap UPnP round-trip.
     """
+    key = "music_zones"
 
     UPDATE_INTERVAL = 3
 

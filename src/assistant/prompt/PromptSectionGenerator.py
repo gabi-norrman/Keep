@@ -1,7 +1,12 @@
+import importlib
+import pkgutil
 import threading
 import time
 from abc import ABC, abstractmethod
+from functools import lru_cache
 from common.logging import error, trace, info
+
+MODULE_SUFFIX = "SectionGenerator"
 
 
 class PromptSectionGenerator(ABC):
@@ -10,7 +15,13 @@ class PromptSectionGenerator(ABC):
     Subclasses implement _fetch_content() and either set UPDATE_INTERVAL for plain polling or
     override _start_monitoring() for a custom update strategy. Failed refreshes keep the last
     good content marked stale rather than blanking the section.
+
+    A generator in an integration's folder (`src/integrations/<folder>/<Name>SectionGenerator.py`)
+    names its section with `key` — the `{KEY}` placeholder in the prompt template, or a key
+    its toolkit carries (`sections:` in toolkit.md) — and is found by `discover()`; the core's
+    own generators are listed in PromptManager.
     """
+    key: str = ""
 
     def __init__(self, prompt_manager, section_name: str):
         self.prompt_manager = prompt_manager
@@ -131,3 +142,31 @@ class PromptSectionGenerator(ABC):
             str: The content for this prompt section
         """
         pass
+
+
+@lru_cache(maxsize=1)
+def discover() -> tuple[type[PromptSectionGenerator], ...]:
+    """The section generators of the `integrations` package, found once per process."""
+    import integrations
+    return find_in(integrations)
+
+
+def find_in(package) -> tuple[type[PromptSectionGenerator], ...]:
+    """Every PromptSectionGenerator subclass in a `*SectionGenerator` module of `package`, in
+    the package's walk order. Only those modules are imported; one that fails to import is
+    logged and left out, so a broken folder costs its own section and nothing else."""
+    found: list[type[PromptSectionGenerator]] = []
+    for _finder, fqn, ispkg in pkgutil.walk_packages(package.__path__, package.__name__ + "."):
+        if ispkg or not fqn.endswith(MODULE_SUFFIX):
+            continue
+        try:
+            module = importlib.import_module(fqn)
+        except Exception as e:
+            error(f"Section generator module {fqn} could not be imported, its section is left out: {type(e).__name__}: {e}")
+            continue
+        for attr in vars(module).values():
+            if isinstance(attr, type) and issubclass(attr, PromptSectionGenerator) and attr is not PromptSectionGenerator \
+                    and attr.__module__ == fqn and attr not in found:
+                found.append(attr)
+    trace(f"Section generators discovered in {package.__name__}: {', '.join(cls.__name__ for cls in found) or 'none'}")
+    return tuple(found)
