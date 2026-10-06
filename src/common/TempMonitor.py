@@ -47,26 +47,31 @@ class TempMonitor:
         self._reported_missing = False
 
     def start(self):
-        if self._thread and self._thread.is_alive():
+        if self._thread and self._thread.is_alive() and not self._stop_event.is_set():
             return
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._monitor_loop, daemon=True, name="TempMonitor")
+        # A stopped loop still mid-sample keeps the event it was started with and ends on it;
+        # this start gets a fresh one. With one event shared, coming back to the tab before
+        # the old loop had ended started nothing and left the monitor dead while the tab showed.
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._monitor_loop, args=(self._stop_event,), daemon=True,
+                                        name="TempMonitor")
         self._thread.start()
         trace("TempMonitor started")
 
     def stop(self):
+        """Returns at once — a tab switch calls it on the TUI's input thread, and a join here
+        held every keypress back while the loop was mid-sample. The loop ends by itself at
+        its next look at its event."""
         self._stop_event.set()
-        if self._thread:
-            self._thread.join(timeout=0.1)
 
-    def _monitor_loop(self):
-        while not self._stop_event.is_set():
+    def _monitor_loop(self, stop_event: threading.Event):
+        while not stop_event.is_set():
             try:
                 self._sample()
             except Exception as e:
                 trace(f"TempMonitor error: {e}")
                 self._dashboard_tab.temp_error = str(e)
-            self._stop_event.wait(self._update_interval)
+            stop_event.wait(self._update_interval)
 
     def _find_macmon(self) -> Optional[str]:
         if self._macmon_path and Path(self._macmon_path).exists():

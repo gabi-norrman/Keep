@@ -413,6 +413,9 @@ class TUIServer:
                 self.input_callback(key, addr)
             except Exception as e:
                 error(f"Error in input callback: {e}")
+            # The frame the first wake started may have been drawn before the key took effect;
+            # this one draws what the key changed without waiting out that frame's slot.
+            self.wake()
 
     _CURSOR_REPORT = re.compile(r"\x1b\[\d+;\d+R")
 
