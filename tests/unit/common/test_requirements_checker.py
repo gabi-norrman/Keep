@@ -165,6 +165,31 @@ def test_verify_or_exit_ignores_blanks_and_comments(tmp_path, monkeypatch):
     assert seen == ["pkg-a", "pkg-b"]
 
 
+def test_verify_or_exit_checks_a_pin_with_a_trailing_comment(tmp_path, monkeypatch):
+    reqs = _write_reqs(tmp_path, "pkg-a==1.0.0   # what needs it\n")
+    monkeypatch.setattr(rc_module, "REQUIREMENTS_FILE", reqs)
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "9.9.9")
+
+    with pytest.raises(SystemExit) as exc_info:
+        RequirementsChecker.verify_or_exit()
+    assert exc_info.value.code == 1
+
+
+def test_verify_or_exit_keeps_the_fragment_of_a_direct_reference_url(tmp_path, monkeypatch):
+    reqs = _write_reqs(tmp_path, f"en_core_web_sm @ {SPACY_URL}#sha256=abc123  # the NER model\n")
+    monkeypatch.setattr(rc_module, "REQUIREMENTS_FILE", reqs)
+    captured = []
+
+    def _version(name):
+        captured.append(name)
+        return "3.8.0"
+
+    monkeypatch.setattr(importlib.metadata, "version", _version)
+
+    RequirementsChecker.verify_or_exit()
+    assert captured == ["en_core_web_sm"]
+
+
 def test_verify_or_exit_extras_spec_validates_against_base_name(tmp_path, monkeypatch):
     reqs = _write_reqs(tmp_path, "Hypercorn[trio,uvloop]==0.17.3\n")
     monkeypatch.setattr(rc_module, "REQUIREMENTS_FILE", reqs)
@@ -300,6 +325,17 @@ def test_real_requirements_files_parse_and_voice_includes_base():
     assert not (base_names & voice_names), "a package must live in exactly one group"
     for name in ("torch", "mlx-whisper", "sounddevice", "spacy", "en_core_web_sm"):
         assert name in voice_names
+
+
+def test_every_line_of_the_real_requirements_files_is_one_the_checker_reads(monkeypatch):
+    # a line the checker cannot parse is skipped with a trace, so a pin could go unchecked unnoticed
+    skipped = []
+    monkeypatch.setattr(rc_module, "trace", lambda message: skipped.append(message) if "Skipped" in message else None)
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0")
+    seen = set()
+    for name in ("requirements.txt", "requirements-voice.txt"):
+        RequirementsChecker._check_file(rc_module.AISERVER_DIR / name, seen)
+    assert not skipped
 
 
 # ---- -r includes (an integration's own pins, src/integrations/<name>/requirements.txt) ----

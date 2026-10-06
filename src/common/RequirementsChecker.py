@@ -14,6 +14,8 @@ REQUIRED_PYTHON = (3, 12)
 _REQ_LINE_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)(?:\[[^\]]+\])?\s*==\s*(\S+)\s*$")
 _DIRECT_REF_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)\s*@\s*(\S+)\s*$")
 _INCLUDE_RE = re.compile(r"^(?:-r|--requirement)[ =]\s*(\S+)")
+# pip's rule: a `#` opens a comment at the start of a line or after whitespace, so a URL's #fragment stays
+_COMMENT_RE = re.compile(r"(^|\s+)#.*$")
 _ARCHIVE_EXTENSIONS = (".whl", ".tar.gz", ".tar.bz2", ".zip")
 
 
@@ -90,8 +92,8 @@ class RequirementsChecker:
 
         with open(path) as f:
             for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#"):
+                line = _COMMENT_RE.sub("", raw).strip()
+                if not line:
                     continue
                 include = _INCLUDE_RE.match(line)
                 if include:
