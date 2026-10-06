@@ -1283,11 +1283,15 @@ class Commands:
     MODEL_PROVIDER_KEYS = frozenset({"openai", "anthropic", "gemini", "grok", "openrouter"})
     DEVELOPER_RELEASE_HINT = ("Takes effect at the next restart_server, which checks out master (true) or "
                               "release (false) before pulling — offer the restart if the user wants to switch now.")
+    TELEMETRY_HINT = ("Telemetry reads it for every event: false is in force from the next event on, "
+                      "no restart needed. Switching telemetry.enabled back to true takes a restart_server.")
 
     @classmethod
     def _restart_hint(cls, key: str) -> str:
         if key == "developer_release":
             return cls.DEVELOPER_RELEASE_HINT
+        if key.startswith("telemetry."):
+            return cls.TELEMETRY_HINT
         if key.startswith("interfaces."):
             return cls.SERVER_RESTART_HINT
         if key.startswith("telegram_bot."):

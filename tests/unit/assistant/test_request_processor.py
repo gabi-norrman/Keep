@@ -1848,16 +1848,33 @@ class TestTelemetryReport:
         from assistant.Telemetry import Telemetry
         handler.request_context = RequestContext(source="Telegram", user_input="lights")
         handler.dialog_manager.command_processor.executed_commands = ["light_on(kitchen)"]
+        handler.dialog_manager.llm_response = "Done."
         handler._rounds = [handler.dialog_manager]
         with patch.object(Telemetry, "get_instance") as get_instance:
-            handler._report_turn("Done.")
+            handler._report_turn()
         get_instance.return_value.assistant_turn.assert_called_once_with("Done.", "Telegram", ["light_on"])
+
+    def test_the_reply_is_what_every_round_said_without_the_command_blocks(self, handler):
+        from assistant.Telemetry import Telemetry
+        handler.request_context = RequestContext(source="Telegram", user_input="remember the gate code")
+        first, second = Mock(), Mock()
+        first.llm_response_raw = '<thinking>store it</thinking>One moment.\nremember("Gate code is 4711")'
+        first.llm_response = "One moment.\n"
+        first.command_processor.executed_commands = ['remember("Gate code is 4711")']
+        second.llm_response_raw = second.llm_response = "Saved."
+        second.command_processor.executed_commands = []
+        handler._rounds = [first, second]
+        with patch.object(Telemetry, "get_instance") as get_instance:
+            handler._report_turn()
+        reply = get_instance.return_value.assistant_turn.call_args.args[0]
+        assert "One moment." in reply and "Saved." in reply
+        assert "4711" not in reply and "remember" not in reply and "thinking" not in reply
 
     def test_a_test_request_is_never_reported(self, handler):
         from assistant.Telemetry import Telemetry
         handler.request_context = RequestContext(source="Telegram", test=True)
         with patch.object(Telemetry, "get_instance") as get_instance:
-            handler._report_turn("Done.")
+            handler._report_turn()
         get_instance.assert_not_called()
 
     def test_a_failing_report_never_breaks_the_request(self, handler):
@@ -1865,4 +1882,4 @@ class TestTelemetryReport:
         handler.request_context = RequestContext(source="Telegram")
         handler._rounds = [handler.dialog_manager]   # a Mock: its executed_commands cannot be iterated
         with patch.object(Telemetry, "get_instance"):
-            handler._report_turn("Done.")
+            handler._report_turn()

@@ -641,12 +641,15 @@ class RequestProcessor:
         """The names of the commands every round of this request ran, in order."""
         return [c.split("(", 1)[0] for dm in self._rounds for c in dm.command_processor.executed_commands]
 
-    def _report_turn(self, response_text: str):
-        """The beta telemetry's assistant event. Like an observer it must never break a request."""
+    def _report_turn(self):
+        """The beta telemetry's assistant event: what every round told the user — the text
+        left once the command processor took the thinking and the command blocks out, so no
+        command argument goes with it. Like an observer it must never break a request."""
         if self.ctx.test:
             return
         try:
-            Telemetry.get_instance().assistant_turn(response_text, self.ctx.source, self._command_names())
+            said = "\n".join(text for dm in self._rounds if (text := dm.llm_response.strip()))
+            Telemetry.get_instance().assistant_turn(said, self.ctx.source, self._command_names())
         except Exception as e:
             error(f"Telemetry report failed: {e}")
 
@@ -826,7 +829,7 @@ class RequestProcessor:
                     raise RequestKilledException()
 
                 response_text = self._update_history(prompt_manager, user_input_already_reported_on)
-                self._report_turn(response_text)
+                self._report_turn()
                 self._wait_for_audio_and_notify_outposts()
 
                 self._save_to_database(query_key, response_text)

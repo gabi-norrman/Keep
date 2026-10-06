@@ -1,5 +1,6 @@
 """The beta telemetry: what leaves the machine, under which switch, and the latch that ends the
 transcript the moment a sensitive integration is enabled."""
+import time
 import uuid
 from unittest.mock import Mock
 
@@ -54,6 +55,28 @@ class TestSwitches:
         t.stop()
         assert not t.active and sent == []
 
+    def test_an_opt_out_while_running_holds_from_the_next_event_without_a_restart(self, settings, telemetry, sent):
+        telemetry.user_turn("before", "console")
+        deadline = time.time() + 2
+        while not _by_name(sent, "user_turn") and time.time() < deadline:   # posted while it was on
+            time.sleep(0.001)
+        settings["telemetry.enabled"] = False
+        telemetry.user_turn("after", "console")
+        telemetry.assistant_turn("reply", "console")
+        telemetry.tab_change("Logs", "Home", 1.0)
+        telemetry.integration_switch("Weather", True, "ok")
+        telemetry.heartbeat()
+        telemetry.stop()
+        assert [e["properties"].get("query") for e in _events(sent) if e["event"] != "heartbeat"] == ["before"]
+        assert len(_by_name(sent, "heartbeat")) == 1   # the one from start
+
+    def test_events_still_queued_at_the_opt_out_are_discarded(self, settings, sent):
+        t = Telemetry(post=sent.append, sensitive_enabled=lambda: [])
+        t._send([{"event": "user_turn"}])
+        settings["telemetry.enabled"] = False
+        t._send([{"event": "assistant_turn"}])
+        assert [e["event"] for e in _events(sent)] == ["user_turn"]
+
     def test_without_a_built_in_key_nothing_is_sent(self, settings, sent, monkeypatch):
         monkeypatch.setattr(telemetry_module, "POSTHOG_PROJECT_KEY", "")
         t = Telemetry(post=sent.append, sensitive_enabled=lambda: [])
@@ -105,6 +128,18 @@ class TestEvents:
         assert reply["properties"]["reply"] == "Done."
         assert reply["properties"]["commands"] == ["light_on"]
         assert reply["properties"]["proactive"] is False
+
+    def test_vault_values_leave_as_placeholders_in_both_directions(self, telemetry, sent, monkeypatch):
+        monkeypatch.setattr(telemetry_module, "redact_for_storage",
+                            lambda text: text.replace("4111 1111 1111 1111", "{{secret:marcus-visa}}"))
+        telemetry.user_turn("pay with 4111 1111 1111 1111", "Telegram")
+        telemetry.assistant_turn("Paid with 4111 1111 1111 1111.", "Telegram")
+        telemetry.assistant_turn("Card 4111 1111 1111 1111 expires soon.", "notifier", proactive=True)
+        telemetry.stop()
+        texts = [e["properties"].get("query") or e["properties"].get("reply")
+                 for e in _events(sent) if e["event"].endswith("_turn")]
+        assert len(texts) == 3
+        assert all("4111" not in text and "{{secret:marcus-visa}}" in text for text in texts)
 
     def test_content_off_in_config_keeps_the_text_out_but_the_command_names_in(self, settings, sent):
         settings["telemetry.content"] = False

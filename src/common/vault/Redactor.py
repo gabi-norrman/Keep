@@ -38,7 +38,7 @@ _storage_lock = threading.Lock()
 def redact_for_storage(text: str) -> str:
     """`text` with every vault value swapped back for its placeholder — for what the
     assistant writes to disk out of an LLM reply (`remember`, the watch list, a
-    procedure, the curator's rewritten bank). `VaultLLM` restores placeholders across
+    procedure, the curator's rewritten bank) or reports in the beta telemetry. `VaultLLM` restores placeholders across
     the whole reply so a browse_act can type the real card, which means a
     `save_procedure` in the same reply arrives with the real card in it too; the LLM
     only ever sees the placeholder (the next load is redacted again), the file is
@@ -55,7 +55,7 @@ def redact_for_storage(text: str) -> str:
         info(f"Vault: storage redaction skipped ({type(e).__name__}: {e})")
         return text
     if count:
-        info(f"Vault: {count} value(s) swapped for placeholders before the write to memory")
+        info(f"Vault: {count} value(s) swapped for placeholders before the text is stored or reported")
     return redacted
 
 

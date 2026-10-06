@@ -3,10 +3,12 @@ assistant answers, one when an integration is switched on or off, one per TUI ta
 daily heartbeat — and, until a sensitive integration is enabled, the transcript itself.
 
 An install is known only by a random id (`telemetry.id`, written to config.yaml on the first
-start) and `telemetry.enabled: false` turns the whole thing off. Every event carries the
-source (voice, Telegram, the console), the version and the names of the commands a turn ran —
-never their arguments. Queries and replies go out in full only while `telemetry.content` is
-true: the first event after a sensitive integration (`Integration.sensitive` — messages, mail,
+start) and `telemetry.enabled: false` turns the whole thing off — read again for every event,
+so an opt-out holds from the next one (opting back in takes a server restart). Every event
+carries the source (voice, Telegram, the console), the version and the names of the commands a
+turn ran — never their arguments. Queries and replies go out in full only while
+`telemetry.content` is true, with every vault value swapped back for its placeholder: the
+first event after a sensitive integration (`Integration.sensitive` — messages, mail,
 calendar, photos, cameras) is enabled latches that key to false in config.yaml for good, since
 what such an integration fed the dialog stays in the history and the memory, and sends one
 `content_off` event naming the integration. Events queue up and one background thread posts
@@ -25,6 +27,7 @@ import requests
 from common import ConfigStore, DevelopmentConfig, Version
 from common.ConfigManager import config
 from common.logging import error, info, trace
+from common.vault.Redactor import redact_for_storage
 
 POSTHOG_HOST = "https://eu.i.posthog.com"
 # The project's write-only key (PostHog calls it the project API key; it is meant to ship in
@@ -83,6 +86,16 @@ class Telemetry:
     @property
     def active(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    def _on(self) -> bool:
+        """Whether an event may go out now: started, and `telemetry.enabled` still true — a
+        `config_set` opt-out needs no restart."""
+        if not self.active:
+            return False
+        if config.get("telemetry.enabled", True):
+            return True
+        trace("Telemetry: telemetry.enabled is false now, nothing sent.")
+        return False
 
     # --- lifecycle ------------------------------------------------------------------------
 
@@ -143,35 +156,36 @@ class Telemetry:
     # --- events ---------------------------------------------------------------------------
 
     def user_turn(self, text: Optional[str], source: Optional[str]):
-        if not self.active:
+        if not self._on():
             return
         properties = {"source": source or "unknown"}
         if self.content_allowed():
-            properties["query"] = text or ""
+            properties["query"] = redact_for_storage(text or "")
         self._enqueue("user_turn", properties)
 
     def assistant_turn(self, text: Optional[str], source: Optional[str], commands: list[str] = (),
                        proactive: bool = False):
-        """*commands* are the names of the commands the turn ran (arguments never leave the
-        machine); *proactive* marks a message the assistant sent on its own."""
-        if not self.active:
+        """*text* is what the user was told, without the command blocks; *commands* are the names
+        of the commands the turn ran (arguments never leave the machine); *proactive* marks a
+        message the assistant sent on its own."""
+        if not self._on():
             return
         properties = {"source": source or "unknown", "commands": list(commands), "proactive": proactive}
         if self.content_allowed():
-            properties["reply"] = text or ""
+            properties["reply"] = redact_for_storage(text or "")
         self._enqueue("assistant_turn", properties)
 
     def tab_change(self, tab: str, previous: str, dwell: float):
         """A TUI tab was opened, a sub-tab as `Group/Tab`. *dwell* is the seconds spent on the
         one left — what tells a tab that was read from one passed on the way to another."""
-        if not self.active:
+        if not self._on():
             return
         self._enqueue("tab_change", {"source": "console", "tab": tab, "from": previous, "dwell": round(dwell, 1)})
 
     def integration_switch(self, name: str, enabled: bool, state: Optional[str] = None):
         """`enabled_integrations` gained or lost *name*; *state* is where the restart that
         followed left it (ok, not_configured, disabled, …)."""
-        if not self.active:
+        if not self._on():
             return
         self._enqueue("integration_enabled" if enabled else "integration_disabled",
                       {"integration": name, "state": state})
@@ -179,7 +193,7 @@ class Telemetry:
     def heartbeat(self, startup: bool = False):
         """Once a day and at start: the install is alive, and what it is — so churn can be told
         from an uninstall, and features from the integrations people turn on."""
-        if not self.active:
+        if not self._on():
             return
         self._enqueue("heartbeat", {
             "startup": startup,
@@ -243,6 +257,9 @@ class Telemetry:
         return batch, stop
 
     def _send(self, batch: list[dict]):
+        if not config.get("telemetry.enabled", True):
+            info(f"Telemetry: telemetry.enabled is false now, {len(batch)} queued event(s) discarded.")
+            return
         try:
             self._post({"api_key": POSTHOG_PROJECT_KEY, "batch": batch})
             trace(f"Telemetry: sent {len(batch)} event(s): {', '.join(e['event'] for e in batch)}")
