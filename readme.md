@@ -15,7 +15,7 @@
 <td>
 
 ### Keep
-Built for users in the <b>Apple ecosystem</b>, runs on <b>Apple Silicon Macs</b> and is powered by <b>Fable from Anthropic</b>.
+Built for users in the <b>Apple ecosystem</b>, runs on an <b>Apple Silicon Mac</b> and is powered by <b>Fable from Anthropic</b>.
 
 Refined over two years of daily use in a real home: it's robust and <b><i>just works</i></b>.
 
@@ -164,18 +164,16 @@ Every integration is off until you turn it on, and Keep walks you through the se
 
 ## Architecture
 
-<a href="https://maciekd.github.io/Keep/atlas/"><img src="docs/images/atlas.png" width="100%" alt="The Keep Atlas"></a>
+<p align="center"><a href="https://maciekd.github.io/Keep/atlas/"><img src="docs/images/atlas.png" width="50%" alt="The Keep Atlas"></a></p>
 
-Curious how it fits together? The **[Keep Atlas](https://maciekd.github.io/Keep/atlas/)** is a zoomable map of the whole
-server: every package, module and class with a one-line description, and a walk through one spoken request from the
-microphone to the speaker.
+Curious how it fits together? The **[Keep Atlas](https://maciekd.github.io/Keep/atlas/)** is a zoomable map of the whole server: every package, module and class with a one-line description, and a walk through one spoken request from the microphone to the speaker.
 
 ## Privacy
 
 Let's be honest: an assistant that reads your mail, sees your photos and messages is a privacy minefield. Here is where Keep stands today.
 
 - 💾 **Your data lives on your Mac.** The database, photo index, logs and voice profiles never leave it, and there is no Keep cloud.
-- ☁️ **The thinking happens on Anthropic's servers.** Anthropic does not train on API data by default; see their data policy.
+- ☁️ **The thinking happens on Anthropic's servers.** Anthropic does not train on API data by default; but you need to be ok with this.
 - 🔐 **Secrets stay out of it.** The Keep Vault keeps passwords, card numbers and the like encrypted on your Mac, and the AI only ever sees placeholders. It is a system for hiding secrets from the cloud, not for anonymizing everything you say.
 
 The end game is 100% local. Keep already runs on local models and once the local SOTA models are good enough, we'll move to <i>local only</i>. Right now Fable from Anthropic is needed for a **<i>no-compromise solution</i>**.
