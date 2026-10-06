@@ -13,6 +13,7 @@ REQUIRED_PYTHON = (3, 12)
 
 _REQ_LINE_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)(?:\[[^\]]+\])?\s*==\s*(\S+)\s*$")
 _DIRECT_REF_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)\s*@\s*(\S+)\s*$")
+_INCLUDE_RE = re.compile(r"^(?:-r|--requirement)[ =]\s*(\S+)")
 _ARCHIVE_EXTENSIONS = (".whl", ".tar.gz", ".tar.bz2", ".zip")
 
 
@@ -43,6 +44,11 @@ class RequirementsChecker:
     interface on from the chat (config_set "interfaces.voice.enabled"), and the restart that
     follows must not be the first time the install learns it lacks requirements-voice.txt.
     Any missing or mismatched package aborts the server with install instructions.
+
+    A `-r other.txt` line is followed the way pip follows it — relative to the file it stands
+    in — which is how the pins an integration keeps in its own folder
+    (src/integrations/<name>/requirements.txt) are checked. Each file is read once per start:
+    the voice file's `-r requirements.txt` finds the base group already checked.
     """
 
     @staticmethod
@@ -53,11 +59,12 @@ class RequirementsChecker:
         missing: list[str] = []
         mismatched: list[tuple[str, str, str]] = []
         checked = 0
+        seen: set[Path] = set()
         for group, path in groups:
             if not path.exists():
                 error(f"{path} not found; skipping {group} requirements check.")
                 continue
-            g_missing, g_mismatched, g_checked = RequirementsChecker._check_file(path)
+            g_missing, g_mismatched, g_checked = RequirementsChecker._check_file(path, seen)
             missing += g_missing
             mismatched += g_mismatched
             checked += g_checked
@@ -70,7 +77,12 @@ class RequirementsChecker:
               f"({', '.join(g for g, _ in groups)}).")
 
     @staticmethod
-    def _check_file(path: Path) -> tuple[list[str], list[tuple[str, str, str]], int]:
+    def _check_file(path: Path, seen: set[Path] | None = None) -> tuple[list[str], list[tuple[str, str, str]], int]:
+        """(missing, mismatched, checked) for *path* and every file it includes. *seen* holds
+        the files already read — passed along so an include cycle, or a file two others
+        include, is read once."""
+        seen = set() if seen is None else seen
+        seen.add(path.resolve())
         missing: list[str] = []
         mismatched: list[tuple[str, str, str]] = []
         skipped: list[str] = []
@@ -81,7 +93,18 @@ class RequirementsChecker:
                 line = raw.strip()
                 if not line or line.startswith("#"):
                     continue
-                if line.startswith("-r "):
+                include = _INCLUDE_RE.match(line)
+                if include:
+                    target = path.parent / include.group(1)
+                    if target.resolve() in seen:
+                        trace(f"{path.name}: {include.group(1)} is already checked")
+                    elif not target.exists():
+                        error(f"{target} (included from {path.name}) not found; skipping its requirements check.")
+                    else:
+                        i_missing, i_mismatched, i_checked = RequirementsChecker._check_file(target, seen)
+                        missing += i_missing
+                        mismatched += i_mismatched
+                        checked += i_checked
                     continue
                 m = _REQ_LINE_RE.match(line)
                 if m:

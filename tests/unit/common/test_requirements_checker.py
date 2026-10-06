@@ -300,3 +300,103 @@ def test_real_requirements_files_parse_and_voice_includes_base():
     assert not (base_names & voice_names), "a package must live in exactly one group"
     for name in ("torch", "mlx-whisper", "sounddevice", "spacy", "en_core_web_sm"):
         assert name in voice_names
+
+
+# ---- -r includes (an integration's own pins, src/integrations/<name>/requirements.txt) ----
+
+def _installed(monkeypatch, versions: dict) -> list:
+    """Pretend exactly *versions* are installed; returns the names asked for, in order."""
+    asked = []
+
+    def _version(name):
+        asked.append(name)
+        if name not in versions:
+            raise importlib.metadata.PackageNotFoundError(name)
+        return versions[name]
+
+    monkeypatch.setattr(importlib.metadata, "version", _version)
+    return asked
+
+
+def _tree(tmp_path, files: dict):
+    for name, body in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+    return tmp_path / "requirements.txt"
+
+
+def test_an_included_file_is_checked_where_its_line_stands(tmp_path, monkeypatch):
+    reqs = _tree(tmp_path, {"requirements.txt": "lamp-driver==1.0.0\n-r folders/kettle/requirements.txt\nradio-tuner==3.0.0\n",
+                            "folders/kettle/requirements.txt": "kettle-sdk==2.0.0\n"})
+    asked = _installed(monkeypatch, {"lamp-driver": "1.0.0", "kettle-sdk": "2.0.0", "radio-tuner": "3.0.0"})
+
+    assert RequirementsChecker._check_file(reqs) == ([], [], 3)
+    assert asked == ["lamp-driver", "kettle-sdk", "radio-tuner"]
+
+
+def test_a_nested_include_is_relative_to_the_file_it_stands_in(tmp_path, monkeypatch):
+    reqs = _tree(tmp_path, {"requirements.txt": "-r folders/kettle/requirements.txt\n",
+                            "folders/kettle/requirements.txt": "-r parts/heater.txt\n",
+                            "folders/kettle/parts/heater.txt": "kettle-heater==4.1.0\n",
+                            "parts/heater.txt": "wrong-file==9.9.9\n"})
+    asked = _installed(monkeypatch, {"kettle-heater": "4.1.0"})
+
+    assert RequirementsChecker._check_file(reqs) == ([], [], 1)
+    assert asked == ["kettle-heater"]
+
+
+def test_a_wrong_version_in_an_included_file_stops_the_server(tmp_path, monkeypatch):
+    reqs = _tree(tmp_path, {"requirements.txt": "lamp-driver==1.0.0\n-r folders/kettle/requirements.txt\n",
+                            "folders/kettle/requirements.txt": "kettle-sdk==2.0.0\nradio-tuner==3.0.0\n"})
+    monkeypatch.setattr(rc_module, "REQUIREMENTS_FILE", reqs)
+    _installed(monkeypatch, {"lamp-driver": "1.0.0", "kettle-sdk": "2.5.0"})
+
+    assert RequirementsChecker._check_file(reqs) == (["radio-tuner"], [("kettle-sdk", "2.0.0", "2.5.0")], 2)
+    with pytest.raises(SystemExit) as exc_info:
+        RequirementsChecker.verify_or_exit()
+    assert exc_info.value.code == 1
+
+
+def test_a_missing_include_is_skipped_and_the_rest_is_still_checked(tmp_path, monkeypatch):
+    reqs = _tree(tmp_path, {"requirements.txt": "-r folders/kettle/requirements.txt\nlamp-driver==1.0.0\n"})
+    monkeypatch.setattr(rc_module, "REQUIREMENTS_FILE", reqs)
+    asked = _installed(monkeypatch, {"lamp-driver": "1.0.0"})
+
+    RequirementsChecker.verify_or_exit()   # no SystemExit, no exception
+    assert asked == ["lamp-driver"]
+
+
+def test_files_that_include_each_other_are_each_read_once(tmp_path, monkeypatch):
+    reqs = _tree(tmp_path, {"requirements.txt": "lamp-driver==1.0.0\n-r other.txt\n",
+                            "other.txt": "-r requirements.txt\nkettle-sdk==2.0.0\n-r other.txt\n"})
+    asked = _installed(monkeypatch, {"lamp-driver": "1.0.0", "kettle-sdk": "2.0.0"})
+
+    assert RequirementsChecker._check_file(reqs) == ([], [], 2)
+    assert asked == ["lamp-driver", "kettle-sdk"]
+
+
+def _included_files(path, seen=None) -> set:
+    seen = set() if seen is None else seen
+    seen.add(path.resolve())
+    for line in path.read_text().splitlines():
+        if line.startswith("-r "):
+            target = (path.parent / line[3:].strip())
+            if target.resolve() not in seen:
+                _included_files(target, seen)
+    return seen
+
+
+def test_every_integration_folders_requirements_are_installed_with_the_base_set():
+    """`pip install -r requirements.txt` is the documented install: a folder's pins the root
+    file does not include would never be installed nor checked."""
+    from common.Paths import INTEGRATIONS_DIR
+    included = _included_files(rc_module.AISERVER_DIR / "requirements.txt")
+    folder_files = {p.resolve() for p in INTEGRATIONS_DIR.glob("*/requirements.txt")}
+    assert folder_files, "no integration folder pins anything — the glob is looking in the wrong place"
+    assert folder_files <= included, f"not included from requirements.txt: {sorted(map(str, folder_files - included))}"
+
+    pins = [line.split("==")[0].strip().lower()
+            for path in _included_files(rc_module.AISERVER_DIR / "requirements-voice.txt")
+            for line in path.read_text().splitlines() if "==" in line and not line.lstrip().startswith("#")]
+    assert sorted(set(pins)) == sorted(pins), "a package is pinned in two files"
