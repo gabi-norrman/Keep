@@ -207,7 +207,11 @@ class WebAccess(Integration):
         r'pass(?:word|wd|phrase|code)?|pwd|secret|token|credential|api[_-]?key|private|personnummer|'
         r'social[_-]?security|card[_-]?(?:number|num|no)|(?<![a-z])(?:pin|otp|cvv|cvc|ssn|tan)(?![a-z])', re.I)
     _NETWORK_SECRET_MASK = '•••'
-    _NETWORK_FORM_BODY_RE = re.compile(r'^[\w.%+\-\[\]]+=[^&\s]*(?:&[\w.%+\-\[\]]*=?[^&\s]*)*$')
+    # A key, "=", then anything without whitespace. Keep it this flat: spelling out the `&key=value`
+    # repetition gave the engine several ways to split every field, and a body that then failed to
+    # match (a space in the last value) backtracked exponentially with the GIL held — the
+    # 2026-10-05 outage, where one tracker POST on a news page froze the whole server.
+    _NETWORK_FORM_BODY_RE = re.compile(r'^[\w.%+\-\[\]]+=\S*$')
     _NETWORK_BODY_TRACE_MAX = 400     # chars of a body written to the log
     _NETWORK_BODY_FETCH_TIMEOUT = 3.0
     _NETWORK_REPORT_DEFAULT = 40      # entries browse_network returns without a filter

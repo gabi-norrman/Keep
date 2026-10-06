@@ -118,6 +118,15 @@ class TestCapture:
                                              post_data='query { order(id: "KEP47L") { status } }'), connection())
         assert entry(wa, 'q')['post'] == 'query { order(id: "KEP47L") { status } }'
 
+    def test_long_form_like_body_that_is_not_a_form_is_classified_without_backtracking(self):
+        # Many `key=value&` fields and then whitespace: the shape that pinned the server's GIL for
+        # hours when the form check could split each field several ways. Kept verbatim, instantly.
+        post = '&'.join(f'field{i}=value{i}' for i in range(60)) + '&note=two words'
+        wa = bare_wa()
+        wa._on_network_request(request_event('beacon', 'https://news.example/ingest', method='POST',
+                                             post_data=post), connection())
+        assert entry(wa, 'beacon')['post'] == post
+
     def test_json_xhr_body_is_read_once_loading_finishes(self):
         wa = bare_wa()
         conn = connection()
