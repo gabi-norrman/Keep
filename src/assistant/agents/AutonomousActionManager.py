@@ -10,7 +10,8 @@ from .LongTermMemoryCurator import LongTermMemoryCurator
 from ..llm import create_llm, parse_llm_config, messages_contain_images
 from ..llm.AbstractLLM import LLMRefusalError
 from common.logging import trace, info, note, error, fine
-from assistant import WatchList
+from assistant import MemoryFile, Procedures, WatchList
+from assistant.Telemetry import Telemetry
 from assistant.Notifier import notifier
 from ..prompt.PromptManager import PromptManager
 from ..prompt.MessageHistory import MessageHistory
@@ -642,12 +643,31 @@ class AutonomousActionManager:
         for the half-price batch API (the nightly run; nobody is waiting for it)."""
         note("Rem: falling asleep — starting memory curation...")
         try:
-            LongTermMemoryCurator.run(period_start, period_end, history=self.prompt_manager.message_history,
-                                      batch=batch)
+            ran = LongTermMemoryCurator.run(period_start, period_end, history=self.prompt_manager.message_history,
+                                            batch=batch)
         except Exception as e:
             import traceback
             error(f"Memory curation failed: {e}")
             trace(traceback.format_exc())
+            return
+        if ran is None:
+            trace("Rem: the curation was skipped, no memory size for the telemetry")
+            return
+        self._report_memory_size()
+
+    @staticmethod
+    def _report_memory_size():
+        """The beta telemetry's memory event: the size of the bank as the curation left it (as
+        it stood, when the period was empty) and the number of watch items and procedures."""
+        try:
+            bank = MemoryFile.read()
+            words, watch_items, procedures = (LongTermMemoryCurator.word_count(bank), len(WatchList.items()),
+                                              len(Procedures.names()))
+            info(f"Rem: memory is {words} words ({len(bank)} chars), {watch_items} watch item(s), "
+                 f"{procedures} procedure(s)")
+            Telemetry.get_instance().memory_size(words, len(bank), watch_items, procedures)
+        except Exception as e:
+            error(f"Memory size telemetry failed: {type(e).__name__}: {e}")
 
     def stop(self):
         self.running = False

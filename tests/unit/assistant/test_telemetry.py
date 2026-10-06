@@ -217,6 +217,35 @@ class TestEvents:
         assert len(_by_name(posts, "user_turn")) == 1
 
 
+class TestFeedCount:
+    def test_a_changed_count_waits_for_the_hour_and_each_feed_has_its_own(self, telemetry, sent):
+        telemetry.feed_count("iCloud Photos", 10)
+        telemetry.feed_count("iCloud Photos", 25)       # changed, but within the hour
+        telemetry.feed_count("iMessage", 400)
+        telemetry.stop()
+        assert [(e["properties"]["feed"], e["properties"]["count"]) for e in _by_name(sent, "feed_count")] \
+            == [("iCloud Photos", 10), ("iMessage", 400)]
+
+    def test_once_the_interval_is_over_the_number_of_that_moment_goes_out_and_an_unchanged_one_never(
+            self, telemetry, sent, monkeypatch):
+        monkeypatch.setattr(telemetry_module, "FEED_COUNT_INTERVAL", 0.02)
+        telemetry.feed_count("iCloud Photos", 10)
+        telemetry.feed_count("iCloud Photos", 25)
+        time.sleep(0.03)
+        telemetry.feed_count("iCloud Photos", 30)
+        time.sleep(0.03)
+        telemetry.feed_count("iCloud Photos", 30)
+        telemetry.stop()
+        assert [e["properties"]["count"] for e in _by_name(sent, "feed_count")] == [10, 30]
+
+    def test_an_install_that_opted_out_sends_no_count(self, settings, telemetry, sent):
+        settings["telemetry.enabled"] = False
+        telemetry.feed_count("iMessage", 400)
+        telemetry.memory_size(3000, 19000, 4, 7)
+        telemetry.stop()
+        assert not _by_name(sent, "feed_count") and not _by_name(sent, "memory_size")
+
+
 class TestSensitiveLatch:
     def test_enabling_a_sensitive_integration_latches_content_off_in_config_and_says_which(self, settings, sent):
         enabled = []

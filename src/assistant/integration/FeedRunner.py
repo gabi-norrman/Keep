@@ -22,6 +22,7 @@ from common.ConfigManager import config
 from common.DevelopmentConfig import RUNNING_UNDER_TEST
 from common.FloxyDatabase import FloxyDatabase
 from common.logging import info, trace, error, fine, note
+from ..Telemetry import Telemetry
 from .Feed import Feed, FeedBatch, FEED_ROLE
 
 SECONDS_PER_MONTH = 30.44 * 24 * 3600
@@ -286,6 +287,16 @@ class FeedRunner:
             self._stored = stored
             self._recounted_at = time.time()
 
+    def _report_count(self):
+        """The telemetry's count of what the feed holds, for a feed that asks for it; the sink
+        decides whether this pass's number is news (changed, and an hour since the last)."""
+        if not self._feed.count_in_telemetry:
+            return
+        try:
+            Telemetry.get_instance().feed_count(self.name, self._stored)
+        except Exception as e:
+            error(f"Feed '{self.name}': telemetry count failed: {type(e).__name__}: {e}")
+
     def _load_cursor(self):
         """Resume from the feeds row; start at the horizon when there is none. A horizon
         moved further back in the config resets the cursor there and opens a gap up to the
@@ -366,6 +377,7 @@ class FeedRunner:
                 continue
             if self._recounted_at is None or time.time() - self._recounted_at >= self.RECOUNT_SECONDS:
                 self._recount_stored()
+            self._report_count()
             try:
                 if self._unstored is not None:
                     batch, gap_closed = self._unstored

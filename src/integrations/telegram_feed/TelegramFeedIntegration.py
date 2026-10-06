@@ -39,6 +39,7 @@ class TelegramFeedIntegration(Integration, Feed):
 
     poll_interval = POLL_INTERVAL
     item_noun = "messages"
+    count_in_telemetry = True
 
     def __init__(self):
         super().__init__()

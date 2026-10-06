@@ -1,6 +1,7 @@
 """Anonymous usage telemetry for the closed beta: an event when the user speaks, one when the
-assistant answers, one when an integration is switched on or off, one per TUI tab opened, a
-daily heartbeat — and, until a sensitive integration is enabled, the transcript itself.
+assistant answers, one when an integration is switched on or off, one per TUI tab opened, the
+size of the memory after a curation, how many photos and messages are indexed (at most hourly),
+a daily heartbeat — and, until a sensitive integration is enabled, the transcript itself.
 
 An install is known only by a random id (`telemetry.id`, written to config.yaml on the first
 start) and `telemetry.enabled: false` turns the whole thing off — read again for every event,
@@ -34,6 +35,7 @@ POSTHOG_HOST = "https://eu.i.posthog.com"
 # clients). Empty = telemetry off, whatever config.yaml says.
 POSTHOG_PROJECT_KEY = "phc_nvbSSUXHLCDv5oDic5ULNwQXTJT2Xk4SrdMSQbMGjyCk"
 HEARTBEAT_INTERVAL = 24 * 3600
+FEED_COUNT_INTERVAL = 3600      # a feed's count goes out at most this often
 BATCH_LIMIT = 50
 QUEUE_LIMIT = 1000
 POST_TIMEOUT = 10
@@ -58,8 +60,8 @@ def _post_http(payload: dict) -> None:
 
 class Telemetry:
     """The process-wide sink: `user_turn` / `assistant_turn` / `tab_change` /
-    `integration_switch` / `heartbeat` enqueue, the worker thread posts. Before `start()` (or
-    when disabled) every call is a no-op."""
+    `integration_switch` / `memory_size` / `feed_count` / `heartbeat` enqueue, the worker thread
+    posts. Before `start()` (or when disabled) every call is a no-op."""
 
     _instance: Optional["Telemetry"] = None
 
@@ -82,6 +84,7 @@ class Telemetry:
         self._id: Optional[str] = None
         self._lock = threading.Lock()
         self._dropped = 0
+        self._feed_counts: dict[str, tuple[int, float]] = {}    # feed → the count last reported, and when
 
     @property
     def active(self) -> bool:
@@ -189,6 +192,33 @@ class Telemetry:
             return
         self._enqueue("integration_enabled" if enabled else "integration_disabled",
                       {"integration": name, "state": state})
+
+    def memory_size(self, words: int, chars: int, watch_items: int, procedures: int):
+        """A memory curation has run: how big the bank is now, and how many watch items and
+        procedures stand beside it. Sizes only — nothing of what the memory says."""
+        if not self._on():
+            return
+        self._enqueue("memory_size", {"words": words, "chars": chars, "watch_items": watch_items,
+                                      "procedures": procedures})
+
+    def feed_count(self, feed: str, count: int):
+        """How many items *feed* holds (photos indexed, messages read in). The feed's thread
+        calls this on every pass; an event goes out when the number differs from the one last
+        reported, and at most once per FEED_COUNT_INTERVAL for a feed — a catch-up shows as an
+        hourly curve, a quiet feed as nothing."""
+        if not self.active:
+            return
+        last = self._feed_counts.get(feed)
+        now = time.time()
+        if last is not None and (count == last[0] or now - last[1] < FEED_COUNT_INTERVAL):
+            return
+        # Recorded before the opt-out check, so an opted-out install is asked hourly, not per pass.
+        self._feed_counts[feed] = (count, now)
+        if not self._on():
+            return
+        trace(f"Telemetry: {feed} holds {count} item(s)"
+              + (f", {last[0]} when last reported" if last is not None else ", first report of this run"))
+        self._enqueue("feed_count", {"feed": feed, "count": count})
 
     def heartbeat(self, startup: bool = False):
         """Once a day and at start: the install is alive, and what it is — so churn can be told
