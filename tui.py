@@ -115,11 +115,13 @@ def handle_connection():
         # Send initial terminal dimensions, plus the terminal program so the server can
         # pick a rendering the terminal copes with (Terminal.app gets no half-block pixels,
         # Ghostty, iTerm2, WezTerm and kitty get pictures through the kitty graphics
-        # protocol). kitty sets no TERM_PROGRAM; its TERM names it.
+        # protocol). kitty sets no TERM_PROGRAM, and ssh carries TERM but not TERM_PROGRAM
+        # to the far side, so TERM (`xterm-kitty`, `xterm-ghostty`) names the terminal then.
         initial_dims = get_terminal_dimensions()
         terminal = os.environ.get("TERM_PROGRAM", "").split(" ")[0]
-        if not terminal and "kitty" in os.environ.get("TERM", ""):
-            terminal = "kitty"
+        if not terminal:
+            term = os.environ.get("TERM", "")
+            terminal = next((name for name in ("kitty", "ghostty") if name in term), "")
         sock.send((f"{initial_dims} {terminal}".rstrip() + "\n").encode())
         last_dimensions = initial_dims
 
