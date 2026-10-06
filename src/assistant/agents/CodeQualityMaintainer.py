@@ -12,6 +12,7 @@ from typing import Optional
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+import common.DevelopmentConfig as DevelopmentConfig
 from common.logging import info, error, trace, note
 from ..llm import parse_llm_config
 from common.ConfigManager import ConfigManager
@@ -53,6 +54,7 @@ DISABLED_MESSAGE = (
 )
 NIGHTLY_RUNS_KEY = "self_improvement.nightly_runs"
 DEVELOPER_RELEASE_KEY = "developer_release"
+NIGHTLY_UPDATE_KEY = "nightly_update"
 RELEASE_BRANCH = "release"
 DEVELOPER_BRANCH = "master"
 NIGHTLY_OFF_MESSAGE = f"{NIGHTLY_RUNS_KEY} is off"
@@ -232,15 +234,27 @@ class CodeQualityMaintainer:
     test health (flaky and slow tests), then the auto-merge of test-only PRs — one email for the night.
 
     A daemon thread fires the run at RUN_HOUR while `self_improvement.nightly_runs` is on (off by
-    default, read at each fire); a night without recent commits only auto-merges. Also exposes the
-    ad-hoc analyze_code / improve_code / restart helpers behind the self_analysis / self_improvement commands.
+    default, read at each fire); a night without recent commits only auto-merges. Once the run is
+    over — or at RUN_HOUR itself when it is off — the nightly update pulls the branch
+    `developer_release` names and restarts the server if the code changed (`nightly_update`, on
+    by default). Also exposes the ad-hoc analyze_code / improve_code / restart helpers behind the
+    self_analysis / self_improvement commands.
     """
     def __init__(self):
         self._running = False
         self._thread = None
         self._last_run_date = None
+        self._boot_commit = ""   # HEAD when this process started; the nightly update restarts once it differs
 
     def start(self):
+        self._boot_commit = self._head_commit()
+        info(f"CodeQualityMaintainer: this process runs commit {self._boot_commit[:8] or 'unknown'}")
+        now = datetime.now()
+        if now.hour == RUN_HOUR:
+            # Most often the nightly update's own restart: without this the new process would
+            # see "RUN_HOUR, nothing ran today" and start the whole night over.
+            self._last_run_date = now.date()
+            info(f"CodeQualityMaintainer: started inside the {RUN_HOUR}:00 hour, tonight's run counts as done")
         self._running = True
         self._thread = threading.Thread(target=self._run, name="CodeQualityMaintainer", daemon=True)
         self._thread.start()
@@ -255,7 +269,10 @@ class CodeQualityMaintainer:
                 now = datetime.now()
                 if now.hour == RUN_HOUR and self._last_run_date != now.date():
                     self._last_run_date = now.date()
-                    self._execute_nightly_run()
+                    try:
+                        self._execute_nightly_run()
+                    finally:
+                        self._nightly_update()
             except Exception as e:
                 error(f"CodeQualityMaintainer error: {e}")
             for _ in range(CHECK_INTERVAL):
@@ -351,6 +368,77 @@ class CodeQualityMaintainer:
         else:
             info("CodeQualityMaintainer: nothing to report, skipping email.")
         info("CodeQualityMaintainer: nightly run complete.")
+
+    def _nightly_update(self):
+        """After the night's run (at RUN_HOUR itself when that is off or skipped): check out the
+        branch `developer_release` names, pull it, and restart when the code is no longer what
+        this process booted on — commits pulled now, pulled by the night's run, or made locally
+        since the start. No new commit, no restart. `nightly_update: false` turns it off; it is
+        read at each fire."""
+        from assistant.SystemNote import system_note
+        if not ConfigManager().get(NIGHTLY_UPDATE_KEY, True):
+            info(f"CodeQualityMaintainer: {NIGHTLY_UPDATE_KEY} is off, no nightly update.")
+            return
+        if DevelopmentConfig.LOCAL_DEVELOPMENT_MODE:
+            info("CodeQualityMaintainer: LOCAL_DEVELOPMENT_MODE is on, no nightly update.")
+            return
+        if not self._boot_commit:
+            info("CodeQualityMaintainer: the commit this process started on is unknown, no nightly update.")
+            return
+        if not _nightly_lock.acquire(blocking=False):
+            info("CodeQualityMaintainer: a nightly run is still going, no nightly update under it.")
+            return
+        try:
+            target = self.target_branch()
+            info(f"CodeQualityMaintainer: nightly update — bringing the checkout to the head of {target}...")
+            failure, _ = self._pull_target()
+            if failure:
+                error(f"CodeQualityMaintainer: nightly update failed, not restarting — {failure}")
+                system_note("server", f"Nightly update failed, the server keeps running the old code: {failure}",
+                            push=False)
+                return
+            head = self._head_commit()
+            if not head:
+                error("CodeQualityMaintainer: nightly update could not read HEAD after the pull, not restarting.")
+                return
+            if head == self._boot_commit:
+                info(f"CodeQualityMaintainer: nightly update — no new commits on {target} since the start "
+                     f"({head[:8]}), not restarting.")
+                return
+            count = self._commits_between(self._boot_commit, head)
+            change = f"{count} new commit{'s' if count != 1 else ''}" if count else f"now at {head[:8]}"
+            note(f"CodeQualityMaintainer: nightly update — {change} on {target} "
+                 f"({self._boot_commit[:8]} → {head[:8]}), restarting.")
+            # History only: the startup announcement of the new process is what the chats get.
+            system_note("server", f"Nightly update: {change} on {target}, the server is restarting.", push=False)
+            self.restart(f"nightly update {self._boot_commit[:8]} → {head[:8]}")
+        finally:
+            _nightly_lock.release()
+
+    @staticmethod
+    def _head_commit() -> str:
+        """The commit the checkout is on, "" when git cannot say."""
+        try:
+            result = CodeQualityMaintainer._run_subprocess(["git", "rev-parse", "HEAD"], "git rev-parse", GIT_TIMEOUT)
+        except Exception as e:
+            error(f"CodeQualityMaintainer: could not read HEAD: {e}")
+            return ""
+        if result.returncode != 0:
+            error(f"CodeQualityMaintainer: git rev-parse HEAD exited {result.returncode}: {(result.stderr or '').strip()}")
+            return ""
+        return (result.stdout or "").strip()
+
+    @staticmethod
+    def _commits_between(old: str, new: str) -> int:
+        """How many commits *new* has that *old* lacks; 0 when git cannot say or *new* is not ahead
+        (a switch back to an older release)."""
+        try:
+            result = CodeQualityMaintainer._run_subprocess(["git", "rev-list", "--count", f"{old}..{new}"],
+                                                           "git rev-list", GIT_TIMEOUT)
+            return int((result.stdout or "").strip()) if result.returncode == 0 else 0
+        except Exception as e:
+            error(f"CodeQualityMaintainer: could not count the commits {old[:8]}..{new[:8]}: {e}")
+            return 0
 
     @staticmethod
     def _tests_path() -> str:
@@ -689,7 +777,9 @@ class CodeQualityMaintainer:
         return DEVELOPER_BRANCH if developer else RELEASE_BRANCH
 
     @staticmethod
-    def pull_and_restart() -> str:
+    def _pull_target() -> tuple[str, str]:
+        """Check out the target branch if the checkout is on another one, then pull it. Returns
+        (failure, pull output): *failure* says what went wrong and is "" when the pull went through."""
         target = CodeQualityMaintainer.target_branch()
         current = CodeQualityMaintainer._current_branch()
         if current != target:
@@ -700,14 +790,19 @@ class CodeQualityMaintainer:
                 if result.returncode != 0:
                     error(f"CodeQualityMaintainer: {label} {target} failed: {result.stderr}")
                     return (f"Could not switch to {target}: {(result.stderr or '').strip()} — "
-                            f"still on {current}, the server was not restarted.")
-        info(f"CodeQualityMaintainer: pulling latest code on {target} and restarting...")
+                            f"still on {current}, the server was not restarted."), ""
+        info(f"CodeQualityMaintainer: pulling latest code on {target}...")
         result = CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
-        output = (result.stdout or "").strip()
-
         if result.returncode != 0:
             error(f"CodeQualityMaintainer: git pull failed: {result.stderr}")
-            return f"Git pull failed: {result.stderr}"
+            return f"Git pull failed: {result.stderr}", ""
+        return "", (result.stdout or "").strip()
+
+    @staticmethod
+    def pull_and_restart() -> str:
+        failure, output = CodeQualityMaintainer._pull_target()
+        if failure:
+            return failure
 
         already_up_to_date = "Already up to date" in output
         if already_up_to_date:

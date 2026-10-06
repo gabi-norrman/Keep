@@ -26,7 +26,10 @@ Development happens on `master`; installs track the `release` branch. `./release
 `install.sh` from `release` and the installer clones it. `restart_server` checks out the branch the
 `developer_release` config key names (false → `release`, true → `master`; the assistant may flip it with
 `config_set`) and pulls it, so an install picks a release up on its next restart and a machine switches
-line by flipping the key and restarting. The development machine's `config.yaml` has it true. Never
+line by flipping the key and restarting. The development machine's `config.yaml` has it true. The
+nightly update (`CodeQualityMaintainer._nightly_update`, `nightly_update` config key, on by default) does
+the same checkout and pull at 03:00 — after the nightly code-quality run when that is on — and restarts
+only when HEAD is no longer the commit the process booted on. Never
 hard-code `master` in a git command — `CodeQualityMaintainer._current_branch()` is the branch to come
 back to after a Claude Code run, `target_branch()` the one to pull.
 
@@ -66,7 +69,7 @@ source .venv/bin/activate && python <script.py>
 - `src/assistant/` — the assistant proper; it never imports `interfaces.*`
   - `Assistant.py` (facade: `stream(RequestContext) -> AssistantEvents`, handler pool), 
   - `commands/` (Commands, CommandProcessor, light/music/photo handlers; `Toolkits.py` — the command references the LLM loads on demand)
-  - `agents/CodeQualityMaintainer.py` runs the Claude Code CLI on the repo: the nightly run (bug analysis, test generation, test health — flaky and slow tests —, auto-merge) and the `self_analysis` / `self_improvement` commands.
+  - `agents/CodeQualityMaintainer.py` runs the Claude Code CLI on the repo: the nightly run (bug analysis, test generation, test health — flaky and slow tests —, auto-merge), the nightly update after it (pull the target branch, restart if the code changed) and the `self_analysis` / `self_improvement` commands.
   - long-term memory, all under `memory/` (gitignored): `MemoryFile.py` — the bank `memory/bank.md` (people, preferences, contacts, rules; whole in every prompt; `remember` appends, the curator rewrites it; the prompt shows the curated part at the top and the notes appended since in a block of their own lower down — `MemoryFile.split`, so a `remember` never changes the cached top of the prompt); `WatchList.py` — `memory/watchlist/<slug>.md`, one file per tracked item (`save_watch` / `checked_watch` / `delete_watch`; the prompt carries a one-line-per-item index, `load_watch` returns an item whole, and the autonomous check gets the full list in its instruction); `Procedures.py` — `memory/procedures/<slug>.md`, the how-tos (`load_procedure` loads one, `save_procedure` / `delete_procedure` write; the curator alone appends dated notes with `procedure_note`; the prompt carries only a code-built index). `memory/` holds only what is live: replaced, deleted and closed versions are copied to `log/memory/{watchlist,procedures}/`, a debugging trail the LLM never reads.
   - `agents/LongTermMemoryCurator.py` — the nightly run: rewrites the bank, then a `<commands>` block (`save_watch`, `delete_watch`, `save_procedure` for new names, `procedure_note`) tidies the watch list and may add (never replace or delete) procedures; `//memory_split` is the one-off move of an old one-file bank into the three parts.
   - self-setup: `list_integrations` / `config_help` / `config_request` / `restart_integration` let the assistant configure an integration itself.

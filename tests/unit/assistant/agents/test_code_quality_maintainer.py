@@ -115,6 +115,152 @@ class TestScheduling:
             assert maintainer._last_run_date == date(2026, 2, 19)
 
 
+    @patch('assistant.agents.CodeQualityMaintainer.time.sleep')
+    @patch('assistant.agents.CodeQualityMaintainer.datetime')
+    def test_the_nightly_update_follows_the_run_even_when_the_run_raises(self, mock_dt, mock_sleep, maintainer):
+        mock_dt.now.return_value = datetime(2026, 2, 19, 3, 0, 0)
+        order = []
+
+        def stop_after_one(*args):
+            maintainer._running = False
+
+        mock_sleep.side_effect = stop_after_one
+
+        def failing_run():
+            order.append("run")
+            raise RuntimeError("claude fell over")
+
+        with patch.object(maintainer, '_execute_nightly_run', side_effect=failing_run), \
+                patch.object(maintainer, '_nightly_update', side_effect=lambda: order.append("update")):
+            maintainer._running = True
+            maintainer._run()
+        assert order == ["run", "update"]
+
+    @pytest.mark.parametrize("hour, counts_as_done", [(3, True), (4, False)])
+    @patch('assistant.agents.CodeQualityMaintainer.threading.Thread')
+    @patch.object(CodeQualityMaintainer, '_head_commit', return_value="a" * 40)
+    @patch('assistant.agents.CodeQualityMaintainer.datetime')
+    def test_a_start_inside_the_run_hour_does_not_run_the_night_again(self, mock_dt, mock_head, mock_thread,
+                                                                    hour, counts_as_done, maintainer):
+        """The nightly update restarts the server while the clock may still say RUN_HOUR; the
+        new process must not start the whole night over."""
+        mock_dt.now.return_value = datetime(2026, 2, 19, hour, 20, 0)
+        maintainer.start()
+        assert (maintainer._last_run_date == date(2026, 2, 19)) is counts_as_done
+
+
+BOOT, NEWER = "b" * 40, "c" * 40
+
+
+@pytest.mark.unit
+class TestNightlyUpdate:
+    @pytest.fixture(autouse=True)
+    def wiring(self, maintainer):
+        """A maintainer booted on BOOT whose pull goes through; git's HEAD afterwards and the
+        config are each test's to set. Nothing here reaches git or start.sh."""
+        maintainer._boot_commit = BOOT
+        self.config = {"nightly_update": True, "developer_release": True}
+        with patch.object(ConfigManager, 'get', side_effect=lambda key, default=None: self.config.get(key, default)), \
+                patch.object(CodeQualityMaintainer, '_pull_target', return_value=("", "")) as pull, \
+                patch.object(CodeQualityMaintainer, '_head_commit', return_value=NEWER) as head, \
+                patch.object(CodeQualityMaintainer, '_commits_between', return_value=2), \
+                patch.object(CodeQualityMaintainer, 'restart') as restart, \
+                patch('assistant.SystemNote.system_note') as note_:
+            self.pull, self.head, self.restart, self.note = pull, head, restart, note_
+            yield
+
+    def test_new_commits_restart_the_server_with_a_history_only_note(self, maintainer):
+        maintainer._nightly_update()
+        self.pull.assert_called_once_with()
+        self.restart.assert_called_once()
+        (source, text), kwargs = self.note.call_args
+        assert source == "server" and "2 new commits" in text and "master" in text
+        assert kwargs == {"push": False}   # the chats get the new process's startup announcement instead
+
+    def test_no_new_commits_means_no_restart(self, maintainer):
+        self.head.return_value = BOOT
+        maintainer._nightly_update()
+        self.pull.assert_called_once_with()
+        self.restart.assert_not_called()
+        self.note.assert_not_called()
+
+    def test_a_failed_pull_keeps_the_old_code_running_and_says_why(self, maintainer):
+        self.pull.return_value = ("Git pull failed: merge conflict in config", "")
+        maintainer._nightly_update()
+        self.restart.assert_not_called()
+        assert "merge conflict in config" in self.note.call_args[0][1]
+
+    def test_an_unreadable_head_does_not_restart(self, maintainer):
+        self.head.return_value = ""
+        maintainer._nightly_update()
+        self.restart.assert_not_called()
+
+    def test_switched_off_it_touches_nothing(self, maintainer):
+        self.config["nightly_update"] = False
+        maintainer._nightly_update()
+        self.pull.assert_not_called()
+        self.restart.assert_not_called()
+
+    def test_it_is_on_when_the_key_is_absent(self, maintainer):
+        del self.config["nightly_update"]
+        maintainer._nightly_update()
+        self.restart.assert_called_once()
+
+    def test_no_update_in_local_development_mode(self, maintainer):
+        with patch('common.DevelopmentConfig.LOCAL_DEVELOPMENT_MODE', True):
+            maintainer._nightly_update()
+        self.pull.assert_not_called()
+        self.restart.assert_not_called()
+
+    def test_no_update_when_the_boot_commit_is_unknown(self, maintainer):
+        maintainer._boot_commit = ""
+        maintainer._nightly_update()
+        self.pull.assert_not_called()
+        self.restart.assert_not_called()
+
+    def test_no_update_under_a_running_nightly_run(self, maintainer):
+        from assistant.agents import CodeQualityMaintainer as module
+        assert module._nightly_lock.acquire(blocking=False)
+        try:
+            maintainer._nightly_update()
+        finally:
+            module._nightly_lock.release()
+        self.pull.assert_not_called()
+        self.restart.assert_not_called()
+
+    def test_a_switch_to_an_older_release_still_restarts(self, maintainer):
+        """release may sit behind the commit a master process booted on: nothing is "new", the
+        code is still different."""
+        self.config["developer_release"] = False
+        with patch.object(CodeQualityMaintainer, '_commits_between', return_value=0):
+            maintainer._nightly_update()
+        self.restart.assert_called_once()
+        assert "release" in self.note.call_args[0][1]
+
+
+@pytest.mark.unit
+class TestHeadCommitAndCount:
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_head_commit_is_empty_when_git_fails(self, mock_sub):
+        mock_sub.return_value = Mock(stdout="", stderr="fatal: not a git repository", returncode=128)
+        assert CodeQualityMaintainer._head_commit() == ""
+        mock_sub.side_effect = OSError("no git")
+        assert CodeQualityMaintainer._head_commit() == ""
+
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_head_commit_is_the_trimmed_hash(self, mock_sub):
+        mock_sub.return_value = Mock(stdout=NEWER + "\n", stderr="", returncode=0)
+        assert CodeQualityMaintainer._head_commit() == NEWER
+
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_commits_between_counts_the_range_and_is_zero_on_failure(self, mock_sub):
+        mock_sub.return_value = Mock(stdout="3\n", stderr="", returncode=0)
+        assert CodeQualityMaintainer._commits_between(BOOT, NEWER) == 3
+        assert mock_sub.call_args[0][0][-1] == f"{BOOT}..{NEWER}"
+        mock_sub.return_value = Mock(stdout="", stderr="bad revision", returncode=128)
+        assert CodeQualityMaintainer._commits_between(BOOT, NEWER) == 0
+
+
 def _pr(number, login, fork=False):
     return {"number": number, "author": {"login": login}, "isCrossRepository": fork}
 

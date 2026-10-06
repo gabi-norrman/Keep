@@ -1281,8 +1281,9 @@ class Commands:
     MODEL_KEY_HINT = ("Model-provider key. Photo indexing, video descriptions and any integration enabled "
                       "from now on use it straight away — setup needs no restart.")
     MODEL_PROVIDER_KEYS = frozenset({"openai", "anthropic", "gemini", "grok", "openrouter"})
-    DEVELOPER_RELEASE_HINT = ("Takes effect at the next restart_server, which checks out master (true) or "
-                              "release (false) before pulling — offer the restart if the user wants to switch now.")
+    DEVELOPER_RELEASE_HINT = ("Takes effect at the next restart_server or nightly update, which checks out master "
+                              "(true) or release (false) before pulling — offer the restart if the user wants to "
+                              "switch now.")
     TELEMETRY_HINT = ("Telemetry reads it for every event: false is in force from the next event on, "
                       "no restart needed. Switching telemetry.enabled back to true takes a restart_server.")
 
