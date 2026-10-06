@@ -40,20 +40,36 @@ gh auth login && gh api -H "Accept: application/vnd.github.raw" "repos/maciekd/K
 
 ## Features
 
-We asked my assistant to pick her own highlights from the past year. **All events are real.**
+I asked Keep to pick her own highlights from the past year. **All events are real.**
 
 <table>
 <tr>
 <td width="50%" valign="top">
 
 ### 🍝 The pasta timing
+I timed his pasta to his wife's drive home.
+
+<details>
+<summary>The full story</summary>
+<br>
+
 He was cooking, his wife driving home from the cinema. I tracked the car across town, said *hold the pasta* when she pulled over to drop off a friend, then counted her down to five minutes out.
+
+</details>
 
 </td>
 <td width="50%" valign="top">
 
 ### 🛍️ Shopping, end to end
+I buy things and book restaurants, checkout included.
+
+<details>
+<summary>The full story</summary>
+<br>
+
 A swivel armchair through a Revolut 3DS push, a pair of Birkenstocks, a Stockholm restaurant booking with the calendar event added and the newsletter box *unticked*.
+
+</details>
 
 </td>
 </tr>
@@ -61,13 +77,29 @@ A swivel armchair through a Revolut 3DS push, a pair of Birkenstocks, a Stockhol
 <td valign="top">
 
 ### 🌧️ Cushions
-Rain radar says rain within the hour: I check the cameras for the beige cushions on the black terrace furniture and ping the family. *Running quietly since May.*
+I ping the family when rain is coming and the cushions are still out.
+
+<details>
+<summary>The full story</summary>
+<br>
+
+When the radar says rain within the hour, I check the cameras for the beige cushions on the black terrace furniture and ping the family. *Running quietly since May.*
+
+</details>
 
 </td>
 <td valign="top">
 
 ### 📸 Needle, haystack
-Found his red 2004 BMW in **87,000 photos**, and the 2020 hall gallery wall.
+I found his red 2004 BMW in **87,000 photos**.
+
+<details>
+<summary>The full story</summary>
+<br>
+
+The 2020 hall gallery wall turned up too.
+
+</details>
 
 </td>
 </tr>
@@ -75,13 +107,13 @@ Found his red 2004 BMW in **87,000 photos**, and the 2020 hall gallery wall.
 <td valign="top">
 
 ### 🐛 Fixing myself
-My self-analysis caught my own cookie-banner remover deleting whole pages, and I shipped the fix as a PR.
+I caught my own bug and shipped the fix as a PR.
 
 <details>
 <summary>The full story</summary>
 <br>
 
-Apple Store pages went blank; my self-analysis caught my own cookie-banner remover deleting the whole page, and I shipped the fix as a PR. When the cushion rule didn't fire, I found I was reading the 3-hour forecast instead of the 15-minute radar and rewrote my own code.
+Apple Store pages went blank: my self-analysis found my own cookie-banner remover deleting the whole page. And when the cushion rule didn't fire, I found I was reading the 3-hour forecast instead of the 15-minute radar and rewrote my own code.
 
 </details>
 
@@ -89,13 +121,13 @@ Apple Store pages went blank; my self-analysis caught my own cookie-banner remov
 <td valign="top">
 
 ### 🪪 BankID into the school portal
-I logged in with a tappable BankID link on Telegram, then read the weekly letter from school and summarized what mattered.
+I got through a BankID login to read the school's weekly letter.
 
 <details>
 <summary>The full story</summary>
 <br>
 
-I drove the browser to the portal's eID page, pulled the autostart token off the auth endpoint, sent him a tappable BankID link on Telegram (*valid for 30 seconds*), then read the weekly letter from school and summarized what mattered to him.
+I drove the browser to the portal's eID page, pulled the autostart token off the auth endpoint and sent him a tappable BankID link on Telegram (*valid for 30 seconds*). Then I read the weekly letter and summarized what mattered to him.
 
 </details>
 
@@ -105,7 +137,7 @@ I drove the browser to the portal's eID page, pulled the autostart token off the
 <td valign="top">
 
 ### 🇩🇪 The Autobahn breakdown
-The car lit up like a Christmas tree in northern Germany; he sent a photo of the alert screen and I decoded every code down to the 12V battery.
+I decoded a dashboard full of warnings from one photo.
 
 <details>
 <summary>The full story</summary>
@@ -119,13 +151,13 @@ The car lit up like a Christmas tree in northern Germany; he sent a photo of the
 <td valign="top">
 
 ### 🏊 Pool chemistry by camera
-*There is no sensor.* I read the pool controller's display off a security camera.
+*There is no sensor:* I read the pool controller's display off a security camera.
 
 <details>
 <summary>The full story</summary>
 <br>
 
-*There is no sensor.* I read the pool controller's display off a security camera. "Tal." means the chlorine tank is empty; I first blamed a sensor fault, he corrected me, and I remembered. I caught the chlorine crash to 0.32 ppm on Jun 21 and to 0.02 a week later, and worked out that a blown-out display means the pump-room lamp is off: switch it on, read, switch it off.
+"Tal." means the chlorine tank is empty; I first blamed a sensor fault, he corrected me, and I remembered. I caught the chlorine crash to 0.32 ppm on Jun 21 and to 0.02 a week later, and worked out that a blown-out display means the pump-room lamp is off: switch it on, read, switch it off.
 
 </details>
 
