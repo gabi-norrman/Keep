@@ -1839,6 +1839,15 @@ class Commands:
             error(f"describe_{command} raised: {e}")
             return None
 
+    def echo_text(self, command: str, params) -> Optional[str]:
+        """What a chat shows for a command call: its description, the call itself for a
+        command without a describe_ method, None for one whose description is empty."""
+        text = self.describe(command, params)
+        if text is None and not hasattr(self, "describe_" + command.strip()):
+            params_display = ", ".join(params) if isinstance(params, list) else str(params)
+            return f"{command}({params_display})"
+        return text
+
     @staticmethod
     def _first_argument(p: str) -> str:
         return p.split(",", 1)[0].strip().strip("\"'`")

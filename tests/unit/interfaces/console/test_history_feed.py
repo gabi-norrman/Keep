@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
+from assistant.commands.StoredReplyReader import StoredReplyReader
+from interfaces.chat.RichText import command_line
 from interfaces.console.HistoryFeed import HistoryFeed, normalize
 from interfaces.console.widgets.ChatPane import (KIND_ASSISTANT, KIND_DIFF, KIND_NOTICE, KIND_SYSTEM, KIND_USER,
                                                   ChatPane)
@@ -45,6 +47,15 @@ def shown(pane):
     return [(e.kind, e.header, e.body.text) for e in pane.entries]
 
 
+def stream_echoes(pane, call):
+    """The notice the console's stream shows as it runs `call`."""
+    return pane.add_notice(command_line(StoredReplyReader().read(call).before[0]))
+
+
+def kinds(pane):
+    return [e.kind for e in pane.entries]
+
+
 class TestBackfill:
     def test_every_role_lands_with_its_header(self, history, pane):
         history.history = [
@@ -67,6 +78,31 @@ class TestBackfill:
         land(history, entry("system", "late", T0))
         assert pane.entries == []
 
+
+    def test_a_command_round_is_drawn_as_the_stream_showed_it(self, history, pane):
+        """A notice per command, the prose without the calls, no result row — not the stored text."""
+        history.history = [
+            entry("marcus", "any news on the ferry?", T0, source="Console"),
+            entry("assistant", 'load_toolkit("web")\n\nsave_watch("ferry-strike", """Strike (day 2), "no boats"\n'
+                               'until further notice.""", "2026-10-07", "6h")', T0 + 1),
+            entry("command", "result:\n# Toolkit: web\nopen_url(url: str)", T0 + 2),
+            entry("assistant", 'google("ferry strike")', T0 + 3),
+            entry("command", "result:\nFerries are back on Friday.", T0 + 4),
+            entry("assistant", "Back on <b>Friday</b>.\n\nremember(Marcus follows the ferry strike)", T0 + 5),
+        ]
+        HistoryFeed(history, pane).start()
+        assert kinds(pane) == [KIND_USER, KIND_NOTICE, KIND_NOTICE, KIND_NOTICE, KIND_ASSISTANT, KIND_NOTICE]
+        notices = [e.body.text for e in pane.entries if e.kind == KIND_NOTICE]
+        assert "web" in notices[0] and "ferry-strike" in notices[1] and "ferry strike" in notices[2]
+        assert not any("no boats" in text or "Toolkit" in text for _, _, text in shown(pane))
+        assert shown(pane)[4] == (KIND_ASSISTANT, "Assistant", "Back on <b>Friday</b>.")
+
+    def test_the_clock_note_and_the_opening_brief_are_left_out(self, history, pane):
+        history.history = [entry("note", "It is 14:05.", T0),
+                           entry("system", "The server has just started…", T0 + 1, source="Console"),
+                           entry("assistant", "Hi, I'm Floxy.", T0 + 2)]
+        HistoryFeed(history, pane).start()
+        assert [text for _, _, text in shown(pane)] == ["Hi, I'm Floxy."]
 
     def test_a_markdown_assistant_row_is_shown_repaired(self, history, pane):
         history.history = [entry("assistant", "Parked at **Kyrkogatan**, spot `B4`.", T0)]
@@ -108,15 +144,15 @@ class TestAdoption:
         feed.user_submitted("dim the kitchen lamp")
         feed.turn_started()
         first = pane.add_assistant("Dimming.", final=True)
+        echo = stream_echoes(pane, "dim(Köksbord lampa [Kök], 50)")
         second = pane.add_assistant("Done, kitchen table lamp at <b>50</b> percent.", final=True)
         now = time.time()
         land(history, entry("Marcus", "dim the kitchen lamp", now, source="Console"),
              entry("assistant", "dim(Köksbord lampa [Kök], 50)\n\nDimming.", now + 0.001))
         land(history, entry("assistant", "Done, kitchen table lamp at <b>50</b> percent.", now + 5))
-        assert pane.entries == [pane.entries[0], first, second]   # nothing added while streaming
+        assert pane.entries == [pane.entries[0], first, echo, second]   # nothing added while streaming
         feed.turn_finished()
-        assert [e.body.text for e in pane.entries] == ["dim the kitchen lamp", "Dimming.",
-                                                       "Done, kitchen table lamp at <b>50</b> percent."]
+        assert pane.entries == [pane.entries[0], first, echo, second]
 
     def test_rows_that_match_no_bubble_are_shown_once_the_reply_is_over(self, history, pane, feed):
         pane.add_user("hello")
@@ -176,6 +212,7 @@ class TestAdoption:
         pane.add_user("so do the cost tracking analysis please")
         feed.user_submitted("so do the cost tracking analysis please")
         feed.turn_started()
+        echo = stream_echoes(pane, 'self_analysis("Cost tracking: where are usage stats stored?")')
         bubble = pane.add_assistant("Running. Claude Code will report back when it's done.\n\n"
                                     "(Fable refused this request, had to use Opus fallback)", final=True)
         now = time.time()
@@ -183,18 +220,37 @@ class TestAdoption:
              entry("assistant", "`self_analysis(\"Cost tracking: where are usage stats stored?\")`\n\n"
                                 "Running. Claude Code will report back when it's done.", now + 0.001))
         feed.turn_finished()
-        assert pane.entries == [pane.entries[0], bubble]
+        assert pane.entries == [pane.entries[0], echo, bubble]
 
-    def test_a_backticked_command_row_is_hidden(self, history, pane, feed):
-        land(history, entry("assistant", "`list_integrations()`", time.time()))
-        assert pane.entries == []
+    def test_a_command_round_the_stream_showed_adds_nothing(self, history, pane, feed):
+        feed.turn_started()
+        echoes = [stream_echoes(pane, call) for call in ("`list_integrations()`", 'google("Mac Studio M5 news")',
+                                                         "<code>open_url(https://example.com/a)</code>")]
+        now = time.time()
+        land(history, entry("assistant", "`list_integrations()`", now),
+             entry("assistant", 'google("Mac Studio M5 news")\n<code>open_url(https://example.com/a)</code>', now + 1))
+        feed.turn_finished()
+        assert pane.entries == echoes
 
-    def test_command_only_rows_are_hidden(self, history, pane, feed):
+    def test_another_channels_command_round_shows_its_notices(self, history, pane, feed):
+        """No stream drew it here, so the row is all the console has: a notice per command."""
         now = time.time()
         land(history, entry("assistant", 'search_x("M5 Ultra Mac Studio")\ngoogle("Mac Studio M5 news")', now),
-             entry("assistant", "<code>open_url(https://example.com/a)</code>", now + 1),
-             entry("assistant", "dim(Köksbord lampa [Kök], 50)\n\nDimming.", now + 2))
-        assert [e.body.text for e in pane.entries] == ["dim(Köksbord lampa [Kök], 50)\n\nDimming."]
+             entry("assistant", "dim(Köksbord lampa [Kök], 50)\n\nDimming.", now + 1))
+        assert kinds(pane) == [KIND_NOTICE, KIND_NOTICE, KIND_NOTICE, KIND_ASSISTANT]
+        assert pane.entries[3].body.text == "Dimming."
+
+    def test_a_notice_stands_for_one_command_only(self, history, pane, feed):
+        stream_echoes(pane, 'google("Mac Studio M5 news")')
+        now = time.time()
+        land(history, entry("assistant", 'google("Mac Studio M5 news")', now))
+        land(history, entry("assistant", 'google("Mac Studio M5 news")', now + 1))
+        assert kinds(pane) == [KIND_NOTICE, KIND_NOTICE]
+
+    def test_the_calls_are_shown_as_written_when_the_flag_is_on(self, history, pane, feed):
+        with patch('interfaces.console.HistoryFeed.SHOW_COMMAND_ROUNDS', True):
+            land(history, entry("assistant", 'google("Mac Studio M5 news")', time.time()))
+        assert [e.body.text for e in pane.entries] == ['google("Mac Studio M5 news")']
 
     def test_notifier_broadcast_is_adopted_by_its_history_row(self, history, pane, feed):
         pane.add_notice("Rain in <b>10 minutes</b> — closing the parasol.")

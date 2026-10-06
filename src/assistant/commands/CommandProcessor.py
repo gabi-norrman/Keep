@@ -177,9 +177,7 @@ class CommandProcessor:
             trace(f"Skipping the chat echo for {profile.name} command {command_name}({params_display})")
             return None
         try:
-            text = self.commands.describe(command_name, params)
-            if text is None and not hasattr(self.commands, "describe_" + command_name):
-                text = f"{command_name}({params_display})"
+            text = self.commands.echo_text(command_name, params)
             if not text:
                 return None
             ctx = self._context_for(dialog_manager)
