@@ -118,7 +118,7 @@ MODULES = {
     'src/interfaces/http/WireFormat.py': 'Serializes AssistantEvents into the legacy /stream bytes the iOS app, Android outposts and tests understand.',
     'src/common/ConfigStore.py': 'Writes one value into config.yaml and reports which keys are set, without ever handing a value on.',
     'src/common/Migrations.py': 'One-off moves of on-disk data, run by the launcher before anything reads it.',
-    'src/common/ConfigSchema.py': 'What settings exist, read from config.example.yaml.',
+    'src/common/ConfigSchema.py': 'What settings exist, read from config.example.yaml and the fragments in the integration folders.',
     'src/interfaces/console/SystemEvents.py': 'How a system history row reads in the Home tab chat.',
     'src/interfaces/console/HistoryFeed.py': 'Puts the dialog history into the Home tab chat.',
     'src/interfaces/console/TUIState.py': 'The one file where the TUI remembers things across restarts.',

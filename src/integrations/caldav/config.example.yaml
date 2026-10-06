@@ -1,0 +1,8 @@
+calendar:
+  username: your_icloud_email@me.com
+  password: YOUR_CALENDAR_PASSWORD_HERE (for iCloud this is an app password)
+  default_calendar: Home  # Name of the iCloud calendar to create events in
+  # Calendars whose events are always in the prompt, e.g. [Home, Family]. The others are only
+  # listed by name and the assistant loads one when it needs it. Empty shows every calendar;
+  # add one with config_set("calendar.shown_calendars[0]", "Home").
+  shown_calendars: []

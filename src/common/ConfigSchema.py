@@ -4,17 +4,32 @@ The example is the schema the assistant reasons about: its sections, the leaves 
 their types, and the how-to comments ("Generate at https://…"). Sections the example ships
 commented out (`#photos:`, `#ai:` …) count too; their text is returned with the leading `#`
 stripped so the reader sees real YAML. plans/SELF_SETUP_PLAN.md §3.1.
+
+The example is one text made of several files: the root `config.example.yaml` and, for an
+integration's own section, the fragment in its folder (`src/integrations/<name>/config.example.yaml`).
+A pointer line in the root (`# >> tesla: src/integrations/tesla/config.example.yaml`) is replaced by
+the fragment it names, so the section stands where it always did; a fragment nothing points at
+(a folder added later) follows after the root, by folder name. Everything below reads that one
+text and knows nothing of the files.
 """
 import re
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Optional
 
 import yaml
 
-from common.Paths import AISERVER_DIR
-from common.logging import info, trace
+from common.Paths import AISERVER_DIR, INTEGRATIONS_DIR
+from common.logging import error, info, trace
 
 EXAMPLE_PATH = AISERVER_DIR / "config.example.yaml"
+FRAGMENT_NAME = "config.example.yaml"
+# Where the fragments are, seen from the root example: tests that swap EXAMPLE_PATH for a file
+# of their own get that file's surroundings, not this repository's folders.
+_FRAGMENTS_FROM_ROOT = INTEGRATIONS_DIR.relative_to(AISERVER_DIR)
+# The root's stand-in for a section that lives in a fragment: the section name (for the human
+# reader) and the fragment's path from the root example's directory.
+_POINTER_RE = re.compile(r"^# >> ([A-Za-z_][A-Za-z0-9_]*): (\S+)$")
 
 # A top-level key at column 0, optionally commented out (`#photos:` — the example comments
 # code out with `#` glued to the key, prose comments always have `# ` with a space).
@@ -64,10 +79,68 @@ class _Section:
         self.end = key_line     # last line of the block (inclusive)
 
 
+def _section_names(lines: list[str]) -> list[str]:
+    return [m.group(2) for m in map(_SECTION_RE.match, lines) if m]
+
+
+def _read_fragment(path: Path) -> Optional[list[str]]:
+    """The fragment's lines, or None (logged) when it cannot be read, is not YAML or holds no section."""
+    try:
+        text = path.read_text(encoding="utf-8")
+        yaml.safe_load(text)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+        error(f"ConfigSchema: fragment {path} left out — {type(e).__name__}: {e}")
+        return None
+    lines = text.splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not _section_names(lines):
+        error(f"ConfigSchema: fragment {path} left out — it holds no top-level section")
+        return None
+    return lines
+
+
 @lru_cache(maxsize=1)
 def _lines() -> list[str]:
-    text = EXAMPLE_PATH.read_text()
-    return text.splitlines()
+    """The example as one text: the root file with every pointer replaced by its fragment,
+    then the fragments no pointer names. A fragment that fails to load, or whose section
+    another file already defines, is logged and left out — the rest of the schema stands."""
+    root = EXAMPLE_PATH.parent
+    root_lines = EXAMPLE_PATH.read_text().splitlines()
+    owners: dict[str, Path] = {name: EXAMPLE_PATH for name in _section_names(root_lines)}
+
+    def claim(path: Path) -> Optional[list[str]]:
+        lines = _read_fragment(path)
+        if lines is None:
+            return None
+        taken = [name for name in _section_names(lines) if name in owners]
+        if taken:
+            error(f"ConfigSchema: fragment {path} left out — section '{taken[0]}' is already defined in {owners[taken[0]]}")
+            return None
+        owners.update({name: path for name in _section_names(lines)})
+        return lines
+
+    out: list[str] = []
+    pointed: set[Path] = set()
+    for line in root_lines:
+        m = _POINTER_RE.match(line)
+        if m is None:
+            out.append(line)
+            continue
+        path = root / m.group(2)
+        pointed.add(path.resolve())
+        out.extend(claim(path) or [])
+    appended = 0
+    for path in sorted((root / _FRAGMENTS_FROM_ROOT).glob(f"*/{FRAGMENT_NAME}")):
+        if path.resolve() in pointed:
+            continue
+        fragment = claim(path)
+        if fragment is not None:
+            out.extend([""] + fragment)
+            appended += 1
+    if pointed or appended:
+        trace(f"ConfigSchema: {EXAMPLE_PATH.name} read with {len(pointed)} pointed and {appended} appended fragment(s)")
+    return out
 
 
 @lru_cache(maxsize=1)

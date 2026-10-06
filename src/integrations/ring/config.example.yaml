@@ -1,0 +1,4 @@
+# 2FA goes over iMessage (SMS). If the user has set up iMessage then this server handles 2FA AUTOMATICALLY.
+ring:
+  username: your_ring_email@example.com
+  password: YOUR_RING_PASSWORD

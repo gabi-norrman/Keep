@@ -1,0 +1,7 @@
+tesla:
+  tessie_access_token: YOUR_TESSIE_ACCESS_TOKEN
+  vehicles:
+    - name: home_car
+      display_name: Family Model Y
+      vin: YOUR_TESLA_VIN
+      default: true

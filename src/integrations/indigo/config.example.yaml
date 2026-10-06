@@ -1,0 +1,11 @@
+indigo:
+  host: YOUR_INDIGO_HOST
+  login: YOUR_INDIGO_LOGIN
+  password: YOUR_INDIGO_PASSWORD
+  # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
+  prompt_filters:
+    - SomeNoisyVariableName
+  # The same, per section (lights / sensors / variables / actions). Optional.
+  # section_filters:
+  #   sensors: [Humidity, Luminance]
+  #   variables: ["Motion[", "Temperature["]

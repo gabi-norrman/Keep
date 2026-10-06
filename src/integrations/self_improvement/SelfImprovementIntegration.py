@@ -10,7 +10,7 @@ class SelfImprovementIntegration(Integration):
     the nightly code-quality runs and the self_analysis / self_improvement commands
     (CodeQualityMaintainer) run only while this integration is enabled, the nightly runs also
     only while `self_improvement.nightly_runs` is on. No key is needed — the setup is on the
-    server machine: install the CLI and log in (config.example.yaml, section self_improvement).
+    server machine: install the CLI and log in (the config.example.yaml beside this file, section self_improvement).
     The health check asks `claude auth status`,
     a free local call, so a missing or logged-out CLI shows in list_integrations within a cycle."""
 

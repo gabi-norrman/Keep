@@ -3,6 +3,8 @@
 # This file doubles as the assistant's documentation of every setting. So the notes
 # on what a setting does, where its value comes from and what depends on what are written for the
 # AI as much as for a human. Keep this file current whenever a setting is added or changed.
+# An integration's own section lives in its folder, src/integrations/<name>/config.example.yaml: a line
+# `# >> section: path` stands where it belongs, and config_help(section) shows the section whole.
 
 # Every integration is off until it is listed here (Web Access and ElevenLabs TTS are on regardless).
 # Use the names list_integrations shows: Arlo, CalDAV, Gmail, iCloud, iCloud Email, iMessage, Indigo,
@@ -42,44 +44,15 @@ google_service_account:
   auth_provider_x509_cert_url: https://www.googleapis.com/oauth2/v1/certs
   client_x509_cert_url: https://www.googleapis.com/robot/v1/metadata/x509/YOUR_CLIENT_EMAIL
 
-calendar:
-  username: your_icloud_email@me.com
-  password: YOUR_CALENDAR_PASSWORD_HERE (for iCloud this is an app password)
-  default_calendar: Home  # Name of the iCloud calendar to create events in
-  # Calendars whose events are always in the prompt, e.g. [Home, Family]. The others are only
-  # listed by name and the assistant loads one when it needs it. Empty shows every calendar;
-  # add one with config_set("calendar.shown_calendars[0]", "Home").
-  shown_calendars: []
+# >> calendar: src/integrations/caldav/config.example.yaml
 
-email:
-  # smtp_host: smtp.gmail.com   # where the nightly reports are sent from; Gmail by default
-  # smtp_port: 587
-  address: your_gmail_address@gmail.com
-  password: YOUR_GMAIL_APP_PASSWORD  # Generate at https://myaccount.google.com/apppasswords
+# >> email: src/integrations/gmail/config.example.yaml
 
-icloud_email:
-  address: your_address@icloud.com
-  password: YOUR_ICLOUD_APP_SPECIFIC_PASSWORD  # Generate at https://appleid.apple.com > App-Specific Passwords
+# >> icloud_email: src/integrations/icloud_email/config.example.yaml
 
-tesla:
-  tessie_access_token: YOUR_TESSIE_ACCESS_TOKEN
-  vehicles:
-    - name: home_car
-      display_name: Family Model Y
-      vin: YOUR_TESLA_VIN
-      default: true
+# >> tesla: src/integrations/tesla/config.example.yaml
 
-# iCloud Find My iPhone. apple_id + password are enough to start (photos, device listing);
-# the devices list is what find_phone / locate_user answer to. Fill it from the iCloud tab in
-# the TUI (copy each baUUID) or ask Keep: icloud_devices() lists them and config_set writes the entries.
-icloud:
-  apple_id: your_apple_id@icloud.com
-  password: YOUR_APPLE_ID_PASSWORD  # Regular password, not app-specific
-  devices:
-    - id: "DEVICE_UUID_FROM_ICLOUD_TAB"
-      display_name: "dad"  # Name used in voice commands
-    - id: "DEVICE_UUID_FROM_ICLOUD_TAB"
-      display_name: "mom"
+# >> icloud: src/integrations/icloud/config.example.yaml
 
 # Photos library indexing: the "Photos" integration reads the Mac's Photos.app library and describes
 # every photo (and video) into the history; its horizon is feeds.photos.
@@ -88,16 +61,9 @@ icloud:
 # icloud.password the feed logs "iCloud not configured", can only nudge macOS with brctl and leaves
 # evicted photos waiting or unindexed. Set up iCloud first, then enable Photos.
 
-# 2FA goes over email. If the user has set up the correct email then this server handles 2FA AUTOMATICALLY. So it's strongly recommended to first enable the email.
-arlo:
-  username: your_arlo_email@example.com
-  password: YOUR_ARLO_PASSWORD
-  ignore_cameras: []
+# >> arlo: src/integrations/arlo/config.example.yaml
 
-# 2FA goes over iMessage (SMS). If the user has set up iMessage then this server handles 2FA AUTOMATICALLY.
-ring:
-  username: your_ring_email@example.com
-  password: YOUR_RING_PASSWORD
+# >> ring: src/integrations/ring/config.example.yaml
 
 location:
   home:
@@ -108,44 +74,11 @@ location:
     # start), and without coordinates it is the server's own timezone.
     # timezone: Europe/Stockholm
 
-indigo:
-  host: YOUR_INDIGO_HOST
-  login: YOUR_INDIGO_LOGIN
-  password: YOUR_INDIGO_PASSWORD
-  # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
-  prompt_filters:
-    - SomeNoisyVariableName
-  # The same, per section (lights / sensors / variables / actions). Optional.
-  # section_filters:
-  #   sensors: [Humidity, Luminance]
-  #   variables: ["Motion[", "Temperature["]
+# >> indigo: src/integrations/indigo/config.example.yaml
 
-# Home Assistant as the house (plans/HOME_ASSISTANT_PLAN.md); enable with `enabled_integrations: [Home Assistant]`.
-# One websocket to the server carries the state, the commands and the event feed.
-home_assistant:
-  url: http://homeassistant.local:8123   # the base URL of the server, http or https; the websocket path is derived
-  token: YOUR_HOME_ASSISTANT_LONG_LIVED_TOKEN  # Profile → Security → Long-lived access tokens; an admin user's token also gets the registry events and who acted
-  exposed_only: true    # true: only entities exposed to Assist (Settings → Voice assistants → Expose) reach the prompt — HA exposes lights, switches, covers, fans, scenes and climate by default, but not locks, input helpers, persons, scripts or automations, so expose those there; false: every light, switch, lock, sensor, input helper, person, scene, script and automation
-  # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
-  prompt_filters: []
+# >> home_assistant: src/integrations/home_assistant/config.example.yaml
 
-# The "Self Improvement" integration: Keep analysing and changing its own code — the
-# self_analysis / self_improvement commands and the nightly code-quality runs — through the
-# Claude Code CLI on the server machine. Enable with `enabled_integrations: [Self Improvement]`.
-# The setup is on the server machine itself, by hand:
-#   1. Install Claude Code: `curl -fsSL https://claude.ai/install.sh | bash` (puts `claude` in
-#      ~/.local/bin, which the server also looks in when it is not on the PATH).
-#   2. Log in: open a terminal ON the server machine, run `claude` and complete /login with a
-#      claude.ai subscription (Pro/Max) or an API key. Do not log in over SSH — a login made in
-#      an SSH session is not seen by the server process.
-#   3. Optional: email.address / email.password, where the nightly reports go.
-# The health check runs `claude auth status` (a free local call) every 15 minutes, first ~10 s
-# after start; a missing or logged-out CLI shows as the error in list_integrations. The model
-# the runs use is ai.code_quality.model.
-self_improvement:
-  # merge_strategy: rebase   # what the nightly auto-merge passes to `gh pr merge`: rebase (default), squash or merge
-  # auto_merge_authors: [your-github-login]   # whose test-only PRs the nightly auto-merge may merge; default: the account `gh` is logged in as. PRs from forks are never merged
-  nightly_runs: false   # true: the nightly run fires at 03:00 — bug analysis, test generation, test health (flaky tests and tests over 100 ms are fixed or removed), then the auto-merge of test-only PRs, one email; a night without recent commits only auto-merges; false: only the self_analysis / self_improvement commands use Claude Code. Read at each fire, no restart needed
+# >> self_improvement: src/integrations/self_improvement/config.example.yaml
 
 chat:
   approval_timeout_seconds: 60  # seconds to wait for an Approve/Deny answer on sensitive commands (e.g. send_imessage) in any chat interface
@@ -165,26 +98,9 @@ telegram_bot:
   notify_chat_ids: []  # who gets the proactive pushes (autonomous findings, system notes, photos it sends unasked); empty = every allowed chat. A photo someone asked for goes back to their chat. Read live, no restart.
   link_previews: false  # true = Telegram renders preview cards for URLs in the bot's replies; needs restart_integration("Telegram")
 
-# The "Telegram Feed" integration: a Telethon client logged into the owner's own Telegram
-# account, feeding their chats into the history. Not the bot users talk to Keep through (section
-# telegram_bot); only set up when the user asks for their Telegram messages to be read. After these two keys the
-# account itself must be signed in: telegram_login(phone) from the console chat (the code and the 2FA password go
-# through the masked prompt), or the console's Telegram tab.
-telegram_feed:
-  api_id: 0          # both from https://my.telegram.org/apps
-  api_hash: YOUR_TELEGRAM_API_HASH_HERE
-  blacklist: []      # messages from users/groups whose name contains any of these are skipped
+# >> telegram_feed: src/integrations/telegram_feed/config.example.yaml
 
-# The iMessage integration has no keys of its own (its horizon is feeds.imessage below): it reads
-# Messages.app's database on this Mac, so nothing to ask the user for.
-# Two things must be true before it is enabled, so check them with the user first:
-# - Messages.app on this Mac must be signed in to iMessage with the user's own, personal Apple ID.
-#   The database only holds what that account receives; a Mac without Messages set up gives an
-#   empty feed.
-# - The first read of chat.db can make macOS show a security permission dialog on the Mac's own
-#   screen. It has to be approved there, so the user must
-#   be sitting at the Mac when the integration starts — not over SSH or on a phone.
-#imessage:
+# >> imessage: src/integrations/imessage/config.example.yaml
 
 # Feeds: integrations that pour into the history (iMessage, the personal Telegram feed). A feed
 # that has never run catches up this many months back; one that was merely stopped resumes where
@@ -226,8 +142,7 @@ vault:                      # secrets the LLM never sees — the console's Vault
                             # existing vault.bin can no longer be opened. Unset = vault disabled.
   default_country_code: 46  # a phone number written with a leading 0 is filed under this country code
 
-reminders:
-  shopping_list_name: Shoppinglista
+# >> reminders: src/integrations/reminders/config.example.yaml
 
 # Web search (Serper) tuning. Optional — these are the defaults.
 #search:

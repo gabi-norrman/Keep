@@ -1,0 +1,11 @@
+# iCloud Find My iPhone. apple_id + password are enough to start (photos, device listing);
+# the devices list is what find_phone / locate_user answer to. Fill it from the iCloud tab in
+# the TUI (copy each baUUID) or ask Keep: icloud_devices() lists them and config_set writes the entries.
+icloud:
+  apple_id: your_apple_id@icloud.com
+  password: YOUR_APPLE_ID_PASSWORD  # Regular password, not app-specific
+  devices:
+    - id: "DEVICE_UUID_FROM_ICLOUD_TAB"
+      display_name: "dad"  # Name used in voice commands
+    - id: "DEVICE_UUID_FROM_ICLOUD_TAB"
+      display_name: "mom"

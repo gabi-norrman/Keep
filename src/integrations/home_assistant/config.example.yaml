@@ -1,0 +1,8 @@
+# Home Assistant as the house (plans/HOME_ASSISTANT_PLAN.md); enable with `enabled_integrations: [Home Assistant]`.
+# One websocket to the server carries the state, the commands and the event feed.
+home_assistant:
+  url: http://homeassistant.local:8123   # the base URL of the server, http or https; the websocket path is derived
+  token: YOUR_HOME_ASSISTANT_LONG_LIVED_TOKEN  # Profile → Security → Long-lived access tokens; an admin user's token also gets the registry events and who acted
+  exposed_only: true    # true: only entities exposed to Assist (Settings → Voice assistants → Expose) reach the prompt — HA exposes lights, switches, covers, fans, scenes and climate by default, but not locks, input helpers, persons, scripts or automations, so expose those there; false: every light, switch, lock, sensor, input helper, person, scene, script and automation
+  # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
+  prompt_filters: []

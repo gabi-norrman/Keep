@@ -1,0 +1,17 @@
+# The "Self Improvement" integration: Keep analysing and changing its own code — the
+# self_analysis / self_improvement commands and the nightly code-quality runs — through the
+# Claude Code CLI on the server machine. Enable with `enabled_integrations: [Self Improvement]`.
+# The setup is on the server machine itself, by hand:
+#   1. Install Claude Code: `curl -fsSL https://claude.ai/install.sh | bash` (puts `claude` in
+#      ~/.local/bin, which the server also looks in when it is not on the PATH).
+#   2. Log in: open a terminal ON the server machine, run `claude` and complete /login with a
+#      claude.ai subscription (Pro/Max) or an API key. Do not log in over SSH — a login made in
+#      an SSH session is not seen by the server process.
+#   3. Optional: email.address / email.password, where the nightly reports go.
+# The health check runs `claude auth status` (a free local call) every 15 minutes, first ~10 s
+# after start; a missing or logged-out CLI shows as the error in list_integrations. The model
+# the runs use is ai.code_quality.model.
+self_improvement:
+  # merge_strategy: rebase   # what the nightly auto-merge passes to `gh pr merge`: rebase (default), squash or merge
+  # auto_merge_authors: [your-github-login]   # whose test-only PRs the nightly auto-merge may merge; default: the account `gh` is logged in as. PRs from forks are never merged
+  nightly_runs: false   # true: the nightly run fires at 03:00 — bug analysis, test generation, test health (flaky tests and tests over 100 ms are fixed or removed), then the auto-merge of test-only PRs, one email; a night without recent commits only auto-merges; false: only the self_analysis / self_improvement commands use Claude Code. Read at each fire, no restart needed

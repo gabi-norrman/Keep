@@ -1,0 +1,5 @@
+# 2FA goes over email. If the user has set up the correct email then this server handles 2FA AUTOMATICALLY. So it's strongly recommended to first enable the email.
+arlo:
+  username: your_arlo_email@example.com
+  password: YOUR_ARLO_PASSWORD
+  ignore_cameras: []

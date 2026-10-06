@@ -1,0 +1,10 @@
+# The iMessage integration has no keys of its own (its horizon is feeds.imessage below): it reads
+# Messages.app's database on this Mac, so nothing to ask the user for.
+# Two things must be true before it is enabled, so check them with the user first:
+# - Messages.app on this Mac must be signed in to iMessage with the user's own, personal Apple ID.
+#   The database only holds what that account receives; a Mac without Messages set up gives an
+#   empty feed.
+# - The first read of chat.db can make macOS show a security permission dialog on the Mac's own
+#   screen. It has to be approved there, so the user must
+#   be sitting at the Mac when the integration starts — not over SSH or on a phone.
+#imessage:
