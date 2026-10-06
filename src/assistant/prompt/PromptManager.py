@@ -43,9 +43,12 @@ class PromptManager:
     # transient history note instead of rebuilding the prompt. Keeps the cached
     # system prompt bytes stable so Anthropic's 1h ephemeral cache stays warm.
     _DIFF_SIZE_THRESHOLD = 600
-    # Hard ceiling on how long we'll keep delta-patching before forcing a full
-    # rebuild — matches the 1h cache TTL set in ClaudeLLM._build_cached_system.
-    _FULL_REBUILD_INTERVAL_S = 3600
+    # Hard ceiling on how long we'll keep delta-patching before forcing a full rebuild.
+    # A rebuild changes the system prompt bytes, and with them the prefix of every cached
+    # history turn behind it, so it must come rarer than the hourly autonomous check for
+    # that check (and a chat resumed within the hour) to read its history instead of
+    # re-writing it; the notes carry the section changes in between.
+    _FULL_REBUILD_INTERVAL_S = 3 * 3600
     # A carried section (Toolkits.CARRIED_SECTIONS) is never re-baked into the prompt, so its
     # notes accumulate until the LLM loads the toolkit again; past this many chars of notes
     # one pointer note replaces them and tracking stops until the next load.
@@ -297,7 +300,7 @@ class PromptManager:
 
             if baseline is None or window_expired:
                 if baseline is not None:
-                    info(f"Full prompt rebuild — section={section_name} reason=1h window expired")
+                    info(f"Full prompt rebuild — section={section_name} reason={self._FULL_REBUILD_INTERVAL_S // 3600}h window expired")
                 do_full_rebuild = True
             elif new_content == prev:
                 # Nothing changed since the last state the LLM saw — no-op. (A revert

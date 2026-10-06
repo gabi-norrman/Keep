@@ -1063,12 +1063,12 @@ def test_large_change_forces_full_rebuild_and_clears_transients(prompt_test_envi
 
 
 @pytest.mark.unit
-def test_hourly_timeout_forces_full_rebuild_even_for_small_change(prompt_test_environment, monkeypatch):
+def test_expired_rebuild_window_forces_full_rebuild_even_for_small_change(prompt_test_environment, monkeypatch):
     manager, sections = _seed_full_rebuild(prompt_test_environment)
     received = []
     manager.on_prompt_assembled(lambda msgs: received.append(msgs))
 
-    # Pretend we're well past the 1h window since baselines were snapshotted.
+    # Pretend we are well past the rebuild window since baselines were snapshotted.
     manager._last_assembly_time = time.time() - (PromptManager._FULL_REBUILD_INTERVAL_S + 10)
 
     sections["weather"] = DummySection("weather_content_x")  # would otherwise be a tiny delta

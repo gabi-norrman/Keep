@@ -575,7 +575,7 @@ class TestClaudeLLM:
         params = llm._build_api_params(messages, thinking=False, stream=True)
         prev_msg = params['messages'][-2]
         assert isinstance(prev_msg['content'], list)
-        assert prev_msg['content'][-1].get('cache_control') == {"type": "ephemeral"}
+        assert prev_msg["content"][-1].get("cache_control") == {"type": "ephemeral", "ttl": llm.static_cache_ttl}
 
     _ROUNDS = [
         {"role": "system", "content": "sys"},
@@ -649,7 +649,7 @@ class TestClaudeLLM:
         prev_msg = params['messages'][-2]
         assert isinstance(prev_msg['content'], list)
         assert prev_msg['content'][0]['type'] == 'text'
-        assert prev_msg['content'][0].get('cache_control') == {"type": "ephemeral"}
+        assert prev_msg["content"][0].get("cache_control") == {"type": "ephemeral", "ttl": llm.static_cache_ttl}
 
     @patch('assistant.llm.ClaudeLLM.config')
     def test_build_api_params_skips_cache_on_empty_string_block(self, mock_config):

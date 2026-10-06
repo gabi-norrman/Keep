@@ -206,9 +206,14 @@ class ClaudeLLM(AbstractLLM):
             blocks.append({"type": "text", "text": tail})
         return blocks
 
-    @staticmethod
-    def _with_cache_breakpoint(message: dict) -> dict | None:
+    def _with_cache_breakpoint(self, message: dict) -> dict | None:
         """Return a copy of `message` with a cache breakpoint on its last content block.
+
+        The breakpoint takes the same TTL as the system prompt (static_cache_ttl, 1h by
+        default): the hourly autonomous check and a chat resumed within the hour then read
+        the history window they share instead of re-writing it — on Fable a 1h write costs
+        2x and a read 0.025x, so one hit pays for the dearer write. The 5m tier only ever
+        served the follow-up rounds of the same request.
 
         Returns None when the breakpoint would land on an empty text block: the
         Anthropic API rejects cache_control on empty text ("cache_control cannot be
@@ -224,13 +229,13 @@ class ClaudeLLM(AbstractLLM):
             last = blocks[-1]
             if isinstance(last, dict) and last.get("type", "text") == "text" and not (last.get("text") or "").strip():
                 return None
-            blocks[-1] = {**last, "cache_control": {"type": "ephemeral"}}
+            blocks[-1] = {**last, "cache_control": {"type": "ephemeral", "ttl": self.static_cache_ttl}}
             return {'role': message['role'], 'content': blocks}
         if not content.strip():
             return None
         return {
             'role': message['role'],
-            'content': [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}],
+            'content': [{"type": "text", "text": content, "cache_control": {"type": "ephemeral", "ttl": self.static_cache_ttl}}],
         }
 
     def _build_api_params(self, messages: list[dict], thinking: bool, stream: bool) -> dict:

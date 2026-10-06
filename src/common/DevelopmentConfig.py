@@ -47,7 +47,8 @@ PREPEND_USER_QUERY_OVERRIDE = _prepend_user_query_override()
 BYTE_PREFIX_TAIL = os.environ.get("FLOXY_BYTE_PREFIX_TAIL", "1") != "0"
 
 # TTL of the Anthropic prompt-cache system blocks (one per <<<CACHE_BREAKPOINT>>> marker,
-# ordered stable → volatile; see ClaudeLLM._build_cached_system).
+# ordered stable → volatile; see ClaudeLLM._build_cached_system) and the breakpoint on the
+# history's last turn — one TTL for the whole request.
 # A cache read refreshes the TTL, so a block only expires after an idle gap longer than its TTL.
 # "1h" (write costs 2x input) survives the 5–60 min gaps between real user voice queries where a
 # 5-min block would expire and need a fresh rewrite; "5m" (write costs 1.25x input) is cheaper and
