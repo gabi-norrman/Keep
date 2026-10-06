@@ -282,6 +282,24 @@ class TestFirstConversation:
             floxy_ai_server._open_first_conversation(FakeServer())
         hub.return_value.open_conversation.assert_called_once_with("the brief")
 
+    def test_the_startup_announcement_goes_out_quietly_as_a_row_already_in_history(self):
+        """The startup row is in the history before the interfaces start, so the chats that
+        draw the history must skip the announcement — only the others (Telegram) get it,
+        without a notification sound: a restart may happen at night."""
+        import floxy_ai_server
+        from assistant.Notifier import set_notifier
+        chats = Mock()
+        set_notifier(chats)
+        try:
+            server = floxy_ai_server.Server(Mock(), [], [], None, running_as_testsuite=False)
+            floxy_ai_server._announce_startup(server)
+            chats.send_message.assert_not_called()
+            server.startup_announcement = "Server is up again"
+            floxy_ai_server._announce_startup(server)
+        finally:
+            set_notifier(None)
+        chats.send_message.assert_called_once_with("Server is up again", disable_notification=True, in_history=True)
+
     def test_an_installed_system_waits_to_be_spoken_to(self):
         import floxy_ai_server
         with patch("assistant.FirstRun.in_ftue", return_value=False), \

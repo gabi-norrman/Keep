@@ -192,6 +192,49 @@ class TestLifecycle:
         assert t._loop.is_closed()
 
 
+    def test_a_send_made_while_the_bot_connects_goes_out_once_it_is_up(self):
+        """start() returns before the bot thread has initialised the application; the
+        launcher's startup announcement is sent in that window and must not be lost."""
+        t = _make_transport(running=False)
+        app, builder, _ = self._mock_application()
+        app.bot.send_message = AsyncMock(return_value=MagicMock(message_id=42))
+        connected = threading.Event()
+
+        async def initialize():
+            while not connected.is_set():
+                await asyncio.sleep(0.005)
+
+        app.initialize = AsyncMock(side_effect=initialize)
+        with patch('telegram.ext.ApplicationBuilder', return_value=builder):
+            t.start(MagicMock())
+            assert t.send_text(100, "Server is up again") is True
+            app.bot.send_message.assert_not_awaited()
+            connected.set()
+            deadline = time.monotonic() + 5
+            while not app.bot.send_message.await_count and time.monotonic() < deadline:
+                time.sleep(0.005)
+            t.stop()
+        assert app.bot.send_message.await_args.kwargs["chat_id"] == 100
+        assert app.bot.send_message.await_args.kwargs["text"] == "Server is up again"
+
+    def test_a_bot_that_never_comes_up_drops_what_it_held(self):
+        t = _make_transport(running=False)
+        app, builder, _ = self._mock_application()
+        app.initialize = AsyncMock(side_effect=OSError("no route to host"))
+        ran = []
+
+        async def coro():
+            ran.append(True)
+
+        with patch('telegram.ext.ApplicationBuilder', return_value=builder), patch(f'{MODULE}.error'):
+            t._running = True
+            t._connecting = True
+            assert t._schedule(coro(), "send") is True
+            t._run()
+        assert ran == [] and t._held == []
+        assert t._connecting is False
+
+
 @pytest.mark.unit
 class TestLoopBridge:
     def test_call_and_schedule_are_noops_when_not_running(self):

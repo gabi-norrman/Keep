@@ -33,6 +33,17 @@ class TestSystemNote:
             "system", "Ring 2FA code submitted. ✅", 1234.5, source="Ring")
         chat.send_message.assert_called_once_with("Ring 2FA code submitted. ✅", in_history=True)
 
+    def test_a_history_only_note_is_stored_and_not_pushed(self, chat):
+        history = Mock()
+        SystemNote.set_history(history)
+        assert system_note("voice", "Voice is ready.", timestamp=7.0, push=False) is True
+        history.add_context_message.assert_called_once_with("system", "Voice is ready.", 7.0, source="voice")
+        chat.send_message.assert_not_called()
+
+    def test_a_history_only_note_without_a_history_reaches_nothing(self, chat):
+        assert system_note("voice", "Voice is ready.", push=False) is False
+        chat.send_message.assert_not_called()
+
     def test_without_a_history_the_note_is_only_pushed(self, chat):
         assert system_note("Arlo", "Arlo 2FA required.") is True
         chat.send_message.assert_called_once_with("Arlo 2FA required.", in_history=False)

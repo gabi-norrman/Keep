@@ -7,6 +7,7 @@ UIs but never the LLM, which then talks about the challenge as if nothing had ha
 `system_note` leaves the event as a `system` row in the dialog history — the Home tab
 draws it as "System (<source>)" through its HistoryFeed and the LLM reads it on its next
 turn — and pushes the same text to the chats that do not render the history (Telegram).
+A routine note (voice came up as usual) passes `push=False` and stays a history row only.
 
 The LLM sees a system row as "System (HH:MM): text" without the source, so the text has
 to name the integration itself. The history is the process-wide one the launcher installs
@@ -32,9 +33,10 @@ def history():
     return _history
 
 
-def system_note(source: str, text: str, timestamp: Optional[float] = None) -> bool:
+def system_note(source: str, text: str, timestamp: Optional[float] = None, push: bool = True) -> bool:
     """Record *text* as a system row from *source* and push it to the chats that do not
-    show the history. Returns True when it reached the history or a chat."""
+    show the history; with *push* off it is a history row only. Returns True when it
+    reached the history or a chat."""
     text = text.strip()
     if not text:
         trace(f"SystemNote: empty note from {source}, skipped")
@@ -46,5 +48,8 @@ def system_note(source: str, text: str, timestamp: Optional[float] = None) -> bo
         _history.add_context_message("system", text, timestamp or time.time(), source=source)
         stored = True
         info(f"SystemNote: {source} → history: {text[:120]!r}")
+    if not push:
+        trace(f"SystemNote: {source} note is history-only, not pushed to the chats")
+        return stored
     pushed = notifier().send_message(text, in_history=stored)
     return stored or pushed

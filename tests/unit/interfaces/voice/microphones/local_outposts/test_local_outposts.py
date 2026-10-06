@@ -3819,7 +3819,13 @@ class TestWhisperDownloadNotes:
     def _manager(self, monkeypatch, cached, warm_up_error=None, size=3_083_151_518):
         mod = sys.modules[LocalOutpostManager.__module__]
         sent = []
-        monkeypatch.setattr(mod, "system_note", lambda source, text: sent.append((source, text)))
+        self.pushed = {}
+
+        def note(source, text, push=True):
+            sent.append((source, text))
+            self.pushed[text] = push
+
+        monkeypatch.setattr(mod, "system_note", note)
         monkeypatch.setattr(mod, "model_cached", lambda repo: cached)
         monkeypatch.setattr(mod, "model_download_size", lambda repo: size)
         worker = MagicMock()
@@ -3852,6 +3858,15 @@ class TestWhisperDownloadNotes:
         assert download_notes[1].startswith("Whisper speech-to-text model downloaded and loaded (")
         assert download_notes[1].endswith(" min).")
         assert sent.index(("voice", download_notes[1])) < len(sent) - 1   # before the running note
+
+    def test_only_the_running_note_stays_out_of_the_chats(self, monkeypatch):
+        """Every start says voice is ready, so that row is for the history alone; a download
+        is news and still goes to the chats."""
+        manager, sent = self._manager(monkeypatch, cached=False)
+        assert manager.start() is True
+        running_note = sent[-1][1]
+        assert "Test Mic" in running_note
+        assert [text for text, push in self.pushed.items() if not push] == [running_note]
 
     def test_unknown_size_says_several_gb(self, monkeypatch):
         manager, sent = self._manager(monkeypatch, cached=False, size=None)

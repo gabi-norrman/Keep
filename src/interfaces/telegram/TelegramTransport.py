@@ -204,6 +204,12 @@ class TelegramTransport(Integration, ChatTransport):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._application = None
         self._stop_event: Optional[asyncio.Event] = None
+        # start() returns before the bot thread has built and initialised the application, so
+        # what is scheduled in that window (the launcher's startup announcement) is held here
+        # and fired once polling runs. Guarded by _held_lock.
+        self._connecting = False
+        self._held: list[tuple] = []  # (coroutine, what)
+        self._held_lock = threading.Lock()
         self._message_texts: dict[tuple[int, int], str] = {}  # (chat_id, message_id) → text
         self._max_message_texts = 1000
         # chat_id → message_id of the current ephemeral status line; only touched from
@@ -257,6 +263,7 @@ class TelegramTransport(Integration, ChatTransport):
             error("Telegram bot started without a chat hub — incoming messages will be apologised to.")
 
         self._running = True
+        self._connecting = True
         self._thread = threading.Thread(target=self._run, name="TelegramBot", daemon=True)
         self._thread.start()
         info("Telegram bot starting...")
@@ -292,7 +299,30 @@ class TelegramTransport(Integration, ChatTransport):
         except Exception as e:
             error(f"Telegram bot crashed: {e}")
         finally:
+            self._drop_held()
             self._loop.close()
+
+    def _release_held(self):
+        """The bot is up: fire what was scheduled while it connected. Runs on the bot loop."""
+        with self._held_lock:
+            self._connecting = False
+            held, self._held = self._held, []
+        if not held:
+            trace("Telegram bot is up, nothing was held while it connected.")
+            return
+        info(f"Telegram bot is up, sending {len(held)} held item(s): {', '.join(what for _, what in held)}")
+        for coro, _ in held:
+            asyncio.ensure_future(coro)
+
+    def _drop_held(self):
+        """The bot loop is over (stopped, or it never came up): nothing held can be sent."""
+        with self._held_lock:
+            self._connecting = False
+            held, self._held = self._held, []
+        for coro, _ in held:
+            coro.close()
+        if held:
+            info(f"Telegram bot loop ended, {len(held)} held item(s) dropped: {', '.join(what for _, what in held)}")
 
     async def _start_bot(self):
         from telegram import LinkPreviewOptions, Update
@@ -318,6 +348,7 @@ class TelegramTransport(Integration, ChatTransport):
         await self._application.initialize()
         await self._application.start()
         await self._application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        self._release_held()
 
         self._stop_event = asyncio.Event()
         if self._running:
@@ -353,7 +384,13 @@ class TelegramTransport(Integration, ChatTransport):
             return None
 
     def _schedule(self, coro, what: str) -> bool:
-        """Fire a coroutine on the bot loop without waiting. True when it was queued."""
+        """Fire a coroutine on the bot loop without waiting. True when it was queued — or
+        held, while the bot is still connecting, to be fired as soon as it is up."""
+        with self._held_lock:
+            if self._connecting:
+                self._held.append((coro, what))
+                trace(f"Telegram bot still connecting, {what} held until it is up ({len(self._held)} waiting).")
+                return True
         if not self._available(what):
             coro.close()
             return False

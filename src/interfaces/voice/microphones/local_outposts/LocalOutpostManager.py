@@ -234,14 +234,15 @@ class LocalOutpostManager:
             f"auto-detect {sorted(self.lang_by_subtag)}"
         note(f"Local outposts running on {len(self.outposts)} mic(s), "
              f"languages={self.languages} (Whisper {whisper_mode}).")
-        system_note("voice", self._running_note())
+        system_note("voice", self._running_note(), push=False)
         self._start_recovery_loop()
         self._start_monitor_loop()
         return True
 
     def _running_note(self) -> str:
         """The household-facing wording of the start-up log line: a system row so the chat
-        history and the LLM know voice is listening, on which mics and in what language."""
+        history and the LLM know voice is listening, on which mics and in what language.
+        History only — every start says it, so it is not pushed to the chats."""
         with self._lock:
             names = ", ".join(o.device_name for o in self.outposts)
         count = len(self.outposts)

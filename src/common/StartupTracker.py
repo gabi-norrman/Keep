@@ -1,3 +1,4 @@
+import html
 import json
 import os
 import time
@@ -93,3 +94,15 @@ class StartupTracker:
             return "Server started up successfully. No changes since last start."
         change_log = "\n".join(commits)
         return f"Server started up successfully. Change log since last start:\n{change_log}"
+
+    @staticmethod
+    def build_announcement(commits: list[str], version: str) -> str:
+        """What the owner's chats are told once the server is up: that it is running again,
+        on which version, and the subjects of the commits picked up since the last start.
+        In the Notifier's HTML dialect, so the subjects are escaped."""
+        up = f"Server is up again — {html.escape(version)}."
+        if not commits:
+            return f"{up} No new commits since the last start."
+        subjects = "\n".join(f"• {html.escape(c.partition(' ')[2] or c, quote=False)}" for c in commits)
+        count = f"{len(commits)} new commit{'s' if len(commits) != 1 else ''}"
+        return f"{up} {count} since the last start:\n{subjects}"

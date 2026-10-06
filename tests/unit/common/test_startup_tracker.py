@@ -56,6 +56,28 @@ class TestBuildHistoryMessage:
 
 
 @pytest.mark.unit
+class TestBuildAnnouncement:
+    def test_lists_the_subjects_without_their_hashes(self):
+        text = StartupTracker.build_announcement(
+            ["abc1234 fix: the porch light", "def5678 feat: a new tab"], "Keep v2026.10.7")
+        lines = text.splitlines()
+        assert "Keep v2026.10.7" in lines[0] and "2 new commits" in lines[0]
+        assert [line.lstrip("• ") for line in lines[1:]] == ["fix: the porch light", "feat: a new tab"]
+
+    def test_one_commit_is_singular(self):
+        first_line = StartupTracker.build_announcement(["abc1234 fix: x"], "Keep v1").splitlines()[0]
+        assert "1 new commit " in first_line
+
+    def test_no_commits_is_a_single_line(self):
+        text = StartupTracker.build_announcement([], "Keep v2026.10.7")
+        assert "Keep v2026.10.7" in text and "\n" not in text and "•" not in text
+
+    def test_subjects_are_escaped_for_the_chat_html_dialect(self):
+        text = StartupTracker.build_announcement(["abc1234 fix: the <commands> block & its tail"], "Keep v1")
+        assert "&lt;commands&gt; block &amp; its tail" in text
+
+
+@pytest.mark.unit
 class TestRecordShutdown:
     def test_db_failure_is_swallowed(self):
         with patch("common.FloxyDatabase.FloxyDatabase.get_instance",

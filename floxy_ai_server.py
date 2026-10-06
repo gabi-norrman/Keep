@@ -88,7 +88,9 @@ def _register_llm_pre_heat(prompt_manager):
     info(f"KV cache pre-heating registered for: {', '.join(pre_heat_llms.keys())}")
 
 
-def _post_startup_message(prompt_manager):
+def _post_startup_message(prompt_manager) -> str:
+    """Leave the startup row (and the change log since the last start) in the history and
+    return the announcement `_announce_startup` sends once the interfaces are up."""
     from common.StartupTracker import StartupTracker
     previous = StartupTracker.read_previous_startup()
     commits = StartupTracker.get_commits_since(previous) if previous else []
@@ -96,6 +98,21 @@ def _post_startup_message(prompt_manager):
     trace(f"Posting startup message to history: {message!r}")
     prompt_manager.message_history.add_context_message("system", message, time.time(), "startup")
     StartupTracker.write_current_startup(time.time())
+    return StartupTracker.build_announcement(commits, Version.label())
+
+
+def _announce_startup(server: "Server"):
+    """Tell the owner's chats the server is up again and what changed since the last start.
+    The startup row is already in the history, so a chat that draws the history (the TUI's
+    Home tab) is skipped; a chat still connecting (Telegram) delivers it once it is up.
+    Sent quietly: a restart is routine and may happen at night."""
+    from assistant.Notifier import notifier
+    if not server.startup_announcement:
+        trace("No startup announcement to send.")
+        return
+    sent = notifier().send_message(server.startup_announcement, disable_notification=True, in_history=True)
+    info(f"Startup announcement {'sent to the chats' if sent else 'not sent, no chat took it'}: "
+         f"{server.startup_announcement!r}")
 
 
 def _open_first_conversation(server: "Server | None" = None):
@@ -131,6 +148,7 @@ class Server:
         self.agents = agents
         self.integration_monitor = integration_monitor
         self.running_as_testsuite = running_as_testsuite
+        self.startup_announcement: str | None = None
         self._stopped = False
 
     @property
@@ -215,6 +233,7 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
 
     agents = []
     integration_monitor = None
+    startup_announcement = None
     if not running_as_testsuite:
         from assistant.agents.AutonomousActionManager import AutonomousActionManager
         from assistant.agents.CacheAuditor import CacheAuditor
@@ -222,7 +241,7 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
         from assistant.integration.bootstrap import discover_integrations
         _register_llm_pre_heat(prompt_manager)
         autonomous = AutonomousActionManager.get_instance(prompt_manager)
-        _post_startup_message(prompt_manager)
+        startup_announcement = _post_startup_message(prompt_manager)
         agents = [CacheAuditor(), CodeQualityMaintainer()]
         for agent in agents:
             agent.start()
@@ -274,7 +293,9 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
         pipeline.start()
         agents.append(pipeline)
 
-    return Server(assistant, interfaces, agents, integration_monitor, running_as_testsuite)
+    server = Server(assistant, interfaces, agents, integration_monitor, running_as_testsuite)
+    server.startup_announcement = startup_announcement
+    return server
 
 
 async def main(server: Server):
@@ -282,6 +303,7 @@ async def main(server: Server):
     for iface in server.interfaces:
         await iface.start_async()
     if not server.running_as_testsuite:
+        _announce_startup(server)
         _open_first_conversation(server)
     try:
         await server.http.serve()
