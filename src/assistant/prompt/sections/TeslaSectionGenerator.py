@@ -6,7 +6,7 @@ from typing import Optional
 
 from ..PromptSectionGenerator import PromptSectionGenerator
 from common.logging import info, trace
-from ...integration.integrations.TeslaIntegration import TeslaIntegration
+from integrations.tesla.TeslaIntegration import TeslaIntegration
 from common.ConfigManager import config
 from ...tools.Geocoding import reverse_geocode
 

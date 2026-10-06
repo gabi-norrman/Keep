@@ -8,19 +8,19 @@ import urllib.parse
 from collections import deque
 from typing import Callable, Optional
 
-from assistant.integration.integrations.email.CompositeEmailAccess import CompositeEmailAccess
-from assistant.integration.integrations.email.GmailIntegration import GmailAccess
-from assistant.integration.integrations.email.EmailProvider import NotConfiguredEmail
-from assistant.integration.integrations.email.ICloudEmailIntegration import ICloudEmailAccess
-from assistant.integration.integrations.WeatherIntegration import WeatherIntegration
-from assistant.integration.integrations.home import HomeAutomation as home
+from assistant.integration.CompositeEmailAccess import CompositeEmailAccess
+from integrations.gmail.GmailIntegration import GmailAccess
+from assistant.integration.EmailProvider import NotConfiguredEmail
+from integrations.icloud_email.ICloudEmailIntegration import ICloudEmailAccess
+from integrations.weather.WeatherIntegration import WeatherIntegration
+from assistant.integration import HomeAutomation as home
 from assistant.tools.WebAccess import WebAccess
 from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import Toolkits, ToolkitPreloader
 from assistant import MemoryFile, Procedures, WatchList
 from common.logging import trace, info, note, error, fine
-from assistant.integration.integrations.MusicIntegration import MusicManager
-from assistant.integration.integrations.CalDAVIntegration import CalDAVIntegration
+from integrations.music.MusicIntegration import MusicManager
+from integrations.caldav.CalDAVIntegration import CalDAVIntegration
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from common.ConfigManager import ConfigManager
 from common import ConfigSchema, ConfigStore
@@ -30,12 +30,12 @@ from assistant.Notifier import SecretRejected, notifier
 from assistant.SystemNote import system_note
 from assistant.Telemetry import Telemetry
 from .CommandEcho import describe_completion
-from assistant.integration.integrations.RemindersIntegration import add_reminder_item
-from assistant.integration.integrations.TeslaIntegration import TeslaIntegration, TeslaAPIError
-from assistant.integration.integrations.ICloudIntegration import iCloudAPI
-from assistant.integration.integrations.cameras.ArloCameraIntegration import ArloCamera
-from assistant.integration.integrations.XIntegration import XIntegration
-from assistant.integration.integrations.cameras.RingIntegration import RingIntegration
+from integrations.reminders.RemindersIntegration import add_reminder_item
+from integrations.tesla.TeslaIntegration import TeslaIntegration, TeslaAPIError
+from integrations.icloud.ICloudIntegration import iCloudAPI
+from integrations.arlo.ArloCameraIntegration import ArloCamera
+from integrations.x.XIntegration import XIntegration
+from integrations.ring.RingIntegration import RingIntegration
 from common.FloxyDatabase import FloxyDatabase
 from common.vault.Vault import Vault, VaultError, DuplicateSecret, KINDS
 
@@ -467,13 +467,13 @@ class Commands:
     @staticmethod
     def _open_photos_db_connection():
         import sqlite3 as _sqlite3
-        from assistant.integration.integrations.photos.PhotoProcessor import PHOTOS_SQLITE_PATH
+        from integrations.photos.PhotoProcessor import PHOTOS_SQLITE_PATH
 
         return _sqlite3.connect(f"file:{PHOTOS_SQLITE_PATH}?mode=ro", uri=True)
 
     @staticmethod
     def _fetch_photo_asset_row(cursor, asset_guid: str):
-        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
+        from integrations.photos.PhotoProcessor import PhotoProcessor
         cursor.execute(PhotoProcessor.ASSET_FILE_SQL, (asset_guid,))
         return cursor.fetchone()
 
@@ -481,8 +481,8 @@ class Commands:
     TELEGRAM_VIDEO_MAX_BYTES = 50 * 1024 * 1024
 
     def _prepare_photo_send_payload(self, photo_id: int, cursor=None) -> tuple[MediaPayload | None, str | None]:
-        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
-        from assistant.integration.integrations.photos.ICloudPhotoDownloader import (
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        from integrations.photos.ICloudPhotoDownloader import (
             ICloudPhotoDownloader, NoVideoRenditionError, PhotoNotInCloudError, VideoTooLargeError)
 
         photo = FloxyDatabase.get_instance().get_photo_by_id(photo_id)
@@ -544,7 +544,7 @@ class Commands:
     @staticmethod
     def _video_poster(record_name: str, library_scope: int) -> Optional[bytes]:
         """The clip's poster frame for the chat thumbnail; a missing one only costs the preview."""
-        from assistant.integration.integrations.photos.ICloudPhotoDownloader import ICloudPhotoDownloader
+        from integrations.photos.ICloudPhotoDownloader import ICloudPhotoDownloader
         try:
             poster = ICloudPhotoDownloader.get_instance().download_video_poster(record_name, library_scope)
         except Exception as e:
@@ -882,7 +882,7 @@ class Commands:
         # LLM emits literal "\n" escape sequences — turn them into real newlines.
         body = normalize_llm_escapes(body)
         body = f"{body}\n\n{self.AI_MESSAGE_SUFFIX}"
-        from assistant.integration.integrations.IMessageIntegration import IMessageIntegration
+        from integrations.imessage.IMessageIntegration import IMessageIntegration
         return IMessageIntegration.get_instance().send(recipient, body)
 
     def cmd_send_email(self, *args: str) -> str:
@@ -1929,7 +1929,7 @@ class Commands:
         if not recipient:
             return "Sending iMessage"
         try:
-            from assistant.integration.integrations.IMessageIntegration import IMessageIntegration
+            from integrations.imessage.IMessageIntegration import IMessageIntegration
             imessage = IMessageIntegration.get_instance()
             handle, err = imessage.resolve_recipient(recipient)
             if handle and not err and handle.lower() != recipient.lower():

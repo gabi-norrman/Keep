@@ -6,8 +6,8 @@ import pytest
 
 from assistant.integration.Integration import Integration
 from assistant.integration.IntegrationMonitor import IntegrationMonitor, DisabledIntegration, UnavailableIntegration
-from assistant.integration.integrations.home import HomeAutomation as module
-from assistant.integration.integrations.home.HomeAutomation import (
+from assistant.integration import HomeAutomation as module
+from assistant.integration.HomeAutomation import (
     Entity, HomeAutomation, HomeSnapshot, NotConfiguredHome, STARTING_HINT, STARTUP_POLL_INTERVAL, active, render)
 
 

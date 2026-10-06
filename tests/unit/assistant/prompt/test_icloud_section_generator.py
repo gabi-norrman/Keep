@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 class TestiCloudSectionGenerator:
     @patch('assistant.prompt.sections.iCloudSectionGenerator.iCloudAPI')
     def test_fetch_content_on_configuration_error(self, mock_icloud_cls):
-        from assistant.integration.integrations.ICloudIntegration import iCloudConfigurationError
+        from integrations.icloud.ICloudIntegration import iCloudConfigurationError
         mock_icloud_cls.get_instance.side_effect = iCloudConfigurationError("no config")
         from assistant.prompt.sections.iCloudSectionGenerator import iCloudSectionGenerator
         section = iCloudSectionGenerator(None)

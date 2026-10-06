@@ -4,7 +4,7 @@ from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import Color
 from interfaces.console.tabs.AuthTab import AuthTab, PENDING
 from interfaces.console.widgets.Board import SummaryTile, Table
-from assistant.integration.integrations.ICloudIntegration import iCloudAPI, iCloudAuthenticationError
+from integrations.icloud.ICloudIntegration import iCloudAPI, iCloudAuthenticationError
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
 
 DEVICE_WIDTH, MODEL_WIDTH, CONFIGURED_WIDTH = 30, 22, 18

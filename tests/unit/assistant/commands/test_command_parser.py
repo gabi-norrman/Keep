@@ -881,7 +881,7 @@ class TestRunDispatcher:
     def test_send_imessage_under_quoted_joins_body(self, commands):
         # LLM under-quoted: 4 tokens. cmd_send_imessage joins args[1:] as body.
         from unittest.mock import patch, Mock
-        with patch("assistant.integration.integrations.IMessageIntegration.IMessageIntegration") as mock_im:
+        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as mock_im:
             mock_inst = Mock()
             mock_inst.send.return_value = ""
             mock_im.get_instance.return_value = mock_inst
@@ -894,7 +894,7 @@ class TestRunDispatcher:
 
     def test_send_imessage_quoted_preserves_comma_in_first_arg(self, commands):
         from unittest.mock import patch, Mock
-        with patch("assistant.integration.integrations.IMessageIntegration.IMessageIntegration") as mock_im:
+        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as mock_im:
             mock_inst = Mock()
             mock_inst.send.return_value = ""
             mock_im.get_instance.return_value = mock_inst

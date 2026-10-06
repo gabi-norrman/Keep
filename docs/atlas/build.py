@@ -19,7 +19,7 @@ sys.path.insert(0, str(HERE))
 
 from descriptions import CLASSES, GROUPS, MODULES, PROMPT_DESCRIPTION, SCRIPTS, TOUR  # noqa: E402
 
-TOP_ORDER = ["launcher", "src/interfaces", "src/assistant", "src/common", "res"]
+TOP_ORDER = ["launcher", "src/interfaces", "src/assistant", "src/integrations", "src/common", "res"]
 MAX_SENTENCE = 230
 
 

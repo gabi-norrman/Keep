@@ -1,5 +1,5 @@
 from ..PromptSectionGenerator import PromptSectionGenerator
-from ...integration.integrations.ICloudIntegration import iCloudAPI, iCloudConfigurationError
+from integrations.icloud.ICloudIntegration import iCloudAPI, iCloudConfigurationError
 
 NO_DEVICES = ("none configured yet — icloud_devices() lists the devices the iCloud account sees "
               "and the config keys that add one")

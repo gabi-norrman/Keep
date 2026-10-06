@@ -1,7 +1,7 @@
 import time
 from ..PromptSectionGenerator import PromptSectionGenerator
 from common.logging import trace, info, error
-from ...integration.integrations.MusicIntegration import MusicManager
+from integrations.music.MusicIntegration import MusicManager
 
 
 class SonosFavoritesSectionGenerator(PromptSectionGenerator):

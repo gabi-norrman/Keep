@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 from assistant.commands.Commands import Commands
 class TestEmailProviderSelection:
     def test_mail_commands_get_the_setup_hint_instead_of_a_key_error(self):
-        from assistant.integration.integrations.email.EmailProvider import NotConfiguredEmail
+        from assistant.integration.EmailProvider import NotConfiguredEmail
         config = Mock()
         config.get.return_value = ""
         with patch("assistant.commands.Commands.ConfigManager.get_instance", return_value=config):
@@ -16,7 +16,7 @@ class TestEmailProviderSelection:
         assert provider.subject_for("GM-AA") is None
 
     def test_configured_accounts_are_the_monitored_singletons(self):
-        from assistant.integration.integrations.email.GmailIntegration import GmailAccess
+        from integrations.gmail.GmailIntegration import GmailAccess
         config = Mock()
         config.get.side_effect = lambda key, default=None: "me@gmail.com" if key == "email.address" else default
         with patch("assistant.commands.Commands.ConfigManager.get_instance", return_value=config), \

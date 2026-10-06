@@ -11,7 +11,7 @@ from .. import MemoryFile, Procedures, WatchList
 from ..llm import create_llm, parse_llm_config
 from common.ConfigManager import ConfigManager
 from common.FloxyDatabase import FloxyDatabase, NO_INTERACTIONS
-from ..integration.integrations.CalDAVIntegration import CalDAVIntegration, EVENTS_UNAVAILABLE, NO_EVENTS
+from integrations.caldav.CalDAVIntegration import CalDAVIntegration, EVENTS_UNAVAILABLE, NO_EVENTS
 from common.logging import info, error, trace
 from ..llm.AbstractLLM import LLMRefusalError
 from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR

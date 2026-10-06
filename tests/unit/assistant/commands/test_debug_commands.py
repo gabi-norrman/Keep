@@ -592,7 +592,7 @@ def test_wipe_logs_the_telegram_session_out_before_deleting_it(wipe_env, monkeyp
     session.write_bytes(b"sqlite")
     monkeypatch.setattr(dc_mod, "TELEGRAM_SESSION", session)
     monkeypatch.setattr(dc_mod, "WIPE_TARGETS", dc_mod.WIPE_TARGETS + [(session, "Telegram feed login")])
-    from assistant.integration.integrations.TelegramFeedIntegration import TelegramFeedIntegration
+    from integrations.telegram_feed.TelegramFeedIntegration import TelegramFeedIntegration
 
     def log_out():
         session.unlink()
@@ -616,7 +616,7 @@ def test_wipe_logs_the_telegram_session_out_before_deleting_it(wipe_env, monkeyp
 
 
 def test_wipe_without_a_telegram_session_never_touches_the_integration(wipe_env):
-    from assistant.integration.integrations.TelegramFeedIntegration import TelegramFeedIntegration
+    from integrations.telegram_feed.TelegramFeedIntegration import TelegramFeedIntegration
     with patch.object(TelegramFeedIntegration, "log_out") as logout:
         DebugCommands().handle("//wipe")
     logout.assert_not_called()

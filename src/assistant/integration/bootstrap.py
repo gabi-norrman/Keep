@@ -1,5 +1,5 @@
 """Process-level integration wiring for the launcher: discover every Integration under
-assistant/integration/integrations (plus WebAccess) into the IntegrationMonitor, and start
+src/integrations (plus WebAccess) into the IntegrationMonitor, and start
 the feeds (iMessage, Telethon, Photos, Indigo, Home Assistant) that pour into the history through FeedRunner. Chat interfaces
 (the Telegram bot) register themselves from interfaces/*."""
 import importlib
@@ -8,38 +8,41 @@ import pkgutil
 from common.logging import info
 
 
+def _integration_modules():
+    """Import and yield every assistant-side module of the `integrations` package, in the
+    package's walk order. A `*Tab` module is the console's (interfaces/console imports it),
+    never the assistant's."""
+    import integrations as integrations_pkg
+    for _finder, fqn, ispkg in pkgutil.walk_packages(integrations_pkg.__path__, integrations_pkg.__name__ + "."):
+        if not ispkg and fqn.endswith("Tab"):
+            continue
+        yield importlib.import_module(fqn)
+
+
 def discover_integrations():
     """Register every Integration subclass found in the integrations package; returns the monitor."""
     from assistant.integration.Feed import Feed
-    from assistant.integration.Integration import Integration
     from assistant.integration.IntegrationMonitor import IntegrationMonitor
-    import assistant.integration.integrations as integrations_pkg
     from assistant.tools.WebAccess import WebAccess
 
     monitor = IntegrationMonitor.get_instance()
-    seen_classes = set()
+    classes = integration_classes()
     feeds = 0
-    for _finder, fqn, _ispkg in pkgutil.walk_packages(integrations_pkg.__path__, integrations_pkg.__name__ + "."):
-        module = importlib.import_module(fqn)
-        for attr in vars(module).values():
-            if isinstance(attr, type) and issubclass(attr, Integration) and attr is not Integration and attr not in seen_classes:
-                seen_classes.add(attr)
-                if issubclass(attr, Feed):
-                    feeds += 1   # registered by start_feeds, with the hook that runs it
-                    continue
-                monitor.register_class(attr)
+    for cls in classes:
+        if issubclass(cls, Feed):
+            feeds += 1   # registered by start_feeds, with the hook that runs it
+            continue
+        monitor.register_class(cls)
     monitor.register_class(WebAccess)
-    info(f"Discovered {len(seen_classes)} integrations (+ WebAccess), {feeds} of them feeds.")
+    info(f"Discovered {len(classes)} integrations (+ WebAccess), {feeds} of them feeds.")
     return monitor
 
 
 def integration_classes() -> list[type]:
     """Every Integration subclass in the integrations package, in the package's walk order."""
     from assistant.integration.Integration import Integration
-    import assistant.integration.integrations as integrations_pkg
     found = []
-    for _finder, fqn, _ispkg in pkgutil.walk_packages(integrations_pkg.__path__, integrations_pkg.__name__ + "."):
-        module = importlib.import_module(fqn)
+    for module in _integration_modules():
         for attr in vars(module).values():
             if isinstance(attr, type) and issubclass(attr, Integration) and attr is not Integration \
                     and attr not in found:

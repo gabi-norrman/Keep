@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from assistant.integration.integrations.home.HomeAutomation import Entity, HomeSnapshot, NotConfiguredHome, STARTUP_POLL_INTERVAL
+from assistant.integration.HomeAutomation import Entity, HomeSnapshot, NotConfiguredHome, STARTUP_POLL_INTERVAL
 from assistant.prompt.sections.HomeSectionGenerator import HomeSectionGenerator, DEFAULT_NIGHT_VARIABLE
 
 MODULE = "assistant.prompt.sections.HomeSectionGenerator"

@@ -1,5 +1,5 @@
 from ..PromptSectionGenerator import PromptSectionGenerator
-from ...integration.integrations.MusicIntegration import MusicManager
+from integrations.music.MusicIntegration import MusicManager
 
 
 class MusicZonesSectionGenerator(PromptSectionGenerator):

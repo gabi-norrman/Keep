@@ -2,8 +2,8 @@ from unittest.mock import Mock, PropertyMock
 
 import pytest
 
-from assistant.integration.integrations.email.CompositeEmailAccess import CompositeEmailAccess
-from assistant.integration.integrations.email.EmailProvider import EmailProvider
+from assistant.integration.CompositeEmailAccess import CompositeEmailAccess
+from assistant.integration.EmailProvider import EmailProvider
 
 
 def _make_provider(name: str, id_prefix: str, fetch_result="", search_result="", read_result=""):

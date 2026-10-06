@@ -601,7 +601,7 @@ def test_get_messages_skips_time_note_in_test_suite_mode(prompt_test_environment
 
 def _home_section(night: str):
     """A real HomeSectionGenerator with its live snapshot set directly (no SSH/thread)."""
-    from assistant.integration.integrations.home.HomeAutomation import Entity, HomeSnapshot
+    from assistant.integration.HomeAutomation import Entity, HomeSnapshot
     from assistant.prompt.sections.HomeSectionGenerator import HomeSectionGenerator
     section = HomeSectionGenerator(prompt_manager=None)
     section._latest = HomeSnapshot(variables=[Entity("Night", night)])

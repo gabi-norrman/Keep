@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from assistant.integration.integrations.cameras.ArloCameraIntegration import ArloAuthenticationError
+from integrations.arlo.ArloCameraIntegration import ArloAuthenticationError
 from interfaces.console.tabs.ArloTab import ArloTab
 
 

@@ -926,7 +926,7 @@ class TestSendEmail:
     def test_report_is_handed_to_the_gmail_integration(self, mock_cm_class, maintainer):
         mock_cm_class.return_value.get.side_effect = lambda k, default=None: {
             "email.address": "me@example.com", "email.password": "pw"}.get(k, default)
-        with patch('assistant.integration.integrations.email.GmailIntegration.GmailIntegration.get_instance') as get_instance:
+        with patch('integrations.gmail.GmailIntegration.GmailIntegration.get_instance') as get_instance:
             get_instance.return_value.send_message.return_value = ""
             CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
             msg, recipients = get_instance.return_value.send_message.call_args[0]
@@ -939,7 +939,7 @@ class TestSendEmail:
     def test_a_refused_send_raises(self, mock_cm_class, maintainer):
         mock_cm_class.return_value.get.side_effect = lambda k, default=None: {
             "email.address": "me@example.com", "email.password": "pw"}.get(k, default)
-        with patch('assistant.integration.integrations.email.GmailIntegration.GmailIntegration.get_instance') as get_instance:
+        with patch('integrations.gmail.GmailIntegration.GmailIntegration.get_instance') as get_instance:
             get_instance.return_value.send_message.return_value = "SMTP error: boom"
             with pytest.raises(RuntimeError, match="boom"):
                 CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
@@ -947,7 +947,7 @@ class TestSendEmail:
     @patch('assistant.agents.CodeQualityMaintainer.ConfigManager')
     def test_without_credentials_nothing_is_sent(self, mock_cm_class, maintainer):
         mock_cm_class.return_value.get.side_effect = lambda k, default=None: None
-        with patch('assistant.integration.integrations.email.GmailIntegration.GmailIntegration.get_instance') as get_instance:
+        with patch('integrations.gmail.GmailIntegration.GmailIntegration.get_instance') as get_instance:
             CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
             get_instance.assert_not_called()
 

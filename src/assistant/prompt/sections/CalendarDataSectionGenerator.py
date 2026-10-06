@@ -2,7 +2,7 @@ from datetime import date, timedelta
 
 from ..PromptSectionGenerator import PromptSectionGenerator
 from common.logging import info, trace
-from ...integration.integrations.CalDAVIntegration import CalDAVIntegration, CALENDAR_DAYS_AHEAD
+from integrations.caldav.CalDAVIntegration import CalDAVIntegration, CALENDAR_DAYS_AHEAD
 
 
 class CalendarDataSectionGenerator(PromptSectionGenerator):

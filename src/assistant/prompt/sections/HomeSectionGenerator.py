@@ -8,7 +8,7 @@ from typing import Optional
 
 from common.ConfigManager import config
 from common.logging import info, trace
-from assistant.integration.integrations.home.HomeAutomation import HomeAutomation, HomeSnapshot, NotConfiguredHome, active, render
+from assistant.integration.HomeAutomation import HomeAutomation, HomeSnapshot, NotConfiguredHome, active, render
 
 from ..PromptSectionGenerator import PromptSectionGenerator
 

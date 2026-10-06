@@ -526,7 +526,7 @@ class DebugCommands:
         on the account after its file is deleted. What happened, per path, for the listing."""
         if not any(path == TELEGRAM_SESSION for path, _ in present):
             return {}
-        from assistant.integration.integrations.TelegramFeedIntegration import TelegramFeedIntegration
+        from integrations.telegram_feed.TelegramFeedIntegration import TelegramFeedIntegration
         return {TELEGRAM_SESSION: TelegramFeedIntegration.log_out()}
 
     def _wipe_plan(self, present, wipe_only) -> str:

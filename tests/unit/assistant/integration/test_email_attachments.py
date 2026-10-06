@@ -3,8 +3,8 @@ from unittest.mock import patch, Mock
 
 import pytest
 
-from assistant.integration.integrations.email.EmailProvider import _is_junk_media, _analyze_media
-from assistant.integration.integrations.email.GmailIntegration import GmailAccess
+from assistant.integration.EmailProvider import _is_junk_media, _analyze_media
+from integrations.gmail.GmailIntegration import GmailAccess
 from assistant.tools import PdfExtractor
 
 
@@ -98,7 +98,7 @@ class TestIsJunkImage:
 @pytest.mark.unit
 class TestAnalyzeMedia:
 
-    @patch("assistant.integration.integrations.email.EmailProvider.media_analyzer")
+    @patch("assistant.integration.EmailProvider.media_analyzer")
     def test_video_attachment_uses_video_label(self, mock_accessor):
         mock_ma = mock_accessor.return_value
         mock_ma.describe_bytes.return_value = "Video description: [A dog] A dog runs."
@@ -113,7 +113,7 @@ class TestAnalyzeMedia:
 @pytest.mark.unit
 class TestFormatEmailBodyWithAttachments:
 
-    @patch("assistant.integration.integrations.email.EmailProvider.PdfExtractor")
+    @patch("assistant.integration.EmailProvider.PdfExtractor")
     def test_pdf_attachment_included(self, mock_pdf):
         mock_pdf.extract_text.return_value = "--- Page 1 ---\nHello from PDF"
         provider = GmailAccess()
@@ -125,7 +125,7 @@ class TestFormatEmailBodyWithAttachments:
         assert "Hello from PDF" in result
         mock_pdf.extract_text.assert_called_once_with(b"pdf_bytes")
 
-    @patch("assistant.integration.integrations.email.EmailProvider._is_junk_media")
+    @patch("assistant.integration.EmailProvider._is_junk_media")
     def test_junk_image_skipped(self, mock_junk):
         mock_junk.return_value = True
         provider = GmailAccess()
@@ -134,7 +134,7 @@ class TestFormatEmailBodyWithAttachments:
         result = provider._format_email_body(msg)
         assert "logo.png" not in result
 
-    @patch("assistant.integration.integrations.email.EmailProvider._analyze_media")
+    @patch("assistant.integration.EmailProvider._analyze_media")
     def test_video_attachment_analyzed(self, mock_analyze):
         mock_analyze.return_value = "Video description: [A dog] A dog runs on a beach."
         provider = GmailAccess()

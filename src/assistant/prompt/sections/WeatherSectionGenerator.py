@@ -1,5 +1,5 @@
 from ..PromptSectionGenerator import PromptSectionGenerator
-from ...integration.integrations.WeatherIntegration import WeatherIntegration
+from integrations.weather.WeatherIntegration import WeatherIntegration
 
 
 class WeatherSectionGenerator(PromptSectionGenerator):

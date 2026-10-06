@@ -4,7 +4,7 @@ from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import Color
 from interfaces.console.tabs.AuthTab import AuthTab, PENDING
 from interfaces.console.widgets.Board import SummaryTile, Table
-from assistant.integration.integrations.cameras.RingIntegration import RingIntegration, RingAuthenticationError
+from integrations.ring.RingIntegration import RingIntegration, RingAuthenticationError
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
 
 

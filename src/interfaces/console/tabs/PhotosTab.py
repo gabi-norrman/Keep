@@ -22,7 +22,7 @@ from interfaces.console.framework.TextWidth import wrap
 from interfaces.console.widgets import Board, Tile
 from interfaces.console.widgets.Board import Fact, SummaryTile
 from common.FloxyDatabase import FloxyDatabase
-from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor, PHOTOS_SQLITE_PATH
+from integrations.photos.PhotoProcessor import PhotoProcessor, PHOTOS_SQLITE_PATH
 
 DETAILS_MIN_W = 60
 FACT_LABEL_W = 14

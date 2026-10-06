@@ -27,7 +27,7 @@ from common.logging import info, trace, fine
 from common.Paths import SRC_DIR
 
 # Frames from these AIServer/src packages count as "ours" in the section-update trigger trace.
-_OWN_PACKAGE_DIRS = tuple(f"{SRC_DIR / pkg}/" for pkg in ("assistant", "common", "interfaces"))
+_OWN_PACKAGE_DIRS = tuple(f"{SRC_DIR / pkg}/" for pkg in ("assistant", "common", "interfaces", "integrations"))
 
 
 class PromptManager:

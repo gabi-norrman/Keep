@@ -7,10 +7,10 @@ import pytest
 
 from assistant.ChannelProfile import profile_for
 from assistant.commands.Commands import Commands, MediaPayload
-from assistant.integration.integrations.photos.ICloudPhotoDownloader import NoVideoRenditionError, PhotoNotInCloudError
-from assistant.integration.integrations.TeslaIntegration import TeslaCommandError, TeslaIntegration
-from assistant.integration.integrations.ICloudIntegration import iCloudAPI
-from assistant.integration.integrations.XIntegration import XIntegration
+from integrations.photos.ICloudPhotoDownloader import NoVideoRenditionError, PhotoNotInCloudError
+from integrations.tesla.TeslaIntegration import TeslaCommandError, TeslaIntegration
+from integrations.icloud.ICloudIntegration import iCloudAPI
+from integrations.x.XIntegration import XIntegration
 from assistant.tools.WebAccess import WebAccess
 
 
@@ -935,7 +935,7 @@ class TestCmdIcloudDevices:
 
 class TestCmdSendImessage:
     def test_returns_send_result_synchronously(self, commands_instance):
-        with patch("assistant.integration.integrations.IMessageIntegration.IMessageIntegration") as MockCls:
+        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
             inst = Mock()
             inst.send.return_value = ""
             MockCls.get_instance.return_value = inst
@@ -946,19 +946,19 @@ class TestCmdSendImessage:
         )
 
     def test_empty_recipient_returns_error_without_calling_send(self, commands_instance):
-        with patch("assistant.integration.integrations.IMessageIntegration.IMessageIntegration") as MockCls:
+        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
             result = commands_instance.cmd_send_imessage("", "just a body")
             MockCls.get_instance.assert_not_called()
         assert "send_imessage failed" in result
 
     def test_empty_body_returns_error_without_calling_send(self, commands_instance):
-        with patch("assistant.integration.integrations.IMessageIntegration.IMessageIntegration") as MockCls:
+        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
             result = commands_instance.cmd_send_imessage("Alice", "  ")
             MockCls.get_instance.assert_not_called()
         assert "send_imessage failed" in result
 
     def test_literal_backslash_n_converted_to_newline(self, commands_instance):
-        with patch("assistant.integration.integrations.IMessageIntegration.IMessageIntegration") as MockCls:
+        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
             inst = Mock()
             inst.send.return_value = ""
             MockCls.get_instance.return_value = inst
@@ -968,7 +968,7 @@ class TestCmdSendImessage:
         assert "\\n" not in sent.split(commands_instance.AI_MESSAGE_SUFFIX)[0]
 
     def test_literal_crlf_and_tab_escapes_converted(self, commands_instance):
-        with patch("assistant.integration.integrations.IMessageIntegration.IMessageIntegration") as MockCls:
+        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
             inst = Mock()
             inst.send.return_value = ""
             MockCls.get_instance.return_value = inst
@@ -978,7 +978,7 @@ class TestCmdSendImessage:
         assert "\\r" not in sent and "\\t" not in sent
 
     def test_real_newlines_in_body_preserved(self, commands_instance):
-        with patch("assistant.integration.integrations.IMessageIntegration.IMessageIntegration") as MockCls:
+        with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
             inst = Mock()
             inst.send.return_value = ""
             MockCls.get_instance.return_value = inst
@@ -1074,7 +1074,7 @@ class TestCmdTurnOnOff:
         mock_home.dim.assert_not_called()
 
     def test_the_not_configured_hint_comes_back_as_the_result(self, commands_instance):
-        from assistant.integration.integrations.home.HomeAutomation import NotConfiguredHome
+        from assistant.integration.HomeAutomation import NotConfiguredHome
         with patch("assistant.commands.Commands.home.active", return_value=NotConfiguredHome("Enable Indigo.")):
             assert commands_instance.cmd_turn_on("Lamp") == "Enable Indigo."
 
@@ -1316,7 +1316,7 @@ class TestCmdShowPhoto:
 
         with patch("assistant.commands.Commands.FloxyDatabase") as mock_db_cls, \
              patch("sqlite3.connect", return_value=mock_conn), \
-             patch("assistant.integration.integrations.photos.PhotoProcessor.PhotoProcessor._get_image_bytes", return_value=None):
+             patch("integrations.photos.PhotoProcessor.PhotoProcessor._get_image_bytes", return_value=None):
             mock_db_cls.get_instance.return_value.get_photo_by_id.return_value = mock_photo
             result = commands_instance._run_show_photo("42")
 
@@ -1337,7 +1337,7 @@ class TestCmdShowPhoto:
 
         with patch("assistant.commands.Commands.FloxyDatabase") as mock_db_cls, \
              patch("sqlite3.connect", return_value=mock_conn), \
-             patch("assistant.integration.integrations.photos.PhotoProcessor.PhotoProcessor._get_image_bytes", return_value=jpeg_bytes), \
+             patch("integrations.photos.PhotoProcessor.PhotoProcessor._get_image_bytes", return_value=jpeg_bytes), \
              patch("assistant.Notifier._notifier", mock_telegram):
             mock_db_cls.get_instance.return_value.get_photo_by_id.return_value = mock_photo
             result = commands_instance._run_show_photo("42")
@@ -1354,7 +1354,7 @@ class TestCmdShowPhoto:
         mock_conn.cursor.return_value = mock_cursor
         with patch("assistant.commands.Commands.FloxyDatabase") as mock_db_cls, \
              patch("sqlite3.connect", return_value=mock_conn), \
-             patch("assistant.integration.integrations.photos.PhotoProcessor.PhotoProcessor._get_image_bytes", return_value=b"jpeg"):
+             patch("integrations.photos.PhotoProcessor.PhotoProcessor._get_image_bytes", return_value=b"jpeg"):
             mock_db_cls.get_instance.return_value.get_photo_by_id.return_value = mock_photo
             result = commands_instance._run_show_photo("42")
         assert "no notification channel configured" in result
@@ -1378,7 +1378,7 @@ class TestCmdShowPhoto:
 
         with patch("assistant.commands.Commands.FloxyDatabase") as mock_db_cls, \
              patch("sqlite3.connect", return_value=mock_conn), \
-             patch("assistant.integration.integrations.photos.PhotoProcessor.PhotoProcessor._get_image_bytes",
+             patch("integrations.photos.PhotoProcessor.PhotoProcessor._get_image_bytes",
                    side_effect=[jpeg_a, jpeg_b]), \
              patch("assistant.Notifier._notifier", mock_telegram):
             mock_db_cls.get_instance.return_value.get_photo_by_id.side_effect = lambda pid: photos.get(pid)
@@ -1403,7 +1403,7 @@ class TestCmdShowPhoto:
 
         with patch("assistant.commands.Commands.FloxyDatabase") as mock_db_cls, \
              patch("sqlite3.connect", return_value=mock_conn), \
-             patch("assistant.integration.integrations.photos.PhotoProcessor.PhotoProcessor._get_image_bytes",
+             patch("integrations.photos.PhotoProcessor.PhotoProcessor._get_image_bytes",
                    return_value=jpeg_a), \
              patch("assistant.Notifier._notifier", mock_telegram):
             mock_db_cls.get_instance.return_value.get_photo_by_id.side_effect = lambda pid: photo_10 if pid == 10 else None
@@ -1555,7 +1555,7 @@ class TestPreparePhotoSendPayload:
                 "short_description": "A nice photo",
             }
             with patch.object(Commands, '_fetch_photo_asset_row', return_value=row):
-                with patch('assistant.integration.integrations.photos.PhotoProcessor.PhotoProcessor') as mock_pp:
+                with patch('integrations.photos.PhotoProcessor.PhotoProcessor') as mock_pp:
                     mock_pp._get_image_bytes.return_value = None
                     payload, err = commands_instance._prepare_photo_send_payload(1, cursor=mock_cursor)
         assert payload is None
@@ -1572,7 +1572,7 @@ class TestPreparePhotoSendPayload:
                 "short_description": "A nice photo",
             }
             with patch.object(Commands, '_fetch_photo_asset_row', return_value=row):
-                with patch('assistant.integration.integrations.photos.PhotoProcessor.PhotoProcessor') as mock_pp:
+                with patch('integrations.photos.PhotoProcessor.PhotoProcessor') as mock_pp:
                     mock_pp._get_image_bytes.return_value = fake_bytes
                     payload, err = commands_instance._prepare_photo_send_payload(1, cursor=mock_cursor)
         assert err is None
@@ -1587,7 +1587,7 @@ class TestPreparePhotoSendPayload:
         row = ("LOCAL-UUID", "clip.mov", "0/00", "master-guid", "asset-guid", 15)
         with patch('assistant.commands.Commands.FloxyDatabase') as mock_db_cls, \
              patch.object(Commands, '_fetch_photo_asset_row', return_value=row), \
-             patch('assistant.integration.integrations.photos.ICloudPhotoDownloader.ICloudPhotoDownloader.get_instance') as dl:
+             patch('integrations.photos.ICloudPhotoDownloader.ICloudPhotoDownloader.get_instance') as dl:
             mock_db_cls.get_instance.return_value.get_photo_by_id.return_value = {
                 "asset_guid": "GUID-VID", "short_description": "Frances sings",
                 "photo_type": "video, slo-mo", "duration_seconds": 12.5,
@@ -1613,7 +1613,7 @@ class TestPreparePhotoSendPayload:
         assert payload.thumbnail is None
 
     def test_video_too_large_for_telegram(self, commands_instance):
-        from assistant.integration.integrations.photos.ICloudPhotoDownloader import VideoTooLargeError
+        from integrations.photos.ICloudPhotoDownloader import VideoTooLargeError
         payload, err, _ = self._video_payload(commands_instance, downloader_error=VideoTooLargeError(60_000_000, 50_000_000))
         assert payload is None
         assert err == "video_too_large"
@@ -1960,7 +1960,7 @@ class TestDescribeDispatcher:
         assert commands_instance.describe("turn_on", "kitchen") is None
 
     def test_describe_send_imessage_uses_full_name_when_available(self, commands_instance):
-        from assistant.integration.integrations.IMessageIntegration import IMessageIntegration
+        from integrations.imessage.IMessageIntegration import IMessageIntegration
         m = IMessageIntegration.get_instance()
         m._name_to_handle = {"alice": "+12345678901"}
         m._handle_to_full_name = {"+12345678901": "Alice Smith"}
@@ -1972,7 +1972,7 @@ class TestDescribeDispatcher:
             IMessageIntegration.reset_instance()
 
     def test_describe_send_imessage_falls_back_to_recipient_when_no_full_name(self, commands_instance):
-        from assistant.integration.integrations.IMessageIntegration import IMessageIntegration
+        from integrations.imessage.IMessageIntegration import IMessageIntegration
         m = IMessageIntegration.get_instance()
         m._name_to_handle = {"alice": "+12345678901"}
         m._handle_to_full_name = {}

@@ -21,10 +21,10 @@ def monitor():
 @pytest.mark.unit
 class TestDiscoverIntegrations:
     def test_registers_every_integration_by_class_plus_web_access(self, monitor):
-        from assistant.integration.integrations.ICloudIntegration import ICloudIntegration
-        from assistant.integration.integrations.TeslaIntegration import TeslaIntegration
-        from assistant.integration.integrations.cameras.RingIntegration import RingIntegration
-        from assistant.integration.integrations.email.GmailIntegration import GmailAccess
+        from integrations.icloud.ICloudIntegration import ICloudIntegration
+        from integrations.tesla.TeslaIntegration import TeslaIntegration
+        from integrations.ring.RingIntegration import RingIntegration
+        from integrations.gmail.GmailIntegration import GmailAccess
         from assistant.tools.WebAccess import WebAccess
 
         assert bootstrap.discover_integrations() is monitor
@@ -40,9 +40,9 @@ class TestDiscoverIntegrations:
         monitor.register.assert_not_called()
 
     def test_feeds_are_left_to_start_feeds(self, monitor):
-        from assistant.integration.integrations.IMessageIntegration import IMessageIntegration
-        from assistant.integration.integrations.TelegramFeedIntegration import TelegramFeedIntegration
-        from assistant.integration.integrations.photos.PhotosIntegration import PhotosIntegration
+        from integrations.imessage.IMessageIntegration import IMessageIntegration
+        from integrations.telegram_feed.TelegramFeedIntegration import TelegramFeedIntegration
+        from integrations.photos.PhotosIntegration import PhotosIntegration
         bootstrap.discover_integrations()
         registered = [call.args[0] for call in monitor.register_class.call_args_list]
         assert IMessageIntegration not in registered
@@ -54,11 +54,11 @@ class TestDiscoverIntegrations:
 class TestStartFeeds:
     def test_feeds_are_restartable_and_start_on_the_runner(self, monitor):
         from assistant.integration.FeedRunner import Feeds
-        from assistant.integration.integrations.IMessageIntegration import IMessageIntegration
-        from assistant.integration.integrations.TelegramFeedIntegration import TelegramFeedIntegration
-        from assistant.integration.integrations.photos.PhotosIntegration import PhotosIntegration
-        from assistant.integration.integrations.home.IndigoIntegration import IndigoIntegration
-        from assistant.integration.integrations.home.HomeAssistantIntegration import HomeAssistantIntegration
+        from integrations.imessage.IMessageIntegration import IMessageIntegration
+        from integrations.telegram_feed.TelegramFeedIntegration import TelegramFeedIntegration
+        from integrations.photos.PhotosIntegration import PhotosIntegration
+        from integrations.indigo.IndigoIntegration import IndigoIntegration
+        from integrations.home_assistant.HomeAssistantIntegration import HomeAssistantIntegration
         history = Mock(name="message_history")
 
         bootstrap.start_feeds(history)
@@ -72,3 +72,14 @@ class TestStartFeeds:
                 feed = Mock(name=cls.__name__)
                 start(feed)
                 feeds.return_value.start.assert_called_with(feed, history)
+
+
+@pytest.mark.unit
+class TestIntegrationModules:
+    def test_a_tab_module_is_left_to_the_console(self):
+        walked = [(None, "integrations.tesla", True), (None, "integrations.tesla.TeslaIntegration", False),
+                  (None, "integrations.tesla.TeslaTab", False)]
+        with patch.object(bootstrap.pkgutil, "walk_packages", return_value=walked), \
+                patch.object(bootstrap.importlib, "import_module", side_effect=lambda name: name):
+            modules = list(bootstrap._integration_modules())
+        assert modules == ["integrations.tesla", "integrations.tesla.TeslaIntegration"]

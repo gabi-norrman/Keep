@@ -41,7 +41,7 @@ class TelegramTab(AuthTab):
         self._feed: Optional[dict] = None
 
     def _connect(self):
-        from assistant.integration.integrations.TelegramFeedIntegration import TelegramFeedIntegration
+        from integrations.telegram_feed.TelegramFeedIntegration import TelegramFeedIntegration
         return TelegramFeedIntegration.get_instance()
 
     def _on_status(self, api):

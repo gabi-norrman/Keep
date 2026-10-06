@@ -303,7 +303,7 @@ class CodeQualityMaintainer:
     def unavailable_reason() -> Optional[str]:
         """Why Claude Code jobs cannot run right now, None when they can: the "Self Improvement"
         integration is the switch. A missing or logged-out CLI is reported by the run itself."""
-        from assistant.integration.integrations.SelfImprovementIntegration import SelfImprovementIntegration
+        from integrations.self_improvement.SelfImprovementIntegration import SelfImprovementIntegration
         if not SelfImprovementIntegration.enabled(ConfigManager()):
             return DISABLED_MESSAGE
         return None
@@ -984,7 +984,7 @@ class CodeQualityMaintainer:
         msg["To"] = address
         msg.attach(MIMEText(full_html, "html"))
 
-        from ..integration.integrations.email.GmailIntegration import GmailIntegration
+        from integrations.gmail.GmailIntegration import GmailIntegration
         err = GmailIntegration.get_instance().send_message(msg, [address])
         if err:
             raise RuntimeError(f"report email not sent: {err}")
