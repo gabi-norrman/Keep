@@ -29,6 +29,8 @@ Everything else — email, smart home, cameras, car — is optional, and Keep wa
 </tr>
 </table>
 
+<br>
+
 ## Try it out!
 
 ```bash
@@ -37,6 +39,8 @@ gh auth login && gh api -H "Accept: application/vnd.github.raw" "repos/maciekd/K
 
 > [!NOTE]
 > Keep is in closed beta: the install only works for GitHub accounts invited as collaborators. `brew install gh` if you do not have `gh`. The installer is self-contained, it won't touch anything else on your Mac.
+
+<br>
 
 ## Features
 
@@ -67,7 +71,17 @@ I buy things and book restaurants, checkout included.
 <summary>The full story</summary>
 <br>
 
-A swivel armchair through a Revolut 3DS push, a pair of Birkenstocks, a Stockholm restaurant booking with the calendar event added and the newsletter box *unticked*.
+Card with a 3DS push, **Klarna** and **BankID** all work: when a signature is needed, he gets a tap-to-sign link on Telegram.
+
+- **A swivel armchair**: I saw in his mail that the first one had bounced back uncollected and reordered it. The price had gone up, so I used a 30% code that needed two items, added a wall charger and saved about 2,000 kr.
+- **A radon test kit**: from *"how would we do that?"* to paid in two minutes.
+- **A pharmacy order**: Klarna-only checkout, signed with BankID, evening courier slot picked.
+- **A secret birthday present**: ordered, and kept secret.
+- **An extra waste collection**: booked with the municipality in two minutes, plus a reminder to put the bin out.
+- **A Stockholm restaurant**: table booked, calendar event added, newsletter box *unticked*.
+- **The everyday stuff**: Birkenstocks, a USB-C adapter in minutes after he asked.
+
+And I know when *not* to buy: I spotted a fake web store before paying.
 
 </details>
 
@@ -91,13 +105,22 @@ When the radar says rain within the hour, I check the cameras for the beige cush
 <td valign="top">
 
 ### 📸 Needle, haystack
-I found his red 2004 BMW in **87,000 photos**.
+I found his old red BMW among **87,000 photos and videos**.
 
 <details>
 <summary>The full story</summary>
 <br>
 
-The 2020 hall gallery wall turned up too.
+*"Show me a picture of my old BMW I had a long time ago."* Ten seconds later he had the red coupe on a beach, July 2004.
+
+Every photo and video is described once (people, place, any text in the frame), so I can search back to 2003 in plain words:
+
+- **The fridge and oven model numbers**, read off rating plates he photographed weeks earlier.
+- **The hall gallery wall** in 2020, plus the 2014 shot of the frames going up with a laser level.
+- **"A drone shot in Thailand way back"**: two clips from 2016–17.
+- **The mouthwash**: he snapped the bottle, I read the label, and *"buy me three of these"* became a pharmacy order.
+
+Ask by voice and the photo lands on the kitchen TV.
 
 </details>
 
@@ -121,7 +144,7 @@ Apple Store pages went blank: my self-analysis found my own cookie-banner remove
 <td valign="top">
 
 ### 🪪 BankID into the school portal
-I got through a BankID login to read the school's weekly letter.
+I got through a BankID login to summarize the school's weekly letter.
 
 <details>
 <summary>The full story</summary>
@@ -165,6 +188,8 @@ The car lit up like a Christmas tree in northern Germany; he sent a photo of the
 </tr>
 </table>
 
+<br>
+
 ## Interfaces
 
 <table>
@@ -172,6 +197,8 @@ The car lit up like a Christmas tree in northern Germany; he sent a photo of the
 <tr><td><img src="docs/images/telegram.svg" width="18" height="18" alt="" valign="middle">&nbsp;<b>Telegram</b></td><td>The same chat on your phone, with images and voice messages.</td></tr>
 <tr><td>🎙️&nbsp;<b>Voice&#8209;to&#8209;voice</b></td><td>A highly optimized interface for talking to your home.</td></tr>
 </table>
+
+<br>
 
 ## Integrations
 
@@ -194,11 +221,15 @@ Every integration is off until you turn it on, and Keep walks you through the se
 > [!TIP]
 > Missing something? Ask Keep to write the integration itself: it analyses the code, builds it and opens the pull request for you (or me) to review.
 
+<br>
+
 ## Architecture
 
 <p align="center"><a href="https://maciekd.github.io/Keep/atlas/"><img src="docs/images/atlas.png" width="70%" alt="The Keep Atlas"></a></p>
 
 Curious how it fits together? The **[Keep Atlas](https://maciekd.github.io/Keep/atlas/)** is a zoomable map of the whole server: every package, module and class with a one-line description, and a walk through one spoken request from the microphone to the speaker.
+
+<br>
 
 ## Privacy
 
