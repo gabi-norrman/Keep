@@ -24,7 +24,7 @@ Apple Silicon Mac connected to your personal iCloud.
 
 Everything else — email, smart home, cameras, car — is optional, and Keep walks you through setting it up.
 
-<img src="docs/images/banner.svg" width="2000" height="0" alt="">
+<img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">
 </td>
 </tr>
 </table>
@@ -136,9 +136,9 @@ The car lit up like a Christmas tree in northern Germany; he sent a photo of the
 ## Interfaces
 
 <table>
-<tr><td>⌨️&nbsp;<b>Terminal&nbsp;UI</b></td><td>Text chat in a Claude Code-style terminal UI.</td></tr>
+<tr><td width="190">⌨️&nbsp;<b>Terminal&nbsp;UI</b></td><td><img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">Text chat in a Claude Code-style terminal UI.</td></tr>
 <tr><td><img src="docs/images/telegram.svg" width="18" height="18" alt="" valign="middle">&nbsp;<b>Telegram</b></td><td>The same chat on your phone, with images and voice messages.</td></tr>
-<tr><td>🎙️&nbsp;<b>Voice-to-voice</b></td><td>A highly optimized interface for talking to your home. It is tuned for speed and best suited for dimming lights, putting on music and the like. Use text for the complex questions.</td></tr>
+<tr><td>🎙️&nbsp;<b>Voice&#8209;to&#8209;voice</b></td><td>A highly optimized interface for talking to your home.</td></tr>
 </table>
 
 ## Integrations
@@ -146,7 +146,7 @@ The car lit up like a Christmas tree in northern Germany; he sent a photo of the
 Every integration is off until you turn it on, and Keep walks you through the setup of each one.
 
 <table>
-<tr><td>🍎&nbsp;<b>Apple</b></td><td>iCloud (Find My for the family's phones), Photos library, iMessage, Reminders, iCloud Mail and CalDAV calendars</td></tr>
+<tr><td width="190">🍎&nbsp;<b>Apple</b></td><td><img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">iCloud (Find My for the family's phones), Photos library, iMessage, Reminders, iCloud Mail and CalDAV calendars</td></tr>
 <tr><td>✉️&nbsp;<b>Email</b></td><td>Gmail and iCloud Mail; Keep also uses your inbox to handle 2FA codes on its own</td></tr>
 <tr><td>🏠&nbsp;<b>Home</b></td><td>Home Assistant and Indigo for lights, switches, locks, sensors and scenes</td></tr>
 <tr><td>📹&nbsp;<b>Cameras</b></td><td>Arlo and Ring</td></tr>
@@ -160,7 +160,7 @@ Every integration is off until you turn it on, and Keep walks you through the se
 </table>
 
 > [!TIP]
-> Missing something? Ask Keep to write the integration itself: it analyses the code, builds it and opens the pull request for you to review.
+> Missing something? Ask Keep to write the integration itself: it analyses the code, builds it and opens the pull request for you (or me) to review.
 
 ## Architecture
 
