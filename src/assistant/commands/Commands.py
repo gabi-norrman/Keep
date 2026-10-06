@@ -12,11 +12,10 @@ from assistant.integration.CompositeEmailAccess import CompositeEmailAccess
 from integrations.gmail.GmailIntegration import GmailAccess
 from assistant.integration.EmailProvider import NotConfiguredEmail
 from integrations.icloud_email.ICloudEmailIntegration import ICloudEmailAccess
-from integrations.weather.WeatherIntegration import WeatherIntegration
 from assistant.integration import HomeAutomation as home
 from assistant.tools.WebAccess import WebAccess
 from assistant.agents.AutonomousActionManager import AutonomousActionManager
-from . import Toolkits, ToolkitPreloader
+from . import CommandSet, Toolkits, ToolkitPreloader
 from assistant import MemoryFile, Procedures, WatchList
 from common.logging import trace, info, note, error, fine
 from integrations.music.MusicIntegration import MusicManager
@@ -30,11 +29,8 @@ from assistant.Notifier import SecretRejected, notifier
 from assistant.SystemNote import system_note
 from assistant.Telemetry import Telemetry
 from .CommandEcho import describe_completion
-from integrations.reminders.RemindersIntegration import add_reminder_item
-from integrations.tesla.TeslaIntegration import TeslaIntegration, TeslaAPIError
 from integrations.icloud.ICloudIntegration import iCloudAPI
 from integrations.arlo.ArloCameraIntegration import ArloCamera
-from integrations.x.XIntegration import XIntegration
 from integrations.ring.RingIntegration import RingIntegration
 from common.FloxyDatabase import FloxyDatabase
 from common.vault.Vault import Vault, VaultError, DuplicateSecret, KINDS
@@ -67,10 +63,15 @@ class MediaPayload:
 
 
 class Commands:
-    """Implements every `cmd_*` command the LLM can invoke, from lights to email to photos.
+    """Runs every command the LLM can invoke, from lights to email to photos.
 
-    The command name list handed to the parser is derived from the `cmd_` method names;
-    SENSITIVE_COMMANDS go through the notifier's approval gate before running.
+    The core commands are the `cmd_*` methods here; an integration's own commands are a
+    CommandSet in its folder (`src/integrations/<folder>/<Name>Commands.py`), one instance of
+    which is built per Commands. `_owners` maps a set's command names to it, and `run`,
+    `describe` and the flags (sensitive, pure, multi-param, approval note) ask the command's
+    owner — this object for a core command. The command name list handed to the parser is
+    derived from the `cmd_` method names of all of them; SENSITIVE_COMMANDS go through the
+    notifier's approval gate before running.
     """
     SENSITIVE_COMMANDS = frozenset({"send_imessage", "send_email", "restart_server"})
     # What the approval prompt shows under the title when the command has no parameters
@@ -114,10 +115,6 @@ class Commands:
     def _get_web_access() -> WebAccess:
         return WebAccess.get_instance()
 
-    @staticmethod
-    def _get_x_integration() -> XIntegration:
-        return XIntegration.get_instance()
-
     @property
     def web_access(self) -> WebAccess:
         return self._get_web_access()
@@ -138,8 +135,10 @@ class Commands:
         # copies that form back; the backend gets the raw name (HomeAutomation.from_display).
         return home.HomeAutomation.from_display(name.strip())
 
-    def __init__(self, cp):
+    def __init__(self, cp, command_sets=None):
+        """`command_sets` are the CommandSet classes to host; the discovered ones when None."""
         self.command_processor = cp
+        self._owners: dict[str, object] = self._host(CommandSet.discover() if command_sets is None else command_sets)
         # Set by CommandProcessor before each run: the policy of the channel that asked
         # and the RequestContext of the request (None for autonomous runs).
         self._current_profile = AUTONOMOUS
@@ -164,6 +163,34 @@ class Commands:
         self._serial_queues: dict[str, queue.Queue] = {}
         self._serial_workers: dict[str, threading.Thread] = {}
 
+    def _host(self, command_sets) -> dict[str, object]:
+        """One instance of each set, by the command names it owns. A name with two owners
+        would make the dispatch depend on the walk order, so it is refused here."""
+        core = set(CommandSet.command_names(type(self)))
+        owners: dict[str, object] = {}
+        for cls in command_sets:
+            command_set = cls(self)
+            for name in CommandSet.command_names(cls):
+                if name in core or name in owners:
+                    other = type(self) if name in core else type(owners[name])
+                    raise ValueError(f"Command '{name}' has two owners: {other.__module__}.{other.__name__} "
+                                     f"and {cls.__module__}.{cls.__name__}")
+                owners[name] = command_set
+        trace(f"Commands: hosting {len(owners)} command(s) from {len(command_sets)} integration command set(s)")
+        return owners
+
+    def _owner(self, command: str):
+        """Who implements `command`: its CommandSet, or this object for a core (or unknown) one."""
+        return self._owners.get(command, self)
+
+    @classmethod
+    def command_names(cls) -> list[str]:
+        """Every command name, core and discovered sets, for a caller without an instance."""
+        names = set(CommandSet.command_names(cls))
+        for command_set in CommandSet.discover():
+            names.update(CommandSet.command_names(command_set))
+        return sorted(names)
+
     @staticmethod
     def _create_email_provider():
         """The monitored singletons (their short-id caches must survive between a listing
@@ -180,9 +207,6 @@ class Commands:
             return providers[0]
         trace("No email account configured — mail commands answer with the setup hint")
         return NotConfiguredEmail()
-
-    def cmd_weather(self, parameter_string: str):
-        self.background_command(WeatherIntegration.fetch_weather_forecast, False)
 
     def cmd_home_automation_logs(self, parameter_string: str):
         self.background_command(self._fetch_home_automation_logs, None)
@@ -216,9 +240,6 @@ class Commands:
 
     def cmd_google(self, parameter_string: str):
         self.background_command(self.web_access.search, parameter_string)
-
-    def cmd_search_x(self, parameter_string: str):
-        self.background_command(self._get_x_integration().search, parameter_string)
 
     def cmd_browse_open(self, parameter_string: str):
         self.background_command(self.web_access.browse_open, parameter_string, lane=self.BROWSER_LANE)
@@ -333,41 +354,6 @@ class Commands:
 
     def cmd_caffeinate(self, parameter_string: str):
         AutonomousActionManager.get_instance().caffeinate()
-
-    @staticmethod
-    def _get_tesla_api() -> TeslaIntegration:
-        return TeslaIntegration.get_instance()
-
-    def _run_tesla_command(self, tesla_method, parameter_string: str) -> str:
-        try:
-            tesla_method(parameter_string if parameter_string else None)
-            return ""
-        except TeslaAPIError as e:
-            return f"Tesla command failed: {e}"
-
-    def cmd_tesla_max_defrost(self, parameter_string: str):
-        self.background_command(
-            lambda p: self._run_tesla_command(self._get_tesla_api().set_max_defrost, p),
-            parameter_string
-        )
-
-    def cmd_tesla_air_con_on(self, parameter_string: str):
-        self.background_command(
-            lambda p: self._run_tesla_command(self._get_tesla_api().start_air_conditioning, p),
-            parameter_string
-        )
-
-    def cmd_tesla_air_con_off(self, parameter_string: str):
-        self.background_command(
-            lambda p: self._run_tesla_command(self._get_tesla_api().stop_air_conditioning, p),
-            parameter_string
-        )
-
-    def cmd_tesla_open_trunk(self, parameter_string: str):
-        self.background_command(
-            lambda p: self._run_tesla_command(self._get_tesla_api().open_trunk, p),
-            parameter_string
-        )
 
     def cmd_show_photo(self, *args: str):
         route = self._request_route()
@@ -830,9 +816,6 @@ class Commands:
             return CalDAVIntegration.load_calendars(names)
         except Exception as e:
             return f"load_calendar failed: {e}"
-
-    def cmd_add_shopping_list_item(self, parameter_string: str) -> str:
-        return add_reminder_item(parameter_string)
 
     @staticmethod
     def _get_icloud_api() -> iCloudAPI:
@@ -1739,17 +1722,21 @@ class Commands:
     def list_commands(self) -> list[str]:
         # Name check first: getattr on every attribute would evaluate the properties too, and
         # `web_access` builds the WebAccess singleton (and its Chrome loop thread) on first use.
-        return [func.replace("cmd_", "", 1) for func in dir(self) if
+        core = [func.replace("cmd_", "", 1) for func in dir(self) if
                 func.startswith("cmd_") and callable(getattr(self, func))]
+        return sorted(core + list(self._owners))
 
     def is_sensitive(self, command_name: str) -> bool:
-        return command_name in self.SENSITIVE_COMMANDS
+        return command_name in self._owner(command_name).SENSITIVE_COMMANDS
 
     def approval_note(self, command_name: str) -> str:
-        return self.APPROVAL_NOTES.get(command_name, "")
+        return self._owner(command_name).APPROVAL_NOTES.get(command_name, "")
 
     def is_pure(self, command_name: str) -> bool:
-        return command_name in self.PURE_COMMANDS
+        return command_name in self._owner(command_name).PURE_COMMANDS
+
+    def is_multi_param(self, command_name: str) -> bool:
+        return command_name in self._owner(command_name).MULTI_PARAM_COMMANDS
 
     # --- toolkits: the command references the LLM loads on demand (plans/TOOLKITS_PLAN.md) ---
 
@@ -1828,7 +1815,7 @@ class Commands:
     # describe_* methods themselves all take a single joined string for simplicity.
     def describe(self, command: str, params) -> Optional[str]:
         command = command.strip()
-        f = getattr(self, "describe_" + command, None)
+        f = getattr(self._owner(command), "describe_" + command, None)
         if f is None:
             return None
         joined = ", ".join(params) if isinstance(params, list) else (params or "")
@@ -1843,7 +1830,7 @@ class Commands:
         """What a chat shows for a command call: its description, the call itself for a
         command without a describe_ method, None for one whose description is empty."""
         text = self.describe(command, params)
-        if text is None and not hasattr(self, "describe_" + command.strip()):
+        if text is None and not hasattr(self._owner(command.strip()), "describe_" + command.strip()):
             params_display = ", ".join(params) if isinstance(params, list) else str(params)
             return f"{command}({params_display})"
         return text
@@ -1852,12 +1839,10 @@ class Commands:
     def _first_argument(p: str) -> str:
         return p.split(",", 1)[0].strip().strip("\"'`")
 
-    def describe_weather(self, p):                return "Checking the weather"
     def describe_home_automation_logs(self, p):   return "Reading home automation logs"
     def describe_server_logs(self, p):            return "Reading server logs"
     def describe_open_url(self, p):               return f"Reading {self._short_url(p)}"
     def describe_google(self, p):                 return f"Searching for {p.strip()}"
-    def describe_search_x(self, p):               return f"Searching X for {p.strip()}" if p.strip() else "Searching X"
     def describe_browse_open(self, p):            return f"Browsing {self._short_url(p)}"
     def describe_browse_eval(self, p):            return "Inspecting the page"
     def describe_browse_snapshot(self, p):        return "Re-reading the page"
@@ -1915,12 +1900,7 @@ class Commands:
         minutes, _, reason = p.partition(",")
         return f"Scheduling wakeup in {minutes.strip()} min" + (f": {reason.strip()}" if reason.strip() else "")
     def describe_caffeinate(self, p):             return "Staying awake"
-    def describe_tesla_max_defrost(self, p):      return "Turning on Tesla max defrost"
-    def describe_tesla_air_con_on(self, p):       return "Turning on Tesla A/C"
-    def describe_tesla_air_con_off(self, p):      return "Turning off Tesla A/C"
-    def describe_tesla_open_trunk(self, p):       return "Opening Tesla trunk"
     def describe_show_photo(self, p):             return f"Showing photo {p.strip()}"
-    def describe_add_shopping_list_item(self, p): return f"Adding {p.strip()} to the shopping list"
     def describe_find_phone(self, p):             return "Pinging phone"
     def describe_locate_user(self, p):            return f"Locating {p.strip()}" if p.strip() else "Locating user"
     def describe_icloud_devices(self, p):         return "Listing iCloud devices"
@@ -2086,13 +2066,13 @@ class Commands:
 
         params_display = ", ".join(params)
         note("Running command: " + command + "(" + params_display + ")")
-        f = getattr(self, "cmd_" + command, None)
+        f = getattr(self._owner(command), "cmd_" + command, None)
         if f is None:
             error(f"Unknown command: {command}")
             return f"Unknown command: {command}"
 
         try:
-            if command in self.MULTI_PARAM_COMMANDS:
+            if self.is_multi_param(command):
                 result = f(*params)
             else:
                 result = f(params[0] if params else "")

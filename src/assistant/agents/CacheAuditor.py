@@ -45,9 +45,7 @@ class CacheAuditor:
             info(f"Cache auditor disabled: no {self.disabled_reason}")
         else:
             self._llm.initialize()
-        commands_list = [func.replace("cmd_", "", 1) for func in dir(Commands)
-                         if callable(getattr(Commands, func)) and func.startswith("cmd_")]
-        self._parser = CommandParser(commands_list)
+        self._parser = CommandParser(Commands.command_names())
 
     def start(self):
         if self.disabled_reason:

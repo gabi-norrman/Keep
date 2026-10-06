@@ -8,9 +8,7 @@ import pytest
 from assistant.ChannelProfile import profile_for
 from assistant.commands.Commands import Commands, MediaPayload
 from integrations.photos.ICloudPhotoDownloader import NoVideoRenditionError, PhotoNotInCloudError
-from integrations.tesla.TeslaIntegration import TeslaCommandError, TeslaIntegration
 from integrations.icloud.ICloudIntegration import iCloudAPI
-from integrations.x.XIntegration import XIntegration
 from assistant.tools.WebAccess import WebAccess
 
 
@@ -46,18 +44,6 @@ def mock_home():
 @pytest.fixture(autouse=True)
 def mock_web_access():
     with patch.object(WebAccess, "get_instance", return_value=Mock()) as get_instance:
-        yield get_instance.return_value
-
-
-@pytest.fixture(autouse=True)
-def mock_x_integration():
-    with patch.object(XIntegration, "get_instance", return_value=Mock()) as get_instance:
-        yield get_instance.return_value
-
-
-@pytest.fixture
-def tesla_api():
-    with patch.object(TeslaIntegration, "get_instance", return_value=Mock()) as get_instance:
         yield get_instance.return_value
 
 
@@ -267,41 +253,10 @@ class TestBackgroundCommand:
 
 
 # ---------------------------------------------------------------------------
-# TestTeslaBackgroundCommands
+# TestBackgroundWorkerReplies
 # ---------------------------------------------------------------------------
 
-class TestTeslaBackgroundCommands:
-    def test_defrost_success_is_silent(self, commands_instance, tesla_api):
-        mock_api = tesla_api
-        mock_api.set_max_defrost.return_value = "Max defrost enabled for Model Y."
-
-        commands_instance.cmd_tesla_max_defrost("Model Y")
-        commands_instance.wait_for_background(timeout=5)
-
-        mock_api.set_max_defrost.assert_called_once_with("Model Y")
-        commands_instance.command_processor.set_command_reply.assert_not_called()
-        commands_instance.command_processor.background_command_done.assert_called_once()
-
-    def test_error_caught_and_returned(self, commands_instance, tesla_api):
-        mock_api = tesla_api
-        mock_api.set_max_defrost.side_effect = TeslaCommandError("vehicle offline")
-
-        commands_instance.cmd_tesla_max_defrost("")
-        commands_instance.wait_for_background(timeout=5)
-
-        commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            "Tesla command failed: vehicle offline", contains_error=False
-        )
-
-    def test_empty_param_passes_none(self, commands_instance, tesla_api):
-        mock_api = tesla_api
-        mock_api.start_air_conditioning.return_value = "Air conditioning started for car."
-
-        commands_instance.cmd_tesla_air_con_on("")
-        commands_instance.wait_for_background(timeout=5)
-
-        mock_api.start_air_conditioning.assert_called_once_with(None)
-
+class TestBackgroundWorkerReplies:
     def test_bg_worker_skips_reply_on_all_empty(self, commands_instance):
         fn = Mock(return_value="")
         commands_instance.background_command(fn, "params")
@@ -693,11 +648,6 @@ class TestCmdWebAccess:
         with patch.object(commands_instance, 'background_command') as mock_bg:
             commands_instance.cmd_google("best pizza")
             mock_bg.assert_called_once_with(commands_instance.web_access.search, "best pizza")
-
-    def test_search_x(self, commands_instance, mock_x_integration):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_search_x("starship launch")
-            mock_bg.assert_called_once_with(mock_x_integration.search, "starship launch")
 
     def test_browse_eval_dispatches_to_web_access(self, commands_instance):
         with patch.object(commands_instance, 'background_command') as mock_bg:

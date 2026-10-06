@@ -87,8 +87,7 @@ def test_every_command_the_prompt_advertises_exists(prompt_text):
     costs a silent 'Unknown command' on every use — the LLM keeps calling the old name."""
     from assistant.commands.Commands import Commands
 
-    missing = sorted(name for name in _advertised_commands(prompt_text)
-                     if not callable(getattr(Commands, "cmd_" + name, None)))
+    missing = sorted(_advertised_commands(prompt_text) - set(Commands.command_names()))
     assert not missing, f"res/prompt.md advertises commands with no cmd_ method: {missing}"
 
 

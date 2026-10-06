@@ -28,19 +28,12 @@ class TestCacheAuditorInit:
         with patch('assistant.agents.CacheAuditor.CommandParser') as mock:
             yield mock
 
-    def test_extracts_commands_from_class(self, mock_gemini_llm, mock_command_parser):
-        with patch('assistant.agents.CacheAuditor.Commands') as mock_commands:
-            mock_commands.cmd_turn_on = lambda: None
-            mock_commands.cmd_turn_off = lambda: None
-            mock_commands.cmd_play = lambda: None
-            mock_commands.helper_method = lambda: None
-            from assistant.agents.CacheAuditor import CacheAuditor
-            CacheAuditor()
-            call_args = mock_command_parser.call_args[0][0]
-            assert 'turn_on' in call_args
-            assert 'turn_off' in call_args
-            assert 'play' in call_args
-            assert 'helper_method' not in call_args
+    def test_the_parser_knows_core_commands_and_the_ones_integration_folders_add(self, mock_gemini_llm, mock_command_parser):
+        from assistant.agents.CacheAuditor import CacheAuditor
+        CacheAuditor()
+        names = mock_command_parser.call_args[0][0]
+        assert {'turn_on', 'load_toolkit', 'tesla_open_trunk', 'search_x'} <= set(names)
+        assert not any(name.startswith(('cmd_', 'describe_', '_')) for name in names)
 
 @pytest.mark.unit
 class TestCacheAuditorAuditPass:

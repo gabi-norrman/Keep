@@ -16,7 +16,7 @@ CORE_IMPORTS_BY_NAME = {
     "assistant/agents/CodeQualityMaintainer.py": {"gmail", "self_improvement"},
     "assistant/agents/LongTermMemoryCurator.py": {"caldav"},
     "assistant/commands/Commands.py": {"arlo", "caldav", "gmail", "icloud", "icloud_email", "imessage", "music",
-                                       "photos", "reminders", "ring", "tesla", "weather", "x"},
+                                       "photos", "ring"},
     "assistant/commands/DebugCommands.py": {"telegram_feed"},
     "assistant/prompt/sections/CalendarDataSectionGenerator.py": {"caldav"},
     "assistant/prompt/sections/MusicZonesSectionGenerator.py": {"music"},
