@@ -54,6 +54,12 @@ def test_a_renamed_tour_module_is_reported(atlas, monkeypatch):
     assert any("TOUR step 1" in p for p in atlas.problems(tree))
 
 
+def test_a_top_level_group_in_a_colour_the_template_lacks_is_reported(atlas):
+    group = {"id": "src/newcomer", "kind": "package", "desc": "A group.", "hue": "chartreuse"}
+    tree = {"id": "root", "kind": "system", "desc": "A tree.", "children": [group]}
+    assert any("src/newcomer" in p and "chartreuse" in p for p in atlas.problems(tree))
+
+
 def test_first_sentence_stops_at_the_sentence_not_an_abbreviation(atlas):
     doc = "Dims the lights, e.g. in the kitchen.\n\nThe rest explains how."
     assert atlas.first_sentence(doc) == "Dims the lights, e.g. in the kitchen."

@@ -11,7 +11,7 @@
 <style>
 :root{
   --ground:#EDF0F5; --surface:#FFFFFF; --surface-2:#F5F7FA; --ink:#141A2B; --muted:#5A6378; --faint:#8A93A8; --line:#D6DBE5;
-  --amber:#B36C05; --teal:#0F7F79; --violet:#5B4BD6; --rose:#BC3F5B; --slate:#5F6E86;
+  --amber:#B36C05; --teal:#0F7F79; --violet:#5B4BD6; --rose:#BC3F5B; --lime:#4A8516; --slate:#5F6E86;
   --accent:var(--amber); --halo:rgba(237,240,245,.92);
   --display:"Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --sans:"IBM Plex Sans", "Helvetica Neue", Arial, system-ui, sans-serif;
@@ -22,13 +22,13 @@
   :root:not([data-theme="light"]){
     color-scheme:dark;
     --ground:#0B101B; --surface:#121929; --surface-2:#0F1523; --ink:#E6E9F2; --muted:#8E97AE; --faint:#5E6780; --line:#222B3F;
-    --amber:#F3B541; --teal:#4CC6BD; --violet:#A395FF; --rose:#EE869C; --slate:#98A6BD; --halo:rgba(11,16,27,.9);
+    --amber:#F3B541; --teal:#4CC6BD; --violet:#A395FF; --rose:#EE869C; --lime:#8FCB5E; --slate:#98A6BD; --halo:rgba(11,16,27,.9);
   }
 }
 :root[data-theme="dark"]{
   color-scheme:dark;
   --ground:#0B101B; --surface:#121929; --surface-2:#0F1523; --ink:#E6E9F2; --muted:#8E97AE; --faint:#5E6780; --line:#222B3F;
-  --amber:#F3B541; --teal:#4CC6BD; --violet:#A395FF; --rose:#EE869C; --slate:#98A6BD; --halo:rgba(11,16,27,.9);
+  --amber:#F3B541; --teal:#4CC6BD; --violet:#A395FF; --rose:#EE869C; --lime:#8FCB5E; --slate:#98A6BD; --halo:rgba(11,16,27,.9);
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--ground);color:var(--ink);font:15px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
@@ -204,7 +204,6 @@ code.i{font:.9em var(--mono);padding:1px 4px;border-radius:4px;background:var(--
 const DATA = JSON.parse(document.getElementById('atlas-data').textContent);
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const S = 1000;
-const HUE = {'launcher':'--slate','src/interfaces':'--teal','src/assistant':'--amber','src/common':'--violet','res':'--rose'};
 const KIND = {system:'System',package:'Package',module:'Module',class:'Class',script:'Script',resource:'Resource'};
 
 const root = d3.hierarchy(DATA)
@@ -217,7 +216,7 @@ const byId = new Map();
 root.each(d => {
   byId.set(d.data.id, d);
   const top = d.ancestors().find(a => a.depth === 1);
-  d.hue = top ? `var(${HUE[top.data.id]})` : 'var(--accent)';
+  d.hue = top ? `var(--${top.data.hue})` : 'var(--accent)';
   d.fileCount = 0; d.loc = 0;
 });
 root.eachAfter(d => {

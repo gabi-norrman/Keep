@@ -19,7 +19,9 @@ sys.path.insert(0, str(HERE))
 
 from descriptions import CLASSES, GROUPS, MODULES, PROMPT_DESCRIPTION, SCRIPTS, TOUR  # noqa: E402
 
-TOP_ORDER = ["launcher", "src/interfaces", "src/assistant", "src/integrations", "src/common", "res"]
+# The top-level groups in drawing order, each with the colour token of template.html its subtree is drawn in.
+TOP_HUES = {"launcher": "slate", "src/interfaces": "teal", "src/assistant": "amber", "src/integrations": "lime",
+            "src/common": "violet", "res": "rose"}
 MAX_SENTENCE = 230
 
 
@@ -176,7 +178,9 @@ def build_tree() -> dict:
                                      "lines": _line_count(REPO / rel), "desc": first_sentence(summary[0].upper() + summary[1:]),
                                      "commands": commands})
     root["children"] += [launcher, res]
-    root["children"].sort(key=lambda g: TOP_ORDER.index(g["id"]))
+    for group in root["children"]:
+        group["hue"] = TOP_HUES[group["id"]]
+    root["children"].sort(key=lambda g: list(TOP_HUES).index(g["id"]))
 
     def sort(node):
         if node["kind"] in ("package", "system"):
@@ -194,7 +198,8 @@ def _nodes(node: dict):
 
 
 def problems(tree: dict) -> list[str]:
-    """What makes the atlas wrong: descriptions.py naming what no longer exists, a module with nothing to say."""
+    """What makes the atlas wrong: descriptions.py naming what no longer exists, a module with nothing to say,
+    a top-level group drawn in a colour the template does not define (the browser paints it black)."""
     nodes = {n["id"]: n for n in _nodes(tree)}
     dirs = {Path(n["id"]).parent.as_posix() for n in nodes.values() if n["kind"] == "module"}
     found = []
@@ -207,6 +212,9 @@ def problems(tree: dict) -> list[str]:
     found += [f"{n['id']} has no description: add a descriptions.GROUPS entry" if n["kind"] == "package" else
               f"{n['id']} has no description: give it a docstring or a descriptions.MODULES entry"
               for n in nodes.values() if not n["desc"]]
+    template = (HERE / "template.html").read_text(encoding="utf-8")
+    found += [f"{g['id']} is drawn in --{g.get('hue')}, which template.html does not define"
+              for g in tree.get("children", []) if f"--{g.get('hue')}:" not in template]
     return found
 
 
