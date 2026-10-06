@@ -70,7 +70,7 @@ MODULES = {
     'src/interfaces/voice/tts/VoiceFactory.py': 'Picks the TTS engine for a language, walking a configured fallback order.',
     'src/interfaces/voice/microphones/FalsePositiveFlood.py': 'Detects a burst of false wake-word triggers and tells the outposts to back off.',
     'src/assistant/llm/__init__.py': 'The LLM factory: builds a backend by tier from config and wraps it in the vault and cache layers.',
-    'src/interfaces/console/tabs/TabBar.py': 'Draws the TUI’s tab bar with the selected tab highlighted.',
+    'src/interfaces/console/tabs/TabBar.py': 'Draws the TUI’s tab bar with the selected tab highlighted, a page of tabs at a time when they outgrow the row.',
     'src/assistant/AssistantEvents.py': 'The event vocabulary the core streams to interfaces: tokens, thinking, commands run, the speaker identified, done.',
     'src/assistant/AssistantRequest.py': 'RequestContext: who is asking, from which channel, in which language, and how the reply should be delivered.',
     'src/interfaces/console/TUIFloxyConsole.py': 'Draws the tabbed TUI dashboard and routes keyboard input to the active tab.',
