@@ -27,6 +27,7 @@ from .constants import (
     SAMPLE_RATE, MIN_SPEECH, DECODE_KWARGS, INITIAL_PROMPT, KEEPWARM_IDLE_SECONDS,
     RISK_CONFIDENCE_MIN_PCT, RISK_NO_SPEECH_MAX, RISK_COMPRESSION_MAX, RISK_TEMPERATURE_MAX,
     WAKE_WORD_HALLUCINATION_NO_SPEECH_MIN, WAKE_WORD_HALLUCINATION_CONFIDENCE_MAX_PCT,
+    transcript_for_log,
 )
 from common.logging import info, error, fine
 
@@ -338,7 +339,7 @@ class WhisperWorker(threading.Thread):
             if res is not None:
                 (text, language, metrics, elapsed, rtf,
                  submitted_at, started_at, done_at, spec_audio) = res
-                fine(f"[{label}] final (promoted speculative): '{text}' "
+                fine(f"[{label}] final (promoted speculative): {transcript_for_log(text)} "
                      f"(lang={language}, {elapsed*1000:.0f} ms infer, {rtf:.2f}x RTF)")
                 try:
                     on_result(text, metrics, audio, language,
@@ -427,7 +428,7 @@ class WhisperWorker(threading.Thread):
                 # full decode, delaying a ready transcript by that decode's length. The
                 # pending job's audio is the complete utterance (this job's is the
                 # utterance-so-far), which speaker ID and the debug WAV need.
-                fine(f"[{pending.label}] final (promoted speculative on completion): '{text}' "
+                fine(f"[{pending.label}] final (promoted speculative on completion): {transcript_for_log(text)} "
                      f"(lang={language}, {elapsed*1000:.0f} ms infer, {rtf:.2f}x RTF)")
                 pending.on_result(text, metrics, pending.audio, language,
                                   {"submitted_at": job.submitted_at, "started_at": started_at,
@@ -456,7 +457,7 @@ class WhisperWorker(threading.Thread):
         text, language, elapsed, _, rtf, metrics = transcribe(
             job.audio, self.repo, self.language, self.prompt, allowed=self.allowed_languages)
         self._last_decode_at = time.time()
-        fine(f"[{job.label}] final: '{text}' (lang={language}, {elapsed*1000:.0f} ms infer, {rtf:.2f}x RTF)")
+        fine(f"[{job.label}] final: {transcript_for_log(text)} (lang={language}, {elapsed*1000:.0f} ms infer, {rtf:.2f}x RTF)")
         job.on_result(text, metrics, job.audio, language,
                       {"submitted_at": job.submitted_at, "started_at": started_at,
                        "done_at": time.time(), "decode": "final", "audio": job.audio})

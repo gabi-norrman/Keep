@@ -894,6 +894,90 @@ class TestTranscriptGate:
         assert client.send_query.call_args.kwargs.get("scribe_skipped") is False
 
 
+@pytest.fixture
+def logged(monkeypatch):
+    """Every message logged while the test runs, at any level."""
+    lines = []
+    monkeypatch.setattr("common.logging.log", lambda message, *args, **kwargs: lines.append(message))
+    return lines
+
+
+@pytest.mark.unit
+class TestOverheardTranscriptLogging:
+    OVERHEARD = "we should call the dentist tomorrow"
+
+    def _allow_overheard(self, monkeypatch, allowed):
+        from interfaces.voice.microphones.local_outposts import constants
+        monkeypatch.setattr(constants, "LOG_OVERHEARD_TRANSCRIPTS", allowed)
+
+    def test_speech_without_wake_word_keeps_its_words_out_of_the_logs(self, logged, monkeypatch):
+        self._allow_overheard(monkeypatch, False)
+        outpost, client = make_outpost(awaiting_wakeword=True)
+        outpost._on_transcript(self.OVERHEARD, CLEAN, AUDIO, vad_stop_at=time.time())
+        client.send_query.assert_not_called()
+        assert logged, "the drop itself is still logged"
+        assert not any("dentist" in line for line in logged)
+
+    def test_muted_overheard_speech_keeps_its_words_out_of_the_logs(self, logged, monkeypatch):
+        self._allow_overheard(monkeypatch, False)
+        outpost, _ = make_outpost(awaiting_wakeword=True, muted=True)
+        outpost._on_transcript(self.OVERHEARD, CLEAN, AUDIO)
+        assert logged and not any("dentist" in line for line in logged)
+
+    def test_mid_sentence_wake_word_mention_is_still_overheard(self, logged, monkeypatch):
+        self._allow_overheard(monkeypatch, False)
+        outpost, _ = make_outpost(awaiting_wakeword=True)
+        outpost._on_transcript("the dentist asked whether Michelle works", CLEAN, AUDIO)
+        assert logged and not any("dentist" in line for line in logged)
+
+    def test_overheard_language_override_is_logged_without_its_words(self, logged, monkeypatch):
+        self._allow_overheard(monkeypatch, False)
+        det = TextLanguageDetector({"en", "sv"})
+        outpost, _ = make_outpost(awaiting_wakeword=True, languages=("en-US", "sv-SE"),
+                                  lang_detector=det)
+        outpost._on_transcript("Vi borde ringa tandläkaren i morgon bitti.", CLEAN, AUDIO, language="en")
+        assert any("arbitration" in line for line in logged)
+        assert not any("tandläkaren" in line for line in logged)
+
+    def test_wake_word_utterance_is_logged_in_clear(self, logged, monkeypatch):
+        self._allow_overheard(monkeypatch, False)
+        outpost, _ = make_outpost(awaiting_wakeword=True)
+        outpost._on_transcript("Michelle call the dentist", CLEAN, AUDIO, vad_stop_at=time.time())
+        assert any("call the dentist" in line for line in logged)
+
+    def test_wake_word_fire_the_gate_drops_is_logged_in_clear(self, logged, monkeypatch):
+        self._allow_overheard(monkeypatch, False)
+        outpost, client = make_outpost(awaiting_wakeword=True)
+        outpost._on_transcript("Michelle call the dentist", {**CLEAN, "no_speech": 0.9}, AUDIO)
+        client.send_query.assert_not_called()
+        assert any("call the dentist" in line for line in logged)
+
+    def test_follow_up_in_the_listen_window_is_logged_in_clear(self, logged, monkeypatch):
+        self._allow_overheard(monkeypatch, False)
+        outpost, _ = make_outpost(awaiting_wakeword=False)
+        outpost._on_transcript(self.OVERHEARD, CLEAN, AUDIO, vad_stop_at=time.time())
+        assert any("dentist" in line for line in logged)
+
+    def test_flag_on_logs_overheard_speech_in_clear(self, logged, monkeypatch):
+        self._allow_overheard(monkeypatch, True)
+        outpost, _ = make_outpost(awaiting_wakeword=True)
+        outpost._on_transcript(self.OVERHEARD, CLEAN, AUDIO, vad_stop_at=time.time())
+        assert any("dentist" in line for line in logged)
+
+    def test_whisper_worker_logs_a_decode_without_its_words(self, logged, monkeypatch):
+        # The worker decodes before the gate, so it cannot know whether the text is addressed.
+        import interfaces.voice.microphones.local_outposts.WhisperWorker as mod
+        self._allow_overheard(monkeypatch, False)
+        monkeypatch.setattr(mod, "transcribe",
+                            lambda *args, **kwargs: (self.OVERHEARD, "en", 0.1, None, 0.2, CLEAN))
+        delivered = []
+        worker = mod.WhisperWorker("repo", "en")
+        worker._run_final(mod._Job("final", np.zeros(8000, np.float32),
+                                   on_result=lambda text, *rest: delivered.append(text), label="m1"))
+        assert delivered == [self.OVERHEARD]
+        assert logged and not any("dentist" in line for line in logged)
+
+
 @pytest.mark.unit
 class TestWakeWordPrefixConfidenceGate:
     """A wake-word fire behind a spoken lead-in ("Okay, Michelle…") must clear

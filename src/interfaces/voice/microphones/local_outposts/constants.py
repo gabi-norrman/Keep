@@ -28,6 +28,24 @@ CAPTURE_DROP_STARTUP_GRACE = 60.0  # ignore drops in the first N s after a mic s
 CAPTURE_DROP_SUMMARY_INTERVAL = 60.0  # min seconds between cumulative per-mic drop summaries
 RESOURCE_MONITOR_INTERVAL = 60.0   # seconds between 'resmon' process/audio resource snapshots (leak hunt)
 
+# ── Privacy ───────────────────────────────────────────────────────────────────
+# The mics transcribe everything said in the room, but only a wake-word sequence is the
+# assistant's business: an utterance that opens with the wake word (whether or not the
+# fire survives the hallucination gate) and the follow-ups inside the listen window it
+# opened. False keeps the words of every other transcript out of the logs — a log line
+# carries its length instead. True logs all of it in clear, for hunting a missed wake word.
+LOG_OVERHEARD_TRANSCRIPTS = False
+
+
+def transcript_for_log(text, addressed=False):
+    """`text` quoted for a log line, or only its length when it is overheard speech and
+    LOG_OVERHEARD_TRANSCRIPTS is off. `addressed` says the transcript belongs to a
+    wake-word sequence; a caller that cannot know (the Whisper worker, which decodes
+    before the gate) leaves it False."""
+    if addressed or LOG_OVERHEARD_TRANSCRIPTS or not text:
+        return f"'{text or ''}'"
+    return f"<{len(text)} chars, not logged>"
+
 # ── Wake word ─────────────────────────────────────────────────────────────────
 # Single source of truth: config.yaml `wake_word` (also drives the prompt identity
 # and /outpost_settings). WAKE_WORDS is matched case-insensitively against transcripts;

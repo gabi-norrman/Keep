@@ -23,6 +23,7 @@ detector model is built once per process (the build is the expensive part; each
 classification is a few ms), so this adds negligible latency to the transcript path.
 """
 
+from .constants import transcript_for_log
 from common.logging import info, fine, note
 
 
@@ -109,9 +110,10 @@ class TextLanguageDetector:
         untouched, so this can only correct a confident mismatch within the accepted set,
         never inject noise or route to a language we don't accept (is_foreign handles those).
 
-        `important` controls only the override's log level: when the clip is about to be
+        `important` controls only how the override is logged: when the clip is about to be
         dropped anyway (e.g. no wake word while awaiting one) the override is noise, so pass
-        False to log it at fine() instead of note()."""
+        False to log it at fine() instead of note() — and, being overheard speech, without
+        its words (see LOG_OVERHEARD_TRANSCRIPTS)."""
         audio_subtag = (audio_label or "").split("-")[0].lower()
         text_subtag, conf = self._classify(text)
         if text_subtag is None or text_subtag == audio_subtag:
@@ -124,7 +126,7 @@ class TextLanguageDetector:
             return audio_label
         log = note if important else fine
         log(f"Language arbitration: Whisper heard '{audio_subtag}' but the text is '{text_subtag}' "
-            f"({conf:.2f} confident) — overriding to '{text_subtag}'. Text: {text!r}")
+            f"({conf:.2f} confident) — overriding to '{text_subtag}'. Text: {transcript_for_log(text, important)}")
         return text_subtag
 
     def is_foreign(self, text: str) -> bool:

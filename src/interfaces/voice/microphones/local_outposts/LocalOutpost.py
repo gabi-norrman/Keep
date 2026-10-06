@@ -39,6 +39,7 @@ from .constants import (
     MUTE_WATCHDOG_TIMEOUT, STREAM_SILENCE_TIMEOUT, STREAM_REOPEN_BACKOFF_MAX,
     CAPTURE_DROP_MIN_GAP, CAPTURE_DROP_WARMUP_FRAMES, CAPTURE_DROP_STARTUP_GRACE,
     CAPTURE_DROP_SUMMARY_INTERVAL,
+    transcript_for_log,
 )
 from .Endpointer import Endpointer, STARTED, STOPPED
 from .VAD import make_vad, rms, RmsVAD
@@ -1169,12 +1170,18 @@ class LocalOutpost:
         the very thing we're trying to correct."""
         if self._lang_detector is None or not self._lang_detector.active:
             return detected
-        found, rest = strip_wake_word(text)
+        _, rest = strip_wake_word(text)
         lid_text = rest.strip() or text
         # A clip awaiting a wake word with none in it is dropped downstream, so an override
         # here never routes anything — keep it at fine() rather than note().
-        important = found or not self.awaiting_wakeword
-        return self._lang_detector.arbitrate(lid_text, detected, important=important)
+        return self._lang_detector.arbitrate(lid_text, detected,
+                                             important=self._addressed(text))
+
+    def _addressed(self, text) -> bool:
+        """Whether a transcript belongs to a wake-word sequence — it opens with the wake
+        word, or lands in the listen window one opened. Anything else is overheard speech,
+        whose words stay out of the logs (see LOG_OVERHEARD_TRANSCRIPTS)."""
+        return bool(text) and (not self.awaiting_wakeword or strip_wake_word(text)[0])
 
     def _is_foreign(self, text):
         return is_foreign_transcript(text, self._lang_detector)
@@ -1200,7 +1207,8 @@ class LocalOutpost:
         self._acc_sent_wake_word = False
         self._acc_last_stop_at = None
 
-    def _save_recording_async(self, text, audio, utt_dropped_s, whisper_span=None):
+    def _save_recording_async(self, text, audio, utt_dropped_s, whisper_span=None,
+                              addressed=True):
         """Write the debug WAV on a background thread — the synchronous write sat on the
         transcript hot path and added ~0.4s of user-facing latency per query. `audio` is
         a fresh per-utterance array that is never mutated after the VAD stop, so handing
@@ -1219,9 +1227,10 @@ class LocalOutpost:
                 path = save_pcm_wav("log/audio", text, pcm, sample_rate=SAMPLE_RATE,
                                     metadata=metadata)
                 if utt_dropped_s >= CAPTURE_DROP_MIN_GAP:
-                    error(f"[{self.label}] saved recording is INCOMPLETE — ~{utt_dropped_s:.1f}s of "
-                          f"audio was dropped at capture during this utterance, so '{path}' has a "
-                          f"gap in the middle: '{text}'")
+                    # The WAV is named after its transcript, so the path is the text.
+                    error(f"[{self.label}] saved recording {transcript_for_log(path, addressed)} "
+                          f"is INCOMPLETE — ~{utt_dropped_s:.1f}s of audio was dropped at "
+                          f"capture during this utterance, leaving a gap in the middle.")
             except Exception as e:
                 trace(f"[{self.label}] failed to save raw audio: {e}")
         threading.Thread(target=_save, name=f"WavSave-{self.device_index}", daemon=True).start()
@@ -1230,8 +1239,10 @@ class LocalOutpost:
     def _on_transcript(self, text, metrics, audio, language=None, vad_stop_at=None,
                        identify_future=None, vad_start_at=None, utt_dropped_s=0.0,
                        speech_ended_at=None, timing=None, spec_trigger="vad"):
+        addressed = self._addressed(text)
+        shown = transcript_for_log(text, addressed)
         if self.muted:
-            trace(f"[{self.label}] dropping transcript — muted while Floxy speaks: '{text}'")
+            trace(f"[{self.label}] dropping transcript — muted while Floxy speaks: {shown}")
             return
         if not text:
             trace(f"[{self.label}] empty transcript, nothing to send.")
@@ -1241,7 +1252,7 @@ class LocalOutpost:
         lang = self._resolve_lang(language)
         if lang is None:
             trace(f"[{self.label}] dropping transcript — detected language '{language}' not in "
-                  f"configured {sorted(self.lang_by_subtag)}: '{text}'")
+                  f"configured {sorted(self.lang_by_subtag)}: {shown}")
             return
 
         # STT latency for this mic, measured from when the user actually stopped
@@ -1279,7 +1290,7 @@ class LocalOutpost:
                 breakdown = (f" (endpoint {endpoint:.2f}s + queue {queue:.2f}s + "
                              f"infer {infer:.2f}s + deliver {deliver:.2f}s, {stt_trigger})")
             fine(f"[{self.label}] STT done {stt_ms / 1000:.2f}s after speech end{breakdown}: "
-                 f"'{text}'")
+                 f"{shown}")
 
         # The WAV holds the full utterance — that is what Scribe verifies below — but
         # Whisper may have decoded less of it: a promoted speculative ran on the
@@ -1297,13 +1308,13 @@ class LocalOutpost:
             fine(f"[{self.label}] Whisper decoded a {whisper_span / SAMPLE_RATE:.2f}s speculative "
                  f"span of the {len(audio) / SAMPLE_RATE:.2f}s utterance — recording the span "
                  f"in the saved WAV.")
-        self._save_recording_async(text, audio, utt_dropped_s, whisper_span)
+        self._save_recording_async(text, audio, utt_dropped_s, whisper_span, addressed)
 
         # The hallucination / wake-word gate itself is pure (gate_whisper_transcript) so the
         # offline harness runs the identical decision; only the logging lives here.
         verdict = gate_whisper_transcript(text, metrics, self._lang_detector)
         found, rest = verdict.found, verdict.rest
-        fine(f"[{self.label}] risk check for '{text}': "
+        fine(f"[{self.label}] risk check for {shown}: "
              f"{format_metrics(metrics, verdict.conf_min_pct)}")
         if verdict.drop:
             if verdict.rescue and self._scribe is not None and SCRIBE_VERIFY_WAKE_WORD:
@@ -1320,7 +1331,7 @@ class LocalOutpost:
                     label=self.label)
                 return
             if verdict.quiet:
-                fine(f"[{self.label}] dropping {verdict.drop}: '{text}'")
+                fine(f"[{self.label}] dropping {verdict.drop}: {shown}")
             else:
                 info(f"  [{self.label}] dropping wake-word fire — {verdict.drop}: '{text}'")
             return
@@ -1331,7 +1342,7 @@ class LocalOutpost:
             if deep_idx != -1:
                 fine(f"[{self.label}] wake word present at char {deep_idx} but past the "
                      f"{WAKE_WORD_ANCHOR_CHARS}-char anchor — treating as overheard mention, "
-                     f"not an address: '{text}'")
+                     f"not an address: {shown}")
         # Re-join silence-split fragments into one cumulative phrase (see CONCAT_MAX_GAP).
         # The server's voting expects the growing-phrase contract the phones send, not the
         # disjoint per-endpoint segments Whisper produces — so a wake-word-less fragment
@@ -1355,7 +1366,7 @@ class LocalOutpost:
             fine(f"[{self.label}] continuing utterance (+{gap:.2f}s gap): "
                  f"'{self._acc_text}' + '{text}'")
         elif self.awaiting_wakeword:
-            fine(f"[{self.label}] no wake word while awaiting one — dropping: '{text}'")
+            fine(f"[{self.label}] no wake word while awaiting one — dropping: {shown}")
             return
         else:
             self._reset_accumulator()  # in a listen window, but the gap is too long → new command
