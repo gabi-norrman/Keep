@@ -76,8 +76,8 @@ def test_a_row_says_what_the_integration_is(monitor):
     lines = rows(CatalogTab())
 
     kettle, lamp = row_of(lines, "Kettle"), row_of(lines, "Lamp")
-    assert "Boils water on request." in kettle and "second paragraph" not in kettle
-    assert "Switches the reading lamp." in lamp and "dusk" not in lamp and "how long" not in lamp
+    assert kettle.endswith("Boils water on request")
+    assert lamp.endswith("Switches the reading lamp")
 
 
 def test_the_selected_integration_says_what_it_does_but_not_its_code_notes(monitor):

@@ -201,7 +201,8 @@ class CatalogTab(TabView):
             name_color = Theme.COLOR_TEXT if entry.enabled else Theme.COLOR_LABEL
         return {"Integration": (entry.name, name_color, chosen),
                 "Status": (entry.status.label, entry.status.color),
-                "What it is": (self._text(entry.cls)[0], Theme.COLOR_LABEL if entry.enabled else Theme.COLOR_DIM)}
+                "What it is": (self._text(entry.cls)[0].removesuffix("."),
+                               Theme.COLOR_LABEL if entry.enabled else Theme.COLOR_DIM)}
 
     def _draw_table(self, screen: TUIScreen, x: int, y: int, width: int, height: int, entries: List[Entry], selected: int):
         columns = self._columns(width - 4)
