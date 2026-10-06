@@ -1,3 +1,8 @@
+---
+name: imessage
+summary: "send an iMessage or SMS to a contact"
+commands: [send_imessage]
+---
 You can send a message via iMessage (with automatic SMS fallback when iMessage isn't reachable) using:
 
 `send_imessage(recipient: str, message: str)`

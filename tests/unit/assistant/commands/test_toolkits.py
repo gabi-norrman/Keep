@@ -8,7 +8,8 @@ import pytest
 
 from assistant.commands import Toolkits
 from assistant.commands.Commands import Commands
-from assistant.commands.Toolkits import TOOLKITS, Toolkit
+from assistant.commands.Toolkits import TOOLKITS, Toolkit, ToolkitFileError
+from common.Paths import INTEGRATIONS_DIR
 
 
 def _documented(text: str) -> set[str]:
@@ -30,7 +31,7 @@ def test_every_command_has_exactly_one_home():
 @pytest.mark.unit
 @pytest.mark.parametrize("toolkit", TOOLKITS, ids=[t.name for t in TOOLKITS])
 def test_file_documents_its_commands_and_no_others(toolkit: Toolkit):
-    assert toolkit.path.exists(), f"res/toolkits/{toolkit.name}.md is missing"
+    assert toolkit.path.exists(), f"{toolkit.path} is missing"
     text = toolkit.text()
     assert len(text) <= Toolkits.MAX_FILE_CHARS
     documented = _documented(text)
@@ -94,3 +95,98 @@ def test_render_carries_the_header_and_substitutes():
     assert Toolkits.loaded_name(rendered) == "timers"
     assert Toolkits.loaded_name("result: \n# Toolkit: timers") is None
     assert Toolkits.loaded_name("# Toolkit: ") is None
+
+
+# --- toolkits an integration folder owns ---------------------------------------------------
+
+LAMP_BODY = "Switch the lamp:\n\n`lamp_on(room: str)`\n`lamp_off(room: str)`\n"
+
+
+def _folder_toolkit(root, folder: str, front_matter: str, body: str = LAMP_BODY):
+    path = root / folder / Toolkits.FOLDER_TOOLKIT_FILE
+    path.parent.mkdir(parents=True)
+    path.write_text(front_matter + body, encoding="utf-8")
+    return path
+
+
+def _lamp(root, folder: str = "lamp", name: str = "lamp", commands: str = "lamp_on, lamp_off"):
+    return _folder_toolkit(root, folder, f'---\nname: {name}\nsummary: "the lamps: on and off"\n'
+                                         f"commands: [{commands}]\n---\n")
+
+
+@pytest.mark.unit
+def test_every_toolkit_file_in_the_integration_folders_is_registered_at_a_pinned_place():
+    """`discover` leaves a broken toolkit.md out so a bad folder cannot stop the server; for the
+    folders of this repository that must be a failing test instead. And a toolkit of the
+    repository has its place in the index pinned, because the index is part of the prompt."""
+    assert {t.file for t in TOOLKITS if t.file} == set(INTEGRATIONS_DIR.glob(f"*/{Toolkits.FOLDER_TOOLKIT_FILE}"))
+    assert [t.name for t in TOOLKITS] == [name for name in Toolkits.INDEX_ORDER if Toolkits.by_name(name)]
+    assert len(TOOLKITS) == len(Toolkits.INDEX_ORDER)
+
+
+@pytest.mark.unit
+def test_a_folder_toolkit_reaches_the_llm_without_its_front_matter(tmp_path):
+    toolkit = Toolkits.read_folder_toolkit(_lamp(tmp_path))
+    assert (toolkit.name, toolkit.commands, toolkit.sections, toolkit.hidden) == ("lamp", ("lamp_on", "lamp_off"), (), False)
+    assert toolkit.summary == "the lamps: on and off"
+    assert toolkit.text() == LAMP_BODY
+    assert Toolkits.render(toolkit) == f"{Toolkits.HEADER_PREFIX}lamp\n{LAMP_BODY}"
+
+
+@pytest.mark.unit
+def test_a_folder_toolkit_may_carry_sections_and_be_hidden(tmp_path):
+    path = _folder_toolkit(tmp_path, "kettle", "---\nname: kettle\nsummary: boil water\ncommands: [boil]\n"
+                                               "sections: [kettle_state]\nhidden: true\n---\n")
+    toolkit = Toolkits.read_folder_toolkit(path)
+    assert toolkit.sections == ("kettle_state",) and toolkit.hidden
+
+
+@pytest.mark.unit
+def test_a_core_reference_that_opens_with_a_rule_keeps_it():
+    """Only a folder's toolkit.md has front matter; a res/toolkits file is the reference whole."""
+    core = Toolkit("lamp", "the lamps", ("lamp_on",))
+    with patch("pathlib.Path.read_text", return_value="---\nnot: front matter\n---\n" + LAMP_BODY):
+        assert core.text().startswith("---\nnot: front matter")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("front_matter", [
+    "",                                                                      # none at all
+    "---\nname: lamp\nsummary: [unclosed\ncommands: [lamp_on]\n---\n",      # not YAML
+    "---\n- lamp\n---\n",                                                   # not a mapping
+    "---\nname: lamp\ncommands: [lamp_on]\n---\n",                          # no summary
+    "---\nname: lamp\nsummary: the lamps\ncommands: lamp_on\n---\n",        # commands not a list
+    "---\nname: lamp\nsummary: the lamps\ncommands: []\n---\n",             # no command
+    "---\nname: lamp\nsummary: the lamps\ncommands: [lamp_on]\nsection: [lamp_state]\n---\n",   # misspelt optional key
+    "---\nname: lamp\nsummary: the lamps\ncommands: [lamp_on]\nhidden: maybe\n---\n",
+], ids=["no front matter", "not yaml", "not a mapping", "no summary", "commands not a list", "no commands",
+        "unknown key", "hidden not a bool"])
+def test_a_broken_toolkit_file_is_named_and_left_out_while_its_neighbours_load(tmp_path, front_matter):
+    broken = _folder_toolkit(tmp_path, "broken", front_matter)
+    _lamp(tmp_path, folder="radio", name="radio", commands="radio_on")
+    with pytest.raises(ToolkitFileError) as raised:
+        Toolkits.read_folder_toolkit(broken)
+    assert str(broken) in str(raised.value)
+    assert [t.name for t in Toolkits.discover(tmp_path)] == ["radio"]
+
+
+@pytest.mark.unit
+def test_a_discovered_toolkit_takes_its_pinned_place_and_an_unknown_one_follows_by_name(tmp_path):
+    core = (Toolkit("home", "the house", ("turn_on",)), Toolkit("voice", "speaking", ("false_positive",), hidden=True))
+    for folder, name, command in (("b", "radio", "radio_on"), ("a", "lamp", "lamp_on"), ("c", "kettle", "boil")):
+        _lamp(tmp_path, folder=folder, name=name, commands=command)
+    registry = Toolkits.assemble(core, Toolkits.discover(tmp_path), order=("home", "lamp", "voice"))
+    assert [t.name for t in registry] == ["home", "lamp", "voice", "kettle", "radio"]
+
+
+@pytest.mark.unit
+def test_a_folder_toolkit_cannot_take_a_name_or_a_command_that_is_owned(tmp_path):
+    core = (Toolkit("home", "the house", ("turn_on", "turn_off")),)
+    _lamp(tmp_path, folder="a_first", name="lamp", commands="lamp_on")
+    _lamp(tmp_path, folder="b_same_name", name="lamp", commands="lamp_dim")
+    _lamp(tmp_path, folder="c_core_name", name="home", commands="open_door")
+    _lamp(tmp_path, folder="d_core_command", name="switches", commands="turn_off, flip")
+    _lamp(tmp_path, folder="e_folder_command", name="bulbs", commands="lamp_on")
+    registry = Toolkits.assemble(core, Toolkits.discover(tmp_path), order=())
+    assert {t.name: t.commands for t in registry} == {"home": ("turn_on", "turn_off"), "lamp": ("lamp_on",)}
+    assert next(t for t in registry if t.name == "lamp").file.parent.name == "a_first"

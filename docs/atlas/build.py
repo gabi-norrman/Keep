@@ -111,14 +111,35 @@ def _group(key: str) -> dict:
     return {"id": key, "name": name, "kind": "package", "path": key + "/", "desc": desc, "children": []}
 
 
-def _toolkits() -> list[tuple[str, str, list[str]]]:
-    """(name, summary, commands) per Toolkit(...) in Toolkits.py, read without importing the assistant."""
+def _front_matter(path: Path) -> dict:
+    """The `key: value` lines of a folder toolkit's front matter (strings and flat lists — all it
+    holds), read without a YAML library."""
+    meta = {}
+    lines = path.read_text(encoding="utf-8").split("\n")
+    for line in lines[1:lines.index("---", 1)] if lines[:1] == ["---"] and "---" in lines[1:] else []:
+        key, _, value = line.partition(":")
+        value = value.strip()
+        if value.startswith("["):
+            meta[key.strip()] = [v.strip().strip("\"'") for v in value.strip("[]").split(",") if v.strip()]
+        else:
+            meta[key.strip()] = json.loads(value) if value.startswith('"') else value
+    return meta
+
+
+def _toolkits() -> list[tuple[str, str, list[str], str]]:
+    """(name, summary, commands, file) per toolkit, read without importing the assistant: the
+    Toolkit(...) calls in Toolkits.py, whose files are in res/toolkits, and the toolkit.md an
+    integration folder owns."""
     tree = ast.parse((REPO / "src/assistant/commands/Toolkits.py").read_text(encoding="utf-8"))
     out = []
     for call in ast.walk(tree):
-        if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "Toolkit" and len(call.args) >= 3:
+        if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "Toolkit" and len(call.args) >= 3 \
+                and all(isinstance(a, (ast.Constant, ast.Tuple)) for a in call.args[:3]):
             name, summary, commands = (ast.literal_eval(a) for a in call.args[:3])
-            out.append((name, summary, list(commands)))
+            out.append((name, summary, list(commands), f"res/toolkits/{name}.md"))
+    for path in sorted((REPO / "src/integrations").glob("*/toolkit.md")):
+        meta = _front_matter(path)
+        out.append((meta["name"], meta["summary"], meta["commands"], path.relative_to(REPO).as_posix()))
     return out
 
 
@@ -150,8 +171,7 @@ def build_tree() -> dict:
                             "lines": _line_count(REPO / "res/prompt.md"), "desc": PROMPT_DESCRIPTION})
     toolkits = _group("res/toolkits")
     res["children"].append(toolkits)
-    for name, summary, commands in _toolkits():
-        rel = f"res/toolkits/{name}.md"
+    for name, summary, commands, rel in _toolkits():
         toolkits["children"].append({"id": rel, "name": f"{name}.md", "kind": "resource", "path": rel,
                                      "lines": _line_count(REPO / rel), "desc": first_sentence(summary[0].upper() + summary[1:]),
                                      "commands": commands})

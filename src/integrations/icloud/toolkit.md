@@ -1,3 +1,8 @@
+---
+name: location
+summary: "make a family member's phone ring, find where they are, set up the phones"
+commands: [find_phone, locate_user, icloud_devices]
+---
 ### Find My iPhone
 To make a family member's phone play a sound (useful when someone can't find their phone):
 

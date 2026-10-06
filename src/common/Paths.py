@@ -10,6 +10,8 @@ AISERVER_DIR = Path(__file__).resolve().parents[2]
 # The server tree is the repository root; both names stay so callers say which one they mean.
 REPO_DIR = AISERVER_DIR
 SRC_DIR = AISERVER_DIR / "src"
+# One folder per outside service; the core finds what is in them by walking this directory.
+INTEGRATIONS_DIR = SRC_DIR / "integrations"
 RES_DIR = AISERVER_DIR / "res"
 CACHE_DIR = AISERVER_DIR / "cache"
 LOG_DIR = AISERVER_DIR / "log"

@@ -54,7 +54,7 @@ GROUPS = {
     'src/interfaces/voice/speaker_id': ('speaker_id', 'Recognises who is speaking from their voice.'),
     'src/interfaces/voice/tts': ('tts', 'Text-to-speech engines, cloud and local, behind one streaming interface with a phrase cache.'),
     'res': ('res', 'The prompt template the LLM reads, and the toolkit references it loads on demand.'),
-    'res/toolkits': ('toolkits', 'Command references the LLM loads into its window only when a request needs them.'),
+    'res/toolkits': ('toolkits', 'Command references the LLM loads into its window only when a request needs them; the one an integration owns is the toolkit.md in its folder.'),
 }
 
 # Modules whose docstring is missing, or whose first sentence is too long to read as one line.

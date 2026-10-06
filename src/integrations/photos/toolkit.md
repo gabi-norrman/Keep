@@ -1,3 +1,8 @@
+---
+name: photos
+summary: "search the family photo library and show photos or videos"
+commands: [search_photos, show_photo]
+---
 You have access to all the families photos. You have a searchable database of {PHOTO_COUNT} indexed photos and videos at your disposal:
 
 `search_photos(keywords: str, sort_by: str = "relevance")`

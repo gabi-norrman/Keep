@@ -1,8 +1,15 @@
 """The toolkits: the command references the LLM loads on demand (plans/TOOLKITS_PLAN.md).
 
 The system prompt carries `load_toolkit(name)` and a one-line index of these; each toolkit's
-reference lives in `res/toolkits/<name>.md` and comes back as the command's result. Nothing
-is inlined into the prompt: every toolkit, `home` included, is loaded on demand.
+reference is a Markdown file that comes back as the command's result. Nothing is inlined into
+the prompt: every toolkit, `home` included, is loaded on demand.
+
+A toolkit more than one integration is behind, or none (`home`, `email`, `web`, `vault` …), is
+declared in `CORE_TOOLKITS` with its reference in `res/toolkits/<name>.md`. A toolkit one
+integration owns lives in that integration's folder, `src/integrations/<folder>/toolkit.md`:
+a front-matter block (`name`, `summary`, `commands`, and `sections` / `hidden` when set) over
+the reference, found by globbing the folders — no Python of the folder is imported to read
+it. `TOOLKITS` is the two together, in `INDEX_ORDER`.
 
 A toolkit can carry prompt sections (`Toolkit.sections`; home carries the house's state): their
 placeholder is not in the prompt template, so the prompt never holds the data — `load_toolkit`
@@ -14,12 +21,21 @@ A hidden toolkit (`voice` — how to talk on the voice channel, and `false_posit
 the index: the channel it belongs to always has it preloaded (`ChannelProfile.fixed_toolkits`),
 so a text chat's prompt never carries a word of it.
 """
+import re
 from dataclasses import dataclass
-from typing import Callable
+from pathlib import Path
+from typing import Callable, Iterable, Optional
 
-from common.Paths import RES_DIR
+import yaml
+
+from common.Paths import INTEGRATIONS_DIR, RES_DIR
+from common.logging import error, trace
 
 TOOLKITS_DIR = RES_DIR / "toolkits"
+# An integration folder's own toolkit: front matter, then the reference.
+FOLDER_TOOLKIT_FILE = "toolkit.md"
+_FRONT_MATTER_RE = re.compile(r"\A---\n(.*?\n)---\n", re.S)
+_FRONT_MATTER_KEYS = {"name", "summary", "commands", "sections", "hidden"}
 # The header of a rendered toolkit; MessageHistory recognises loaded toolkits by it.
 HEADER_PREFIX = "# Toolkit: "
 # A reference is not a web page: the history stores it whole, so the files stay bounded.
@@ -36,16 +52,85 @@ class Toolkit:
     sections: tuple[str, ...] = ()
     # Left out of the index and the "Available:" lists; `load_toolkit` still resolves it.
     hidden: bool = False
+    # An integration folder's toolkit.md; None for a core toolkit, whose file is in res/toolkits.
+    file: Optional[Path] = None
 
     @property
-    def path(self):
-        return TOOLKITS_DIR / f"{self.name}.md"
+    def path(self) -> Path:
+        return self.file or TOOLKITS_DIR / f"{self.name}.md"
 
     def text(self) -> str:
-        return self.path.read_text(encoding="utf-8")
+        """The reference as the LLM receives it: a folder toolkit's front matter is not part of it."""
+        text = self.path.read_text(encoding="utf-8")
+        return _FRONT_MATTER_RE.sub("", text, count=1) if self.file else text
 
 
-TOOLKITS: tuple[Toolkit, ...] = (
+class ToolkitFileError(Exception):
+    """A folder's toolkit.md that cannot be a toolkit; the message names the file."""
+
+
+def read_folder_toolkit(path: Path) -> Toolkit:
+    """The Toolkit a folder's toolkit.md declares in its front matter."""
+    match = _FRONT_MATTER_RE.match(path.read_text(encoding="utf-8"))
+    if match is None:
+        raise ToolkitFileError(f"{path}: no front matter (a `---` block with name, summary, commands)")
+    try:
+        meta = yaml.safe_load(match.group(1))
+    except yaml.YAMLError as e:
+        raise ToolkitFileError(f"{path}: front matter is not YAML: {e}") from e
+    if not isinstance(meta, dict):
+        raise ToolkitFileError(f"{path}: front matter is not a mapping")
+    unknown = set(meta) - _FRONT_MATTER_KEYS
+    if unknown:
+        raise ToolkitFileError(f"{path}: unknown front matter key(s) {sorted(unknown)}")
+    name, summary = meta.get("name"), meta.get("summary")
+    commands, sections, hidden = meta.get("commands"), meta.get("sections", []), meta.get("hidden", False)
+    if not (isinstance(name, str) and name.strip() and isinstance(summary, str) and summary.strip()):
+        raise ToolkitFileError(f"{path}: front matter needs a name and a summary")
+    for key, value, may_be_empty in (("commands", commands, False), ("sections", sections, True)):
+        if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value) or not (value or may_be_empty):
+            raise ToolkitFileError(f"{path}: front matter `{key}` must be a list of names")
+    if not isinstance(hidden, bool):
+        raise ToolkitFileError(f"{path}: front matter `hidden` must be true or false")
+    return Toolkit(name.strip(), summary.strip(), tuple(commands), tuple(sections), hidden, file=path)
+
+
+def discover(root: Path = INTEGRATIONS_DIR) -> list[Toolkit]:
+    """The toolkits the integration folders under *root* own, in folder order. A file that
+    cannot be read as one is logged and left out: one broken folder must not take the
+    server down (for the folders in this repository the unit suite fails instead)."""
+    found = []
+    for path in sorted(root.glob(f"*/{FOLDER_TOOLKIT_FILE}")):
+        try:
+            found.append(read_folder_toolkit(path))
+        except (ToolkitFileError, OSError) as e:
+            error(f"Toolkit left out — {e}")
+    return found
+
+
+def assemble(core: Iterable[Toolkit], discovered: Iterable[Toolkit], order: tuple[str, ...]) -> tuple[Toolkit, ...]:
+    """Core and folder toolkits as one registry. A folder toolkit whose name, or one of whose
+    commands, is already taken is logged and left out — the core and the folder read before
+    it keep theirs. The names in *order* come first, in that order; any other toolkit after
+    them, by name."""
+    accepted = list(core)
+    for toolkit in discovered:
+        taken = {t.name: t for t in accepted}
+        owners = {command: t for t in accepted for command in t.commands}
+        clashes = sorted(c for c in toolkit.commands if c in owners)
+        if toolkit.name in taken:
+            error(f"Toolkit left out — {toolkit.path}: the name '{toolkit.name}' is already "
+                  f"{taken[toolkit.name].path}'s")
+        elif clashes:
+            error(f"Toolkit left out — {toolkit.path}: {', '.join(clashes)} already belong(s) to "
+                  f"the {owners[clashes[0]].name} toolkit")
+        else:
+            accepted.append(toolkit)
+    rank = {name: i for i, name in enumerate(order)}
+    return tuple(sorted(accepted, key=lambda t: (rank.get(t.name, len(rank)), t.name)))
+
+
+CORE_TOOLKITS: tuple[Toolkit, ...] = (
     Toolkit("home", "lights, actions, cameras and the home automation log, with the current state of every "
                     "light, action and variable of the house",
             ("turn_on", "turn_off", "dim", "execute", "fetch_camera_images", "home_automation_logs"),
@@ -57,22 +142,12 @@ TOOLKITS: tuple[Toolkit, ...] = (
             ("browse_open", "browse_act", "browse_key", "browse_eval", "browse_inspect", "browse_snapshot",
              "browse_wait", "browse_network", "browse_click_at", "browse_extract", "browse_screenshot",
              "browse_close", "send_screenshot")),
-    Toolkit("x", "search X (Twitter) posts and read a specific post", ("search_x",)),
     Toolkit("email", "list, search, read and move the user's mail; send an email",
             ("latest_email", "search_email", "read_email", "move_email", "list_folders", "send_email")),
-    Toolkit("imessage", "send an iMessage or SMS to a contact", ("send_imessage",)),
-    Toolkit("music", "play, pause, skip, volume, search Spotify, start a playlist or favorite on a Sonos zone",
-            ("play", "pause", "next", "volume_up", "volume_down", "search_music", "play_music")),
-    Toolkit("photos", "search the family photo library and show photos or videos",
-            ("search_photos", "show_photo")),
-    Toolkit("location", "make a family member's phone ring, find where they are, set up the phones",
-            ("find_phone", "locate_user", "icloud_devices")),
     Toolkit("calendar", "create a calendar event; add to the shared shopping list",
             ("create_event", "add_shopping_list_item")),
     Toolkit("timers", "anything the user wants done LATER, or watched for until it happens",
             ("schedule_wakeup", "caffeinate")),
-    Toolkit("tesla", "the cars: defrost, climate, trunk",
-            ("tesla_max_defrost", "tesla_air_con_on", "tesla_air_con_off", "tesla_open_trunk")),
     Toolkit("history", "search everything that ever happened, when long-term memory does not cover it",
             ("search_history", "show_history")),
     Toolkit("vault", "store a secret the user has said, or ask them for one you must never see",
@@ -85,6 +160,14 @@ TOOLKITS: tuple[Toolkit, ...] = (
     Toolkit("voice", "how to reply when the user is speaking: spoken style, emotion tags, false positives",
             ("false_positive",), hidden=True),
 )
+
+# The order of the index, which is part of the prompt: a toolkit keeps its place wherever its
+# file lives. A toolkit not named here (a new folder's) comes after these, by name.
+INDEX_ORDER = ("home", "web", "browser", "x", "email", "imessage", "music", "photos", "location", "calendar",
+               "timers", "tesla", "history", "vault", "setup", "developer", "voice")
+
+TOOLKITS: tuple[Toolkit, ...] = assemble(CORE_TOOLKITS, discover(), INDEX_ORDER)
+trace(f"Toolkits: {len(CORE_TOOLKITS)} core, {len(TOOLKITS) - len(CORE_TOOLKITS)} from integration folders")
 
 # Documented in the prompt itself, outside any toolkit.
 CORE_COMMANDS = frozenset({"load_toolkit", "remember", "weather", "load_calendar",

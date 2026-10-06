@@ -1,3 +1,8 @@
+---
+name: music
+summary: "play, pause, skip, volume, search Spotify, start a playlist or favorite on a Sonos zone"
+commands: [play, pause, next, volume_up, volume_down, search_music, play_music]
+---
 You can control the Sonos sound system in the house.
 
 Here are the commands you can use (use this syntax exactly):

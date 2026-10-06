@@ -1,3 +1,8 @@
+---
+name: x
+summary: "search X (Twitter) posts and read a specific post"
+commands: [search_x]
+---
 You can search X posts in real time:
 `search_x(query: str)`
 

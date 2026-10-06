@@ -1,3 +1,8 @@
+---
+name: tesla
+summary: "the cars: defrost, climate, trunk"
+commands: [tesla_max_defrost, tesla_air_con_on, tesla_air_con_off, tesla_open_trunk]
+---
 You can interact with the families car using these commands (use this syntax exactly):
 
 `tesla_max_defrost(vehicle_id: str)`
