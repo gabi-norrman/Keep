@@ -787,3 +787,15 @@ class TestMissingConfigKeys:
             config.get.side_effect = get
             probe = self._integration(["api_keys.set", "api_keys.empty", "api_keys.absent"])
             assert probe.missing_config_keys() == ["api_keys.empty", "api_keys.absent"]
+
+
+def test_description_is_the_first_sentence_of_the_class_docstring_and_is_not_inherited():
+    class Described(FakeIntegration):
+        """Reads the meter
+        every hour, e.g. at night. Nothing else of the docstring belongs to it."""
+
+    class Undocumented(Described):
+        pass
+
+    assert Described.description() == "Reads the meter every hour, e.g. at night."
+    assert Undocumented.description() == ""

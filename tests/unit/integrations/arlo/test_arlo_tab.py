@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from integrations.arlo.ArloCameraIntegration import ArloAuthenticationError
-from interfaces.console.tabs.ArloTab import ArloTab
+from integrations.arlo.ArloTab import ArloTab
 
 
 def make_tab(api=None):
@@ -22,7 +22,7 @@ class TestRateLimit:
     def test_the_countdown_replaces_the_outcome_and_clears_itself_on_expiry(self):
         tab = make_tab()
         tab._status_message = "Connecting..."
-        with patch("interfaces.console.tabs.ArloTab.time") as clock:   # pinned: int(remaining) is exact
+        with patch("integrations.arlo.ArloTab.time") as clock:   # pinned: int(remaining) is exact
             clock.time.return_value = 1_000.0
             tab._rate_limit_until = 1_125.0
             assert tab._outcome() == "Rate limited — next attempt allowed in 02:05"

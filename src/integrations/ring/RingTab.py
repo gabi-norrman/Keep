@@ -5,18 +5,16 @@ from interfaces.console.framework.TUIScreen import Color
 from interfaces.console.tabs.AuthTab import AuthTab, PENDING
 from interfaces.console.widgets.Board import SummaryTile, Table
 from integrations.ring.RingIntegration import RingIntegration, RingAuthenticationError
-from assistant.integration.IntegrationMonitor import IntegrationMonitor
 
 
 class RingTab(AuthTab):
     """Ring login with its 2FA, and the doorbells the account has."""
 
+    integration = RingIntegration
+
     def __init__(self):
         super().__init__()
         self._doorbell_names: list = []
-
-    def _connect(self):
-        return RingIntegration.get_instance()
 
     def _on_status(self, api):
         if self.status == "authenticated":
@@ -57,7 +55,7 @@ class RingTab(AuthTab):
         self._check_auth_status()
         if self.status == "authenticated":
             self._status_message = "2FA verification successful!"
-            IntegrationMonitor.get_instance().check_now("Ring")
+            self._check_health_now()
         else:
             self._status_message = "2FA code submitted, waiting for authentication..."
 

@@ -43,7 +43,7 @@ GROUPS = {
     'src/interfaces/console': ('console', 'The terminal ops console: a tabbed dashboard with the Home chat, served over TCP to tui.py.'),
     'src/interfaces/console/crystal': ('crystal', 'A 90s-demo software 3D renderer that draws the console’s logo and startup intro in terminal cells.'),
     'src/interfaces/console/framework': ('framework', 'The TUI engine: a double-buffered cell screen with a picture layer (kitty graphics protocol or half-block pixels), a frame server over TCP and text-width helpers.'),
-    'src/interfaces/console/tabs': ('tabs', 'The console’s tabs: Home chat, Dashboard, Log, Memory, Prompt, Photos, Vault, logins and developer tools.'),
+    'src/interfaces/console/tabs': ('tabs', 'The console’s tabs: Home chat, Dashboard, Log, Memory, Prompt, Vault and developer tools, and the Integrations group that shows each enabled integration’s own tab.'),
     'src/interfaces/console/widgets': ('widgets', 'Reusable console widgets: the Dashboard’s tiles and the board the data tabs are laid out as, the chat pane, markdown, diffs, the CRT cursor and typewriter text.'),
     'src/interfaces/voice': ('voice', 'The VoiceToVoice stack: microphones, cross-mic voting, speaker identification, TTS and speaker playback.'),
     'src/interfaces/voice/ios': ('ios', 'Streams reply text to the iOS app while it speaks.'),

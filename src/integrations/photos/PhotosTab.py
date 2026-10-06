@@ -13,7 +13,8 @@ import time
 from datetime import datetime
 from typing import List, Optional
 
-from .TabView import TabView, SUB_CONTENT_TOP
+from interfaces.console.tabs.IntegrationTab import IntegrationTab
+from interfaces.console.tabs.TabView import SUB_CONTENT_TOP
 from common.logging import info, trace
 from interfaces.console import Theme
 from interfaces.console.framework.Pictures import CELL_ASPECT, Picture
@@ -23,6 +24,7 @@ from interfaces.console.widgets import Board, Tile
 from interfaces.console.widgets.Board import Fact, SummaryTile
 from common.FloxyDatabase import FloxyDatabase
 from integrations.photos.PhotoProcessor import PhotoProcessor, PHOTOS_SQLITE_PATH
+from integrations.photos.PhotosIntegration import PhotosIntegration
 
 DETAILS_MIN_W = 60
 FACT_LABEL_W = 14
@@ -46,8 +48,10 @@ SORT_MODES = [
 ]
 
 
-class PhotosTab(TabView):
+class PhotosTab(IntegrationTab):
     """Tab for browsing the indexed photo library and triggering photo processing."""
+
+    integration = PhotosIntegration
 
     def __init__(self):
         self._index: int = 0

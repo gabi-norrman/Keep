@@ -5,8 +5,8 @@ tab counts — devices, cameras), the tab's own table (its device list) and a Si
 the integration's message, the code entry or a hint on how to start it, and the outcome of the
 last action. From 150 columns the Sign-in tile sits beside the table, above it on a narrower
 screen. The status check runs on a background thread every CHECK_INTERVAL seconds and when the
-tab is opened. A subclass says how to reach its integration, what its table and tiles hold and
-how to verify a code; the key handling for a six-digit code is here too.
+tab is opened. A subclass names its integration (`integration`) and says what its table and tiles
+hold and how to verify a code; the key handling for a six-digit code is here too.
 """
 import threading
 import time
@@ -15,7 +15,8 @@ from typing import Callable, List, Optional, Tuple
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
 from interfaces.console.framework.TextWidth import wrap
-from interfaces.console.tabs.TabView import TabView, SUB_CONTENT_TOP
+from interfaces.console.tabs.IntegrationTab import IntegrationTab
+from interfaces.console.tabs.TabView import SUB_CONTENT_TOP
 from interfaces.console.widgets import Board, Tile
 from interfaces.console.widgets.Board import Fact, SummaryTile, Table
 from common.logging import info, trace
@@ -43,7 +44,7 @@ def code_display(code: str, length: int) -> str:
     return shown + " _" * (length - len(code))
 
 
-class AuthTab(TabView):
+class AuthTab(IntegrationTab):
     HELP = "Ctrl-R refresh  Ctrl-E enter 2FA code"
     CHECK_INTERVAL = 30.0
     SUBMITTING_MESSAGE = "Submitting 2FA code..."
@@ -68,7 +69,12 @@ class AuthTab(TabView):
 
     def _connect(self):
         """The integration singleton; raises when it cannot be built (not configured)."""
-        raise NotImplementedError
+        return self.integration.get_instance()
+
+    def _check_health_now(self):
+        """Have the monitor re-check the integration now (a sign-in just landed), not at its next cycle."""
+        from assistant.integration.IntegrationMonitor import IntegrationMonitor
+        IntegrationMonitor.get_instance().check_now(self.integration.config_name())
 
     def _on_status(self, api) -> None:
         """After a status check: fetch whatever the tab's section shows (device names)."""

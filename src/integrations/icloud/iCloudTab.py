@@ -5,7 +5,6 @@ from interfaces.console.framework.TUIScreen import Color
 from interfaces.console.tabs.AuthTab import AuthTab, PENDING
 from interfaces.console.widgets.Board import SummaryTile, Table
 from integrations.icloud.ICloudIntegration import iCloudAPI, iCloudAuthenticationError
-from assistant.integration.IntegrationMonitor import IntegrationMonitor
 
 DEVICE_WIDTH, MODEL_WIDTH, CONFIGURED_WIDTH = 30, 22, 18
 NONE_CONFIGURED = "none yet — ask Keep to set one up, or copy an id into icloud.devices"
@@ -14,6 +13,8 @@ VERIFIED_STATES = ("authenticated", "partial_auth")   # partial_auth still serve
 
 class iCloudTab(AuthTab):
     """iCloud login with its 2FA, and the Find My devices the session sees."""
+
+    integration = iCloudAPI
 
     SUBMITTING_MESSAGE = "Verifying 2FA code..."
     STATUS_LABELS = {
@@ -26,9 +27,6 @@ class iCloudTab(AuthTab):
         super().__init__()
         self._icloud_devices: list = []
         self._devices_list: str = ""
-
-    def _connect(self):
-        return iCloudAPI.get_instance()
 
     def _on_status(self, api):
         if self.status not in VERIFIED_STATES:
@@ -111,7 +109,7 @@ class iCloudTab(AuthTab):
     def _verify_code(self, api, code: str):
         if api.send_2fa_code(code):
             self._status_message = "2FA verification successful!"
-            IntegrationMonitor.get_instance().check_now("iCloud")
+            self._check_health_now()
             self._check_auth_status()
         else:
             self._status_message = "2FA verification failed. Try again."

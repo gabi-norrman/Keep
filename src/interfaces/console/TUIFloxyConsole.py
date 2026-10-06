@@ -16,15 +16,11 @@ from interfaces.console.tabs.ProceduresTab import ProceduresTab
 from interfaces.console.tabs.WatchListTab import WatchListTab
 from interfaces.console.tabs.VaultTab import VaultTab
 from interfaces.console.tabs.CrystalTab import CrystalTab
-from interfaces.console.tabs.iCloudTab import iCloudTab
-from interfaces.console.tabs.ArloTab import ArloTab
-from interfaces.console.tabs.RingTab import RingTab
-from interfaces.console.tabs.TelegramTab import TelegramTab
-from interfaces.console.tabs.PhotosTab import PhotosTab
 from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.crystal.Scene import Scene
 from interfaces.console.StartupIntro import StartupIntro
 from interfaces.console.tabs import TabBar
+from interfaces.console.tabs.IntegrationsGroup import IntegrationsGroup
 from interfaces.console.tabs.TabGroup import TabGroup
 from interfaces.console.tabs.TabNavigator import TabNavigator
 from interfaces.console.widgets.ChatPane import ChatPane
@@ -37,8 +33,10 @@ if TYPE_CHECKING:
 class TUIFloxyConsole(AssistantObserver):
     """Draws the tabbed TUI dashboard and routes keyboard input to the active tab.
 
-    Tab selection and the Shift+arrow / Tab navigation live in TabNavigator; the Integrations
-    tab is a TabGroup with its own row of sub-tabs.
+    Tab selection and the Shift+arrow / Tab navigation live in TabNavigator; Memory, Integrations
+    and Developer are TabGroups with their own row of sub-tabs. The Integrations row is not
+    fixed: IntegrationsGroup shows the tab of each enabled integration that brings one (found in
+    the integration folders) and a Disabled tab listing the rest.
 
     The first frames after the first client connects are the startup intro (`StartupIntro`):
     the Crystal scene's flight over the whole screen and the title typing out beside the
@@ -113,13 +111,7 @@ class TUIFloxyConsole(AssistantObserver):
                 WatchListTab(),
             ]),
             VaultTab(),
-            TabGroup("Integrations", [
-                iCloudTab(),
-                ArloTab(),
-                RingTab(),
-                TelegramTab(),
-                PhotosTab(),
-            ]),
+            IntegrationsGroup(),
             TabGroup("Developer", [
                 LogTab(),
                 PromptTab(prompt_manager),

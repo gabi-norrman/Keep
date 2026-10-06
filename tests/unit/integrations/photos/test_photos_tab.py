@@ -9,7 +9,7 @@ from PIL import Image
 from interfaces.console import Theme
 from interfaces.console.framework.Pictures import Picture
 from interfaces.console.framework.TUIScreen import TUIScreen
-from interfaces.console.tabs.PhotosTab import PhotosTab
+from integrations.photos.PhotosTab import PhotosTab
 from interfaces.console.widgets.Board import SIDE_BY_SIDE_MIN
 
 PHOTO = {
@@ -117,7 +117,7 @@ class TestPhoto:
         assert any("Ctrl-P" in l for l in lines[:-2])            # how to index the first one
 
 
-from interfaces.console.tabs.PhotosTab import DESCRIPTION_MIN_ROWS
+from integrations.photos.PhotosTab import DESCRIPTION_MIN_ROWS
 
 
 @pytest.mark.unit
@@ -175,7 +175,7 @@ class TestPicture:
 
     def test_a_picture_arriving_after_the_browsing_moved_on_is_dropped(self, monkeypatch):
         import threading
-        from interfaces.console.tabs import PhotosTab as module
+        from integrations.photos import PhotosTab as module
         started = []
         monkeypatch.setattr(threading, "Thread", lambda target, daemon: started.append(target) or type("T", (), {"start": lambda self: None})())
         monkeypatch.setattr(module.PhotoProcessor, "image_bytes_for_asset", staticmethod(lambda guid: jpeg_bytes()))

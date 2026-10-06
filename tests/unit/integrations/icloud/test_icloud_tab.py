@@ -2,7 +2,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from interfaces.console.tabs.iCloudTab import iCloudTab
+from integrations.icloud.iCloudTab import iCloudTab
 
 
 def make_tab(api):

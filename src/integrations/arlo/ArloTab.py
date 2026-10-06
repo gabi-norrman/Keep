@@ -6,7 +6,6 @@ from interfaces.console.framework.TUIScreen import Color
 from interfaces.console.tabs.AuthTab import AuthTab, PENDING
 from interfaces.console.widgets.Board import SummaryTile, Table
 from integrations.arlo.ArloCameraIntegration import ArloCamera, ArloAuthenticationError
-from assistant.integration.IntegrationMonitor import IntegrationMonitor
 
 VERIFY_POLL_SECONDS = 30   # pyaarlo processes the code on its own thread; poll for the login
 
@@ -14,13 +13,12 @@ VERIFY_POLL_SECONDS = 30   # pyaarlo processes the code on its own thread; poll 
 class ArloTab(AuthTab):
     """Arlo login with its 2FA, and the cameras the account has."""
 
+    integration = ArloCamera
+
     def __init__(self):
         super().__init__()
         self._camera_names: list = []
         self._rate_limit_until: float = 0
-
-    def _connect(self):
-        return ArloCamera.get_instance()
 
     def _on_status(self, api):
         if self.status == "authenticated":
@@ -76,7 +74,7 @@ class ArloTab(AuthTab):
             self._status_message = f"Verifying 2FA code ({i + 1}s)..."
         if self.status == "authenticated":
             self._status_message = "2FA verification successful!"
-            IntegrationMonitor.get_instance().check_now("Arlo")
+            self._check_health_now()
         else:
             self._status_message = "2FA code submitted, waiting for authentication..."
 

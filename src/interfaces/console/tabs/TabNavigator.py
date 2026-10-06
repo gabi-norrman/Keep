@@ -106,7 +106,7 @@ class TabNavigator:
             return
         new = self.tabs[(self.index + delta) % len(self.tabs)]
         if isinstance(new, TabGroup):
-            new.index = 0 if delta > 0 else len(new.tabs) - 1
+            new.enter(from_end=delta < 0)
         self._select(delta)
         if isinstance(new, TabGroup):
             new.focused = True

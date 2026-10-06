@@ -28,6 +28,10 @@ class TabGroup(TabView):
     def content_tab(self) -> TabView:
         return self.tabs[self.index]
 
+    def enter(self, from_end: bool):
+        """The Tab walk is about to land on this group: pick the sub-tab at the end it comes from."""
+        self.index = len(self.tabs) - 1 if from_end else 0
+
     def select(self, delta: int):
         old = self.content_tab()
         old.on_deactivate()

@@ -7,6 +7,7 @@ from interfaces.console.tabs.AuthTab import (AuthTab, BACKSPACE_KEYS, ENTER_KEYS
 from interfaces.console.widgets import Board
 from interfaces.console.widgets.Board import Fact, SummaryTile
 from common.logging import trace
+from integrations.telegram_feed.TelegramFeedIntegration import TelegramFeedIntegration
 
 INPUT_PHONE = "phone"
 INPUT_CODE = "code"
@@ -28,6 +29,8 @@ class TelegramTab(AuthTab):
     """The Telegram feed's login: phone number, the code Telegram sends, and the account's
     2FA password when it has one."""
 
+    integration = TelegramFeedIntegration
+
     HELP = "Ctrl-R reconnect  Ctrl-P authenticate"
     STATUS_LABELS = {
         **AuthTab.STATUS_LABELS,
@@ -39,10 +42,6 @@ class TelegramTab(AuthTab):
         super().__init__()
         self._phone_number = ""
         self._feed: Optional[dict] = None
-
-    def _connect(self):
-        from integrations.telegram_feed.TelegramFeedIntegration import TelegramFeedIntegration
-        return TelegramFeedIntegration.get_instance()
 
     def _on_status(self, api):
         from assistant.integration.FeedRunner import Feeds

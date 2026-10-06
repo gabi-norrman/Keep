@@ -12,10 +12,14 @@ from interfaces.console.tabs import AuthTab as auth_tab_module
 from interfaces.console.Theme import COLOR_GREEN, COLOR_RED, COLOR_YELLOW
 from interfaces.console.tabs.AuthTab import AuthTab, code_display
 from interfaces.console.widgets.Board import COLOR_PROMPT, SIDE_BY_SIDE_MIN, Table
-from interfaces.console.tabs.ArloTab import ArloTab
-from interfaces.console.tabs.iCloudTab import iCloudTab
-from interfaces.console.tabs.RingTab import RingTab
-from interfaces.console.tabs.TelegramTab import INPUT_CODE, INPUT_PASSWORD, INPUT_PHONE, TelegramTab
+from assistant.integration.Integration import IntegrationState
+from assistant.integration.IntegrationMonitor import IntegrationMonitor
+from integrations.arlo.ArloTab import ArloTab
+from integrations.icloud.iCloudTab import iCloudTab
+from integrations.ring.RingTab import RingTab
+from integrations.telegram_feed.TelegramTab import INPUT_CODE, INPUT_PASSWORD, INPUT_PHONE, TelegramTab
+
+from .integration_fakes import LampIntegration
 
 
 class FakeTab(AuthTab):
@@ -672,3 +676,28 @@ class TestTelegramFeedTile:
     def test_without_a_feed_the_tile_is_pending(self):
         lines = rows(draw(self.make(None), width=120))
         assert PENDING in row_with(lines, "Feed") and any("not running" in l for l in lines)
+
+
+@pytest.mark.unit
+class TestIntegrationBinding:
+    """A sign-in tab only names its integration's class; reaching it and re-checking it follow from that."""
+
+    class LampSignIn(AuthTab):
+        integration = LampIntegration
+
+    def test_the_tab_reaches_the_singleton_of_the_integration_it_names(self):
+        try:
+            assert self.LampSignIn()._get_api() is LampIntegration.peek_instance()
+        finally:
+            LampIntegration.reset_instance()
+
+    def test_a_sign_in_has_the_monitor_check_the_integration_under_the_name_it_is_registered_by(self, monkeypatch):
+        monitor = IntegrationMonitor()
+        monkeypatch.setattr(IntegrationMonitor, "_instance", monitor)
+        lamp = LampIntegration()
+        monitor.register(lamp)
+        assert lamp.state is IntegrationState.UNKNOWN
+
+        self.LampSignIn()._check_health_now()
+
+        assert lamp.state is IntegrationState.OK

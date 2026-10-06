@@ -374,7 +374,7 @@ class TestPhotosTab:
 
     @pytest.mark.unit
     def test_sort_cycling(self):
-        from interfaces.console.tabs.PhotosTab import PhotosTab, SORT_MODES
+        from integrations.photos.PhotosTab import PhotosTab, SORT_MODES
         from unittest.mock import patch, MagicMock
 
         tab = PhotosTab()
@@ -390,7 +390,7 @@ class TestPhotosTab:
 
     @pytest.mark.unit
     def test_navigation_clamps(self):
-        from interfaces.console.tabs.PhotosTab import PhotosTab
+        from integrations.photos.PhotosTab import PhotosTab
         from unittest.mock import patch, MagicMock
 
         tab = PhotosTab()
@@ -407,7 +407,7 @@ class TestPhotosTab:
 
     @pytest.mark.unit
     def test_home_end(self):
-        from interfaces.console.tabs.PhotosTab import PhotosTab
+        from integrations.photos.PhotosTab import PhotosTab
         from unittest.mock import patch, MagicMock
 
         tab = PhotosTab()
@@ -423,14 +423,14 @@ class TestPhotosTab:
 
     @pytest.mark.unit
     def test_type_label_includes_duration_for_videos(self):
-        from interfaces.console.tabs.PhotosTab import PhotosTab
+        from integrations.photos.PhotosTab import PhotosTab
         assert PhotosTab._type_label({"photo_type": "video, slo-mo", "duration_seconds": 12.4}) == "video, slo-mo \u00b7 12s"
         assert PhotosTab._type_label({"photo_type": "photo", "duration_seconds": None}) == "photo"
         assert PhotosTab._type_label({}) == "\u2014"
 
     @pytest.mark.unit
     def test_format_date(self):
-        from interfaces.console.tabs.PhotosTab import PhotosTab
+        from integrations.photos.PhotosTab import PhotosTab
         assert PhotosTab._format_date(None) == "\u2014"
         formatted = PhotosTab._format_date(1700000000.0)
         assert "2023" in formatted

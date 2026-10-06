@@ -1,3 +1,4 @@
+import re
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import List, Optional
@@ -52,6 +53,14 @@ class Integration(SingletonMixin, ABC):
             except Exception:
                 pass
         return cls.__name__.removesuffix("Integration")
+
+    @classmethod
+    def description(cls) -> str:
+        """One line on what the integration is, readable before an instance exists: the first
+        sentence of the class docstring ("" for a class without one)."""
+        text = " ".join((cls.__doc__ or "").split())
+        sentence = re.match(r".+?(?<!e\.g)(?<!i\.e)[.!?](?=\s|$)", text)
+        return sentence.group(0) if sentence else text
 
     @classmethod
     def enabled(cls, config) -> bool:

@@ -46,6 +46,7 @@ EXECUTE = {"scene": ("scene", "turn_on"), "script": ("script", "turn_on"), "auto
 
 
 class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
+    """Home Assistant as the house: its lights, switches, sensors and scenes over one websocket, and its events as a feed."""
 
     poll_interval = POLL_INTERVAL
     item_noun = "events"
