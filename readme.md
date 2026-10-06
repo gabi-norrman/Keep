@@ -178,17 +178,13 @@ microphone to the speaker.
 
 ## Privacy
 
-Let's be honest: an assistant that reads your mail, sees your photos and listens in your kitchen is a bit of a privacy
-nightmare. Here is where Keep stands today.
+Let's be honest: an assistant that reads your mail, sees your photos and messages is a privacy minefield. Here is where Keep stands today.
 
-- 💾 **Your data lives on your Mac.** The database, photo index, logs and voice profiles never leave it, and
-  there is no Keep cloud. The one thing that does leave during the beta is the usage telemetry described below.
+- 💾 **Your data lives on your Mac.** The database, photo index, logs and voice profiles never leave it, and there is no Keep cloud.
 - ☁️ **The thinking happens on Anthropic's servers.** Anthropic does not train on API data by default; see their data policy.
-- 🔐 **Secrets stay out of it.** The Keep Vault keeps passwords, card numbers and the like encrypted on your Mac, and the AI
-  only ever sees placeholders. It is a system for hiding secrets from the cloud, not for anonymizing everything you say.
-- 🏁 **The end game is 100% local.** Keep already runs on local models and once the SOTA local models are good enough, we'll move to <i>local only</i>.
+- 🔐 **Secrets stay out of it.** The Keep Vault keeps passwords, card numbers and the like encrypted on your Mac, and the AI only ever sees placeholders. It is a system for hiding secrets from the cloud, not for anonymizing everything you say.
 
-Right now Fable from Anthropic is needed for a no-compromise solution.
+The end game is 100% local. Keep already runs on local models and once the local SOTA models are good enough, we'll move to <i>local only</i>. Right now Fable from Anthropic is needed for a **<i>no-compromise solution</i>**.
 
 > [!IMPORTANT]
 > **Beta telemetry.** During the beta Keep sends anonymous usage events: a random install id, the Keep version, which
