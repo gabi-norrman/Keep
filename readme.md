@@ -1,36 +1,30 @@
-<p align="center"><img src="docs/images/banner.svg" width="840" alt="Keep — personal AI done right"></p>
-
+<p align="center"><img src="docs/images/banner.svg" width="100%" alt="Keep — personal AI done right"></p>
+<br>
 <p align="center">
-  A self-hosted AI assistant that runs on a Mac in your home and <b>truly knows you</b>.
+  A self-hosted personal AI assistant that <b>just works</b>.
 </p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/runs_on-Apple_Silicon-40c8ff?style=flat-square&labelColor=181b28&logo=apple&logoColor=white" alt="Runs on Apple Silicon">
-  <img src="https://img.shields.io/badge/powered_by-Fable-af82ff?style=flat-square&labelColor=181b28&logo=anthropic&logoColor=white" alt="Powered by Fable">
-  <img src="https://img.shields.io/badge/self--hosted-on_your_Mac-46e696?style=flat-square&labelColor=181b28" alt="Self-hosted on your Mac">
-  <a href="https://maciekd.github.io/Keep/atlas/"><img src="https://img.shields.io/badge/architecture-Keep_Atlas-ffcd50?style=flat-square&labelColor=181b28" alt="Architecture: Keep Atlas"></a>
-</p>
+<br>
 
 <table>
 <tr>
-<td width="340" align="center">
+<td align="center">
 <img src="docs/images/video.gif" width="300" alt="A chat with Keep"><br>
-<sub>Real chat transcripts</sub>
 </td>
-<td valign="top">
+</tr>
+<tr>
+<td>
 
-### Personal AI done right
-
-Keep is built for people who live in the <b>Apple ecosystem</b>, runs on <b>Apple Silicon Macs</b> and is powered by <b>Fable from Anthropic</b>.
+### Keep
+Built for users in the <b>Apple ecosystem</b>, runs on <b>Apple Silicon Macs</b> and is powered by <b>Fable from Anthropic</b>.
 
 Refined over two years of daily use in a real home: it's robust and <b><i>just works</i></b>.
 
 ### Requirements
-
-Apple Silicon Mac connected to your iCloud that can stay on as a server.
+Apple Silicon Mac connected to your personal iCloud.
 
 Everything else — email, smart home, cameras, car — is optional, and Keep walks you through setting it up.
 
+<img src="docs/images/banner.svg" width="2000" height="0" alt="">
 </td>
 </tr>
 </table>
@@ -42,7 +36,7 @@ gh auth login && gh api -H "Accept: application/vnd.github.raw" "repos/maciekd/K
 ```
 
 > [!NOTE]
-> `brew install gh` if you do not have `gh`. The installer is self-contained, it won't touch anything else on your Mac.
+> Keep is in closed beta: the install only works for GitHub accounts invited as collaborators. `brew install gh` if you do not have `gh`. The installer is self-contained, it won't touch anything else on your Mac.
 
 ## Features
 
@@ -170,7 +164,7 @@ Every integration is off until you turn it on, and Keep walks you through the se
 
 ## Architecture
 
-<a href="https://maciekd.github.io/Keep/atlas/"><img src="docs/images/atlas.png" width="840" alt="The Keep Atlas"></a>
+<a href="https://maciekd.github.io/Keep/atlas/"><img src="docs/images/atlas.png" width="100%" alt="The Keep Atlas"></a>
 
 Curious how it fits together? The **[Keep Atlas](https://maciekd.github.io/Keep/atlas/)** is a zoomable map of the whole
 server: every package, module and class with a one-line description, and a walk through one spoken request from the
