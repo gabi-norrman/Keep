@@ -123,6 +123,38 @@ class TestTelegramOnlyBoot:
 
 
 @pytest.mark.unit
+class TestDisabledSonosIsLeftAlone:
+    def test_build_does_not_build_the_music_integration(self, telegram_only_config, quiet_heavy_startup):
+        # Only the IntegrationMonitor builds it (mocked away here, as on an install where
+        # Sonos & Spotify is disabled): built at startup it discovers speakers on its own.
+        from assistant.integration.integrations.MusicIntegration import MusicIntegration
+        MusicIntegration.reset_instance()
+        import floxy_ai_server
+        server = floxy_ai_server.build(8999, running_as_testsuite=False)
+        try:
+            assert MusicIntegration.peek_instance() is None
+        finally:
+            server.stop()
+
+
+@pytest.mark.unit
+class TestCrashTraces:
+    def test_traces_go_to_the_real_stderr_not_the_logging_wrapper(self):
+        # faulthandler needs a file descriptor; sys.stderr is a StderrLogger once _parse_args ran.
+        import floxy_ai_server
+        with patch.object(sys, 'stderr', Mock(spec=[])), patch('floxy_ai_server.faulthandler') as fh:
+            floxy_ai_server._enable_crash_traces()
+        assert fh.enable.call_args.kwargs["file"] is sys.__stderr__
+        assert fh.enable.call_args.kwargs["all_threads"] is True
+
+    def test_a_process_without_stderr_starts_anyway(self):
+        import floxy_ai_server
+        with patch.object(sys, '__stderr__', None), patch('floxy_ai_server.faulthandler') as fh:
+            floxy_ai_server._enable_crash_traces()
+        fh.enable.assert_not_called()
+
+
+@pytest.mark.unit
 class TestInterfaceFlags:
     def test_voice_is_off_unless_the_config_says_so(self, quiet_heavy_startup):
         real_get = config.get
