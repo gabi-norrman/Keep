@@ -2,14 +2,16 @@ from .GeminiVoiceSynthesizer import GeminiVoiceSynthesizer
 
 
 class Chirp3VoiceSynthesizer(GeminiVoiceSynthesizer):
-    """Streams speech from Google Cloud TTS's Chirp 3 HD voices.
+    """A voice from Google Chirp 3 HD.
 
-    Shares the Gemini synthesizer's streaming machinery (threads, queues, audio generator)
-    but targets Chirp 3 HD, which streams truly incrementally: audio starts after the first
-    words instead of after most of the text (as the Gemini TTS model does). Trade-off: Chirp
-    3 HD takes plain text only, so prompt-based tone steering is unavailable and emotion tags
-    ([laughing] etc.) are stripped before synthesis (SUPPORTS_EMOTION_TAGS = False).
-    """
+    Speaks Keep's replies with the Chirp 3 HD voices of Google Cloud TTS, which start talking
+    after the first words of an answer.
+
+    Shares the Gemini synthesizer's streaming machinery (threads, queues, audio generator) but
+    targets Chirp 3 HD, which streams truly incrementally: audio starts after the first words
+    instead of after most of the text (as the Gemini TTS model does). Trade-off: Chirp 3 HD
+    takes plain text only, so prompt-based tone steering is unavailable and emotion tags
+    ([laughing] etc.) are stripped before synthesis (SUPPORTS_EMOTION_TAGS = False)."""
 
     SUPPORTS_EMOTION_TAGS = False
 

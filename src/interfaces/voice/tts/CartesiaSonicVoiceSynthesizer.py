@@ -12,7 +12,12 @@ from common.ConfigManager import config
 
 
 class CartesiaSonicVoiceSynthesizer(WebSocketVoiceSynthesizer, Integration):
-    """Streams speech from the Cartesia Sonic websocket TTS API."""
+    """A voice from Cartesia Sonic.
+
+    Speaks Keep's replies with Cartesia's Sonic TTS, streamed while the answer is still being
+    written.
+
+    Streams over the websocket API."""
 
     # Can render emotion tags, but the feature is currently disabled at the prompt
     # level (see VoiceSynthesizer.SUPPORTS_EMOTION_TAGS) — it was a bit wonky.

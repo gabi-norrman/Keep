@@ -17,11 +17,12 @@ _FOLD_MAP = str.maketrans({
 
 
 class GmailIntegration(Integration, EmailProvider):
-    """Provides IMAP access to the Gmail account.
+    """A Gmail mailbox.
 
-    Search queries are folded to ASCII because Gmail rejects non-ASCII SEARCH strings
-    but matches diacritic-folded terms server-side.
-    """
+    Gives Keep the Gmail account: it searches and reads the mail and sends a message when asked.
+
+    IMAP for reading, SMTP for sending. Search queries are folded to ASCII because Gmail rejects
+    non-ASCII SEARCH strings but matches diacritic-folded terms server-side."""
     sensitive = True
 
     IMAP_HOST = "imap.gmail.com"

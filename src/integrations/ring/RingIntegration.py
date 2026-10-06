@@ -47,7 +47,12 @@ HARDWARE_ID_AGENT = "Floxy/1.0"
 
 
 class RingIntegration(Integration):
-    """Connects to the Ring API and fetches doorbell camera snapshots."""
+    """Ring doorbell snapshots.
+
+    Fetches a snapshot from the Ring doorbell camera so Keep can say who is at the door. Signing
+    in takes the Ring account and its 2FA code.
+
+    Connects to the Ring API."""
     sensitive = True
 
     def __init__(self, config_manager: Optional[ConfigManager] = None, config: Optional[Dict[str, Any]] = None):

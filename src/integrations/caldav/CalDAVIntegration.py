@@ -18,7 +18,12 @@ EVENTS_UNAVAILABLE = "(Calendar events could not be loaded)"
 
 
 class CalDAVIntegration(Integration):
-    """Reads and creates calendar events on the iCloud CalDAV server."""
+    """The iCloud calendars.
+
+    Reads the household's calendars and creates events in them, so Keep can say what is on the
+    schedule and add to it when asked.
+
+    Talks to the iCloud CalDAV server."""
     sensitive = True
 
     @property

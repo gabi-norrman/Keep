@@ -44,11 +44,13 @@ _serialise_zone_state_parsing()
 
 
 class MusicIntegration(Integration):
-    """Controls Sonos zones and plays Spotify content, playlists and favorites in them.
+    """Music on the Sonos speakers.
 
-    Playlists and favorites are cached and refreshed periodically; Spotify search results
-    get short ids the LLM can refer back to within the conversation.
-    """
+    Plays Spotify music, playlists and favorites in the Sonos zones, with pause, skip and
+    volume. Keep can search Spotify and start what it finds in any room.
+
+    Playlists and favorites are cached and refreshed periodically; Spotify search results get
+    short ids the LLM can refer back to within the conversation."""
 
     CACHE_EXPIRY_SECONDS = 30 * 60
     REFRESH_INTERVAL_SECONDS = 30 * 60

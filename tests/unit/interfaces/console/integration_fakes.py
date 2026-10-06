@@ -20,7 +20,11 @@ class FakeIntegration(Integration):
 
 
 class LampIntegration(FakeIntegration):
-    """Switches the reading lamp. It also knows how long it has been on."""
+    """Switches the reading lamp.
+
+    Turns it on at dusk and off when the room is empty.
+
+    It also knows how long it has been on."""
     name = named("Lamp")
 
 

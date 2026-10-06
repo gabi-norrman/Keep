@@ -39,8 +39,13 @@ STATE_LINE = re.compile(r'^"(.+?)": ?(.*)$')
 
 
 class IndigoIntegration(Integration, Feed, HomeAutomation):
-    """Indigo's REST API for the light and action commands, prompt.txt for the state, and the
-    event log as a feed."""
+    """The house through Indigo.
+
+    Makes Indigo the home automation backend: Keep sees the state of the house, switches the
+    lights and runs actions, and follows the event log as a feed.
+
+    Indigo's REST API for the light and action commands, prompt.txt for the state, and the event
+    log as a feed."""
 
     poll_interval = POLL_INTERVAL
     item_noun = "events"

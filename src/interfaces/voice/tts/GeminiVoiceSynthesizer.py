@@ -13,7 +13,12 @@ from common.ConfigManager import config
 
 
 class GeminiVoiceSynthesizer(VoiceSynthesizer, Integration):
-    """Streams speech from Google Cloud TTS's Gemini models over a bidirectional stream."""
+    """A voice from Google Gemini.
+
+    Speaks Keep's replies with the Gemini models of Google Cloud TTS, whose tone can be steered
+    by a prompt.
+
+    Streams over a bidirectional stream."""
 
     # Can render emotion tags, but the feature is currently disabled at the prompt
     # level (see VoiceSynthesizer.SUPPORTS_EMOTION_TAGS) — it was a bit wonky.

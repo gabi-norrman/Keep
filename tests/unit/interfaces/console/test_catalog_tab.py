@@ -1,16 +1,22 @@
 import pytest
 
+from assistant.integration import bootstrap
 from assistant.integration.Integration import IntegrationState
 from assistant.integration.IntegrationMonitor import IntegrationMonitor, UnavailableIntegration
 from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.tabs import CatalogTab as module
+from assistant.tools.WebAccess import WebAccess
 from interfaces.console.tabs.CatalogTab import CatalogTab
+from interfaces.telegram.TelegramTransport import TelegramTransport
+from interfaces.voice.tts.VoiceFactory import ENGINES
 
 from .integration_fakes import (FakeIntegration, KettleIntegration, LampIntegration, RadioIntegration, disable, enable,
                                 named)
 
 ENABLED = module.STATUS[IntegrationState.OK].label
 DISABLED = module.STATUS[IntegrationState.DISABLED].label
+DESCRIPTION_MAX = 48    # "a few words": what fits the table's "What it is" column on a narrow screen
+DETAILS_MAX = 300       # one to three sentences
 
 
 class ToasterIntegration(FakeIntegration):
@@ -71,7 +77,23 @@ def test_a_row_says_what_the_integration_is(monitor):
 
     kettle, lamp = row_of(lines, "Kettle"), row_of(lines, "Lamp")
     assert "Boils water on request." in kettle and "second paragraph" not in kettle
-    assert "Switches the reading lamp." in lamp and "how long" not in lamp
+    assert "Switches the reading lamp." in lamp and "dusk" not in lamp and "how long" not in lamp
+
+
+def test_the_selected_integration_says_what_it_does_but_not_its_code_notes(monitor):
+    working(monitor, LampIntegration)
+
+    text = "\n".join(rows(CatalogTab(), width=180, height=40))
+
+    assert "on at dusk and off when the room is empty" in text and "how long" not in text
+
+
+@pytest.mark.parametrize("cls", [*bootstrap.integration_classes(), WebAccess, TelegramTransport, *ENGINES],
+                         ids=lambda cls: cls.__name__)
+def test_every_integration_of_this_repository_describes_itself_for_the_catalog(cls):
+    """The first two paragraphs of the class docstring: a few words, then one to three sentences."""
+    assert 0 < len(cls.description()) <= DESCRIPTION_MAX
+    assert 0 < len(cls.details()) <= DETAILS_MAX
 
 
 def test_the_selected_integration_says_what_it_brings(monitor):

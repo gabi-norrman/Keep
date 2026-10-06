@@ -169,7 +169,12 @@ class TelegramDraft:
 
 
 class TelegramTransport(Integration, ChatTransport):
-    """Runs the Telegram bot: updates in, chat-layer rendering out."""
+    """Keep as a Telegram bot.
+
+    A chat with Keep in Telegram: write or send a voice message from the phone and get its
+    replies, approval prompts and notifications there.
+
+    Runs the bot: updates in, chat-layer rendering out."""
 
     source = SOURCE_TELEGRAM
     max_message_length = 4096

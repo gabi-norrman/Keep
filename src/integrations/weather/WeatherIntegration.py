@@ -11,7 +11,11 @@ from common.ConfigManager import config
 
 # noinspection PyMethodMayBeStatic
 class WeatherIntegration(Integration):
-    """Fetches the home location's weather forecast from the YR (met.no) API."""
+    """The weather forecast from YR.
+
+    Fetches the forecast for the home location, so Keep can say what the weather will be.
+
+    Uses the YR (met.no) API."""
 
     @property
     def name(self) -> str:

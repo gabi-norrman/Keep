@@ -789,13 +789,23 @@ class TestMissingConfigKeys:
             assert probe.missing_config_keys() == ["api_keys.empty", "api_keys.absent"]
 
 
-def test_description_is_the_first_sentence_of_the_class_docstring_and_is_not_inherited():
+def test_description_and_details_are_the_first_two_paragraphs_of_the_class_docstring_and_are_not_inherited():
     class Described(FakeIntegration):
-        """Reads the meter
-        every hour, e.g. at night. Nothing else of the docstring belongs to it."""
+        """The electricity
+        meter.
+
+        Reads the meter every hour, e.g. at night. Keep can
+        say what the house used.
+
+        Nothing of this paragraph is shown anywhere."""
+
+    class Terse(FakeIntegration):
+        """The water meter."""
 
     class Undocumented(Described):
         pass
 
-    assert Described.description() == "Reads the meter every hour, e.g. at night."
-    assert Undocumented.description() == ""
+    assert Described.description() == "The electricity meter."
+    assert Described.details() == "Reads the meter every hour, e.g. at night. Keep can say what the house used."
+    assert (Terse.description(), Terse.details()) == ("The water meter.", "")
+    assert (Undocumented.description(), Undocumented.details()) == ("", "")

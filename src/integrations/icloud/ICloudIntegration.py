@@ -147,11 +147,13 @@ class iCloudDeviceSpec:
 
 
 class ICloudIntegration(Integration):
-    """Locates and pings the family's devices through the iCloud Find My service.
+    """Find My: where the devices are.
 
-    Owns the pyicloud session, including automatic SMS 2FA recovery with strict caps on
-    code requests and fresh signins so a broken flow can never spam Apple or the phone.
-    """
+    Locates the family's devices through iCloud Find My and makes a lost phone ring. Signing in
+    takes the Apple ID and the 2FA code Apple texts.
+
+    Owns the pyicloud session, including automatic SMS 2FA recovery with strict caps on code
+    requests and fresh signins so a broken flow can never spam Apple or the phone."""
     sensitive = True
 
     SESSION_EXPIRED_2FA_MESSAGE = (

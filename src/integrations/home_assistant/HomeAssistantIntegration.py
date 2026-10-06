@@ -46,7 +46,12 @@ EXECUTE = {"scene": ("scene", "turn_on"), "script": ("script", "turn_on"), "auto
 
 
 class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
-    """Home Assistant as the house: its lights, switches, sensors and scenes over one websocket, and its events as a feed."""
+    """The house through Home Assistant.
+
+    Makes Home Assistant the home automation backend: Keep sees the lights, switches, sensors
+    and scenes, controls them, and follows what happens in the house as a feed of events.
+
+    One websocket carries the state, the commands and the event subscription."""
 
     poll_interval = POLL_INTERVAL
     item_noun = "events"

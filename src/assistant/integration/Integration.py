@@ -29,6 +29,11 @@ class Integration(SingletonMixin, ABC):
     Subclasses implement name, config_keys, and check_health(). The IntegrationMonitor
     periodically calls check_health() and manages state transitions on this base class.
     Singleton access (get_instance/reset_instance) comes from SingletonMixin.
+
+    A subclass's docstring is read by the console's Catalog tab, so it has three paragraphs:
+    what the integration is in a few words (`description()`, the "What it is" column), what
+    it does for the user in one to three sentences (`details()`, shown with the selected
+    integration), then the notes for whoever reads the code, which no UI shows.
     """
 
     # Off unless config.yaml lists the integration in `enabled_integrations`. The exceptions
@@ -55,12 +60,21 @@ class Integration(SingletonMixin, ABC):
         return cls.__name__.removesuffix("Integration")
 
     @classmethod
+    def _paragraphs(cls) -> List[str]:
+        """The paragraphs of the class docstring, each on one line (a class without a docstring has none)."""
+        return [" ".join(part.split()) for part in re.split(r"\n\s*\n", cls.__doc__ or "") if part.strip()]
+
+    @classmethod
     def description(cls) -> str:
-        """One line on what the integration is, readable before an instance exists: the first
-        sentence of the class docstring ("" for a class without one)."""
-        text = " ".join((cls.__doc__ or "").split())
-        sentence = re.match(r".+?(?<!e\.g)(?<!i\.e)[.!?](?=\s|$)", text)
-        return sentence.group(0) if sentence else text
+        """What the integration is, in a few words, readable before an instance exists: the
+        first paragraph of the class docstring ("" for a class without one)."""
+        return next(iter(cls._paragraphs()), "")
+
+    @classmethod
+    def details(cls) -> str:
+        """What the integration does for the user, in one to three sentences: the second
+        paragraph of the class docstring ("" for a docstring of one paragraph)."""
+        return next(iter(cls._paragraphs()[1:]), "")
 
     @classmethod
     def enabled(cls, config) -> bool:

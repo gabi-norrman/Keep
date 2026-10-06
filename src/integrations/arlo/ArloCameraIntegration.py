@@ -157,11 +157,14 @@ class _ArloTfaHandler(TfaCodeHandler):
 
 
 class ArloCameraIntegration(Integration):
-    """Connects to the Arlo cloud via PyArlo and fetches camera snapshots.
+    """Arlo camera snapshots.
 
-    Failed logins back off exponentially (persisted across restarts) and lock out for 24h
-    after MAX_CONSECUTIVE_FAILURES, so a broken 2FA flow can never hammer Arlo's auth.
-    """
+    Fetches a fresh snapshot from an Arlo camera so Keep can say what it sees. Signing in takes
+    the Arlo account, its 2FA included.
+
+    Connects to the Arlo cloud via PyArlo. Failed logins back off exponentially (persisted
+    across restarts) and lock out for 24h after MAX_CONSECUTIVE_FAILURES, so a broken 2FA flow
+    can never hammer Arlo's auth."""
     sensitive = True
 
     REAL_CHECK_EVERY = 4  # do a real health check every Nth call (4 × 15 min = 1 hour)

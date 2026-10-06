@@ -42,13 +42,17 @@ SCHEDULED_GRACE_PERIOD = 7 * 24 * 3600
 
 
 class IMessageIntegration(Integration, Feed):
-    """Reads the macOS iMessage database as a Feed (plans/FEED_PLAN.md): `fetch` turns the
-    rows after the cursor (a chat.db ROWID) into history entries; FeedRunner owns the thread,
-    the cursor and the catch-up.
+    """iMessage and SMS on the server's Mac.
 
-    Also sends messages (rate-limited), resolves contact names to handles, forwards detected
-    Apple/Ring 2FA codes to their integrations, and dispatches scheduled send-later messages.
-    """
+    Brings the messages that arrive on the server's Mac into Keep's history, as a feed, and
+    sends an iMessage or SMS to a contact when asked. It also catches the 2FA codes Apple and
+    Ring text.
+
+    Reads the macOS iMessage database as a Feed (plans/FEED_PLAN.md): `fetch` turns the rows
+    after the cursor (a chat.db ROWID) into history entries; FeedRunner owns the thread, the
+    cursor and the catch-up. Sending is rate-limited; it also resolves contact names to handles,
+    forwards the detected Apple/Ring 2FA codes to their integrations, and dispatches scheduled
+    send-later messages."""
     sensitive = True
 
     poll_interval = POLL_INTERVAL

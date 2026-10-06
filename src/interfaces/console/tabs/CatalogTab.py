@@ -16,9 +16,9 @@ from interfaces.console.widgets.Board import Fact, SummaryTile, Table
 
 NAME_W, STATUS_W = 22, 14
 DESCRIPTION_MIN_W = 24                   # a narrower table drops the description
-STACKED_DETAIL_H = Tile.CARD_CHROME + 4
+STACKED_DETAIL_H = Tile.CARD_CHROME + 6   # the description, three rows of details, a blank one, the status
 STACKED_TABLE_MIN_ROWS = 4               # a screen too short for these and the detail shows the table alone
-DESCRIPTION_MAX_ROWS = 4
+DETAILS_MAX_ROWS = 6
 ERROR_MAX_ROWS = 3
 STARTING = "integrations are still starting"
 ALL_ENABLED = "everything is enabled"
@@ -69,8 +69,10 @@ class CatalogTab(TabView):
     A board in the Dashboard's tiles: summary tiles (how many are enabled, which of those need
     attention, how many are disabled), a table of them all — enabled in their health colour,
     disabled dimmed under them — and the selected one in full beside it (under it on a narrow
-    screen): its description, its health, the config keys it misses, what it brings (a feed,
-    private data, a tab of its own) and the words that turn it on or off. Read from the IntegrationMonitor, placeholders included, so it lists the
+    screen): what it is and what it does for the user (`Integration.description` and
+    `details`, the first two paragraphs of its docstring), its health, the config keys it
+    misses, what it brings (a feed, private data, a tab of its own) and the words that turn it
+    on or off. Read from the IntegrationMonitor, placeholders included, so it lists the
     integrations without a tab of their own too (and the voice engines and the Telegram bot
     when their interface registers them). Read-only: enabling and disabling are the
     assistant's `enable_integration` / `disable_integration`."""
@@ -84,7 +86,7 @@ class CatalogTab(TabView):
         self._top = 0
         self._room = 1
         self._listed: Optional[Tuple[Tuple[str, bool], ...]] = None
-        self._descriptions: Dict[type, str] = {}
+        self._texts: Dict[type, Tuple[str, str]] = {}    # class -> its description and details
 
     @property
     def name(self) -> str:
@@ -109,10 +111,10 @@ class CatalogTab(TabView):
             trace(f"Catalog tab: listing {len(entries)} integrations, {sum(1 for e in entries if e.enabled)} enabled")
         return entries
 
-    def _description(self, cls: type) -> str:
-        if cls not in self._descriptions:
-            self._descriptions[cls] = cls.description()
-        return self._descriptions[cls]
+    def _text(self, cls: type) -> Tuple[str, str]:
+        if cls not in self._texts:
+            self._texts[cls] = (cls.description(), cls.details())
+        return self._texts[cls]
 
     def _tags(self, entry: Entry) -> str:
         tags = []
@@ -199,7 +201,7 @@ class CatalogTab(TabView):
             name_color = Theme.COLOR_TEXT if entry.enabled else Theme.COLOR_LABEL
         return {"Integration": (entry.name, name_color, chosen),
                 "Status": (entry.status.label, entry.status.color),
-                "What it is": (self._description(entry.cls), Theme.COLOR_LABEL if entry.enabled else Theme.COLOR_DIM)}
+                "What it is": (self._text(entry.cls)[0], Theme.COLOR_LABEL if entry.enabled else Theme.COLOR_DIM)}
 
     def _draw_table(self, screen: TUIScreen, x: int, y: int, width: int, height: int, entries: List[Entry], selected: int):
         columns = self._columns(width - 4)
@@ -251,10 +253,17 @@ class CatalogTab(TabView):
         Tile.draw_card(screen, self._cards, x, y, width, height, entry.name, entry.status.label, entry.status.color)
         inner_w = width - 4
         room = height - Tile.CARD_CHROME
-        lines = textwrap.wrap(self._description(entry.cls), max(8, inner_w), max_lines=DESCRIPTION_MAX_ROWS, placeholder="…")
-        lines = lines[:max(1, room - 2)]         # leave the status its row on a short tile
-        screen.set_color(Theme.COLOR_TEXT)
-        for i, line in enumerate(lines[:room]):
+        description, details = self._text(entry.cls)
+        text_room = max(1, room - 2)                # the status keeps its row on a short tile
+        lines = [(line, Theme.COLOR_BRIGHT) for line in textwrap.wrap(description, max(8, inner_w))][:text_room]
+        budget = min(DETAILS_MAX_ROWS, text_room - len(lines))
+        more = [(line, Theme.COLOR_LABEL) for line in
+                textwrap.wrap(details, max(8, inner_w), max_lines=budget, placeholder="…")] if budget > 0 else []
+        if lines and more and len(lines) + 1 + len(more) <= text_room:
+            lines.append(("", Theme.COLOR_LABEL))
+        lines += more
+        for i, (line, color) in enumerate(lines[:room]):
+            screen.set_color(color)
             screen.write_at(x + 2, y + Tile.CARD_TOP + i, line)
         screen.reset_color()
         first_row = Tile.CARD_TOP + (len(lines) + 1 if lines else 0)

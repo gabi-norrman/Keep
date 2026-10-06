@@ -7,7 +7,11 @@ from common.logging import error
 
 
 class RemindersIntegration(Integration):
-    """Adds items to Apple Reminders lists (e.g. the shopping list) via AppleScript."""
+    """Apple Reminders lists.
+
+    Adds items to Apple Reminders lists, such as the shopping list, when asked.
+
+    Goes through AppleScript."""
     sensitive = True
 
     @property

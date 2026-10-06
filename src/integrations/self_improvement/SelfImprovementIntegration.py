@@ -6,13 +6,17 @@ from common.logging import trace
 
 
 class SelfImprovementIntegration(Integration):
-    """The switch and health check for Floxy working on its own code through the Claude Code CLI:
-    the nightly code-quality runs and the self_analysis / self_improvement commands
-    (CodeQualityMaintainer) run only while this integration is enabled, the nightly runs also
-    only while `self_improvement.nightly_runs` is on. No key is needed — the setup is on the
-    server machine: install the CLI and log in (the config.example.yaml beside this file, section self_improvement).
-    The health check asks `claude auth status`,
-    a free local call, so a missing or logged-out CLI shows in list_integrations within a cycle."""
+    """Keep working on its own code.
+
+    Lets Keep analyse and improve its own code through the Claude Code CLI: the nightly
+    code-quality runs and the self_analysis / self_improvement commands. It needs no key, only
+    the CLI installed and logged in on the server machine.
+
+    The switch and the health check: the runs (CodeQualityMaintainer) happen only while this
+    integration is enabled, the nightly ones also only while `self_improvement.nightly_runs` is
+    on. The setup is in the config.example.yaml beside this file, section self_improvement. The
+    health check asks `claude auth status`, a free local call, so a missing or logged-out CLI
+    shows in list_integrations within a cycle."""
 
     @property
     def name(self) -> str:

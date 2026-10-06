@@ -26,15 +26,20 @@ CODE_REUSE_NOTE = ("Asked again within a few minutes, Telegram repeats the same 
 
 
 class TelegramFeedIntegration(Integration, Feed):
-    """The personal Telegram account (Telethon) as a Feed (plans/FEED_PLAN.md): a catch-up
-    walks the recent dialogs for messages newer than the cursor (a timestamp); live, the
-    NewMessage handler queues entries that `fetch` drains. The login (phone, the code Telegram
-    sends, the account's 2FA password) runs through the auth methods below: `login` drives
-    them from the chat's masked prompt, the TUI tab step by step. The login client lives on an
-    in-memory session and the session file is written only once the sign-in completes —
-    Telethon writes a file-backed session the moment its client connects, so a login on the
-    file itself made `needs_2fa()` false from the first code request on: the tab said
-    "Connected" and the feed opened an unauthorized session."""
+    """The owner's Telegram chats.
+
+    Follows the personal Telegram account, so the messages of its chats land in Keep's history,
+    as a feed. Signing in takes the phone number, the code Telegram sends and the account's 2FA
+    password.
+
+    The account through Telethon as a Feed (plans/FEED_PLAN.md): a catch-up walks the recent
+    dialogs for messages newer than the cursor (a timestamp); live, the NewMessage handler
+    queues entries that `fetch` drains. The login runs through the auth methods below: `login`
+    drives them from the chat's masked prompt, the TUI tab step by step. The login client lives
+    on an in-memory session and the session file is written only once the sign-in completes —
+    Telethon writes a file-backed session the moment its client connects, so a login on the file
+    itself made `needs_2fa()` false from the first code request on: the tab said "Connected" and
+    the feed opened an unauthorized session."""
     sensitive = True
 
     poll_interval = POLL_INTERVAL

@@ -13,7 +13,12 @@ from common.ConfigManager import config
 
 
 class FishAudioVoiceSynthesizer(WebSocketVoiceSynthesizer, Integration):
-    """Streams speech from the Fish Audio websocket TTS API."""
+    """A voice from Fish Audio.
+
+    Speaks Keep's replies with Fish Audio's TTS, streamed while the answer is still being
+    written.
+
+    Streams over the websocket API."""
 
     # Fish S2.x renders bracket markers ([whisper], [laugh], ...) as audio, so stray
     # tags must reach the API instead of being stripped by the base class. The feature

@@ -14,14 +14,16 @@ from common.ConfigManager import config
 
 
 class ElevenLabsVoiceSynthesizer(WebSocketVoiceSynthesizer, Integration):
-    """Streams speech from the ElevenLabs websocket TTS API.
+    """A voice from ElevenLabs.
 
-    Two wire protocols, chosen by the model: the v3/v4 family only streams over the
-    text-to-dialogue socket (one registered voice, `inputs` frames, `close_socket` to end);
-    the older flash/turbo/multilingual models speak the classic stream-input protocol
-    (`bos`/`eos` text frames). `tts.elevenlabs.model` picks the model, so switching back to
-    an old one is a config change.
-    """
+    Speaks Keep's replies with ElevenLabs' TTS, streamed while the answer is still being
+    written. It is the voice Keep uses unless another engine is enabled.
+
+    Two wire protocols over the websocket API, chosen by the model: the v3/v4 family only
+    streams over the text-to-dialogue socket (one registered voice, `inputs` frames,
+    `close_socket` to end); the older flash/turbo/multilingual models speak the classic
+    stream-input protocol (`bos`/`eos` text frames). `tts.elevenlabs.model` picks the model, so
+    switching back to an old one is a config change."""
 
     CONFIG_SECTION = "elevenlabs"
     DEFAULT_MODEL = "eleven_v4_turbo"

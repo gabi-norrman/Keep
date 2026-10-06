@@ -12,11 +12,13 @@ class XSearchError(Exception):
 
 
 class XIntegration(Integration):
-    """Searches X (Twitter) posts through xAI's server-side x_search tool.
+    """Search of X (Twitter) posts.
 
-    Reading individual posts needs no code here: the prompt instructs the LLM to
-    rewrite x.com status URLs to api.fxtwitter.com and fetch them with open_url().
-    """
+    Searches the posts on X, so Keep can find what is being said about a topic.
+
+    Goes through xAI's server-side x_search tool. Reading individual posts needs no code here:
+    the prompt instructs the LLM to rewrite x.com status URLs to api.fxtwitter.com and fetch
+    them with open_url()."""
 
     XAI_API_BASE = "https://api.x.ai/v1"
     MODEL = "grok-4.6"

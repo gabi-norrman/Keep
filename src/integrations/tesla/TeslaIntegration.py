@@ -48,7 +48,12 @@ class TeslaVehicleSpec:
 
 
 class TeslaIntegration(Integration):
-    """Reads vehicle state and sends climate/trunk commands to the Teslas through the Tessie API."""
+    """The Teslas, through Tessie.
+
+    Reads the state of the cars and sends them commands: defrost, climate on and off, opening
+    the trunk.
+
+    Talks to the Tessie API."""
 
     TESSIE_API_BASE = "https://api.tessie.com"
 

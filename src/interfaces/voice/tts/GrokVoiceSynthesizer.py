@@ -12,7 +12,11 @@ from common.ConfigManager import config
 
 
 class GrokVoiceSynthesizer(WebSocketVoiceSynthesizer, Integration):
-    """Streams speech from xAI's Grok TTS websocket API."""
+    """A voice from xAI Grok.
+
+    Speaks Keep's replies with xAI's Grok TTS, streamed while the answer is still being written.
+
+    Streams over the websocket API."""
 
     CONFIG_SECTION = "grok"
 

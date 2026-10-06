@@ -13,13 +13,16 @@ from common.ConfigManager import config
 
 
 class SupertonicVoiceSynthesizer(VoiceSynthesizer, Integration):
-    """Synthesizes speech locally on CPU with the Supertonic ONNX model (Supertone/supertonic).
+    """A local voice, no cloud.
 
-    No network, no API key. Supertonic is batch-only, so LLM text chunks are buffered and
-    flushed at clause boundaries to keep first-audio latency low while preserving prosodic
-    context. Output is 24 kHz / mono / int16 PCM to match the rest of the pipeline
-    (Supertonic natively emits 44.1 kHz float32, which is resampled and packed to int16).
-    """
+    Speaks Keep's replies with the Supertonic model on this machine's CPU: no network and no API
+    key.
+
+    Runs the Supertonic ONNX model (Supertone/supertonic). It is batch-only, so LLM text chunks
+    are buffered and flushed at clause boundaries to keep first-audio latency low while
+    preserving prosodic context. Output is 24 kHz / mono / int16 PCM to match the rest of the
+    pipeline (Supertonic natively emits 44.1 kHz float32, which is resampled and packed to
+    int16)."""
 
     CONFIG_SECTION = "supertonic"
 

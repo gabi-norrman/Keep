@@ -132,10 +132,14 @@ class _LoopThread:
 
 
 class WebAccess(Integration):
-    """Drives a headless Chrome via nodriver for the browse_* commands, web search and page fetches.
+    """Web search and browsing.
 
-    Singleton; the browser lives on a dedicated asyncio loop thread and is started lazily.
-    """
+    Gives Keep the web: it searches, reads pages and clicks through a site in a browser of its
+    own when a task needs it. It needs no credentials and is on unless switched off.
+
+    Drives a headless Chrome via nodriver for the browse_* commands, web search and page
+    fetches. Singleton; the browser lives on a dedicated asyncio loop thread and is started
+    lazily."""
     _instance: ClassVar[Optional['WebAccess']] = None
 
     @classmethod

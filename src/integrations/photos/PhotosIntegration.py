@@ -45,10 +45,13 @@ LIMIT ?
 
 
 class PhotosIntegration(Integration, Feed):
-    """Indexes the macOS Photos library with a vision LLM and pours one history row per asset
-    into the dialog history, as a Feed. check_health() verifies the library database and,
-    once an hour, that iCloud photo downloads still work.
-    """
+    """The Photos library, searchable.
+
+    Indexes the macOS Photos library with a vision model, so Keep can search the family's photos
+    and videos and show them. What it indexes also lands in Keep's history, as a feed.
+
+    Pours one history row per asset into the dialog history, as a Feed. check_health() verifies
+    the library database and, once an hour, that iCloud photo downloads still work."""
     sensitive = True
 
     poll_interval = POLL_INTERVAL
