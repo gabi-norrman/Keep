@@ -2,12 +2,14 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from assistant.commands.Commands import Commands
 from integrations.music.MusicCommands import MusicCommands
 
 
 @pytest.fixture
 def music_manager():
-    with patch.object(MusicCommands, "music_manager", Mock()) as manager:
+    manager = Mock()
+    with patch.object(MusicCommands, '_get_music_manager', return_value=manager):
         yield manager
 
 
@@ -33,3 +35,10 @@ class TestCmdMusicPlayback:
         music_manager.get_favorites.return_value = ["Other Fav"]
         commands_instance.run("sonos_enqueue_and_play", ["Kitchen", "My Playlist"])
         music_manager.play_playlist.assert_called_once_with("Kitchen", "My Playlist", shuffle=True)
+
+    def test_building_commands_does_not_build_the_music_integration(self):
+        # A disabled Sonos must not be probed at startup: the integration is built by the
+        # IntegrationMonitor when enabled, or by the first music command.
+        with patch.object(MusicCommands, '_get_music_manager') as build:
+            Commands(Mock())
+        build.assert_not_called()

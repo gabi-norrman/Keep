@@ -7,13 +7,15 @@ class MusicCommands(CommandSet):
     """The music commands: playback and volume in a Sonos zone, Spotify search, playlists and favorites."""
     MULTI_PARAM_COMMANDS = frozenset({"play_music", "sonos_enqueue_and_play"})
 
-    music_manager = None
+    # Built by the first music command when Sonos & Spotify is disabled — never at startup,
+    # where it would start discovering speakers on a network nobody asked it to look at.
+    @staticmethod
+    def _get_music_manager() -> MusicManager:
+        return MusicManager.get_instance()
 
-    @classmethod
-    def get_music_manager(cls) -> 'MusicManager':
-        if cls.music_manager is None:
-            cls.music_manager = MusicManager.get_instance()
-        return cls.music_manager
+    @property
+    def music_manager(self) -> MusicManager:
+        return self._get_music_manager()
 
     def cmd_search_music(self, parameter_string: str):
         self.background_command(self.music_manager.search_spotify, parameter_string)
@@ -47,13 +49,13 @@ class MusicCommands(CommandSet):
         room = args[0].strip()
         playlist = args[1].strip()
 
-        favorites = MusicCommands.music_manager.get_favorites(room)
+        favorites = self.music_manager.get_favorites(room)
         if playlist in favorites:
             trace("Sonos favorite, playing.")
-            MusicCommands.music_manager.play_favorite(room, playlist)
+            self.music_manager.play_favorite(room, playlist)
         else:
             trace("Sonos playlist, playing.")
-            MusicCommands.music_manager.play_playlist(room, playlist, shuffle=True)
+            self.music_manager.play_playlist(room, playlist, shuffle=True)
 
     def describe_search_music(self, p):           return f"Searching music for {p.strip()}"
     def describe_play(self, p):                   return f"Playing in {p.strip()}" if p.strip() else "Playing"

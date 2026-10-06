@@ -23,9 +23,6 @@ CORE_IMPORTS_BY_NAME = {
     "assistant/commands/DebugCommands.py": {"telegram_feed"},
 }
 
-# the folders the launcher (floxy_ai_server.py) imports by name: it hands the PromptManager to the music manager
-LAUNCHER_IMPORTS_BY_NAME = {"music"}
-
 # (folder, the folder it imports): the cameras' 2FA codes arrive by mail or iMessage, iMessage
 # hands the codes it sees to iCloud and Ring, Photos downloads through the iCloud session
 FOLDER_IMPORTS_FOLDER = {
@@ -94,11 +91,11 @@ def test_core_imports_a_folder_by_name_only_where_listed(tree):
     assert tree["core_by_name"] == CORE_IMPORTS_BY_NAME
 
 
-def test_the_launcher_imports_a_folder_by_name_only_where_listed():
+def test_the_launcher_imports_no_folder_by_name():
     launcher = AISERVER_DIR / "floxy_ai_server.py"
     folders = {module.split(".")[1] for module in imported_modules(launcher, launcher.parent)
                if module.startswith("integrations.")}
-    assert folders == LAUNCHER_IMPORTS_BY_NAME
+    assert folders == set()
 
 
 def test_a_folder_imports_another_folder_only_where_listed(tree):
