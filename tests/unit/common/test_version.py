@@ -13,7 +13,7 @@ def fresh_cache():
 
 
 def clear():
-    for f in (Version.version, Version.branch, Version.label, Version.detail):
+    for f in (Version.version, Version.branch, Version.label, Version.detail, Version.release_notes):
         f.cache_clear()
 
 
@@ -73,3 +73,33 @@ def test_label_is_bare_on_release_and_badged_elsewhere():
     clear()
     with fake_git({**base, BRANCH: "HEAD"}):
         assert Version.label() == "Keep v2026.09.3868"
+
+
+TAG_COMMIT = ("tag", "-l", "--format=%(*objectname)", "v2026.09.3868")
+TAG_BODY = ("tag", "-l", "--format=%(contents:body)", "v2026.09.3868")
+HEAD = ("rev-parse", "HEAD")
+NOTE = "<b>Spotify is back.</b>\n\nSearch works on a fresh app.\n"
+
+
+@pytest.mark.unit
+def test_release_notes_are_the_body_of_the_tag_on_the_running_commit():
+    with fake_git({"log": "2026.09", "rev-list": "3868", TAG_COMMIT: "abc123", HEAD: "abc123", TAG_BODY: NOTE}):
+        assert Version.release_notes() == NOTE.strip()
+
+
+@pytest.mark.unit
+def test_no_release_notes_when_the_version_tag_names_another_commit():
+    with fake_git({"log": "2026.09", "rev-list": "3868", TAG_COMMIT: "abc123", HEAD: "def456", TAG_BODY: NOTE}):
+        assert Version.release_notes() == ""
+
+
+@pytest.mark.unit
+def test_no_release_notes_on_an_untagged_commit():
+    with fake_git({"log": "2026.09", "rev-list": "3868", TAG_COMMIT: "", HEAD: "abc123", TAG_BODY: ""}):
+        assert Version.release_notes() == ""
+
+
+@pytest.mark.unit
+def test_a_tag_without_a_note_gives_no_release_notes():
+    with fake_git({"log": "2026.09", "rev-list": "3868", TAG_COMMIT: "abc123", HEAD: "abc123", TAG_BODY: "\n"}):
+        assert Version.release_notes() == ""

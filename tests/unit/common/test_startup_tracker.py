@@ -45,8 +45,55 @@ class TestWriteCurrentStartup:
         data = json.loads(temp_state_file.read_text())
         assert data == {"started_at": 123.0}
 
+
+@pytest.mark.unit
+class TestAnnouncedRelease:
+    def test_none_before_any_release_was_announced(self, temp_state_file):
+        StartupTracker.write_current_startup(1.0)
+        assert StartupTracker.read_announced_release() is None
+
+    def test_a_later_start_keeps_the_announced_release(self, temp_state_file):
+        StartupTracker.write_current_startup(1.0, "v2026.10.243")
+        StartupTracker.write_current_startup(2.0)
+        assert StartupTracker.read_announced_release() == "v2026.10.243"
+        assert StartupTracker.read_previous_startup() == 2.0
+
+    def test_a_newer_release_replaces_it(self, temp_state_file):
+        StartupTracker.write_current_startup(1.0, "v2026.10.243")
+        StartupTracker.write_current_startup(2.0, "v2026.11.250")
+        assert StartupTracker.read_announced_release() == "v2026.11.250"
+
+
+@pytest.mark.unit
+class TestUnannouncedReleaseNotes:
+    NOTE = "<b>Spotify is back.</b>"
+
+    def test_the_first_start_on_a_release_gets_its_note(self, temp_state_file):
+        with patch.object(startup_tracker_module.Version, "release_notes", return_value=self.NOTE), \
+             patch.object(startup_tracker_module.Version, "version", return_value="v2026.10.243"):
+            assert StartupTracker.unannounced_release_notes() == self.NOTE
+
+    def test_a_restart_on_an_announced_release_gets_nothing(self, temp_state_file):
+        StartupTracker.write_current_startup(1.0, "v2026.10.243")
+        with patch.object(startup_tracker_module.Version, "release_notes", return_value=self.NOTE), \
+             patch.object(startup_tracker_module.Version, "version", return_value="v2026.10.243"):
+            assert StartupTracker.unannounced_release_notes() == ""
+
+    def test_an_untagged_commit_gets_nothing(self, temp_state_file):
+        with patch.object(startup_tracker_module.Version, "release_notes", return_value=""):
+            assert StartupTracker.unannounced_release_notes() == ""
+
 @pytest.mark.unit
 class TestBuildHistoryMessage:
+    def test_the_whats_new_follows_the_change_log_without_its_markup(self):
+        with patch.object(startup_tracker_module.Version, "version", return_value="v2026.10.243"):
+            message = StartupTracker.build_history_message(
+                ["abc feat: x"], 1.0, "<b>Spotify &amp; radio are back.</b>\n\n<i>Nothing else.</i>")
+        assert "abc feat: x" in message
+        assert "v2026.10.243" in message
+        assert "Spotify & radio are back.\n\nNothing else." in message
+        assert "<b>" not in message and "&amp;" not in message
+
     def test_with_commits(self):
         commits = ["abc1234 first commit", "def5678 second commit"]
         msg = StartupTracker.build_history_message(commits, 1700000000.0)
@@ -57,6 +104,12 @@ class TestBuildHistoryMessage:
 
 @pytest.mark.unit
 class TestBuildAnnouncement:
+    def test_a_release_note_replaces_the_commit_list_and_keeps_its_markup(self):
+        text = StartupTracker.build_announcement(["abc feat: x"], "Keep v2026.10.243", "<b>Spotify is back.</b>")
+        assert "<b>Spotify is back.</b>" in text
+        assert "Keep v2026.10.243" in text
+        assert "feat: x" not in text
+
     def test_lists_the_subjects_without_their_hashes(self):
         text = StartupTracker.build_announcement(
             ["abc1234 fix: the porch light", "def5678 feat: a new tab"], "Keep v2026.10.7")

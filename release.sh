@@ -11,9 +11,11 @@
 #   ./release.sh --dry-run [<commit>]
 #                           run the checks and print the what's new, but neither tag nor push
 #
-# After the push, Claude Code (`claude -p`) reads the released commits and writes a "what's
-# new" for the household — Telegram-flavoured, since that is where it will one day be sent.
-# For now it is only printed; a missing `claude` or a failed run never fails the release.
+# Before tagging, Claude Code (`claude -p`) reads the released commits and writes a "what's
+# new" for the household, which becomes the body of the annotated tag. An install's pull
+# brings the tag along with the commit, and the server's first start on it announces the
+# note (common/StartupTracker.py reads it through Version.release_notes()). A missing
+# `claude` or a failed run leaves the tag without a note and never fails the release.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -28,7 +30,8 @@ Run \`git show <hash>\` or \`git show --stat <hash>\` when a message does not ma
 
 Create a user friendly, fairly punchy and nice \"what's new\" for this release. Format it so that it will look nice
 in a Telegram chat: the bot sends HTML, so use <b>…</b> and <i>…</i> only, blank lines between items, an emoji
-or two where it helps, nothing else (no markdown, no headers, no code spans, no tables).
+or two where it helps, nothing else (no markdown, no headers, no code spans, no tables). Do not open with a
+title or the version: the message that carries the note already says which release it is.
 
 The readers are not developers. Describe what they will notice — what Keep can now do, what got better, what
 was fixed — never how it was built. Leave out refactors, tests, tooling, docs and anything with no visible
@@ -38,11 +41,8 @@ it under 15 lines. Output only the note, nothing before or after it.
 Commits:
 $log"
 
-  echo
-  echo "What's new in $version:"
-  echo
   claude -p "$prompt" --allowedTools 'Bash(git show:*) Bash(git log:*) Bash(git diff:*) Read Grep' < /dev/null \
-    || echo "claude failed — write the what's new by hand." >&2
+    || echo "claude failed — the tag gets no what's new." >&2
 }
 
 dry_run=false
@@ -70,17 +70,30 @@ fi
 echo "Releasing $version ($short)"
 [ -n "$current" ] && git log --oneline "$current..$commit" | sed 's/^/  /'
 
-if $dry_run; then
-  echo "Dry run: not tagging or pushing."
-  [ -n "$current" ] && whats_new "$current" "$commit"
-  exit 0
+existing=$(git rev-parse -q --verify "refs/tags/$version^{commit}" || true)
+if [ -n "$existing" ] && [ "$existing" != "$commit" ]; then
+  echo "Tag $version already names $(git rev-parse --short "$existing")." >&2; exit 1
 fi
 
-if existing=$(git rev-parse -q --verify "refs/tags/$version^{commit}"); then
-  [ "$existing" = "$commit" ] || { echo "Tag $version already names $(git rev-parse --short "$existing")." >&2; exit 1; }
-else
-  git tag -a "$version" -m "Release $version" "$commit"
+note=""
+if [ -n "$existing" ]; then
+  note=$(git tag -l --format='%(contents:body)' "$version")
+  echo "Tag $version exists already; keeping its what's new."
+elif [ -n "$current" ]; then
+  note=$(whats_new "$current" "$commit")
+fi
+echo; echo "What's new in $version:"; echo; echo "${note:-(none)}"; echo
+
+if $dry_run; then
+  echo "Dry run: not tagging or pushing."
+  exit 0
+fi
+if [ -t 0 ]; then
+  read -r -p "Tag $version with this note and push the release? [y/N] " answer
+  [[ "$answer" =~ ^[Yy] ]] || { echo "Not released."; exit 1; }
+fi
+if [ -z "$existing" ]; then
+  printf 'Release %s\n\n%s\n' "$version" "$note" | git tag -a "$version" -F - "$commit"
 fi
 git push origin "$commit:refs/heads/release" "refs/tags/$version"
 echo "Done: release is $version — installs pick it up on their next restart_server."
-if [ -n "$current" ]; then whats_new "$current" "$commit"; fi

@@ -100,11 +100,12 @@ def _post_startup_message(prompt_manager) -> str:
     from common.StartupTracker import StartupTracker
     previous = StartupTracker.read_previous_startup()
     commits = StartupTracker.get_commits_since(previous) if previous else []
-    message = StartupTracker.build_history_message(commits, previous)
+    whats_new = StartupTracker.unannounced_release_notes()
+    message = StartupTracker.build_history_message(commits, previous, whats_new)
     trace(f"Posting startup message to history: {message!r}")
     prompt_manager.message_history.add_context_message("system", message, time.time(), "startup")
-    StartupTracker.write_current_startup(time.time())
-    return StartupTracker.build_announcement(commits, Version.label())
+    StartupTracker.write_current_startup(time.time(), Version.version() if whats_new else None)
+    return StartupTracker.build_announcement(commits, Version.label(), whats_new)
 
 
 def _announce_startup(server: "Server"):

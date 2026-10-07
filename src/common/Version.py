@@ -5,7 +5,7 @@ moved the `release` branch to and tagged with this very string, so an install on
 reports the same version as master did at that commit. `detail()` adds what the short form
 cannot tell: the hash (two side branches can share a count), the branch the checkout follows
 (release on an install, master on the development machine) and whether the tree has local
-edits."""
+edits. `release_notes()` is the what's new release.sh wrote into that tag's body."""
 import subprocess
 from functools import lru_cache
 from typing import Optional
@@ -36,6 +36,25 @@ def version() -> str:
         info("Version: not a git checkout, the version is unknown")
         return UNKNOWN
     return f"v{month}.{count}"
+
+
+@lru_cache(maxsize=None)
+def release_notes() -> str:
+    """The what's new release.sh wrote into the annotated tag of the running commit; "" when
+    HEAD is not a tagged release (master between releases, an install on another branch), when
+    the tag of this version names another commit (a side branch can share the count) or when the
+    tag carries no note (a release made while Claude was unavailable)."""
+    tag = version()
+    if tag == UNKNOWN:
+        return ""
+    tagged = _git("tag", "-l", "--format=%(*objectname)", tag)   # the commit of an annotated tag, "" otherwise
+    head = _git("rev-parse", "HEAD")
+    if not tagged or not head or tagged != head:
+        info(f"Version: HEAD is not the tagged release {tag}, no release notes")
+        return ""
+    body = (_git("tag", "-l", "--format=%(contents:body)", tag) or "").strip()
+    info(f"Version: release {tag} carries {'a' if body else 'no'} what's new ({len(body)} chars)")
+    return body
 
 
 @lru_cache(maxsize=None)
