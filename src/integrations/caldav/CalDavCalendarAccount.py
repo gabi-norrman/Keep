@@ -1,0 +1,112 @@
+"""A CalendarAccount over CalDAV: the account's calendars, their events and a new event, parsed
+from and written as vobject through the `caldav` library."""
+import logging
+from datetime import datetime, timedelta, date
+from typing import Callable, Optional
+
+import caldav
+import pytz
+
+from assistant.integration.calendar.CalendarAccount import CalendarAccount, CalendarInfo
+from assistant.integration.calendar.Event import Event
+from common.logging import info, trace
+
+
+class CalDavCalendarAccount(CalendarAccount):
+    """One CalDAV login. `credentials` is read on every call so a password set through
+    config_set works without a rebuild; the calendar objects of the last `calendars()` are kept
+    so the events and create calls that follow need no second principal lookup."""
+
+    def __init__(self, name: str, url: str, credentials: Callable[[], tuple[str, str]],
+                 shown_calendars: Callable[[], list[str]], default_calendar: Callable[[], str]):
+        self._name = name
+        self._url = url
+        self._credentials = credentials
+        self._shown_calendars = shown_calendars
+        self._default_calendar = default_calendar
+        self._objects: Optional[list] = None
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def shown_calendars(self) -> list[str]:
+        return self._shown_calendars()
+
+    @property
+    def default_calendar(self) -> str:
+        return self._default_calendar()
+
+    def _calendar_objects(self, refresh: bool = False) -> list:
+        """Every calendar of the account as the library's objects, looked up again on `refresh`."""
+        if self._objects is not None and not refresh:
+            return self._objects
+        logging.getLogger("root").setLevel(logging.CRITICAL)
+        username, password = self._credentials()
+        if not username or not password:
+            raise ValueError("Calendar username or password not found in config")
+        client = caldav.DAVClient(self._url, username=username, password=password)
+        self._objects = client.principal().calendars()
+        trace(f"{self.name}: {len(self._objects)} calendars on {self._url}")
+        return self._objects
+
+    @staticmethod
+    def _holds_events(calendar) -> bool:
+        """False for a Reminders list, which iCloud serves next to the calendars."""
+        try:
+            return "VEVENT" in calendar.get_supported_components()
+        except Exception as e:
+            trace(f"Calendar '{calendar.name}': supported components unknown ({e}), treating it as a calendar")
+            return True
+
+    def calendars(self) -> list[CalendarInfo]:
+        return [CalendarInfo(str(c.name), self._holds_events(c)) for c in self._calendar_objects(refresh=True)]
+
+    def events(self, calendar_names: list[str], start: date, end: date) -> list[Event]:
+        wanted = {name.lower() for name in calendar_names}
+        found = []
+        for calendar in self._calendar_objects():
+            if str(calendar.name).lower() not in wanted:
+                continue
+            events = calendar.date_search(
+                start=datetime.combine(start, datetime.min.time()),
+                end=datetime.combine(end, datetime.min.time())
+            )
+            for event in events:
+                vevent = event.vobject_instance.vevent
+                dtstart, all_day = self._as_datetime(vevent.contents['dtstart'][0].value)
+                dtend, _ = self._as_datetime(vevent.contents['dtend'][0].value)
+                found.append(Event(dtstart, dtend, vevent.summary.value, calendar=str(calendar.name),
+                                   account=self.name, all_day=all_day))
+        trace(f"{self.name}: {len(found)} event(s) in {sorted(wanted)} between {start} and {end}")
+        return found
+
+    @staticmethod
+    def _as_datetime(value) -> tuple[datetime, bool]:
+        """A vobject date value as a tz-aware datetime, and whether it was a plain date (all-day):
+        an ISO string is UTC, a date is its midnight UTC, a naive datetime is taken as UTC."""
+        if isinstance(value, str):
+            return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC), False
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return datetime.combine(value, datetime.min.time()).replace(tzinfo=pytz.UTC), True
+        if value.tzinfo is None:
+            return value.replace(tzinfo=pytz.UTC), False
+        return value, False
+
+    def create_event(self, calendar_name: str, event: Event) -> None:
+        calendar = next((c for c in self._calendar_objects() if c.name == calendar_name), None)
+        if calendar is None:
+            raise ValueError(f"Calendar '{calendar_name}' not found. Available: {[c.name for c in self._calendar_objects()]}")
+        calendar.save_event(dtstart=event.start, dtend=event.end, summary=event.title)
+        info(f"{self.name}: event '{event.title}' saved in '{calendar_name}'")
+
+    def check(self) -> bool:
+        calendars = self._calendar_objects(refresh=True)
+        if calendars:
+            today = date.today()
+            calendars[0].date_search(
+                start=datetime.combine(today, datetime.min.time()),
+                end=datetime.combine(today + timedelta(days=1), datetime.min.time())
+            )
+        return True

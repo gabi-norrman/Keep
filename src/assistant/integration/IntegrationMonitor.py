@@ -340,6 +340,7 @@ class IntegrationMonitor:
             "config_keys": list(integration.config_keys),
             "restartable": restartable,
             "sensitive": (integration.cls if isinstance(integration, DisabledIntegration) else type(integration)).sensitive,
+            "accounts": integration.accounts_status(),
         }
         if isinstance(integration, Feed):
             # The feed's own axis (catching up / live / stopped), next to the health state.

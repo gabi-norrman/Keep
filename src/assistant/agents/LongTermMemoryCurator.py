@@ -11,7 +11,8 @@ from .. import MemoryFile, Procedures, WatchList
 from ..llm import create_llm, parse_llm_config
 from common.ConfigManager import ConfigManager
 from common.FloxyDatabase import FloxyDatabase, NO_INTERACTIONS
-from integrations.caldav.CalDAVIntegration import CalDAVIntegration, EVENTS_UNAVAILABLE, NO_EVENTS
+from assistant.integration.calendar.CalendarAccess import CalendarAccess, EVENTS_UNAVAILABLE
+from assistant.integration.calendar.Event import NO_EVENTS
 from common.logging import info, error, trace
 from ..llm.AbstractLLM import LLMRefusalError
 from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
@@ -485,7 +486,7 @@ class LongTermMemoryCurator:
 
         calendar_start = period_end.date()
         calendar_end = calendar_start + timedelta(days=lookahead_days)
-        calendar_data = CalDAVIntegration.fetch_calendar_events(calendar_start, calendar_end)
+        calendar_data = CalendarAccess.current().fetch(calendar_start, calendar_end)
         trace(f"Loaded {len(calendar_data)} bytes of calendar data.")
 
         current_memory = self._load_memory()

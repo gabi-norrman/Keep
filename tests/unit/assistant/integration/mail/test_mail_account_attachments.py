@@ -1,10 +1,12 @@
+"""What a read email carries of its attachments: PDF text, a description of a real image or
+video, nothing for signatures, pixels and unsupported types."""
 from datetime import datetime, timezone
 from unittest.mock import patch, Mock
 
 import pytest
 
-from assistant.integration.EmailProvider import _is_junk_media, _analyze_media
-from integrations.gmail.GmailIntegration import GmailAccess
+from assistant.integration.mail.ImapMailAccount import ImapMailAccount
+from assistant.integration.mail.MailAccount import _is_junk_media, _analyze_media
 from assistant.tools import PdfExtractor
 
 
@@ -47,7 +49,7 @@ def _make_attachment(filename="file.pdf", content_type="application/pdf",
     return att
 
 
-def _make_message(uid="123", from_="sender@test.com", to=("me@test.com",),
+def _make_message(uid="123", from_="sender@example.com", to=("m@mlab.test",),
                   subject="Test", date=None, text="Body", html="",
                   attachments=None):
     msg = Mock()
@@ -60,6 +62,11 @@ def _make_message(uid="123", from_="sender@test.com", to=("me@test.com",),
     msg.html = html
     msg.attachments = attachments or []
     return msg
+
+
+@pytest.fixture
+def account():
+    return ImapMailAccount("Gmail", "GM", lambda: ("m@mlab.test", "pw"), preset="gmail")
 
 
 @pytest.mark.unit
@@ -94,11 +101,15 @@ class TestIsJunkImage:
         )
         assert _is_junk_media(att) is False
 
+    def test_video_attachment_is_not_junk(self):
+        att = _make_attachment(content_type="video/quicktime", size=500000)
+        assert _is_junk_media(att) is False
+
 
 @pytest.mark.unit
 class TestAnalyzeMedia:
 
-    @patch("assistant.integration.EmailProvider.media_analyzer")
+    @patch("assistant.integration.mail.MailAccount.media_analyzer")
     def test_video_attachment_uses_video_label(self, mock_accessor):
         mock_ma = mock_accessor.return_value
         mock_ma.describe_bytes.return_value = "Video description: [A dog] A dog runs."
@@ -110,51 +121,44 @@ class TestAnalyzeMedia:
         assert kwargs["context"] == "Video attached to an email, filename: clip.mp4"
         assert kwargs["fallback"] == "[Video]"
 
+
 @pytest.mark.unit
 class TestFormatEmailBodyWithAttachments:
 
-    @patch("assistant.integration.EmailProvider.PdfExtractor")
-    def test_pdf_attachment_included(self, mock_pdf):
+    @patch("assistant.integration.mail.MailAccount.PdfExtractor")
+    def test_pdf_attachment_included(self, mock_pdf, account):
         mock_pdf.extract_text.return_value = "--- Page 1 ---\nHello from PDF"
-        provider = GmailAccess()
         att = _make_attachment(filename="report.pdf", content_type="application/pdf",
                                payload=b"pdf_bytes", size=100000)
         msg = _make_message(attachments=[att])
-        result = provider._format_email_body(msg)
+        result = account._format_email_body(msg)
         assert "report.pdf" in result
         assert "Hello from PDF" in result
         mock_pdf.extract_text.assert_called_once_with(b"pdf_bytes")
 
-    @patch("assistant.integration.EmailProvider._is_junk_media")
-    def test_junk_image_skipped(self, mock_junk):
+    @patch("assistant.integration.mail.MailAccount._is_junk_media")
+    def test_junk_image_skipped(self, mock_junk, account):
         mock_junk.return_value = True
-        provider = GmailAccess()
         att = _make_attachment(filename="logo.png", content_type="image/png", size=3000)
         msg = _make_message(attachments=[att])
-        result = provider._format_email_body(msg)
+        result = account._format_email_body(msg)
         assert "logo.png" not in result
 
-    @patch("assistant.integration.EmailProvider._analyze_media")
-    def test_video_attachment_analyzed(self, mock_analyze):
+    @patch("assistant.integration.mail.MailAccount._analyze_media")
+    def test_video_attachment_analyzed(self, mock_analyze, account):
         mock_analyze.return_value = "Video description: [A dog] A dog runs on a beach."
-        provider = GmailAccess()
         att = _make_attachment(filename="clip.mp4", content_type="video/mp4",
                                payload=b"mp4_bytes", size=300000)
         msg = _make_message(attachments=[att])
-        result = provider._format_email_body(msg)
+        result = account._format_email_body(msg)
         assert "--- Attachment: clip.mp4 (video, 293 KB) ---" in result
         assert "A dog runs on a beach." in result
         mock_analyze.assert_called_once_with(b"mp4_bytes", "video/mp4", "clip.mp4")
 
-    def test_video_attachment_is_not_junk(self):
-        att = _make_attachment(content_type="video/quicktime", size=500000)
-        assert _is_junk_media(att) is False
-
-    def test_unsupported_attachment_skipped(self):
-        provider = GmailAccess()
+    def test_unsupported_attachment_skipped(self, account):
         att = _make_attachment(filename="data.zip", content_type="application/zip", size=500000)
         msg = _make_message(attachments=[att])
-        result = provider._format_email_body(msg)
+        result = account._format_email_body(msg)
         assert "data.zip" not in result
 
 

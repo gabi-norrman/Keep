@@ -1057,8 +1057,11 @@ class CodeQualityMaintainer:
         msg["To"] = address
         msg.attach(MIMEText(full_html, "html"))
 
-        from integrations.gmail.GmailIntegration import GmailIntegration
-        err = GmailIntegration.get_instance().send_message(msg, [address])
+        from assistant.integration.mail.MailAccess import MailAccess
+        account = MailAccess.current().account_for(address)
+        if account is None:
+            raise RuntimeError(f"report email not sent: no enabled mail account for {address}")
+        err = account.send_message(msg, [address])
         if err:
             raise RuntimeError(f"report email not sent: {err}")
         info(f"CodeQualityMaintainer: email sent to {address}")

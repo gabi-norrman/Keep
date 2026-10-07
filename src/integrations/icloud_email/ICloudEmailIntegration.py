@@ -1,29 +1,29 @@
 from typing import List
 
-from assistant.integration.EmailProvider import EmailProvider
-from common.ConfigManager import ConfigManager
 from assistant.integration.Integration import Integration
+from assistant.integration.mail.ImapMailAccount import ImapMailAccount
+from assistant.integration.mail.MailAccount import MailAccount
+from assistant.integration.mail.MailSource import MailSource
+from common.ConfigManager import ConfigManager
 
 
-class ICloudEmailIntegration(Integration, EmailProvider):
+class ICloudEmailIntegration(Integration, MailSource):
     """An iCloud mailbox.
 
     Gives Keep the iCloud mail account: it searches and reads the mail and sends a message when
     asked.
 
-    IMAP for reading, rate-limited SMTP for sending."""
+    A MailSource holding one ImapMailAccount built from the `icloud` preset and the
+    `icloud_email` section."""
     sensitive = True
-
-    IMAP_HOST = "imap.mail.me.com"
-    IMAP_FOLDER = "INBOX"
-    SMTP_HOST = "smtp.mail.me.com"
-    # iCloud's SMTP server does not file what it sends; the copy goes here over IMAP.
-    SENT_FOLDER = "Sent Messages"
-    AUTH_HELP = "regenerate the app-specific password at appleid.apple.com"
 
     def __init__(self):
         Integration.__init__(self)
-        EmailProvider.__init__(self)
+        config = ConfigManager.get_instance()
+        self._account = ImapMailAccount(
+            "iCloud Email", "IC",
+            credentials=lambda: (config.get("icloud_email.address"), config.get("icloud_email.password")),
+            preset="icloud")
 
     @property
     def name(self) -> str:
@@ -33,20 +33,8 @@ class ICloudEmailIntegration(Integration, EmailProvider):
     def config_keys(self) -> List[str]:
         return ["icloud_email"]
 
-    @property
-    def id_prefix(self) -> str:
-        return "IC"
-
-    def _get_credentials(self) -> tuple[str, str]:
-        config = ConfigManager()
-        return config.get("icloud_email.address"), config.get("icloud_email.password")
+    def mail_accounts(self) -> list[MailAccount]:
+        return [self._account]
 
     def check_health(self) -> bool:
-        from imap_tools import MailBox
-        address, password = self._get_credentials()
-        with MailBox(self.IMAP_HOST, timeout=self.IMAP_TIMEOUT).login(address, password, initial_folder=self.IMAP_FOLDER):
-            pass
-        return True
-
-
-ICloudEmailAccess = ICloudEmailIntegration
+        return self._account.check()

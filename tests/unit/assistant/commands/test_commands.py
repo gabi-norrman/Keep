@@ -12,7 +12,7 @@ from assistant.tools.WebAccess import WebAccess
 
 @pytest.fixture(autouse=True)
 def mock_email_provider():
-    with patch.object(Commands, '_create_email_provider', return_value=Mock()) as mock:
+    with patch.object(Commands, '_mail_access', return_value=Mock()) as mock:
         yield mock
 
 
@@ -908,33 +908,24 @@ class TestCmdFindPhone:
 
 
 class TestCmdSendEmail:
-    def test_returns_send_result_synchronously(self, commands_instance):
-        with patch("assistant.commands.Commands.ICloudEmailAccess") as MockCls:
-            inst = Mock()
-            inst.send.return_value = ""
-            MockCls.get_instance.return_value = inst
-            result = commands_instance.cmd_send_email("alice@example.com", "Hi", "Hello there")
+    def test_returns_send_result_synchronously(self, commands_instance, mock_email_provider):
+        mock_email_provider.return_value.send.return_value = ""
+        result = commands_instance.cmd_send_email("alice@example.com", "Hi", "Hello there")
         assert result == ""
-        inst.send.assert_called_once_with("alice@example.com", "Hi", "Hello there")
+        mock_email_provider.return_value.send.assert_called_once_with("alice@example.com", "Hi", "Hello there")
 
-    def test_email_body_carries_no_ai_footer(self, commands_instance):
-        with patch("assistant.commands.Commands.ICloudEmailAccess") as MockCls:
-            inst = Mock()
-            inst.send.return_value = ""
-            MockCls.get_instance.return_value = inst
-            commands_instance.cmd_send_email("alice@example.com", "Hi", "Hello there")
-        assert commands_instance.AI_MESSAGE_SUFFIX not in inst.send.call_args[0][2]
+    def test_email_body_carries_no_ai_footer(self, commands_instance, mock_email_provider):
+        commands_instance.cmd_send_email("alice@example.com", "Hi", "Hello there")
+        assert commands_instance.AI_MESSAGE_SUFFIX not in mock_email_provider.return_value.send.call_args[0][2]
 
-    def test_missing_parts_returns_error_without_calling_send(self, commands_instance):
-        with patch("assistant.commands.Commands.ICloudEmailAccess") as MockCls:
-            result = commands_instance.cmd_send_email("alice@example.com, Subject")
-            MockCls.get_instance.assert_not_called()
+    def test_missing_parts_returns_error_without_calling_send(self, commands_instance, mock_email_provider):
+        result = commands_instance.cmd_send_email("alice@example.com, Subject")
+        mock_email_provider.return_value.send.assert_not_called()
         assert "send_email failed" in result
 
-    def test_empty_recipient_returns_error(self, commands_instance):
-        with patch("assistant.commands.Commands.ICloudEmailAccess") as MockCls:
-            result = commands_instance.cmd_send_email("", "Subject", "body")
-            MockCls.get_instance.assert_not_called()
+    def test_empty_recipient_returns_error(self, commands_instance, mock_email_provider):
+        result = commands_instance.cmd_send_email("", "Subject", "body")
+        mock_email_provider.return_value.send.assert_not_called()
         assert "send_email failed" in result
 
     def test_send_email_is_sensitive(self, commands_instance):

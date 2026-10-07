@@ -711,6 +711,21 @@ class TestDisabledIntegrations:
             Mailbox.reset_instance()
         assert flags == {"Mailbox": True, "Lamps": False}
 
+    def test_the_status_carries_what_an_integration_says_of_its_accounts(self):
+        """An account-holding integration reports its accounts one by one; the rest have none."""
+        class Mailboxes(FakeIntegration):
+            def accounts_status(self):
+                return [{"name": "Personal", "state": "ok", "last_error": None},
+                        {"name": "Work", "state": "error", "last_error": "auth failed"}]
+
+        monitor = IntegrationMonitor.get_instance()
+        monitor.register(Mailboxes("Mailboxes"))
+        monitor.register(FakeIntegration("Lamps"))
+        accounts = {status["name"]: status["accounts"] for status in monitor.get_all_statuses()}
+        assert [a["name"] for a in accounts["Mailboxes"]] == ["Personal", "Work"]
+        assert accounts["Mailboxes"][1]["last_error"] == "auth failed"
+        assert accounts["Lamps"] == []
+
     def test_enabling_then_restart_builds_it(self):
         monitor = IntegrationMonitor.get_instance()
         started = []

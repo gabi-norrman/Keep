@@ -9,6 +9,13 @@ from assistant.agents.LongTermMemoryCurator import HISTORY_SOURCE, MEMORY_WORD_L
 from common.FloxyDatabase import NO_INTERACTIONS
 
 
+def _no_events():
+    """A CalendarAccess whose week is empty."""
+    access = Mock()
+    access.fetch.return_value = "(No upcoming events)"
+    return access
+
+
 class TestLongTermMemoryCurator:
     def test_default_llm_created_with_prompt_cache_disabled(self):
         # The nightly curation call is one-shot: a prompt cache written for it is
@@ -130,8 +137,7 @@ class TestCurationPeriod:
     def test_explicit_datetimes_reach_the_history_query_untouched(self):
         curator = self._curator()
         start, end = datetime(2026, 9, 10, 14, 3), datetime(2026, 9, 10, 16, 30)
-        with patch('assistant.agents.LongTermMemoryCurator.CalDAVIntegration.fetch_calendar_events',
-                   return_value="(No upcoming events)"):
+        with patch('assistant.agents.LongTermMemoryCurator.CalendarAccess.current', return_value=_no_events()):
             _, metadata = curator.curate_memory(start, end)
         curator.floxy_db.get_interaction_history.assert_called_once_with(start, end)
         assert metadata['period_start'] == "2026-09-10T14:03"
@@ -139,8 +145,7 @@ class TestCurationPeriod:
 
     def test_period_is_told_to_the_llm(self):
         curator = self._curator(history="[2026-09-10 14:10:00] User: hi")
-        with patch('assistant.agents.LongTermMemoryCurator.CalDAVIntegration.fetch_calendar_events',
-                   return_value="(No upcoming events)"):
+        with patch('assistant.agents.LongTermMemoryCurator.CalendarAccess.current', return_value=_no_events()):
             curator.curate_memory(datetime(2026, 9, 10, 14, 3), datetime(2026, 9, 10, 16, 30))
         prompt = curator.llm.think.call_args.kwargs['system_message']
         assert "This run covers 2026-09-10 14:03 to 2026-09-10 16:30." in prompt
@@ -160,15 +165,13 @@ class TestCurationPeriod:
 
     def test_dates_mean_midnight(self):
         curator = self._curator()
-        with patch('assistant.agents.LongTermMemoryCurator.CalDAVIntegration.fetch_calendar_events',
-                   return_value="(No upcoming events)"):
+        with patch('assistant.agents.LongTermMemoryCurator.CalendarAccess.current', return_value=_no_events()):
             curator.curate_memory(date(2026, 9, 8), date(2026, 9, 10))
         curator.floxy_db.get_interaction_history.assert_called_once_with(datetime(2026, 9, 8), datetime(2026, 9, 10))
 
     def test_default_period_is_lookback_midnight_until_now(self):
         curator = self._curator()
-        with patch('assistant.agents.LongTermMemoryCurator.CalDAVIntegration.fetch_calendar_events',
-                   return_value="(No upcoming events)"):
+        with patch('assistant.agents.LongTermMemoryCurator.CalendarAccess.current', return_value=_no_events()):
             before = datetime.now()
             curator.curate_memory(lookback_days=2)
             after = datetime.now()
@@ -519,7 +522,7 @@ class TestEmptyPeriod:
 
     def test_curate_memory_returns_the_bank_untouched(self):
         curator = self._curator()
-        with patch('assistant.agents.LongTermMemoryCurator.CalDAVIntegration.fetch_calendar_events') as calendar:
+        with patch('assistant.agents.LongTermMemoryCurator.CalendarAccess.current') as calendar:
             memory, metadata = curator.curate_memory(datetime(2026, 9, 10, 14), datetime(2026, 9, 10, 16))
         assert memory == "# Memory\nA bank long enough"
         assert metadata['empty'] is True and metadata['interaction_count'] == 0
