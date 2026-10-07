@@ -1081,11 +1081,18 @@ class TestCmdFetchCameraImages:
         assert "The cameras:" not in result
 
     def test_the_command_hands_the_trimmed_names_to_the_background_fetch(self, commands_instance):
-        with patch.object(commands_instance, "background_command") as bg:
+        """background_command splats a list/tuple parameter (`function(*params)`), so the
+        names must arrive at the fetch as one list — not as one name's characters, nor as two
+        positional names."""
+        with patch.object(commands_instance, "background_command") as bg, \
+             patch.object(commands_instance, "_fetch_all_camera_images") as fetch:
             commands_instance.cmd_fetch_camera_images(" Front ", "", "Back")
+            commands_instance.cmd_fetch_camera_images("Front")
             commands_instance.cmd_fetch_camera_images()
-        assert bg.call_args_list[0].args[1] == ["Front", "Back"]
-        assert bg.call_args_list[1].args[1] is None
+            for call in bg.call_args_list:
+                function, params = call.args[:2]
+                function(*params)
+        assert [c.args for c in fetch.call_args_list] == [(["Front", "Back"],), (["Front"],), (None,)]
 
 
 # ---------------------------------------------------------------------------

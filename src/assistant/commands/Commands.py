@@ -546,7 +546,8 @@ class Commands:
         """Stills from every camera of every enabled camera integration, or from the cameras
         the arguments name (substring match)."""
         only = [n.strip() for n in names if n and n.strip()] or None
-        self.background_command(self._fetch_all_camera_images, only)
+        # background_command splats a list into positional arguments: the one list goes in a tuple
+        self.background_command(self._fetch_all_camera_images, (only,))
 
     @staticmethod
     def _provider_snapshots(provider, only) -> list:
