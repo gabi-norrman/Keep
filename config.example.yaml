@@ -77,6 +77,8 @@ mail:
 
 # >> ring: src/integrations/ring/config.example.yaml
 
+# >> unifi_protect: src/integrations/unifi_protect/config.example.yaml
+
 location:
   home:
     latitude: 34.67448641

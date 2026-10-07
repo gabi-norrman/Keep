@@ -1,0 +1,8 @@
+# A UniFi Protect console on the local network. The api_key is created in the console's own
+# settings: Settings > Control Plane > Integrations > Create API Key. No login or 2FA.
+unifi_protect:
+  host: 192.168.1.1        # the console's address, with or without https://
+  api_key: YOUR_UNIFI_PROTECT_API_KEY
+  verify_ssl: false         # the console's certificate is self-signed; true only with a trusted one installed
+  # Cameras whose name contains one of these words are left out of the camera images.
+  ignore_cameras: []

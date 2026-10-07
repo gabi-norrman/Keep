@@ -34,6 +34,7 @@ GROUPS = {
     'src/integrations/photos': ('photos', 'The family photo library: iCloud downloads, vision-LLM indexing and a feed into the history.'),
     'src/integrations/reminders': ('reminders', 'Adds items to Apple Reminders lists such as the shopping list.'),
     'src/integrations/ring': ('ring', 'Ring doorbell snapshots, with the login’s 2FA.'),
+    'src/integrations/unifi_protect': ('unifi_protect', 'UniFi Protect camera snapshots over the console’s local Integration API, with an API key.'),
     'src/integrations/self_improvement': ('self_improvement', 'The switch and health check for Keep working on its own code through the Claude Code CLI.'),
     'src/integrations/telegram_feed': ('telegram_feed', 'The owner’s own Telegram account as a feed of their chats.'),
     'src/integrations/tesla': ('tesla', 'The cars through the Tessie API: state, climate and trunk.'),
