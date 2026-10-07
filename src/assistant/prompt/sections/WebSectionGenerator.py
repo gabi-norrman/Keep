@@ -3,7 +3,7 @@ the server, and the fact that none is when it is not. With it the LLM knows why 
 thin and the browse commands fail, and can tell the user what to install. Polled, so an install
 made while the server runs reaches the LLM as a delta note."""
 from ..PromptSectionGenerator import PromptSectionGenerator
-from common.logging import info, trace
+from common.logging import info
 
 
 class WebSectionGenerator(PromptSectionGenerator):
@@ -18,6 +18,7 @@ class WebSectionGenerator(PromptSectionGenerator):
 
     def __init__(self, prompt_manager):
         super().__init__(prompt_manager, "WebBrowser")
+        self._binary = None
 
     @staticmethod
     def chrome_binary() -> str | None:
@@ -25,9 +26,12 @@ class WebSectionGenerator(PromptSectionGenerator):
         return WebAccess._find_chrome_binary()
 
     def _fetch_content(self) -> str:
+        """Polled, so the verdict is logged only when it changes from the last poll."""
         binary = self.chrome_binary()
-        if binary:
-            trace(f"Web section: Chrome at {binary} — nothing to tell the LLM")
-            return ""
-        info("Web section: no Chrome/Chromium binary on this machine — the web toolkit says so")
-        return self.NO_CHROME
+        if binary != self._binary:
+            self._binary = binary
+            if binary:
+                info(f"Web section: Chrome at {binary} — nothing to tell the LLM")
+            else:
+                info("Web section: no Chrome/Chromium binary on this machine — the web toolkit says so")
+        return "" if binary else self.NO_CHROME

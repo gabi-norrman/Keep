@@ -124,38 +124,42 @@ _OWNER_UNKNOWN = ('owner_name is not set: ask who you are talking to and save th
                   'config_set("owner_name", ...) before anything else.')
 
 
-def brief_due() -> bool:
+def brief_due(verbose: bool = True) -> bool:
     """Whether the first-run brief opens the conversation: fewer than
-    `FTUE_INTEGRATION_THRESHOLD` integrations enabled."""
+    `FTUE_INTEGRATION_THRESHOLD` integrations enabled. `verbose=False` is for a poller that
+    logs the verdict itself when it changes."""
     enabled = config.enabled_integrations()
     due = len(enabled) < FTUE_INTEGRATION_THRESHOLD
-    trace(f"Brief check: {len(enabled)} of {FTUE_INTEGRATION_THRESHOLD} integration(s) enabled — "
-          f"the brief {'opens' if due else 'is retired'}")
+    if verbose:
+        trace(f"Brief check: {len(enabled)} of {FTUE_INTEGRATION_THRESHOLD} integration(s) enabled — "
+              f"the brief {'opens' if due else 'is retired'}")
     return due
 
 
-def in_ftue(now: float = None, state_path: Path = None, activity_path: Path = None) -> bool:
+def in_ftue(now: float = None, state_path: Path = None, activity_path: Path = None, verbose: bool = True) -> bool:
     """Whether setup is in progress: fewer than `FTUE_INTEGRATION_THRESHOLD` integrations
     enabled, or the install younger than `FTUE_INSTALL_DAYS` (an established install that
     pre-dates the pipeline has no state file and counts as old) with a setup command in the
-    last `FTUE_SETUP_GRACE_HOURS`."""
-    if brief_due():
-        trace("FTUE check: too few integrations enabled — setup in progress")
+    last `FTUE_SETUP_GRACE_HOURS`. `verbose=False` silences the trace lines, for a poller
+    that logs the verdict itself when it changes."""
+    log = trace if verbose else (lambda _message: None)
+    if brief_due(verbose):
+        log("FTUE check: too few integrations enabled — setup in progress")
         return True
     now = now if now is not None else time.time()
     state = State.load(state_path)
     age_days = (now - state.started_at) / 86400 if state else None
     age = f"{age_days:.1f} day(s) old" if age_days is not None else "established"
     if age_days is None or age_days >= FTUE_INSTALL_DAYS:
-        trace(f"FTUE check: the install is {age} (>= {FTUE_INSTALL_DAYS} days) — setup is not in progress")
+        log(f"FTUE check: the install is {age} (>= {FTUE_INSTALL_DAYS} days) — setup is not in progress")
         return False
     last = last_setup_activity(activity_path)
     hours_ago = (now - last) / 3600 if last is not None else None
     if hours_ago is not None and hours_ago < FTUE_SETUP_GRACE_HOURS:
-        trace(f"FTUE check: the install is {age} and a setup command ran {hours_ago:.1f} h ago "
+        log(f"FTUE check: the install is {age} and a setup command ran {hours_ago:.1f} h ago "
               f"(< {FTUE_SETUP_GRACE_HOURS} h) — setup in progress")
         return True
-    trace(f"FTUE check: the install is {age} but no setup command ran in the last "
+    log(f"FTUE check: the install is {age} but no setup command ran in the last "
           + (f"{hours_ago:.0f} h" if hours_ago is not None else "ever recorded") + " — setup is not in progress")
     return False
 

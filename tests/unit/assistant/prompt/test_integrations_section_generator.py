@@ -73,3 +73,39 @@ class TestFetchContent:
         with patch("assistant.FirstRun.in_ftue", return_value=False) as predicate:
             assert section._fetch_content() == ""
         predicate.assert_called_once()
+
+
+@pytest.mark.unit
+class TestPollLogging:
+    """The section is polled every 20 s; the log must not carry a line per poll."""
+
+    def _poll(self, section):
+        # What the base class does after _fetch_content: keeps the text for the next comparison.
+        section.content = section._fetch_content()
+
+    def test_the_summary_is_logged_once_for_an_unchanged_state(self, section):
+        with patch(f"{MODULE}.in_ftue", return_value=True), patch(f"{MODULE}.statuses", return_value=STATUSES), \
+                patch("assistant.prompt.sections.IntegrationsSectionGenerator.info") as info:
+            for _ in range(3):
+                self._poll(section)
+        assert info.call_count == 2  # the verdict once, the summary once
+
+    def test_a_changed_state_is_logged_again(self, section):
+        with patch(f"{MODULE}.in_ftue", return_value=True), \
+                patch(f"{MODULE}.statuses", side_effect=[STATUSES, STATUSES, STATUSES[:1]]), \
+                patch("assistant.prompt.sections.IntegrationsSectionGenerator.info") as info:
+            for _ in range(3):
+                self._poll(section)
+        assert info.call_count == 3
+
+    def test_setup_over_is_logged_once(self, section):
+        with patch(f"{MODULE}.in_ftue", return_value=False), \
+                patch("assistant.prompt.sections.IntegrationsSectionGenerator.info") as info:
+            for _ in range(3):
+                self._poll(section)
+        assert info.call_count == 1
+
+    def test_the_poll_asks_first_run_without_its_trace_lines(self, section):
+        with patch("assistant.FirstRun.in_ftue", return_value=False) as predicate:
+            section._fetch_content()
+        assert predicate.call_args.kwargs == {"verbose": False}
