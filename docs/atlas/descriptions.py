@@ -20,6 +20,7 @@ GROUPS = {
     'src/assistant/tools': ('tools', 'Helpers commands lean on: web browsing, image and video analysis, PDFs, geocoding and message formatting.'),
     'src/integrations': ('integrations', 'One folder per outside service, holding everything that belongs to it: calendars, cameras, email, the home, photos, music, cars, messages and more.'),
     'src/integrations/arlo': ('arlo', 'Arlo camera snapshots through PyArlo, with the login’s 2FA.'),
+    'src/integrations/aseko': ('aseko', 'The pool through the Aseko Cloud API: the unit’s readings and warnings, read-only.'),
     'src/integrations/caldav': ('caldav', 'Calendars over CalDAV: one calendar account per caldav.accounts entry, iCloud by preset, any other server by its url.'),
     'src/integrations/home_assistant': ('home_assistant', 'Home Assistant as the home automation backend: one websocket for state, commands and the event feed.'),
     'src/integrations/icloud': ('icloud', 'The iCloud account: Find My locations and device pings, with its 2FA recovery.'),

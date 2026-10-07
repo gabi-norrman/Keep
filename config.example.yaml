@@ -7,7 +7,7 @@
 # `# >> section: path` stands where it belongs, and config_help(section) shows the section whole.
 
 # Every integration is off until it is listed here (Web Access and ElevenLabs TTS are on regardless).
-# Use the names list_integrations shows: Arlo, CalDAV, Google, iCloud, IMAP Mail, iMessage, Indigo,
+# Use the names list_integrations shows: Arlo, Aseko Pool, CalDAV, Google, iCloud, IMAP Mail, iMessage, Indigo,
 # Microsoft 365, Photos, Reminders, Ring, Self Improvement, Sonos & Spotify, Telegram Feed, Tesla, X, YR Weather.
 # The TTS engines voice speaks through are integrations too — ElevenLabs TTS (on by default), Gemini TTS,
 # Chirp 3 HD, Cartesia Sonic TTS, Fish Audio TTS, Grok TTS, Supertonic TTS: a request speaks through the
@@ -59,6 +59,8 @@ mail:
   send_from: Personal
 
 # >> tesla: src/integrations/tesla/config.example.yaml
+
+# >> aseko: src/integrations/aseko/config.example.yaml
 
 # >> icloud: src/integrations/icloud/config.example.yaml
 

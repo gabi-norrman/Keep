@@ -1,0 +1,9 @@
+# The pool: an Aseko unit (ASIN AQUA and the like) through the Aseko Cloud public API. Read-only — the
+# readings (water and air temperature, pH, redox, chlorine, salinity, filtration, heating, water level)
+# and the unit's own warnings land in the prompt every 5 minutes; nothing can be changed from here.
+# The key comes from https://account.aseko.cloud/profile/settings/api-keys, and the account must have
+# accepted the latest terms of service at https://account.aseko.cloud/ or every call answers 403
+# (TOS_NOT_ACCEPTED — the user does that on the site, there is no way around it). Aseko may also
+# answer that the account's plan has no API access (UNPAID_OR_LOW_SUBSCRIPTION_PLAN).
+aseko:
+  api_key: YOUR_ASEKO_API_KEY

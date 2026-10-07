@@ -211,6 +211,7 @@ Every integration is off until you turn it on, and Keep walks you through the se
 <tr><td>🏠&nbsp;<b>Home</b></td><td>Home Assistant and Indigo for lights, switches, locks, sensors and scenes</td></tr>
 <tr><td>📹&nbsp;<b>Cameras</b></td><td>Arlo and Ring</td></tr>
 <tr><td>🚗&nbsp;<b>Car</b></td><td>Tesla, through tessie.com</td></tr>
+<tr><td>🏊&nbsp;<b>Pool</b></td><td>Aseko pool units, through aseko.cloud</td></tr>
 <tr><td>🎵&nbsp;<b>Music</b></td><td>Sonos and Spotify</td></tr>
 <tr><td>🌦️&nbsp;<b>Weather</b></td><td>YR forecasts and rain radar</td></tr>
 <tr><td>🌐&nbsp;<b>Web</b></td><td>Search, page reading, a real headless browser for sites that need clicking, and X</td></tr>
