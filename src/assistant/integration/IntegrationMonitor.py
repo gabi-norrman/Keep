@@ -10,6 +10,13 @@ from common.logging import info, error, trace
 from common.DevelopmentConfig import RUNNING_UNDER_TEST
 
 
+def folder_of(cls: type) -> Optional[str]:
+    """The integration folder (`src/integrations/<folder>/`) a class lives in, None for a
+    class outside the package (WebAccess, the TTS engines)."""
+    parts = cls.__module__.split(".")
+    return parts[1] if len(parts) > 2 and parts[0] == "integrations" else None
+
+
 class UnavailableIntegration(Integration):
     """Stands in for an integration whose constructor raised (Tesla without a `tesla`
     section): listed as NOT_CONFIGURED with the error, so `list_integrations` sees it and
@@ -67,6 +74,11 @@ class IntegrationMonitor:
     A background thread calls each integration's check_health() every CHECK_INTERVAL and
     moves it between OK/WARNING/ERROR (after FAILURE_THRESHOLD consecutive failures);
     NOT_CONFIGURED, NEEDS_2FA and RATE_LIMITED integrations are skipped until resolved.
+
+    It is also the one answer to "is this integration on": `folder_enabled` and
+    `contract_enabled` tell the prompt which folders' sections to run and which toolkits to
+    offer, and `add_listener` callbacks run whenever that answer may have changed — after a
+    registration batch (the registrar calls `notify`) and after every `restart`.
     """
 
     _instance: Optional['IntegrationMonitor'] = None
@@ -84,6 +96,7 @@ class IntegrationMonitor:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._config_manager = ConfigManager()
+        self._listeners: List[Callable[[], None]] = []
 
     @classmethod
     def get_instance(cls) -> 'IntegrationMonitor':
@@ -143,6 +156,59 @@ class IntegrationMonitor:
             start(integration)
         return integration
 
+    def add_listener(self, callback: Callable[[], None]):
+        """Run *callback* after every change to which integrations are on (see `notify`)."""
+        with self._lock:
+            self._listeners.append(callback)
+
+    def remove_listener(self, callback: Callable[[], None]):
+        with self._lock:
+            if callback in self._listeners:
+                self._listeners.remove(callback)
+
+    def notify(self):
+        """Tell the listeners the set of enabled integrations may have changed. The registrar
+        calls it once a batch of register_class calls is in; `restart` calls it itself."""
+        with self._lock:
+            listeners = list(self._listeners)
+        trace(f"IntegrationMonitor: notifying {len(listeners)} listener(s) of a change")
+        for callback in listeners:
+            try:
+                callback()
+            except Exception as exc:
+                error(f"IntegrationMonitor listener {callback} raised {type(exc).__name__}: {exc}")
+
+    @staticmethod
+    def _class_of(integration: Integration) -> type:
+        """The integration class, behind a placeholder too."""
+        return integration.cls if isinstance(integration, (DisabledIntegration, UnavailableIntegration)) \
+            else type(integration)
+
+    def folder_integrations(self, folder: str) -> List[Integration]:
+        """The registered integrations (placeholders included) of an integration folder."""
+        return [i for i in self._snapshot() if folder_of(self._class_of(i)) == folder]
+
+    def contract_integrations(self, contract: type) -> List[Integration]:
+        """The registered integrations (placeholders included) whose class implements *contract*."""
+        return [i for i in self._snapshot() if issubclass(self._class_of(i), contract)]
+
+    @staticmethod
+    def _enabled(integrations: List[Integration]) -> Optional[bool]:
+        if not integrations:
+            return None
+        return any(not isinstance(i, DisabledIntegration) for i in integrations)
+
+    def folder_enabled(self, folder: str) -> Optional[bool]:
+        """Whether the folder's integrations are on: True when one of them is built (configured
+        or not), False when every registered one is disabled, None while none is registered
+        (the launcher has not reached it yet, or a test never will)."""
+        return self._enabled(self.folder_integrations(folder))
+
+    def contract_enabled(self, contract: type) -> Optional[bool]:
+        """The same verdict for the integrations implementing a contract (HomeAutomation, a
+        mail or calendar source)."""
+        return self._enabled(self.contract_integrations(contract))
+
     def find(self, name: str) -> Optional[Integration]:
         wanted = name.strip().lower()
         for integration in self._snapshot():
@@ -179,6 +245,7 @@ class IntegrationMonitor:
             self._check_integration(rebuilt)
         info(f"Integration '{rebuilt.name}' restarted: {rebuilt.state.value}"
              + (f" ({rebuilt.last_error})" if rebuilt.last_error else ""))
+        self.notify()
         return {"restartable": True, "status": self._status(rebuilt)}
 
     def _await_feed_open(self, integration: Integration):

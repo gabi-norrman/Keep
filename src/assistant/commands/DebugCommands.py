@@ -208,16 +208,20 @@ class DebugCommands:
     def cmd_TOOLKITS(self, args: str) -> str:
         """The toolkits: size, commands, and when each was loaded into today's history window."""
         from . import Toolkits
+        from assistant.integration.IntegrationMonitor import IntegrationMonitor
         loaded = self.history.loaded_toolkits() if self.history is not None else {}
+        monitor = IntegrationMonitor.get_instance()
         lines = [f"Toolkits ({len(Toolkits.TOOLKITS)}):"]
         width = max(len(t.name) for t in Toolkits.TOOLKITS)
         for toolkit in Toolkits.TOOLKITS:
             size = f"{len(toolkit.text()):5d} chars" if toolkit.path.exists() else "  MISSING FILE"
-            if toolkit.name in loaded:
+            if not toolkit.offered_by(monitor):
+                state = "integration off"
+            elif toolkit.name in loaded:
                 state = "loaded " + datetime.fromtimestamp(loaded[toolkit.name]).strftime("%H:%M")
             else:
                 state = "not loaded"
-            lines.append(f"  {toolkit.name.ljust(width)}  {size}  {state:14s} {', '.join(toolkit.commands)}")
+            lines.append(f"  {toolkit.name.ljust(width)}  {size}  {state:15s} {', '.join(toolkit.commands)}")
         return "\n".join(lines)
 
     def cmd_TOOLKIT(self, args: str) -> str:

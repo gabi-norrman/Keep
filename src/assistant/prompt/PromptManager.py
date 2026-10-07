@@ -85,6 +85,10 @@ class PromptManager:
         # cache on every turn. It's now appended to the trailing user message in
         # get_messages() instead, where it lives in the uncached suffix and never
         # invalidates anything.
+        # The generators that run only while their integration is on (key -> class, see
+        # PromptSectionGenerator.enabled_by): built and started when the IntegrationMonitor
+        # says so, stopped and dropped when it changes its mind (_on_integrations_changed).
+        self._gated: dict[str, type] = {}
         self.sections = self._build_sections(
             SectionGenerators.discover() if section_generators is None else section_generators)
         self._assert_unique_section_names(self.sections)
@@ -106,22 +110,29 @@ class PromptManager:
             # For test suite, just load test prompt immediately
             self._load_test_suite_prompt()
         else:
-            # Start all section generators; each one's first fetch triggers a cheap
-            # rebuild as it lands (a cold boot rebuilds a handful of times — fine).
+            # Start the core's section generators; each one's first fetch triggers a cheap
+            # rebuild as it lands (a cold boot rebuilds a handful of times — fine). The gated
+            # ones start when the IntegrationMonitor registers their integrations.
             info("Starting prompt section generators...")
             for name, section in self.sections.items():
                 section.start()
             self._assemble_prompt()
+            self._monitor().add_listener(self._on_integrations_changed)
 
-    # Where each section stands in `self.sections`: the order they are started and stopped in.
-    # A section a new folder brings comes after these, by key.
+    # Where each section stands in `self.sections`: the order they are started and stopped in,
+    # and the order of the {INTEGRATION_DATA} block. A section a new folder brings comes after
+    # these, by key.
     SECTION_ORDER = ("memory", "memory_recent", "procedures", "watchlist", "integrations", "vault", "weather",
                      "precipitation", "home", "web", "calendar", "sonos", "music_zones", "car_info", "phones")
+    # The placeholder the data sections of the integrations fill, each under its own heading.
+    DATA_BLOCK = "{INTEGRATION_DATA}"
 
     def _build_sections(self, generator_classes) -> dict:
-        """The core's generators plus one of each integration folder's, under the key the class
-        declares. A key with two owners is an error naming both; a folder's generator without
-        a key, or whose constructor raises, is logged and left out."""
+        """The core's generators, plus one of each integration folder's under the key the
+        class declares. A generator tied to an integration — a folder's, or a core one with
+        `needs` — is not built here but noted in `_gated` for _on_integrations_changed. A key
+        with two owners is an error naming both; a generator without a key, or whose
+        constructor raises, is logged and left out."""
         memory = MemorySectionGenerator(self)
         sections = {
             'memory': memory,
@@ -130,30 +141,88 @@ class PromptManager:
             'watchlist': WatchListSectionGenerator(self),
             'integrations': IntegrationsSectionGenerator(self),
             'vault': VaultSectionGenerator(self),
-            'home': HomeSectionGenerator(self),
             'web': WebSectionGenerator(self),
-            'calendar': CalendarSectionGenerator(self),
         }
+        gated: dict[str, type] = {'home': HomeSectionGenerator, 'calendar': CalendarSectionGenerator}
         for cls in generator_classes:
             if not cls.key:
                 error(f"Section generator {cls.__module__}.{cls.__name__} declares no key, left out")
                 continue
-            if cls.key in sections:
-                owner = type(sections[cls.key])
+            if cls.key in sections or cls.key in gated:
+                owner = gated[cls.key] if cls.key in gated else type(sections[cls.key])
                 raise ValueError(f"Prompt section '{cls.key}' has two owners: "
                                  f"{owner.__module__}.{owner.__name__} and {cls.__module__}.{cls.__name__}")
+            if cls.folder() is not None or cls.needs is not None:
+                gated[cls.key] = cls
+                continue
             try:
                 sections[cls.key] = cls(self)
             except Exception as e:
                 error(f"Section generator {cls.__module__}.{cls.__name__} could not be built, left out: {type(e).__name__}: {e}")
-        order = {key: index for index, key in enumerate(self.SECTION_ORDER)}
-        ordered = dict(sorted(sections.items(), key=lambda item: (order.get(item[0], len(order)), item[0])))
-        trace(f"Prompt sections: {', '.join(ordered)}")
+        self._gated = gated
+        ordered = self._ordered(sections)
+        trace(f"Prompt sections: {', '.join(ordered)}; waiting for their integration: {', '.join(gated)}")
         return ordered
 
-    def _compute_section_positions(self) -> dict[str, int]:
-        """Map of section_key -> placeholder position in the prompt template.
-        Sections whose placeholder is missing are omitted (callers fall back to alpha order)."""
+    def section_classes(self) -> dict[str, type]:
+        """Every section this manager knows, key -> generator class: the running ones and the
+        gated ones waiting for their integration."""
+        with self._prompt_lock:
+            return {key: type(gen) for key, gen in self.sections.items()} | dict(self._gated)
+
+    @classmethod
+    def _ordered(cls, sections: dict) -> dict:
+        order = {key: index for index, key in enumerate(cls.SECTION_ORDER)}
+        return dict(sorted(sections.items(), key=lambda item: (order.get(item[0], len(order)), item[0])))
+
+    def _monitor(self):
+        """The IntegrationMonitor whose verdict gates the sections and the toolkit index; None
+        in test-suite mode, where every toolkit is offered and no gated section runs."""
+        if self.test_suite:
+            return None
+        from assistant.integration.IntegrationMonitor import IntegrationMonitor
+        return IntegrationMonitor.get_instance()
+
+    def _on_integrations_changed(self):
+        """The IntegrationMonitor's listener: build and start the gated generators whose
+        integration is on now, stop and drop the ones whose integration went off, then
+        rebuild the prompt — the toolkit index follows the same verdict, so it is rebuilt even
+        when no section changed. The generators are stopped outside the prompt lock: a stop
+        joins the generator's thread, which may be waiting for that lock in on_section_updated."""
+        monitor = self._monitor()
+        started, stopped = [], []
+        with self._prompt_lock:
+            for key, cls in self._gated.items():
+                running = key in self.sections
+                wanted = cls.enabled_by(monitor)
+                if wanted and not running:
+                    try:
+                        self.sections[key] = cls(self)
+                    except Exception as e:
+                        error(f"Section generator {cls.__module__}.{cls.__name__} could not be built, left out: "
+                              f"{type(e).__name__}: {e}")
+                        continue
+                    started.append(key)
+                elif running and not wanted:
+                    stopped.append(self.sections.pop(key))
+            if started or stopped:
+                self.sections = self._ordered(self.sections)
+            starting = [self.sections[key] for key in started]
+        for section in stopped:
+            section.stop()
+        for section in starting:
+            section.start()
+        info(f"Integrations changed — sections started: {', '.join(started) or 'none'}, stopped: "
+             f"{', '.join(s.section_name for s in stopped) or 'none'}; "
+             f"waiting: {', '.join(k for k in self._gated if k not in self.sections) or 'none'}")
+        self._assemble_prompt("integrations changed")
+
+    def _compute_section_positions(self) -> dict[str, float]:
+        """Map of section_key -> where the section stands in the prompt template: its own
+        placeholder's position, or the {INTEGRATION_DATA} block's plus its rank in the block
+        for a section with a heading. Sections placed nowhere are omitted (callers fall back
+        to alpha order). Every section is mapped, the gated ones included, so the map is
+        fixed for the life of the manager."""
         template_path = self._test_suite_template_path() if self.test_suite else "res/prompt.md"
         try:
             with open(template_path, "r") as f:
@@ -162,19 +231,25 @@ class PromptManager:
             info(f"Could not read {template_path} for section order ({e})")
             return {}
 
+        classes = {key: type(gen) for key, gen in self.sections.items()} | self._gated
+        block_at = template.find(self.DATA_BLOCK)
+        order = {key: index for index, key in enumerate(self.SECTION_ORDER)}
         positions = {}
-        for section_key in self.sections:
+        for section_key, cls in classes.items():
             idx = template.find("{" + section_key.upper() + "}")
             if idx >= 0:
                 positions[section_key] = idx
-        if absent := [key for key in self.sections if key not in positions]:
+            elif cls.heading and block_at >= 0:
+                positions[section_key] = block_at + order.get(section_key, len(order)) / 1000
+        if absent := [key for key in classes if key not in positions]:
             from assistant.commands import Toolkits
-            info(f"Sections without a placeholder in {template_path} (they reach the LLM through a toolkit, "
+            info(f"Sections without a place in {template_path} (they reach the LLM through a toolkit, "
                  f"see Toolkits.CARRIED_SECTIONS): {', '.join(absent)}")
             # The test suite's own template is static: it places no section at all.
             if unreachable := [] if self.test_suite else [key for key in absent if key not in Toolkits.CARRIED_SECTIONS]:
-                error(f"Sections that reach the LLM nowhere — no {{KEY}} placeholder in {template_path} and no toolkit "
-                      f"carries them (`sections:` in a toolkit.md): {', '.join(unreachable)}")
+                error(f"Sections that reach the LLM nowhere — no {{KEY}} placeholder or {self.DATA_BLOCK} block in "
+                      f"{template_path} and no toolkit carries them (`sections:` in a toolkit.md): "
+                      f"{', '.join(unreachable)}")
         return positions
 
     @staticmethod
@@ -195,7 +270,7 @@ class PromptManager:
         # The data sections are baked into the test-suite prompt; only the config-driven
         # values and the toolkit index are substituted. The production template, the stand-in
         # when that file is absent, still has the section placeholders: they are blanked.
-        sections = {} if template_path == "testsuite_prompt.md" else {key: "" for key in self.sections}
+        sections = {} if template_path == "testsuite_prompt.md" else {key: "" for key in self.section_classes()}
         self.prompt = self._substitute(template, sections, photo_count=self._TEST_SUITE_PHOTO_COUNT)
         self._messages = [{"role": "system", "content": self.prompt}]
         self._test_toolkit_messages = self._all_toolkits_loaded()
@@ -646,19 +721,39 @@ class PromptManager:
     _TEST_SUITE_PHOTO_COUNT = "~43034"
 
     def _substitute(self, text: str, sections: dict[str, str], photo_count: str | None = None) -> str:
-        """Fill every placeholder the templates and toolkit files use: the sections given,
-        then {TOOLKITS} (assistant.commands.Toolkits), {PHOTO_COUNT}
+        """Fill every placeholder the templates and toolkit files use: the sections given — by
+        their own placeholder, or in the {INTEGRATION_DATA} block for the ones with a heading —
+        then {TOOLKITS} (assistant.commands.Toolkits, the toolkits offered now), {PHOTO_COUNT}
         (`photo_count` if given, else the DB's, refreshed at most daily), {WAKE_WORD} and
         {WAKE_INTERVAL_MINUTES} (config-driven)."""
         from assistant.commands import Toolkits
         for key, content in sections.items():
             text = text.replace("{" + key.upper() + "}", content)
+        if self.DATA_BLOCK in text:
+            text = text.replace(self.DATA_BLOCK, self._render_data_block(sections))
         if "{TOOLKITS}" in text:
-            text = text.replace("{TOOLKITS}", Toolkits.render_index())
+            text = text.replace("{TOOLKITS}", Toolkits.render_index(self._monitor()))
         if "{PHOTO_COUNT}" in text:
             text = text.replace("{PHOTO_COUNT}", photo_count or f"~{self._get_photo_count()}")
         text = text.replace("{WAKE_WORD}", config.get('wake_word', 'Michelle'))
         return text.replace("{WAKE_INTERVAL_MINUTES}", self._wake_interval_minutes_str())
+
+    def _render_data_block(self, contents: dict[str, str]) -> str:
+        """The {INTEGRATION_DATA} text: every running section with a heading, in SECTION_ORDER,
+        as heading, intro and data; one with nothing to say is left out heading and all. Caller
+        holds _prompt_lock (the sections change under it)."""
+        parts, left_out = [], []
+        for key, gen in self.sections.items():
+            if not gen.heading or key not in contents:
+                continue
+            content = contents[key].strip()
+            if not content:
+                left_out.append(key)
+                continue
+            parts.append("\n".join(part for part in (gen.heading, gen.intro.strip(), content) if part) + "\n")
+        if left_out:
+            trace(f"Data block: {', '.join(left_out)} have nothing to show — left out, heading and all")
+        return "\n".join(parts)
 
     def render_template(self, text: str) -> str:
         """`text` with the placeholders filled from the sections' current content — what a
@@ -891,7 +986,9 @@ class PromptManager:
 
     def stop(self):
         """Stop all background threads and clean up resources."""
-        for name, section in self.sections.items():
+        if not self.test_suite:
+            self._monitor().remove_listener(self._on_integrations_changed)
+        for name, section in list(self.sections.items()):
             if hasattr(section, 'stop'):
                 section.stop()
 

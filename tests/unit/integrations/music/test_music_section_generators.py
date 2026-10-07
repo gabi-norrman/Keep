@@ -268,31 +268,3 @@ class TestSonosFavoritesSectionGeneratorMonitoring:
         section._start_monitoring()
 
         section._update_content.assert_called_once()
-
-    @patch('integrations.music.SonosFavoritesSectionGenerator.time')
-    @patch('integrations.music.SonosFavoritesSectionGenerator.MusicManager')
-    def test_a_dropped_integration_empties_the_section_and_is_waited_for_again(self, mock_mm_cls, mock_time):
-        mock_mm = Mock()
-        mock_mm.get_favorites.return_value = ["Radio 1"]
-        mock_mm.get_playlists.return_value = []
-        mock_mm_cls.peek_instance.return_value = mock_mm
-        mock_time.time.return_value = 100.0
-        waits = []
-
-        def wait(duration):
-            waits.append(duration)
-            if duration == 30 * 60:
-                mock_mm_cls.peek_instance.return_value = None   # disable_integration dropped it
-            elif len(waits) > 1:
-                section._stop_event.set()
-
-        from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
-        section = SonosFavoritesSectionGenerator(None)
-        section._wait = wait
-        contents = []
-        section._update_content = lambda: contents.append(section._fetch_content())
-
-        section._start_monitoring()
-
-        assert len(contents) == 2 and "Radio 1" in contents[0] and contents[1] == ""
-        assert waits[-1] < 30 * 60, "after the drop the loop must poll for the integration, not sit out 30 minutes"

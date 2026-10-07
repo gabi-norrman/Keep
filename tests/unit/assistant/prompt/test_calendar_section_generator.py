@@ -1,8 +1,11 @@
-"""The calendar section: the coming week of every calendar account, refreshed every 15 minutes."""
-from unittest.mock import patch
+"""The calendar section: the coming week of every calendar account, refreshed every 15 minutes,
+standing under its own heading in the prompt's data block and running only while a calendar
+source is on."""
+from unittest.mock import Mock, patch
 
 import pytest
 
+from assistant.integration.calendar.CalendarSource import CalendarSource
 from assistant.prompt.sections.CalendarSectionGenerator import CalendarSectionGenerator
 
 
@@ -14,26 +17,25 @@ class TestCalendarSectionGenerator:
             section = CalendarSectionGenerator(None)
             assert section._fetch_content() == "Calendars shown below: Home\n\n(No upcoming events)"
 
-    def test_the_key_is_a_contract_with_the_placeholder_of_the_prompt_template(self):
+    def test_the_heading_is_a_contract_with_the_toolkits_that_point_the_llm_at_it(self):
+        """The section has no placeholder of its own: it stands in the data block under its
+        heading, which is the name the calendar and music toolkit references send the LLM to."""
+        from assistant.prompt.PromptManager import PromptManager
         from common.Paths import RES_DIR
         template = (RES_DIR / "prompt.md").read_text(encoding="utf-8")
-        assert "{" + CalendarSectionGenerator.key.upper() + "}" in template
+        heading = CalendarSectionGenerator.heading
+        assert heading.startswith("# ") and PromptManager.DATA_BLOCK in template
+        assert "{" + CalendarSectionGenerator.key.upper() + "}" not in template and heading not in template
+        assert heading.lstrip("# ") in (RES_DIR / "toolkits" / "calendar.md").read_text(encoding="utf-8")
 
-    def test_polls_again_soon_while_the_integrations_are_still_starting(self):
+    def test_it_runs_only_while_the_monitor_has_a_calendar_source_on(self):
         """2026-10-07: production's first fetch ran before CalDAV was registered and the prompt
-        said "not configured" for the whole 15-minute interval."""
-        from unittest.mock import Mock
-        starting = Mock(starting=True); starting.coming_week.return_value = "(Calendar not configured)"
-        ready = Mock(starting=False); ready.coming_week.return_value = "Family (CalDAV): Home\n\n(No upcoming events)"
-        waits = []
-        section = CalendarSectionGenerator(None)
-        with patch('assistant.prompt.sections.CalendarSectionGenerator.CalendarAccess.current', side_effect=[starting, ready, ready]):
-            def wait(seconds):
-                waits.append(seconds)
-                if len(waits) == 2:
-                    section._stop_event.set()
-                return False
-            section._wait = wait
-            section._start_monitoring()
-        assert waits == [CalendarSectionGenerator.STARTING_POLL_INTERVAL, CalendarSectionGenerator.UPDATE_INTERVAL]
-        assert section.content.startswith("Family (CalDAV)")
+        said "not configured" for the whole 15-minute interval — now the section is not started
+        until a source is registered on, and never for an install without one."""
+        def monitor(verdict):
+            return Mock(contract_enabled=Mock(side_effect=lambda c: verdict if c is CalendarSource else None),
+                        folder_enabled=Mock(return_value=True))
+        assert CalendarSectionGenerator.folder() is None
+        assert CalendarSectionGenerator.enabled_by(monitor(True)) is True
+        assert CalendarSectionGenerator.enabled_by(monitor(False)) is False
+        assert CalendarSectionGenerator.enabled_by(monitor(None)) is False

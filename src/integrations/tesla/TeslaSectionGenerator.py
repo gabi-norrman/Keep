@@ -12,8 +12,12 @@ from assistant.tools.Geocoding import reverse_geocode
 
 
 class TeslaSectionGenerator(PromptSectionGenerator):
-    """Refreshes the Tesla vehicle section every minute while driving, every 5 minutes when parked."""
+    """Refreshes the Tesla vehicle section every minute while driving, every 5 minutes when parked.
+
+    Reads the integration the IntegrationMonitor built (it runs only while Tesla is on); while
+    that is not configured the section says so and looks again at the parked cadence."""
     key = "car_info"
+    heading = "# CURRENT TESLA CAR INFO"
 
     HOME_RADIUS_METERS = 500
     UPDATE_INTERVAL_DRIVING = 60  # 1 minute when driving
@@ -29,27 +33,13 @@ class TeslaSectionGenerator(PromptSectionGenerator):
 
     def _start_monitoring(self):
         """Update every 1 minute when driving, 5 minutes when parked."""
-        if not config.get("tesla", {}):
-            self._update_content()
-            while not self._stop_event.is_set() and not config.get("tesla", {}):
-                self._wait(60)
-            if self._stop_event.is_set():
-                return
-            info("TeslaInfo: 'tesla' configured now, starting")
-        try:
-            self.tesla_api = TeslaIntegration()
-        except Exception as e:
-            raise Exception(f"Failed to initialize TeslaIntegration: {e}")
-
-        # Update immediately on start
-        self._update_content()
-
         while not self._stop_event.is_set():
-            # Determine update interval based on whether any car is driving
-            interval = self._get_update_interval()
-            self._wait(interval)
-            if not self._stop_event.is_set():
-                self._update_content()
+            api = TeslaIntegration.peek_instance()
+            if api is not self.tesla_api:
+                info(f"TeslaInfo: the Tesla integration is {'running' if api else 'not configured'}")
+                self.tesla_api = api
+            self._update_content()
+            self._wait(self._get_update_interval())
 
     def _get_update_interval(self) -> int:
         """
@@ -64,7 +54,7 @@ class TeslaSectionGenerator(PromptSectionGenerator):
     def _fetch_content(self) -> str:
         """Fetch Tesla vehicle information for all cars."""
         if not self.tesla_api:
-            return "(Tesla not configured)"
+            return "(Tesla is on but not configured yet — the setup toolkit configures it)"
 
         trace("Fetching Tesla vehicle information...")
 

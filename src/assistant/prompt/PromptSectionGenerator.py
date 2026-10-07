@@ -17,11 +17,42 @@ class PromptSectionGenerator(ABC):
     good content marked stale rather than blanking the section.
 
     A generator in an integration's folder (`src/integrations/<folder>/<Name>SectionGenerator.py`)
-    names its section with `key` — the `{KEY}` placeholder in the prompt template, or a key
-    its toolkit carries (`sections:` in toolkit.md) — and is found by `discover()`; the core's
-    own generators are listed in PromptManager.
+    names its section with `key` and is found by `discover()`; the core's own generators are
+    listed in PromptManager. The section reaches the LLM one of three ways: under its
+    `heading` in the prompt's `{INTEGRATION_DATA}` block (the data of the integrations, one
+    block the template places once), through a `{KEY}` placeholder of its own in the template
+    (the core's memory, vault and the like), or carried by a toolkit (`sections:` in
+    toolkit.md — `load_toolkit` sends it).
+
+    A folder's generator runs only while the folder's integration is on; a core generator may
+    tie itself to a contract the same way with `needs` (the calendar section to the calendar
+    sources). PromptManager starts and stops them as the IntegrationMonitor's verdict changes.
     """
     key: str = ""
+    # The heading line the section stands under in the {INTEGRATION_DATA} block, hashes
+    # included ("# CURRENT TESLA CAR INFO", "## Zones"); "" for a section placed otherwise.
+    heading: str = ""
+    # The text between the heading and the data — what the data is and how to use it.
+    intro: str = ""
+    # A core generator's contract: it runs while an enabled integration implements it.
+    needs: type | None = None
+
+    @classmethod
+    def folder(cls) -> str | None:
+        """The integration folder the generator belongs to; None for a core generator."""
+        parts = cls.__module__.split(".")
+        return parts[1] if len(parts) > 2 and parts[0] == "integrations" else None
+
+    @classmethod
+    def enabled_by(cls, monitor) -> bool:
+        """Whether the IntegrationMonitor says the generator's integration is on: its folder's
+        (`folder_enabled`), or the contract it `needs` (`contract_enabled`). A generator tied to
+        neither is always on; one whose integration is not registered yet is not."""
+        if cls.folder() is not None:
+            return monitor.folder_enabled(cls.folder()) is True
+        if cls.needs is not None:
+            return monitor.contract_enabled(cls.needs) is True
+        return True
 
     def __init__(self, prompt_manager, section_name: str):
         self.prompt_manager = prompt_manager

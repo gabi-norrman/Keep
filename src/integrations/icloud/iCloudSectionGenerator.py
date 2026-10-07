@@ -9,6 +9,9 @@ class iCloudSectionGenerator(PromptSectionGenerator):
     """The configured iCloud devices available to Find My iPhone. Re-read every minute so a
     device configured through config_set shows up once iCloud is restarted."""
     key = "phones"
+    heading = "# FAMILY PHONES"
+    intro = ("Phones registered with Find My iPhone, by the name the family uses (the `location` toolkit rings and "
+             "locates them):")
 
     def __init__(self, prompt_manager):
         super().__init__(prompt_manager, "iCloud Devices")

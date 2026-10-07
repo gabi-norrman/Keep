@@ -75,7 +75,7 @@ def test_a_checkout_without_the_testsuite_prompt_runs_the_suite_on_the_productio
     manager.load_test_suite_history("res/testsuite_history.json")
 
     assert manager.prompt.startswith("Header\n")
-    assert "{WEATHER}" not in manager.prompt
+    assert "{MEMORY}" not in manager.prompt and "{VAULT}" not in manager.prompt
     assert manager._test_history_messages == []
 
 

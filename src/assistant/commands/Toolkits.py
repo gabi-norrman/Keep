@@ -20,6 +20,13 @@ delta notes against what was sent (PromptManager._on_carried_section_updated_loc
 A hidden toolkit (`voice` — how to talk on the voice channel, and `false_positive`) is not in
 the index: the channel it belongs to always has it preloaded (`ChannelProfile.fixed_toolkits`),
 so a text chat's prompt never carries a word of it.
+
+A toolkit is offered only while the integration behind it is on (`Toolkit.offered_by`, the
+IntegrationMonitor's verdict): a folder toolkit while its folder's integration is enabled, a
+core toolkit that fronts a contract (`needs` — home automation, the mail and calendar
+sources) while an enabled integration implements it. One that is not offered is out of the
+index, `load_toolkit` and the preloads answer that its integration is off, and its commands
+are refused — the LLM never hears of a Tesla the house does not have.
 """
 import re
 from dataclasses import dataclass
@@ -28,6 +35,9 @@ from typing import Callable, Iterable, Optional
 
 import yaml
 
+from assistant.integration.HomeAutomation import HomeAutomation
+from assistant.integration.calendar.CalendarSource import CalendarSource
+from assistant.integration.mail.MailSource import MailSource
 from common.Paths import INTEGRATIONS_DIR, RES_DIR
 from common.logging import error, trace
 
@@ -54,10 +64,40 @@ class Toolkit:
     hidden: bool = False
     # An integration folder's toolkit.md; None for a core toolkit, whose file is in res/toolkits.
     file: Optional[Path] = None
+    # A core toolkit that fronts a contract: offered while an enabled integration implements it.
+    needs: Optional[type] = None
 
     @property
     def path(self) -> Path:
         return self.file or TOOLKITS_DIR / f"{self.name}.md"
+
+    @property
+    def folder(self) -> Optional[str]:
+        """The integration folder a folder toolkit belongs to; None for a core toolkit."""
+        return self.file.parent.name if self.file else None
+
+    def offered_by(self, monitor) -> bool:
+        """Whether the LLM is offered the toolkit: not while the IntegrationMonitor knows the
+        integration behind it to be off (`folder_enabled` / `contract_enabled` False). None
+        from the monitor — nothing registered for it yet — leaves it offered; without a
+        monitor everything is."""
+        if monitor is None:
+            return True
+        if self.folder is not None:
+            return monitor.folder_enabled(self.folder) is not False
+        if self.needs is not None:
+            return monitor.contract_enabled(self.needs) is not False
+        return True
+
+    def behind(self, monitor) -> list:
+        """The registered integrations the toolkit depends on (for the "it is off" answers)."""
+        if monitor is None:
+            return []
+        if self.folder is not None:
+            return monitor.folder_integrations(self.folder)
+        if self.needs is not None:
+            return monitor.contract_integrations(self.needs)
+        return []
 
     def text(self) -> str:
         """The reference as the LLM receives it: a folder toolkit's front matter is not part of it."""
@@ -134,7 +174,7 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
     Toolkit("home", "lights, actions, cameras and the home automation log, with the current state of every "
                     "light, action and variable of the house",
             ("turn_on", "turn_off", "dim", "execute", "fetch_camera_images", "home_automation_logs"),
-            sections=("home",)),
+            sections=("home",), needs=HomeAutomation),
     Toolkit("web", "read a web page or google something; anything that needs current information",
             ("open_url", "google"), sections=("web",)),
     Toolkit("browser", "drive a real browser when a page needs clicking, typing or a date picker before it "
@@ -143,9 +183,10 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
              "browse_wait", "browse_network", "browse_click_at", "browse_extract", "browse_screenshot",
              "browse_close", "send_screenshot")),
     Toolkit("email", "list, search, read and move the user's mail; send an email",
-            ("latest_email", "search_email", "read_email", "move_email", "list_folders", "send_email")),
-    Toolkit("calendar", "create a calendar event; add to the shared shopping list",
-            ("create_event", "add_shopping_list_item")),
+            ("latest_email", "search_email", "read_email", "move_email", "list_folders", "send_email"),
+            needs=MailSource),
+    Toolkit("calendar", "create a calendar event; the coming week of a calendar the prompt does not show",
+            ("create_event", "load_calendar"), needs=CalendarSource),
     Toolkit("timers", "anything the user wants done LATER, or watched for until it happens",
             ("schedule_wakeup", "caffeinate")),
     Toolkit("history", "search everything that ever happened, when long-term memory does not cover it",
@@ -165,13 +206,13 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
 # The order of the index, which is part of the prompt: a toolkit keeps its place wherever its
 # file lives. A toolkit not named here (a new folder's) comes after these, by name.
 INDEX_ORDER = ("home", "web", "browser", "x", "email", "imessage", "music", "photos", "location", "calendar",
-               "timers", "tesla", "history", "vault", "setup", "developer", "voice")
+               "shopping_list", "weather", "timers", "tesla", "history", "vault", "setup", "developer", "voice")
 
 TOOLKITS: tuple[Toolkit, ...] = assemble(CORE_TOOLKITS, discover(), INDEX_ORDER)
 trace(f"Toolkits: {len(CORE_TOOLKITS)} core, {len(TOOLKITS) - len(CORE_TOOLKITS)} from integration folders")
 
 # Documented in the prompt itself, outside any toolkit.
-CORE_COMMANDS = frozenset({"load_toolkit", "remember", "weather", "load_calendar",
+CORE_COMMANDS = frozenset({"load_toolkit", "remember",
                            "load_watch", "save_watch", "checked_watch", "delete_watch",
                            "load_procedure", "save_procedure", "delete_procedure"})
 # Runnable but deliberately offered nowhere (Commands.py carries the todo asking whether to keep it).
@@ -184,9 +225,16 @@ CARRIED_SECTIONS: dict[str, str] = {key: t.name for t in TOOLKITS for key in t.s
 SECTION_HEADINGS = {"home": "HOME AUTOMATION DATA", "web": "WEB BROWSER"}
 
 
-def names() -> list[str]:
-    """The toolkits the LLM is offered by name (the hidden ones are not)."""
-    return [t.name for t in TOOLKITS if not t.hidden]
+def offered(monitor=None) -> list[Toolkit]:
+    """The toolkits the LLM may load: every one whose integration *monitor* does not know to
+    be off (Toolkit.offered_by); all of them without a monitor."""
+    return [t for t in TOOLKITS if t.offered_by(monitor)]
+
+
+def names(monitor=None) -> list[str]:
+    """The toolkits the LLM is offered by name (the hidden ones and the ones whose integration
+    is off are not)."""
+    return [t.name for t in offered(monitor) if not t.hidden]
 
 
 def by_name(name: str) -> Toolkit | None:
@@ -205,9 +253,14 @@ def owner_of(command: str) -> Toolkit | None:
     return None
 
 
-def render_index() -> str:
-    """The `{TOOLKITS}` text: one line per toolkit the LLM may load itself."""
-    return "\n".join(f"- `{t.name}` — {t.summary}" for t in TOOLKITS if not t.hidden)
+def render_index(monitor=None) -> str:
+    """The `{TOOLKITS}` text: one line per toolkit the LLM may load itself — the hidden ones
+    and those of an integration *monitor* knows to be off are left out."""
+    lines = [f"- `{t.name}` — {t.summary}" for t in offered(monitor) if not t.hidden]
+    left_out = [t.name for t in TOOLKITS if not t.hidden and not t.offered_by(monitor)]
+    trace(f"Toolkit index: {len(lines)} toolkit(s) offered"
+          + (f", {', '.join(left_out)} left out (integration off)" if left_out else ""))
+    return "\n".join(lines)
 
 
 def render(toolkit: Toolkit, substitute: Callable[[str], str] = lambda text: text) -> str:

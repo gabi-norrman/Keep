@@ -61,19 +61,6 @@ Load several in one call when a task spans areas: `load_toolkit("email", "web")`
 The toolkits:
 {TOOLKITS}
 
-## Long term weather forecast
-To fetch the long term weather forecast use:
-
-`weather()`
-
-## Calendars
-The CALENDAR EVENTS COMING WEEK section below holds the coming week of the calendars shown by default. It opens with
-one line per calendar account naming the calendars it shows and the account's other calendars, which it leaves out,
-then the events of every account in one list; an event names its calendar in brackets when more than one is shown.
-
-`load_calendar(name: str, ...)` — the coming week's events of a calendar that is not shown; `Account/Name` when two
-accounts have a calendar by that name.
-
 ## Memory
 Your memory has three parts. Put each thing where it belongs.
 
@@ -153,7 +140,7 @@ The vault keeps specific secrets out of the AI; it is not an anonymization tool.
 ## Function Calling Rules
 
 ### Stop-and-wait commands
-Commands that fetch data — `load_toolkit()`, `load_procedure()`, `load_watch()`, `load_calendar()`, `weather()`, and the ones each toolkit lists under "Stop-and-wait" —
+Commands that fetch data — `load_toolkit()`, `load_procedure()`, `load_watch()`, and the ones each toolkit lists under "Stop-and-wait" —
 return their result in a follow-up round.
 
 After emitting any of these commands, you MUST STOP generating immediately. DO NOT make up results or use training
@@ -170,40 +157,8 @@ I REPEAT: NEVER say you will perform an action without emitting the actual comma
 1. First emit the command(s) at the start of your response
 2. Optionally add a natural language response
 
-# SONOS PLAYLISTS AND ZONES
-Playlists and favorites the `music` toolkit can start (ids `P-0`, `F-0`, …):
-
 <<<CACHE_BREAKPOINT>>>
-{SONOS}
-
-These are high quality playlists curated by the user.
-
-## Zones
-The following zones are available for playing music:
-
-{MUSIC_ZONES}
-
-If no zone/room is specified assume the user means the Kitchen. Unless previous context suggests otherwise.
-
-# WEATHER FORECAST
-Below is the short term weather forecast for house location. If longer forecast is needed use the weather command.
-
-<<<CACHE_BREAKPOINT>>>
-{WEATHER}
-
-Below is the short term precipitation forecast. This is based on rain radar projections and is very accurate. THIS is
-the most accurate rain reading we have. Values are mm/h, averaged over each labelled time window:
-{PRECIPITATION}
-
-# CALENDAR EVENTS COMING WEEK
-{CALENDAR}
-
-# CURRENT TESLA CAR INFO
-{CAR_INFO}
-
-# FAMILY PHONES
-Phones registered with Find My iPhone, by the name the family uses (the `location` toolkit rings and locates them):
-{PHONES}
+{INTEGRATION_DATA}
 
 # REMEMBERED SINCE THE LAST CURATION
 What you saved with `remember` after the LONG TERM MEMORY BANK above was last curated. These notes are part of

@@ -1,31 +1,26 @@
-"""Refreshes the coming-week calendar section from every calendar account every 15 minutes."""
+"""Refreshes the coming-week calendar section from every calendar account every 15 minutes;
+runs only while a calendar source integration is on (PromptManager starts it when the
+IntegrationMonitor has one), so it never shows "not configured" for an install without one."""
 from assistant.integration.calendar.CalendarAccess import CalendarAccess
+from assistant.integration.calendar.CalendarSource import CalendarSource
 from assistant.prompt.PromptSectionGenerator import PromptSectionGenerator
 from common.logging import trace
 
 
 class CalendarSectionGenerator(PromptSectionGenerator):
     key = "calendar"
+    needs = CalendarSource
+    heading = "# CALENDAR EVENTS COMING WEEK"
+    intro = ("The coming week of the calendars shown by default: one line per calendar account naming the calendars "
+             "it shows and the account's other calendars, which it leaves out, then the events of every account in "
+             "one list; an event names its calendar in brackets when more than one is shown. The `calendar` toolkit "
+             "fetches a calendar that is not shown.")
 
     UPDATE_INTERVAL = 15 * 60
-    # The prompt sections start before the launcher registers the integrations, so the first
-    # fetch may find no calendar integration at all; until one is registered the section looks
-    # again this often instead of showing "not configured" for a whole UPDATE_INTERVAL.
-    STARTING_POLL_INTERVAL = 2
 
     def __init__(self, prompt_manager):
         super().__init__(prompt_manager, "CalendarData")
-        self._starting = True
-
-    def _start_monitoring(self):
-        self._update_content()
-        while not self._stop_event.is_set():
-            self._wait(self.STARTING_POLL_INTERVAL if self._starting else self.UPDATE_INTERVAL)
-            if not self._stop_event.is_set():
-                self._update_content()
 
     def _fetch_content(self) -> str:
         trace("Fetching the coming week from the calendar accounts...")
-        access = CalendarAccess.current()
-        self._starting = access.starting
-        return access.coming_week()
+        return CalendarAccess.current().coming_week()

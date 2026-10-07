@@ -50,7 +50,7 @@ def test_file_documents_its_commands_and_no_others(toolkit: Toolkit):
 def test_carried_sections_are_real_sections_with_a_heading():
     from assistant.prompt.PromptManager import PromptManager
     with patch("assistant.prompt.PromptSectionGenerator.PromptSectionGenerator.start"):
-        keys = set(PromptManager(test_suite=True).sections)
+        keys = set(PromptManager(test_suite=True).section_classes())   # the gated ones (home) included
     for key, name in Toolkits.CARRIED_SECTIONS.items():
         assert key in keys and Toolkits.by_name(name) is not None
         assert key in Toolkits.SECTION_HEADINGS

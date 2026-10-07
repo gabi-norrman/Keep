@@ -1370,19 +1370,23 @@ class Commands:
         answered with a pointer to it instead of the text again. Splatted like every
         list-parameter background command (`function(*params)`)."""
         names = [n for n in names if n and n.strip()]
+        monitor = self._integration_monitor()
         if not names:
-            return "load_toolkit failed: expected a toolkit name. Available: " + ", ".join(Toolkits.names())
+            return "load_toolkit failed: expected a toolkit name. Available: " + ", ".join(Toolkits.names(monitor))
         prompt_manager = self._prompt_manager()
         in_window = prompt_manager.message_history.loaded_toolkits() if prompt_manager else {}
         # The autonomous check's rounds live in its own messages, never in the history: what
         # it is sent must not become the baseline the history's readers are diffed against.
         record = self._current_profile is not AUTONOMOUS
-        parts, loaded, pointed, unknown = [], [], [], []
+        parts, loaded, pointed, unknown, off = [], [], [], [], []
         for name in names:
             toolkit = Toolkits.by_name(name)
             if toolkit is None:
                 unknown.append(name.strip())
-                parts.append(f"No toolkit named '{name.strip()}'. Available: {', '.join(Toolkits.names())}")
+                parts.append(f"No toolkit named '{name.strip()}'. Available: {', '.join(Toolkits.names(monitor))}")
+            elif not toolkit.offered_by(monitor):
+                off.append(toolkit.name)
+                parts.append(self._toolkit_off(toolkit, monitor))
             elif toolkit.name in in_window:
                 # The reference is static, the carried data is not: a pointer back to the
                 # reference, the data again as it is now.
@@ -1395,9 +1399,33 @@ class Commands:
                 parts.append(ToolkitPreloader.render_load(toolkit, prompt_manager, record=record))
         result = "\n\n".join(parts)
         info(f"load_toolkit: loaded {loaded or 'nothing'}, pointed back to {pointed or 'nothing'}, "
-             f"unknown {unknown or 'none'} ({len(result)} chars, channel {self._current_profile.name}"
-             f"{'' if record else ', baseline untouched'})")
+             f"unknown {unknown or 'none'}, integration off {off or 'none'} ({len(result)} chars, channel "
+             f"{self._current_profile.name}{'' if record else ', baseline untouched'})")
         return result
+
+    @staticmethod
+    def _toolkit_off(toolkit, monitor) -> str:
+        """The answer to a toolkit, or a command of one, whose integration is off: which
+        integration it is and how the setup toolkit turns it on."""
+        behind = toolkit.behind(monitor)
+        if len(behind) == 1:
+            return (f"The {toolkit.name} toolkit belongs to the {behind[0].name} integration, which is off — "
+                    f"enable_integration(\"{behind[0].name}\") in the setup toolkit turns it on.")
+        names = ", ".join(i.name for i in behind)
+        return (f"The {toolkit.name} toolkit needs one of these integrations, and every one is off: {names}. "
+                f"enable_integration(name) in the setup toolkit turns one on.")
+
+    def refused(self, command: str) -> str | None:
+        """Why *command* cannot run now: it belongs to a toolkit whose integration is off
+        (Toolkit.offered_by). None when it may run."""
+        toolkit = Toolkits.owner_of(command)
+        if toolkit is None:
+            return None
+        monitor = self._integration_monitor()
+        if toolkit.offered_by(monitor):
+            return None
+        info(f"Command {command} refused: the {toolkit.name} toolkit's integration is off")
+        return f"{command} failed: " + self._toolkit_off(toolkit, monitor)
 
     @staticmethod
     def _carried_data(toolkit, prompt_manager, record: bool = True) -> str:
@@ -1649,6 +1677,8 @@ class Commands:
         if f is None:
             error(f"Unknown command: {command}")
             return f"Unknown command: {command}"
+        if refusal := self.refused(command):
+            return refusal
 
         try:
             if self.is_multi_param(command):

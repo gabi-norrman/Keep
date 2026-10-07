@@ -1,12 +1,14 @@
 """Proactive toolkit loading: the toolkits a channel wants in the LLM's window before a
 request from it starts (`ChannelProfile.preload_toolkits`, or the `preload_toolkits.<channel>`
-config list in its place — voice wants `home`, with the home data, `music` and `tesla`, since
-"turn on the kitchen lamp", "turn off the music" and "defrost the car" are the product and a
-`load_toolkit` round there costs a second or two on every request), in front of them the
-channel's `ChannelProfile.fixed_toolkits`, which no config list replaces (voice's `voice`:
-the spoken dialog style lives there and not in the prompt), plus
-whatever the caller adds for the moment
-(`FirstRun.preload_toolkits` — the `setup` toolkit while the FTUE lasts, on any channel).
+config list in its place — voice wants `home`, with the home data, `music`, `tesla` and
+`weather`, since "turn on the kitchen lamp", "turn off the music", "defrost the car" and
+"will it rain" are the product and a `load_toolkit` round there costs a second or two on
+every request), in front of them the channel's `ChannelProfile.fixed_toolkits`, which no
+config list replaces (voice's `voice`: the spoken dialog style lives there and not in the
+prompt), plus whatever the caller adds for the moment (`FirstRun.preload_toolkits` — the
+`setup` toolkit while the FTUE lasts, on any channel). A toolkit whose integration is off
+(`Toolkit.offered_by`, the IntegrationMonitor's verdict) is skipped: a house without a Tesla
+preloads no Tesla.
 
 Runs on the request thread right before the messages are assembled, after the history
 window is trimmed the way `get_messages` is about to (so "in the window" means the same
@@ -76,10 +78,15 @@ def preload(prompt_manager, profile: ChannelProfile, extra: tuple[str, ...] = ()
             info(f"Toolkit preload: the {profile.name} request was killed before its turn at the window — "
                  f"nothing loaded, the request that superseded it preloads for itself")
             return []
-        return _preload_locked(prompt_manager, profile, wanted)
+        return _preload_locked(prompt_manager, profile, wanted, _monitor())
 
 
-def _preload_locked(prompt_manager, profile: ChannelProfile, wanted: tuple[str, ...]) -> list[str]:
+def _monitor():
+    from assistant.integration.IntegrationMonitor import IntegrationMonitor
+    return IntegrationMonitor.get_instance()
+
+
+def _preload_locked(prompt_manager, profile: ChannelProfile, wanted: tuple[str, ...], monitor) -> list[str]:
     prompt_manager.message_history.trim_window()
     in_window = prompt_manager.message_history.loaded_toolkits()
     loaded = []
@@ -87,6 +94,9 @@ def _preload_locked(prompt_manager, profile: ChannelProfile, wanted: tuple[str, 
         toolkit = Toolkits.by_name(name)
         if toolkit is None:
             info(f"Toolkit preload: the {profile.name} channel names an unknown toolkit '{name}' — skipped")
+            continue
+        if not toolkit.offered_by(monitor):
+            info(f"Toolkit preload: {toolkit.name}'s integration is off — not preloaded for the {profile.name} channel")
             continue
         if toolkit.name in in_window:
             untracked = prompt_manager.untracked_sections(toolkit)

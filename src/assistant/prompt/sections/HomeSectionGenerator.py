@@ -16,7 +16,9 @@ DEFAULT_NIGHT_VARIABLE = "Night"
 
 
 class HomeSectionGenerator(PromptSectionGenerator):
-    """Refreshes the home automation state section from the active backend."""
+    """Refreshes the home automation state section from the active backend; runs only while a
+    home automation integration is on."""
+    needs = HomeAutomation
 
     UPDATE_INTERVAL = 30
 

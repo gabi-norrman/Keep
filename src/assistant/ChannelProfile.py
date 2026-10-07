@@ -45,11 +45,10 @@ class ChannelProfile:
     streams_tokens: bool
     # Toolkits put in the LLM's window before every request from this channel, so the model
     # never spends a round on `load_toolkit` for them (assistant/commands/ToolkitPreloader.py).
-    # Voice names `home`, `music` and `tesla`: "turn on the lamp", "turn off the music" and
-    # "defrost the car" are what it is spoken to for, and a load_toolkit round there costs a
-    # second or two every time. A household without a Tesla drops it through the
-    # `preload_toolkits.<channel>` config list, which replaces this default. `weather()` is a
-    # core command, always in the prompt, so it needs no preload.
+    # Voice names `home`, `music`, `tesla` and `weather`: "turn on the lamp", "turn off the
+    # music", "defrost the car" and "will it rain tomorrow" are what it is spoken to for, and a
+    # load_toolkit round there costs a second or two every time. One whose integration is off
+    # is skipped by itself; the `preload_toolkits.<channel>` config list replaces this default.
     preload_toolkits: tuple[str, ...] = ()
     # Toolkits the channel cannot do without, preloaded ahead of `preload_toolkits` and out of
     # the config list's reach: voice's is `voice`, the spoken dialog style and the false
@@ -61,7 +60,7 @@ VOICE_TO_VOICE = ChannelProfile(
     name=SOURCE_VOICE, llm_tier="fast", brevity_directive=True, forward_thinking=False,
     command_notifications=False, notification_ephemeral=False, notify_observers_of_commands=False,
     photo_target=PHOTO_TARGET_KITCHEN_TV, screenshot_allowed=False,
-    streams_tokens=False, preload_toolkits=("home", "music", "tesla"), fixed_toolkits=("voice",),
+    streams_tokens=False, preload_toolkits=("home", "music", "tesla", "weather"), fixed_toolkits=("voice",),
 )
 
 TEXT_CHAT = ChannelProfile(

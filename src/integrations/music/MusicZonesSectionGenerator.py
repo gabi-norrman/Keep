@@ -12,26 +12,22 @@ class MusicZonesSectionGenerator(PromptSectionGenerator):
     one made externally in the Sonos app — is reflected in the prompt within 3s
     while a steady state costs only a cheap UPnP round-trip.
 
-    It reads the integration the IntegrationMonitor built and never builds one: while
-    Sonos & Spotify is disabled (or still starting) the section is empty and no speaker
-    is looked for.
+    It reads the integration the IntegrationMonitor built and never builds one; it runs only
+    while Sonos & Spotify is on, so a house without it never looks for a speaker.
     """
     key = "music_zones"
+    heading = "## Zones"
+    intro = ("The zones music can play in. If no zone/room is specified assume the user means the Kitchen, unless "
+             "previous context suggests otherwise:")
 
     UPDATE_INTERVAL = 3
 
     def __init__(self, prompt_manager):
         super().__init__(prompt_manager, "MusicZones")
-        self._running = None   # whether the last poll found the integration; None before the first
 
     def _fetch_content(self) -> str:
         manager = MusicManager.peek_instance()
-        running = manager is not None
-        if running != self._running:
-            self._running = running
-            if running:
-                info("MusicZones: Sonos & Spotify is running, polling its zones")
-            else:
-                info("MusicZones: Sonos & Spotify is not running (disabled or still starting) — "
-                     "section empty, no speaker is looked for")
-        return manager.get_all_zones_status() if running else ""
+        if manager is None:
+            info("MusicZones: Sonos & Spotify is being rebuilt — section empty until it is back")
+            return ""
+        return manager.get_all_zones_status()

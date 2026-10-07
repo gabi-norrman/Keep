@@ -114,7 +114,7 @@ def test_a_generator_without_a_key_or_with_a_failing_constructor_costs_only_itse
     pm = manager(SectionGenerators.find_in(folders.load()))
 
     assert "kettle" in pm.sections and "toaster" not in pm.sections and "" not in pm.sections
-    assert "memory" in pm.sections and "home" in pm.sections
+    assert "memory" in pm.sections and "home" not in pm.sections and "home" in pm.section_classes()
 
 
 def test_load_toolkit_sends_a_folders_carried_section_that_the_prompt_never_holds(folders, template, monkeypatch):

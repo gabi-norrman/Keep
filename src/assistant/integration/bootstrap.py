@@ -35,6 +35,7 @@ def discover_integrations():
         monitor.register_class(cls)
     monitor.register_class(WebAccess)
     info(f"Discovered {len(classes)} integrations (+ WebAccess), {feeds} of them feeds.")
+    monitor.notify()
     return monitor
 
 
@@ -67,3 +68,4 @@ def start_feeds(message_history):
         monitor.register_class(cls, start=lambda feed: Feeds.get_instance().start(feed, message_history))
     info(f"Feeds registered: {', '.join(c.__name__.removesuffix('Integration') for c in classes)} "
          f"(each runs only when enabled and configured)")
+    monitor.notify()
