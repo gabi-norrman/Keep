@@ -77,6 +77,9 @@ class CommandParser:
         if ch in ('\n', '\r'):
             return True
         if ch in (':', ';', '.', '?', '!'):
+            # "57.5501633)" is a decimal, not a sentence end followed by a list number.
+            if ch == '.' and check_pos > 0 and content[check_pos - 1].isdigit():
+                return False
             if ch == ':':
                 p = check_pos - 1
                 while p >= 0 and content[p] in (' ', '\t'):

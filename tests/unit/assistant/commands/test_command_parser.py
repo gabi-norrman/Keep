@@ -10,7 +10,7 @@ class TestCommandParser:
     def parser(self):
         """Create a parser with common commands"""
         commands = ["turn_on", "turn_off", "dim", "play", "remember", "execute", "false_positive", "create_event", "show_history", "list_integrations",
-                    "self_improvement", "self_analysis"]
+                    "self_improvement", "self_analysis", "config_set"]
         return CommandParser(commands)
 
     def test_is_possibly_command_empty_string(self, parser):
@@ -378,6 +378,24 @@ class TestCommandParser:
         result, _ = parser.extract_command_and_params("execute(5)")
         assert result is not None
         assert result[1] == ["5"]
+
+    def test_decimal_argument_not_treated_as_list_marker(self, parser):
+        """A bare decimal like 57.5501633) is a number — the digits after the dot are not a
+        list marker (regression: the LLM's coordinates failed to parse until it quoted them)"""
+        text = 'config_set("location.home.latitude", 57.5501633)'
+        for streaming in (True, False):
+            result, remainder = parser.extract_command_and_params(text, streaming=streaming)
+            assert result == ("config_set", ["location.home.latitude", "57.5501633"]), streaming
+            assert remainder == ""
+        result, remainder = parser.extract_command_and_params(
+            'config_set("x.y", 11.9462948)\nSparar koordinaterna.', streaming=True)
+        assert result == ("config_set", ["x.y", "11.9462948"])
+        assert "Sparar" in remainder
+
+    def test_sentence_then_numbered_list_still_a_list_marker(self, parser):
+        """The decimal rule must not undo the sentence-end rule: 'done. 2) next' stays a list"""
+        assert parser.find_complete_command("execute(First step done. 2) next step)", streaming=True) is True
+        assert parser.find_complete_command("execute(First step done. 2)", streaming=True) is False
 
     # ===== Streaming mode: ambiguous end-of-buffer =====
 
