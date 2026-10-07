@@ -165,10 +165,10 @@ class HusdataIntegration(Integration):
     # --- writing -----------------------------------------------------------------------------
 
     def set_room_target(self, celsius: float) -> str:
-        return self._set_temperature(ROOM_TARGET, "room target", celsius, config.get("husdata.room_target_range") or [15, 25])
+        return self._set_temperature(ROOM_TARGET, "room target", celsius, config.get("husdata.room_target_range", [15, 25]))
 
     def set_hot_water(self, celsius: float) -> str:
-        return self._set_temperature(HOT_WATER_SETPOINT, "hot water setpoint", celsius, config.get("husdata.hot_water_range") or [40, 60])
+        return self._set_temperature(HOT_WATER_SETPOINT, "hot water setpoint", celsius, config.get("husdata.hot_water_range", [40, 60]))
 
     def _set_temperature(self, idx: str, what: str, celsius: float, allowed: list) -> str:
         """Writes `celsius` to the register and says what the pump accepted; raises

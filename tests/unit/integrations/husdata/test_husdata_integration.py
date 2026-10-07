@@ -15,7 +15,14 @@ ALLDATA = {"0007": 34, "0008": 212, "0203": 210, "0009": 485, "0002": 341, "0001
 def _gateway(settings: dict):
     """A HusdataIntegration over *settings*, whose HTTP layer is a dict of path → reply recording every call."""
     with patch("integrations.husdata.HusdataIntegration.config") as cfg:
-        cfg.get.side_effect = lambda key, default=None: settings.get(key, default)
+        def get(key, default=None):
+            # Like ConfigManager.get: a missing key with no default is a KeyError, not None
+            if key in settings:
+                return settings[key]
+            if default is None:
+                raise KeyError(key)
+            return default
+        cfg.get.side_effect = get
         integration = HusdataIntegration()
         integration.replies = {"/api/alldata": dict(ALLDATA), "/api/set": {"response": "Ok"},
                                "/api/status": {"status": {"hpconn": 1}}}
