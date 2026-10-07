@@ -151,9 +151,10 @@ class CalendarAccess:
         return "\n\n".join(parts)
 
     def create(self, title: str, date_str: str, start_time: str, end_time: str, calendar_name: str = "") -> str:
-        """An event in the named calendar, else the first account's default calendar; returns
-        the `Account/Calendar` it went to and raises ValueError when there is no account or no
-        such calendar."""
+        """An event in the named calendar, else the first account's default calendar (matched
+        to a listed name whatever its case, or handed over as an alias the account knows);
+        returns the `Account/Calendar` it went to and raises ValueError when there is no
+        account or no such calendar."""
         if not self._accounts:
             raise ValueError(NO_ACCOUNT_HINT)
         local_tz = pytz.timezone(config.get_home_timezone())
@@ -172,8 +173,12 @@ class CalendarAccess:
             if not target_name:
                 target_name = next((c.name for c in calendars if c.holds_events), "")
                 trace(f"{account.name}: no default calendar configured, using '{target_name}'")
-            if target_name not in [c.name for c in calendars]:
-                raise ValueError(f"Calendar '{target_name}' not found in {account.name}. Available: {[c.name for c in calendars]}")
+            listed = next((c.name for c in calendars if c.name.lower() == target_name.lower()), None)
+            if listed is None:
+                # Not a listed name: an alias the account resolves itself (Google's "primary"),
+                # or unknown — the account's create_event raises for that, naming what exists.
+                trace(f"{account.name}: default calendar '{target_name}' is not a listed name, the account resolves it")
+            target_name = listed or target_name
         account.create_event(target_name, Event(dt_start, dt_end, title, calendar=target_name, account=account.name))
         info(f"Created calendar event: {title} on {date_str} {start_time}-{end_time} in {account.name}/{target_name}")
         return f"{account.name}/{target_name}"

@@ -114,6 +114,21 @@ class TestTheFile:
         assert ConfigMigrations.run(str(config_file)) == []
         assert config_file.read_text() == after_first
 
+    def test_a_never_filled_section_is_commented_out_but_makes_no_account(self, config_file):
+        """An install that copied the old example and never filled it in: the placeholders are
+        not carried over and no half account is made, while the rename in enabled_integrations
+        and the commented-out originals still happen — so the second run finds nothing."""
+        config_file.write_text("enabled_integrations: [Gmail, CalDAV]\n"
+                               "email:\n  address: YOUR_GMAIL_ADDRESS\n  password: YOUR_APP_PASSWORD\n"
+                               "calendar: {}\n")
+        changes = ConfigMigrations.run(str(config_file))
+        data = _load(config_file)
+        assert data["imap"]["accounts"] == [] and data["caldav"]["accounts"] == []
+        assert data["enabled_integrations"] == ["IMAP Mail", "CalDAV"]
+        assert "mail" not in data
+        assert "# email:" in config_file.read_text() and "# calendar:" in config_file.read_text()
+        assert len(changes) == 3 and ConfigMigrations.run(str(config_file)) == []
+
     def test_a_file_without_the_old_sections_is_not_even_rewritten(self, config_file):
         config_file.write_text("enabled_integrations: [Tesla, IMAP Mail]\nimap:\n  accounts: []\n")
         os.utime(config_file, (1_000_000, 1_000_000))

@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from assistant.commands.Commands import Commands
-from integrations.microsoft.MicrosoftAuth import DeviceFlow
+from integrations.microsoft.MicrosoftAuth import DeviceFlow, NotSignedIn
 
 MODULE = "integrations.microsoft.MicrosoftCommands"
 
@@ -85,3 +85,14 @@ class TestCmdMicrosoftLogin:
         disabled.state = Mock(value="disabled")
         with patch.object(Commands, "_integration_monitor", return_value=_monitor(disabled)):
             assert 'enable_integration("Microsoft 365")' in commands_instance._owner("microsoft_login")._run_microsoft_login("Work")
+
+    def test_a_missing_client_id_is_the_commands_answer_not_an_escaped_exception(self, commands_instance):
+        """An enabled but not configured integration is still the instance the monitor holds,
+        so login_begin reaches MSAL without a client id and raises NotSignedIn — the LLM must
+        get that reason back, not a generic command failure."""
+        integration = _integration()
+        integration.login_begin.side_effect = NotSignedIn("microsoft.app.client_id is not set")
+        with patch.object(Commands, "_integration_monitor", return_value=_monitor(integration)), patch(f"{MODULE}.system_note") as note:
+            text = commands_instance._owner("microsoft_login")._run_microsoft_login("Work")
+        assert text.startswith("microsoft_login failed") and "client_id" in text
+        note.assert_not_called()

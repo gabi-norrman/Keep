@@ -30,16 +30,18 @@ def stockholm():
 
 class _Account(CalendarAccount):
     """A calendar account over dicts: `calendars` maps a name to its events (None for a
-    Reminders list), `created` records what create_event was handed."""
+    Reminders list), `aliases` are the names create_event takes besides the listed ones (the
+    way Google takes "primary"), `created` records what create_event was handed."""
 
     service_name = "dicts"
 
-    def __init__(self, name="iCloud", calendars=None, shown=(), default="Home", failing=False):
+    def __init__(self, name="iCloud", calendars=None, shown=(), default="Home", failing=False, aliases=()):
         self._name = name
         self._calendars = calendars or {}
         self._shown = list(shown)
         self._default = default
         self._failing = failing
+        self._aliases = set(aliases)
         self.created: List[tuple] = []
         self.asked: List[list] = []
 
@@ -69,6 +71,8 @@ class _Account(CalendarAccount):
         return [e for name in calendar_names for e in (self._calendars.get(name) or [])]
 
     def create_event(self, calendar_name, event):
+        if calendar_name not in self._calendars and calendar_name not in self._aliases:
+            raise ValueError(f"Calendar '{calendar_name}' not found. Available: {list(self._calendars)}")
         self.created.append((calendar_name, event))
 
     def check(self):
@@ -239,6 +243,20 @@ class TestCreate:
         with pytest.raises(ValueError, match="Calendar 'Nope' not found") as raised:
             CalendarAccess([_household(default="Nope")]).create("Dentist", "2025-10-28", "10:00", "11:00")
         assert "Home" in str(raised.value)
+
+    def test_the_default_calendar_is_matched_to_the_listed_name_whatever_its_case(self):
+        account = _household(default="family")
+        CalendarAccess([account]).create("Dentist", "2025-10-28", "10:00", "11:00")
+        (calendar_name, _), = account.created
+        assert calendar_name == "Family"
+
+    def test_a_default_the_account_resolves_itself_is_handed_over_unchanged(self):
+        """Google's default is "primary", an alias the account understands but never lists: the
+        composite must not refuse it on the listed names alone."""
+        account = _Account("Google", {"marcus@example.com": []}, default="primary", aliases=("primary",))
+        where = CalendarAccess([account]).create("Dentist", "2025-10-28", "10:00", "11:00")
+        (calendar_name, _), = account.created
+        assert calendar_name == "primary" and where == "Google/primary"
 
     def test_without_a_default_calendar_the_accounts_first_event_calendar_takes_it(self):
         account = _household(default="")

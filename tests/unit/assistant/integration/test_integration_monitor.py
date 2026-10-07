@@ -99,6 +99,15 @@ class TestRegistration:
         mock_config.register(integration)
         assert integration.state == IntegrationState.NOT_CONFIGURED
 
+    @pytest.mark.parametrize("empty", [[], {}])
+    def test_register_not_configured_when_the_accounts_list_or_section_is_empty(self, mock_config, empty):
+        """`imap: accounts: []` (what the migration leaves behind a never-filled section) and a
+        bare `tesla: {}` hold nothing to run on: not configured, not an error of a health check."""
+        mock_config._config_manager.get.return_value = empty
+        integration = FakeIntegration(keys=["imap.accounts"])
+        mock_config.register(integration)
+        assert integration.state == IntegrationState.NOT_CONFIGURED
+
 class TestStateTransitions:
     def test_healthy_check_stays_ok(self, mock_config):
         integration = FakeIntegration(healthy=True)
@@ -802,6 +811,13 @@ class TestMissingConfigKeys:
             config.get.side_effect = get
             probe = self._integration(["api_keys.set", "api_keys.empty", "api_keys.absent"])
             assert probe.missing_config_keys() == ["api_keys.empty", "api_keys.absent"]
+
+    def test_an_empty_accounts_list_and_an_empty_section_are_missing_too(self):
+        values = {"imap.accounts": [], "tesla": {}, "caldav.accounts": [{"name": "Family"}]}
+        with patch("common.ConfigManager.config") as config:
+            config.get.side_effect = values.__getitem__
+            probe = self._integration(["imap.accounts", "tesla", "caldav.accounts"])
+            assert probe.missing_config_keys() == ["imap.accounts", "tesla"]
 
 
 def test_description_and_details_are_the_first_two_paragraphs_of_the_class_docstring_and_are_not_inherited():

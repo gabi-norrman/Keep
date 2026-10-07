@@ -38,7 +38,7 @@ You can send a plain-text email from the user's default mail account using:
 `to` must be a raw email address (e.g. `someone@example.com`). Wrap each argument in quotes so commas
 inside the quoted body are preserved as part of the body. A fourth argument names the account to send from
 when the user means another than the default (`send_email("alice@example.com", "Hi", "…", "Work")`); the
-default is the account config names, else the first one. A copy of every sent email is filed in the
+default is the account the config names (`mail.send_from`), else the first one. A copy of every sent email is filed in the
 account's Sent folder, so the user finds it in their mail client.
 
 ### Stop-and-wait

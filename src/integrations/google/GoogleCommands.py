@@ -44,7 +44,8 @@ class GoogleCommands(CommandSet):
             return problem
         try:
             sign_in = integration.login_begin(name)
-        except (ValueError, RuntimeError, OSError) as e:
+        except Exception as e:   # an unknown account, no client id, an account with neither flag on
+
             info(f"google_login: {e}")
             return f"google_login failed: {e}"
         account = integration.account(name)

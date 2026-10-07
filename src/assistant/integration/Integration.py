@@ -115,7 +115,7 @@ class Integration(SingletonMixin, ABC):
                 value = config.get(key)
             except KeyError:
                 value = None
-            if value in (None, ""):
+            if value in (None, "", [], {}):   # an empty accounts list or section is not set either
                 missing.append(key)
         return missing
 

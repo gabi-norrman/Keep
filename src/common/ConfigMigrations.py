@@ -78,9 +78,12 @@ def _accounts_list(data: CommentedMap, section: str, position: int) -> Commented
 
 
 def _account(fields: list[tuple[str, object]]) -> CommentedMap:
+    """The entry out of an old section's fields: an empty value or a copied example placeholder
+    (YOUR_APP_PASSWORD) is left out, so a never-filled section carries nothing over."""
+    from common.ConfigStore import looks_like_placeholder   # at call time: ConfigStore imports ConfigManager
     account = CommentedMap()
     for key, value in fields:
-        if value not in (None, "", []):
+        if value not in (None, "", []) and not looks_like_placeholder(value):
             account[key] = value
     return account
 
@@ -100,9 +103,13 @@ def migrate(data: CommentedMap, date_text: str) -> list[str]:
         del data[section]
         data.ca.items.pop(section, None)
         accounts = _accounts_list(data, "imap", position)
-        accounts.append(_account([("name", name), ("preset", preset), ("address", old.get("address")),
-                                  ("password", old.get("password")), ("smtp_host", old.get("smtp_host")),
-                                  ("smtp_port", old.get("smtp_port"))]))
+        account = _account([("name", name), ("preset", preset), ("address", old.get("address")),
+                            ("password", old.get("password")), ("smtp_host", old.get("smtp_host")),
+                            ("smtp_port", old.get("smtp_port"))])
+        if "address" not in account:
+            done.append(f"{section} held no address (empty or the example's placeholders) — no account made of it")
+            continue
+        accounts.append(account)
         done.append(f"{section} → imap.accounts[{len(accounts) - 1}] (name {name}, preset {preset})")
         migrated_icloud_mail |= preset == "icloud"
     old = data.get(CALENDAR_SECTION)
@@ -112,11 +119,15 @@ def migrate(data: CommentedMap, date_text: str) -> list[str]:
         del data[CALENDAR_SECTION]
         data.ca.items.pop(CALENDAR_SECTION, None)
         accounts = _accounts_list(data, "caldav", position)
-        accounts.append(_account([("name", "iCloud"), ("preset", "icloud"), ("username", old.get("username")),
-                                  ("password", old.get("password")),
-                                  ("default_calendar", old.get("default_calendar") or "Home"),
-                                  ("shown_calendars", old.get("shown_calendars", []))]))
-        done.append(f"{CALENDAR_SECTION} → caldav.accounts[{len(accounts) - 1}] (name iCloud, preset icloud)")
+        account = _account([("name", "iCloud"), ("preset", "icloud"), ("username", old.get("username")),
+                            ("password", old.get("password")),
+                            ("default_calendar", old.get("default_calendar") or "Home"),
+                            ("shown_calendars", old.get("shown_calendars", []))])
+        if "username" not in account:
+            done.append(f"{CALENDAR_SECTION} held no username (empty or the example's placeholders) — no account made of it")
+        else:
+            accounts.append(account)
+            done.append(f"{CALENDAR_SECTION} → caldav.accounts[{len(accounts) - 1}] (name iCloud, preset icloud)")
     for section, texts in comments.items():
         data.yaml_set_comment_before_after_key(section, before="\n".join(texts))
 

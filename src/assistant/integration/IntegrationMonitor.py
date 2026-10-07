@@ -100,7 +100,7 @@ class IntegrationMonitor:
     def register(self, integration: Integration):
         for key in integration.config_keys:
             try:
-                present = self._config_manager.get(key) not in (None, "")
+                present = self._config_manager.get(key) not in (None, "", [], {})
             except KeyError:
                 present = False
             if not present:   # absent or empty, the same verdict Integration.missing_config_keys gives

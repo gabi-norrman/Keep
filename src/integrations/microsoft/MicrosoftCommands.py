@@ -35,7 +35,8 @@ class MicrosoftCommands(CommandSet):
             return f"{INTEGRATION} is {label} — set microsoft.app.client_id and microsoft.accounts and enable it first."
         try:
             flow = integration.login_begin(name)
-        except (ValueError, RuntimeError, OSError) as e:
+        except Exception as e:   # an unknown account, a refused app registration, no client id (NotSignedIn), the network
+
             info(f"microsoft_login: {e}")
             return f"microsoft_login failed: {e}"
         account = integration.account(name)
