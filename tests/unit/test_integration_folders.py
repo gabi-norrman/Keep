@@ -130,7 +130,9 @@ def test_a_folder_imports_another_folder_only_where_listed(tree):
 
 
 def test_every_folder_is_a_package_the_discovery_walks():
-    folders = {p.name for p in (SRC_DIR / "integrations").iterdir() if p.is_dir() and p.name != "__pycache__"}
+    # A folder git deleted can survive a pull as a __pycache__-only directory: no source, not a folder.
+    folders = {p.name for p in (SRC_DIR / "integrations").iterdir()
+               if p.is_dir() and p.name != "__pycache__" and any(p.glob("*.py"))}
     assert folders and all((SRC_DIR / "integrations" / name / "__init__.py").exists() for name in folders)
 
 
