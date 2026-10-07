@@ -10,6 +10,7 @@ from soco.plugins.sharelink import ShareLinkPlugin
 from soco.zonegroupstate import ZoneGroupState
 from spotipy import Spotify
 from spotipy.oauth2 import SpotifyClientCredentials
+from spotipy.exceptions import SpotifyException
 
 from common.logging import trace, info, error
 from common.ConfigManager import ConfigManager
@@ -275,6 +276,12 @@ class MusicIntegration(Integration):
                 raise
         return res.strip()
 
+    @staticmethod
+    def _popularity(item: dict) -> str:
+        """The popularity suffix, or nothing: Spotify dropped the field for Development Mode apps in February 2026."""
+        popularity = item.get('popularity')
+        return f" (popularity {popularity}/100)" if popularity is not None else ""
+
     def search_spotify(self, query: str, limit: int = 4) -> str:
         try:
             res = f"Searching Spotify for '{query}':\n\n"
@@ -288,7 +295,8 @@ class MusicIntegration(Integration):
                     for item in results['tracks']['items']:
                         short_id = self._generate_short_id()
                         self._spotify_search_cache[short_id] = item['uri']
-                        res += f"{item['name']} - {', '.join([artist['name'] for artist in item['artists']])} (popularity {item['popularity']}/100) ID: {short_id}\n"
+                        artists = ', '.join([artist['name'] for artist in item['artists']])
+                        res += f"{item['name']} - {artists}{self._popularity(item)} ID: {short_id}\n"
                 else:
                     res += "No tracks found.\n"
 
@@ -298,15 +306,37 @@ class MusicIntegration(Integration):
                         short_id = self._generate_short_id()
                         self._spotify_search_cache[short_id] = item['uri']
                         genres = ', '.join(item.get('genres', [])[:2]) if item.get('genres') else 'N/A'
-                        res += f"{item['name']} - {genres} (popularity {item['popularity']}/100) ID: {short_id}\n"
+                        res += f"{item['name']} - {genres}{self._popularity(item)} ID: {short_id}\n"
                 else:
                     res += "No artists found.\n"
 
+            items = results['tracks']['items'] + results['artists']['items']
+            if items and not any('popularity' in item for item in items):
+                trace("Spotify search results carry no popularity field (Development Mode app since February 2026) — listing without it")
             return res
         except Exception as e:
             e = f"Error searching Spotify: {e}"
             error(e)
             return e
+
+    def _artist_top_tracks(self, track_id: str) -> list:
+        """The seed track's artist's top tracks, or none when this app may not ask for them.
+
+        Spotify removed the top-tracks endpoint for Development Mode apps in February 2026; an app created since
+        gets a 403 or 404 here, and the radio is then the seed track alone rather than a failure."""
+        spotify = self._get_spotify_client()
+        track_info = spotify.track(track_id)
+        artist_id = track_info['artists'][0]['id']
+        artist_name = track_info['artists'][0]['name']
+        try:
+            similar_tracks = spotify.artist_top_tracks(artist_id, country='SE')['tracks']
+        except SpotifyException as e:
+            if e.http_status not in (403, 404):
+                raise
+            info(f"Top tracks of {artist_name} not available to this Spotify app (HTTP {e.http_status}, Development Mode) — playing the seed track alone")
+            return []
+        trace(f"Building radio from {len(similar_tracks)} top tracks by {artist_name}")
+        return similar_tracks
 
     def play_in_zone(self, id: str, room_name: str) -> bool:
         zone = self._get_zone(room_name)
@@ -359,17 +389,7 @@ class MusicIntegration(Integration):
                         coordinator.add_uri_to_queue(track_uri)
                         trace(f"Added seed track {spotify_id} to queue")
 
-                        # Get similar tracks from Spotify (artist's top tracks)
-                        spotify = self._get_spotify_client()
-                        track_info = spotify.track(spotify_id)
-                        artist_id = track_info['artists'][0]['id']
-                        artist_name = track_info['artists'][0]['name']
-
-                        # Get all artist's top tracks
-                        top_tracks = spotify.artist_top_tracks(artist_id, country='SE')
-                        similar_tracks = top_tracks['tracks']
-
-                        trace(f"Building radio from {len(similar_tracks)} top tracks by {artist_name}")
+                        similar_tracks = self._artist_top_tracks(spotify_id)
 
                         # Add tracks to queue (skip the seed track if it appears)
                         tracks_added = 0

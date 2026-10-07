@@ -112,6 +112,24 @@ class TestMusicManager:
         # Verify short IDs were generated
         assert len(mm._spotify_search_cache) == 2
 
+    def test_search_spotify_lists_results_without_popularity(self):
+        """A Development Mode app (created since February 2026) gets no popularity field at all."""
+        mm = make_music_manager()
+        mock_spotify = Mock()
+        mm._get_spotify_client = Mock(return_value=mock_spotify)
+        mock_spotify.search.return_value = {
+            'tracks': {'items': [{'name': 'Song A', 'artists': [{'name': 'Artist 1'}], 'uri': 'spotify:track:abc123'}]},
+            'artists': {'items': [{'name': 'Artist 1', 'genres': [], 'uri': 'spotify:artist:def456'}]},
+        }
+
+        result = mm.search_spotify("test query")
+
+        assert not result.startswith("Error")
+        assert "Song A - Artist 1 ID: " in result
+        assert "Artist 1 - N/A ID: " in result
+        assert "popularity" not in result
+        assert set(mm._spotify_search_cache.values()) == {'spotify:track:abc123', 'spotify:artist:def456'}
+
     def test_get_playlists_returns_copy(self):
         mm = make_music_manager()
         playlists = mm.get_playlists()
@@ -231,6 +249,48 @@ class TestPlayInZoneRouting:
         played_uri = mock_coordinator.play_uri.call_args[0][0]
         assert "artistRadio" in played_uri
         assert "abc123" in played_uri
+
+    def _track_radio_manager(self, top_tracks):
+        from spotipy.exceptions import SpotifyException
+        mm = make_music_manager()
+        mm._spotify_search_cache = {"AA": "spotify:track:seed01"}
+        coordinator = Mock()
+        mm._get_zone = Mock(return_value=Mock())
+        mm._get_coordinator = Mock(return_value=coordinator)
+        spotify = Mock()
+        spotify.track.return_value = {'artists': [{'id': 'art01', 'name': 'Artist 1'}]}
+        if isinstance(top_tracks, int):
+            spotify.artist_top_tracks.side_effect = SpotifyException(top_tracks, -1, "forbidden")
+        else:
+            spotify.artist_top_tracks.return_value = {'tracks': [{'id': t} for t in top_tracks]}
+        mm._get_spotify_client = Mock(return_value=spotify)
+        return mm, coordinator
+
+    def queued_track_ids(self, coordinator):
+        return [c.args[0].split("spotify:track:")[1].split("?")[0] for c in coordinator.add_uri_to_queue.call_args_list]
+
+    def test_track_radio_queues_seed_then_top_tracks(self):
+        mm, coordinator = self._track_radio_manager(["seed01", "top02", "top03"])
+
+        assert mm.play_in_zone("AA", "Living Room") is True
+        assert self.queued_track_ids(coordinator) == ["seed01", "top02", "top03"]
+        coordinator.play_from_queue.assert_called_once_with(0)
+
+    def test_track_radio_without_top_tracks_endpoint_plays_seed_from_queue(self):
+        """Spotify removed artist top tracks for Development Mode apps (February 2026): a 403 is seed-only, not an error."""
+        mm, coordinator = self._track_radio_manager(403)
+
+        assert mm.play_in_zone("AA", "Living Room") is True
+        assert self.queued_track_ids(coordinator) == ["seed01"]
+        coordinator.play_from_queue.assert_called_once_with(0)
+        coordinator.play_uri.assert_not_called()
+
+    def test_track_radio_other_spotify_error_falls_back_to_single_track(self):
+        mm, coordinator = self._track_radio_manager(500)
+
+        assert mm.play_in_zone("AA", "Living Room") is True
+        coordinator.play_from_queue.assert_not_called()
+        assert "seed01" in coordinator.play_uri.call_args[0][0]
 
     def test_playlist_uri_delegates_to_play_playlist(self):
         mm = make_music_manager()
