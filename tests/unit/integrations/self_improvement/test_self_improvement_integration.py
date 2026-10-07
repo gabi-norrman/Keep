@@ -1,6 +1,6 @@
 import json
 import subprocess
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import pytest
 
@@ -62,12 +62,40 @@ class TestClaudeStatus:
         assert run.call_args[1]["timeout"] == cqm.AUTH_STATUS_TIMEOUT
         assert run.call_args[1]["stdin"] is subprocess.DEVNULL
 
+    @patch.object(cqm, "claude_api_key", return_value=None)
     @patch.object(cqm.subprocess, "run", return_value=_completed(LOGGED_OUT))
-    def test_logged_out(self, _run, cli_at):
+    def test_logged_out_without_a_key(self, _run, _key, cli_at):
         status = claude_status()
         assert not status.ok
         assert status.path == "/opt/bin/claude"
         assert status.detail == NOT_LOGGED_IN_SHORT
+        assert not status.api_key
+
+    @patch.object(cqm, "claude_api_key", return_value="sk-ant-test-key")
+    @patch.object(cqm.subprocess, "run", return_value=_completed(LOGGED_OUT))
+    def test_logged_out_with_a_key_stands_in(self, run, _key, cli_at):
+        status = claude_status()
+        assert status.ok and status.api_key
+        assert "api_keys.anthropic" in status.detail
+        assert run.call_args[1].get("env") is None   # the check runs without the key: it reports the login
+        assert status.env()[cqm.API_KEY_ENV] == "sk-ant-test-key"
+
+    @patch.object(cqm, "claude_api_key", return_value="sk-ant-test-key")
+    @patch.object(cqm.subprocess, "run", return_value=_completed(LOGGED_IN))
+    def test_login_wins_over_the_key(self, _run, _key, cli_at):
+        status = claude_status()
+        assert status.ok and not status.api_key
+        assert status.env() is None
+
+    def test_placeholder_key_does_not_count(self):
+        config = Mock()
+        config.missing_required.return_value = ["api_keys.anthropic"]
+        with patch.object(cqm, "ConfigManager", return_value=config):
+            assert cqm.claude_api_key() is None
+        config.missing_required.return_value = []
+        config.get.return_value = "sk-ant-test-key"
+        with patch.object(cqm, "ConfigManager", return_value=config):
+            assert cqm.claude_api_key() == "sk-ant-test-key"
 
     @patch.object(cqm.subprocess, "run", return_value=_completed("", "error: unknown command 'auth'", 1))
     def test_no_json_reports_the_output(self, _run, cli_at):
@@ -115,7 +143,7 @@ class TestSelfImprovementIntegration:
         assert "self_improvement" in ConfigSchema.sections()
         assert ConfigSchema.leaves("self_improvement") == ["self_improvement.nightly_runs"]   # the CLI setup is by hand; the one key is the nightly switch
         text = ConfigSchema.section_text("self_improvement")
-        assert "claude.ai/install.sh" in text and "/login" in text
+        assert "claude.ai/install.sh" in text and "/login" in text and "api_keys.anthropic" in text
         assert "Self Improvement" in ConfigSchema._lines()[0:12].__str__()
 
 

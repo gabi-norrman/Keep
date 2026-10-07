@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeStatus, API_KEY_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -632,6 +632,14 @@ def _mock_popen(stdout_lines=None, stderr=""):
 
 @pytest.mark.unit
 class TestRunClaude:
+    @pytest.fixture(autouse=True)
+    def logged_in(self):
+        """_run_claude asks claude_status() first (a `claude auth status` call); these tests are
+        about the run itself, with a login in place."""
+        with patch('assistant.agents.CodeQualityMaintainer.claude_status',
+                   return_value=ClaudeStatus(CLAUDE_PATH, True, "logged in as me@example.com (max)")):
+            yield
+
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     def test_builds_correct_command(self, mock_popen):
         mock_popen.return_value = _mock_popen()
@@ -641,6 +649,52 @@ class TestRunClaude:
                        "--output-format", "stream-json", "--verbose",
                        "--model", "claude-fable-5-1"]
         assert mock_popen.call_args[1]["cwd"] == WORKING_DIR
+        assert mock_popen.call_args[1]["env"] is None   # a login keeps its precedence: nothing added
+
+    @patch('assistant.agents.CodeQualityMaintainer.claude_api_key', return_value="sk-ant-test-key")
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_api_key_stands_in_for_a_login_through_the_environment(self, mock_popen, _key):
+        mock_popen.return_value = _mock_popen()
+        with patch('assistant.agents.CodeQualityMaintainer.claude_status',
+                   return_value=ClaudeStatus(CLAUDE_PATH, True, "no login, using api_keys.anthropic", api_key=True)):
+            CodeQualityMaintainer._run_claude("test prompt", "label")
+        env = mock_popen.call_args[1]["env"]
+        assert env[API_KEY_ENV] == "sk-ant-test-key"
+        assert "PATH" in env                                   # the server's own environment, plus the key
+        assert "sk-ant-test-key" not in " ".join(mock_popen.call_args[0][0])   # never on the command line
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_no_credentials_raises_before_starting_the_cli(self, mock_popen):
+        with patch('assistant.agents.CodeQualityMaintainer.claude_status',
+                   return_value=ClaudeStatus(CLAUDE_PATH, False, "no credentials")):
+            with pytest.raises(ClaudeNotLoggedInError):
+                CodeQualityMaintainer._run_claude("test prompt", "label")
+        mock_popen.assert_not_called()
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_manual_permission_mode_in_the_init_event_is_an_error(self, mock_popen):
+        lines = ['{"type": "system", "subtype": "init", "permissionMode": "default", "model": "claude-haiku-4-5"}\n',
+                 '{"type": "result", "result": "done"}\n']
+        mock_popen.return_value = _mock_popen(lines)
+        with patch('assistant.agents.CodeQualityMaintainer.error') as mock_error:
+            assert CodeQualityMaintainer._run_claude("prompt", "label") == "done"
+        assert any("auto mode" in str(c) and "default" in str(c) for c in mock_error.call_args_list)
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_auto_permission_mode_is_not_an_error(self, mock_popen):
+        lines = ['{"type": "system", "subtype": "init", "permissionMode": "auto", "model": "claude-fable-5-1"}\n',
+                 '{"type": "result", "result": "done"}\n']
+        mock_popen.return_value = _mock_popen(lines)
+        with patch('assistant.agents.CodeQualityMaintainer.error') as mock_error:
+            CodeQualityMaintainer._run_claude("prompt", "label")
+        mock_error.assert_not_called()
+
+    def test_result_line_carries_the_cost_the_cli_reports(self):
+        line = CodeQualityMaintainer._format_stream_line(
+            {"type": "result", "result": "ok", "total_cost_usd": 1.23456, "num_turns": 7, "duration_ms": 65000})
+        assert "$1.2346" in line and "7 turns" in line and "65 s" in line
+        legacy = CodeQualityMaintainer._format_stream_line({"type": "result", "result": "ok", "cost_usd": 0.5})
+        assert "$0.5000" in legacy
 
     @patch('assistant.agents.CodeQualityMaintainer.parse_llm_config', return_value=("ClaudeLLM", "claude-sonnet-5"))
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
@@ -679,8 +733,9 @@ class TestRunClaude:
         mock_popen.return_value = _mock_popen(lines)
         with pytest.raises(ClaudeNotLoggedInError) as exc:
             CodeQualityMaintainer._run_claude("prompt", "label")
-        assert "not logged in" in str(exc.value).lower()
-        assert "SSH" in str(exc.value)
+        message = str(exc.value)
+        assert "api_keys.anthropic" in message and "/login" in message   # both ways to give it credentials
+        assert "SSH" in message
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     def test_raises_when_stderr_reports_invalid_api_key(self, mock_popen):

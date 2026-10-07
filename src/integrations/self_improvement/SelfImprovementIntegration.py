@@ -9,14 +9,17 @@ class SelfImprovementIntegration(Integration):
     """Keep working on its own code.
 
     Lets Keep analyse and improve its own code through the Claude Code CLI: the nightly
-    code-quality runs and the self_analysis / self_improvement commands. It needs no key, only
-    the CLI installed and logged in on the server machine.
+    code-quality runs and the self_analysis / self_improvement commands. It needs only the CLI
+    installed on the server machine; the runs use api_keys.anthropic unless a claude.ai login
+    is there.
 
     The switch and the health check: the runs (CodeQualityMaintainer) happen only while this
     integration is enabled, the nightly ones also only while `self_improvement.nightly_runs` is
     on. The setup is in the config.example.yaml beside this file, section self_improvement. The
-    health check asks `claude auth status`, a free local call, so a missing or logged-out CLI
-    shows in list_integrations within a cycle."""
+    health check asks `claude auth status`, a free local call, so a missing CLI or one without
+    credentials shows in list_integrations within a cycle. A login takes precedence over the key
+    (the key is only handed to the CLI when there is no login, since the environment variable
+    would shadow a login and move its billing to the key)."""
 
     @property
     def name(self) -> str:

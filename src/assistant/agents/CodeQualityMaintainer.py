@@ -30,27 +30,34 @@ AUTH_STATUS_TIMEOUT = 30
 GIT_TIMEOUT = 60
 CHECK_INTERVAL = 900
 
+API_KEY_CONFIG_KEY = "api_keys.anthropic"   # stands in for a Claude Code login, billed per token
+API_KEY_ENV = "ANTHROPIC_API_KEY"            # how the CLI takes a key: its environment, never argv
 NOT_LOGGED_IN_MARKERS = ("not logged in", "please run /login", "invalid api key")
+CREDENTIALS_HINT = (
+    f"Either put an Anthropic API key in config.yaml ({API_KEY_CONFIG_KEY}; the runs are then billed "
+    "per token to that key), or log in with a claude.ai subscription: open a terminal on the server "
+    "machine itself, run `claude` and complete the `/login` flow — not over SSH, a login made in an "
+    "SSH session is not seen by the server."
+)
 NOT_LOGGED_IN_MESSAGE = (
-    "Claude Code is not logged in on the server, so this job could not run.\n\n"
-    "To fix it, log in on the server machine itself: open a terminal there, run `claude`, "
-    "and complete the `/login` flow. Do not log in over SSH — credentials created in an SSH "
-    "session are not picked up by the server, so the login will not stick."
+    "Claude Code has no credentials on the server, so this job could not run.\n\n" + CREDENTIALS_HINT
 )
 NOT_INSTALLED_MESSAGE = (
     "Claude Code is not installed on the server, so this job could not run.\n\n"
-    "To fix it, install the CLI on the server machine (`curl -fsSL https://claude.ai/install.sh | bash`), "
-    "then open a terminal there, run `claude` and complete the `/login` flow — not over SSH."
+    "To fix it, install the CLI on the server machine (`curl -fsSL https://claude.ai/install.sh | bash`). "
+    + CREDENTIALS_HINT
 )
 # One-liners for the integration's health state, what list_integrations shows.
 NOT_INSTALLED_SHORT = ("Claude Code CLI not found: install it on the server machine "
-                       "(curl -fsSL https://claude.ai/install.sh | bash), then run `claude` there and complete /login")
-NOT_LOGGED_IN_SHORT = ("Claude Code is not logged in: run `claude` in a terminal on the server machine itself "
-                       "(not over SSH) and complete /login")
+                       "(curl -fsSL https://claude.ai/install.sh | bash); with api_keys.anthropic set nothing "
+                       "else is needed")
+NOT_LOGGED_IN_SHORT = (f"Claude Code has no credentials: set {API_KEY_CONFIG_KEY} in config.yaml, or run `claude` "
+                       "in a terminal on the server machine itself (not over SSH) and complete /login")
 DISABLED_MESSAGE = (
     'The "Self Improvement" integration is disabled, so Claude Code is not used. '
-    'enable_integration("Self Improvement") turns it on; Claude Code must be installed and logged in '
-    'on the server machine — config_help("self_improvement") has the steps.'
+    'enable_integration("Self Improvement") turns it on; Claude Code must be installed on the server '
+    'machine, and api_keys.anthropic or a claude.ai login gives it credentials — '
+    'config_help("self_improvement") has the steps.'
 )
 NIGHTLY_RUNS_KEY = "self_improvement.nightly_runs"
 DEVELOPER_RELEASE_KEY = "developer_release"
@@ -67,7 +74,8 @@ class ClaudeUnavailableError(RuntimeError):
 
 
 class ClaudeNotLoggedInError(ClaudeUnavailableError):
-    """The `claude` CLI on the server has no valid login; nothing it is asked to do can succeed."""
+    """The `claude` CLI on the server has neither a login nor an API key to stand in for one;
+    nothing it is asked to do can succeed."""
     def __init__(self):
         super().__init__(NOT_LOGGED_IN_MESSAGE)
 
@@ -89,21 +97,42 @@ def claude_path() -> Optional[str]:
     return None
 
 
+def claude_api_key() -> Optional[str]:
+    """The Anthropic API key of config.yaml, or None when it is absent or still the example
+    placeholder — what stands in for a Claude Code login."""
+    config = ConfigManager()
+    if config.missing_required((API_KEY_CONFIG_KEY,)):
+        return None
+    return config.get(API_KEY_CONFIG_KEY)
+
+
 @dataclass
 class ClaudeStatus:
-    """What `claude auth status` says about the CLI on this machine."""
+    """What `claude auth status` says about the CLI on this machine, and whether the config's
+    API key stands in for a missing login."""
     path: Optional[str]      # None when the binary is missing
-    logged_in: bool
+    logged_in: bool          # a login, or the API key standing in for one
     detail: str              # "logged in as … (max)" or the one-line reason it cannot run
+    api_key: bool = False    # True: no login, the runs get api_keys.anthropic in their environment
 
     @property
     def ok(self) -> bool:
         return self.path is not None and self.logged_in
 
+    def env(self) -> Optional[dict]:
+        """The environment for a run: the server's own, plus the API key when it stands in for
+        a login. None (inherit) otherwise, so a claude.ai login keeps its precedence and its
+        billing — the variable would shadow it."""
+        if not self.api_key:
+            return None
+        return {**os.environ, API_KEY_ENV: claude_api_key() or ""}
+
 
 def claude_status() -> ClaudeStatus:
-    """A quick, free check that the CLI is installed and logged in — `claude auth status --json`,
-    no model call — the Self Improvement integration's health check."""
+    """A quick, free check that the CLI is installed and has credentials — `claude auth status
+    --json`, no model call — the Self Improvement integration's health check. The check runs
+    without the config's key so it reports the login the CLI would use on its own; only when
+    there is none does api_keys.anthropic stand in."""
     path = claude_path()
     if path is None:
         info("Claude Code status: CLI not found on the PATH or at " + CLAUDE_FALLBACK_PATH)
@@ -127,7 +156,10 @@ def claude_status() -> ClaudeStatus:
         error(f"Claude Code status: `claude auth status` gave no JSON (exit {result.returncode}): {output}")
         return ClaudeStatus(path, False, f"`claude auth status` failed (exit {result.returncode}): {output}")
     if not data.get("loggedIn"):
-        info(f"Claude Code status: not logged in ({path})")
+        if claude_api_key():
+            info(f"Claude Code status: not logged in, {API_KEY_CONFIG_KEY} stands in ({path})")
+            return ClaudeStatus(path, True, f"no login, using {API_KEY_CONFIG_KEY} (billed per token)", api_key=True)
+        info(f"Claude Code status: not logged in and no {API_KEY_CONFIG_KEY} ({path})")
         return ClaudeStatus(path, False, NOT_LOGGED_IN_SHORT)
     who = data.get("email") or data.get("authMethod") or "unknown account"
     plan = data.get("subscriptionType") or data.get("apiProvider") or ""
@@ -602,27 +634,36 @@ class CodeQualityMaintainer:
                     if snippet:
                         parts.append(f"(thinking: {snippet}...)")
             return " | ".join(parts) if parts else None
+        if msg_type == "system" and obj.get("subtype") == "init":
+            return (f"INIT: model {obj.get('model')}, permission mode {obj.get('permissionMode')}, "
+                    f"credentials {obj.get('apiKeySource') or 'login'}, CLI {obj.get('claude_code_version')}")
         if msg_type == "result":
             result = obj.get("result", "")
-            cost = obj.get("cost_usd")
+            cost = obj.get("total_cost_usd") or obj.get("cost_usd")   # cost_usd: CLIs before the rename
             preview = result[:200] if result else "(empty)"
-            cost_str = f" (${cost:.4f})" if cost else ""
-            return f"RESULT{cost_str}: {preview}"
+            facts = [f"${cost:.4f}" if cost else "",
+                     f"{obj['num_turns']} turns" if obj.get("num_turns") else "",
+                     f"{obj['duration_ms'] / 1000:.0f} s" if obj.get("duration_ms") else ""]
+            facts_str = ", ".join(f for f in facts if f)
+            return f"RESULT ({facts_str}): {preview}" if facts_str else f"RESULT: {preview}"
         return None
 
     @staticmethod
     def _run_claude(prompt, label):
-        path = claude_path()
-        if path is None:
+        status = claude_status()
+        if status.path is None:
             error(f"CodeQualityMaintainer [{label}] Claude Code CLI not found on this machine")
             raise ClaudeNotInstalledError()
+        if not status.ok:
+            error(f"CodeQualityMaintainer [{label}] Claude Code has no credentials: {status.detail}")
+            raise ClaudeNotLoggedInError()
         _, model = parse_llm_config('code_quality')  # only the model matters; the runner is always the `claude` CLI
-        trace(f"CodeQualityMaintainer [{label}] using Claude Code model: {model}")
-        cmd = [path, "--permission-mode", "auto", "-p", prompt,
+        trace(f"CodeQualityMaintainer [{label}] using Claude Code model {model}, {status.detail}")
+        cmd = [status.path, "--permission-mode", "auto", "-p", prompt,
                "--output-format", "stream-json", "--verbose", "--model", model]
         process = subprocess.Popen(
             cmd, cwd=WORKING_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL, text=True
+            stdin=subprocess.DEVNULL, text=True, env=status.env()
         )
         timer = threading.Timer(CLAUDE_TIMEOUT, process.kill)
         timer.start()
@@ -640,6 +681,14 @@ class CodeQualityMaintainer:
                     summary = CodeQualityMaintainer._format_stream_line(obj)
                     if summary:
                         trace(f"CodeQualityMaintainer [{label}] {summary}")
+                    if obj.get("type") == "system" and obj.get("subtype") == "init" \
+                            and obj.get("permissionMode") != "auto":
+                        # The CLI falls back to Manual silently when auto mode is unavailable (an
+                        # unsupported model, an old CLI); in -p every prompt is then a denial and
+                        # the run ends with a report of refused edits rather than an error.
+                        error(f"CodeQualityMaintainer [{label}] auto mode unavailable, Claude Code runs in "
+                              f"'{obj.get('permissionMode')}' mode with model {obj.get('model')}: edits and "
+                              f"commands will be denied — use a model that supports auto mode and a current CLI")
                     if obj.get("type") == "assistant":
                         text_parts = []
                         for block in obj.get("message", {}).get("content", []):

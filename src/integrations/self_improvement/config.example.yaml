@@ -3,15 +3,19 @@
 # Claude Code CLI on the server machine. Enable with `enabled_integrations: [Self Improvement]`.
 # The setup is on the server machine itself, by hand:
 #   1. Install Claude Code: `curl -fsSL https://claude.ai/install.sh | bash` (puts `claude` in
-#      ~/.local/bin, which the server also looks in when it is not on the PATH).
-#   2. Log in: open a terminal ON the server machine, run `claude` and complete /login with a
-#      claude.ai subscription (Pro/Max) or an API key. Do not log in over SSH — a login made in
-#      an SSH session is not seen by the server process.
+#      ~/.local/bin, which the server also looks in when it is not on the PATH). Nothing else is
+#      needed when api_keys.anthropic is set: the runs use that key, billed per token at the
+#      API price of ai.code_quality.model (a self_improvement run is a few dollars on a Fable
+#      model, well under a dollar on a Sonnet one). The CLI is never run interactively, so no
+#      login and no workspace-trust prompt stands in the way.
+#   2. Optional: a claude.ai subscription (Pro/Max) instead of the key — open a terminal ON the
+#      server machine, run `claude` and complete /login. Do not log in over SSH — a login made
+#      in an SSH session is not seen by the server process. A login takes precedence over the key.
 #   3. Optional: email.address / email.password, where the nightly reports go.
 # The health check runs `claude auth status` (a free local call) every 15 minutes, first ~10 s
-# after start; a missing or logged-out CLI shows as the error in list_integrations. The model
-# the runs use is ai.code_quality.model.
+# after start; a missing CLI, or one with neither a login nor the key, shows as the error in
+# list_integrations. The model the runs use is ai.code_quality.model.
 self_improvement:
   # merge_strategy: rebase   # what the nightly auto-merge passes to `gh pr merge`: rebase (default), squash or merge
   # auto_merge_authors: [your-github-login]   # whose test-only PRs the nightly auto-merge may merge; default: the account `gh` is logged in as. PRs from forks are never merged
-  nightly_runs: false   # true: the nightly run fires at 03:00 — bug analysis, test generation, test health (flaky tests and tests over 100 ms are fixed or removed), then the auto-merge of test-only PRs, one email; a night without recent commits only auto-merges; false: only the self_analysis / self_improvement commands use Claude Code. Read at each fire, no restart needed
+  nightly_runs: false   # true: the nightly run fires at 03:00 — bug analysis, test generation, test health (flaky tests and tests over 100 ms are fixed or removed), then the auto-merge of test-only PRs, one email; a night without recent commits only auto-merges; false: only the self_analysis / self_improvement commands use Claude Code. Read at each fire, no restart needed. On an API key a night is three Claude Code runs, budget a few dollars a night on a Fable model
