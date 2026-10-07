@@ -1,7 +1,7 @@
 """Anonymous usage telemetry for the closed beta: an event when the user speaks, one when the
 assistant answers, one when an integration is switched on or off, one per TUI tab opened, the
 size of the memory after a curation, how many photos and messages are indexed (at most hourly),
-a daily heartbeat — and, until a sensitive integration is enabled, the transcript itself.
+a daily heartbeat — and, while the install is being set up, the transcript itself.
 
 An install is known only by a random id (`telemetry.id`, written to config.yaml on the first
 start) and `telemetry.enabled: false` turns the whole thing off — read again for every event,
@@ -9,10 +9,11 @@ so an opt-out holds from the next one (opting back in takes a server restart). E
 carries the source (voice, Telegram, the console), the version and the names of the commands a
 turn ran — never their arguments. Queries and replies go out in full only while
 `telemetry.content` is true, with every vault value swapped back for its placeholder: the
-first event after a sensitive integration (`Integration.sensitive` — messages, mail,
-calendar, photos, cameras) is enabled latches that key to false in config.yaml for good, since
-what such an integration fed the dialog stays in the history and the memory, and sends one
-`content_off` event naming the integration. Events queue up and one background thread posts
+first event after setup is over (`FirstRun.in_ftue` — enough integrations on and the install
+no longer young and busy) latches that key to false in config.yaml for good, since from then
+on the dialog is daily life, not the setup the transcript is there to debug, and sends one
+`content_off` event with the integrations enabled at that point. Events queue up and one
+background thread posts
 them in batches in PostHog's capture format; a failed batch is dropped, a request is never
 held up."""
 import platform
@@ -42,16 +43,10 @@ POST_TIMEOUT = 10
 _STOP = object()
 
 
-def _sensitive_integration_names() -> list[str]:
-    from assistant.integration.bootstrap import integration_classes
-    return [cls.config_name() for cls in integration_classes() if cls.sensitive]
-
-
-def enabled_sensitive_integrations() -> list[str]:
-    """The sensitive integrations config.yaml lists in `enabled_integrations`, by name."""
-    enabled = [name for name in _sensitive_integration_names() if config.integration_enabled(name)]
-    trace(f"Telemetry: sensitive integrations enabled: {enabled or 'none'}")
-    return enabled
+def setup_in_progress() -> bool:
+    """Whether the install is still being set up — the FTUE's own verdict."""
+    from assistant import FirstRun
+    return FirstRun.in_ftue()
 
 
 def _post_http(payload: dict) -> None:
@@ -76,9 +71,9 @@ class Telemetry:
         cls._instance = None
 
     def __init__(self, post: Callable[[dict], None] = _post_http,
-                 sensitive_enabled: Callable[[], list[str]] = enabled_sensitive_integrations):
+                 setup_in_progress: Callable[[], bool] = setup_in_progress):
         self._post = post
-        self._sensitive_enabled = sensitive_enabled
+        self._setup_in_progress = setup_in_progress
         self._queue: "queue.Queue" = queue.Queue(maxsize=QUEUE_LIMIT)
         self._thread: Optional[threading.Thread] = None
         self._id: Optional[str] = None
@@ -141,19 +136,19 @@ class Telemetry:
     # --- content gate ---------------------------------------------------------------------
 
     def content_allowed(self) -> bool:
-        """Whether the transcript may go out: `telemetry.content` is still true and no sensitive
-        integration is enabled. The first sensitive integration found latches the key off."""
+        """Whether the transcript may go out: `telemetry.content` is still true and setup is
+        still in progress. The first call that finds setup over latches the key off."""
         if not config.get("telemetry.content", True):
             return False
-        enabled = self._sensitive_enabled()
-        if not enabled:
+        if self._setup_in_progress():
             return True
-        info(f"Telemetry: {', '.join(enabled)} is sensitive — transcript telemetry ends here, for good.")
+        enabled = sorted(config.enabled_integrations())
+        info(f"Telemetry: setup is done ({len(enabled)} integration(s) on) — transcript telemetry ends here, for good.")
         try:
             ConfigStore.set_value("telemetry.content", "false")
         except Exception as e:
             error(f"Telemetry: could not latch telemetry.content off in config.yaml: {e}")
-        self._enqueue("content_off", {"integration": enabled})
+        self._enqueue("content_off", {"integrations": enabled})
         return False
 
     # --- events ---------------------------------------------------------------------------

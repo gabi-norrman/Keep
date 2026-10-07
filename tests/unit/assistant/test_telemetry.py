@@ -1,5 +1,5 @@
 """The beta telemetry: what leaves the machine, under which switch, and the latch that ends the
-transcript the moment a sensitive integration is enabled."""
+transcript once the install's setup is over."""
 import time
 import uuid
 from unittest.mock import Mock
@@ -8,7 +8,7 @@ import pytest
 
 import assistant.Telemetry as telemetry_module
 import common.ConfigManager as config_module
-from assistant.Telemetry import Telemetry, enabled_sensitive_integrations
+from assistant.Telemetry import Telemetry
 from common import ConfigSchema, ConfigStore
 
 
@@ -32,7 +32,7 @@ def sent():
 @pytest.fixture
 def telemetry(settings, sent):
     """Started with a fake poster; `stop()` flushes, so a test stops it before asserting."""
-    t = Telemetry(post=sent.append, sensitive_enabled=lambda: [])
+    t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
     t.start()
     yield t
     t.stop()
@@ -49,7 +49,7 @@ def _by_name(sent, name) -> list[dict]:
 class TestSwitches:
     def test_disabled_in_config_sends_nothing(self, settings, sent):
         settings["telemetry.enabled"] = False
-        t = Telemetry(post=sent.append, sensitive_enabled=lambda: [])
+        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
         t.start()
         t.user_turn("hello", "console")
         t.stop()
@@ -71,7 +71,7 @@ class TestSwitches:
         assert len(_by_name(sent, "heartbeat")) == 1   # the one from start
 
     def test_events_still_queued_at_the_opt_out_are_discarded(self, settings, sent):
-        t = Telemetry(post=sent.append, sensitive_enabled=lambda: [])
+        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
         t._send([{"event": "user_turn"}])
         settings["telemetry.enabled"] = False
         t._send([{"event": "assistant_turn"}])
@@ -79,7 +79,7 @@ class TestSwitches:
 
     def test_without_a_built_in_key_nothing_is_sent(self, settings, sent, monkeypatch):
         monkeypatch.setattr(telemetry_module, "POSTHOG_PROJECT_KEY", "")
-        t = Telemetry(post=sent.append, sensitive_enabled=lambda: [])
+        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
         t.start()
         t.user_turn("hello", "console")
         t.stop()
@@ -102,7 +102,7 @@ class TestInstallId:
 
     def test_an_existing_id_is_kept(self, settings, sent):
         settings["telemetry.id"] = "8f1c9b2a-0000-4000-8000-000000000001"
-        t = Telemetry(post=sent.append, sensitive_enabled=lambda: [])
+        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
         t.start()
         t.stop()
         ConfigStore.set_value.assert_not_called()
@@ -143,7 +143,7 @@ class TestEvents:
 
     def test_content_off_in_config_keeps_the_text_out_but_the_command_names_in(self, settings, sent):
         settings["telemetry.content"] = False
-        t = Telemetry(post=sent.append, sensitive_enabled=lambda: [])
+        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
         t.start()
         t.user_turn("read my mail", "Telegram")
         t.assistant_turn("Three new messages.", "Telegram", commands=["check_mail"])
@@ -157,7 +157,7 @@ class TestEvents:
         assert ConfigStore.set_value.call_args.args[0] == "telemetry.id"
 
     def test_events_go_out_in_batches_no_larger_than_the_limit_and_none_is_lost(self, settings, sent):
-        t = Telemetry(post=sent.append, sensitive_enabled=lambda: [])
+        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
         t.start()
         count = telemetry_module.BATCH_LIMIT * 2 + 7
         for i in range(count):
@@ -172,7 +172,7 @@ class TestEvents:
         coming after the one sent at start, and say it is not a start."""
         import time
         monkeypatch.setattr(telemetry_module, "HEARTBEAT_INTERVAL", 0.002)
-        t = Telemetry(post=sent.append, sensitive_enabled=lambda: [])
+        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
         t.start()
         deadline = time.time() + 1.0
         while time.time() < deadline and len(_by_name(sent, "heartbeat")) < 3:
@@ -206,10 +206,10 @@ class TestEvents:
             if len(posts) == 1:
                 raise ConnectionError("down")
 
-        t = Telemetry(post=post, sensitive_enabled=lambda: [])
+        t = Telemetry(post=post, setup_in_progress=lambda: True)
         t.start()
         t.stop()          # the startup heartbeat fails
-        t2 = Telemetry(post=post, sensitive_enabled=lambda: [])
+        t2 = Telemetry(post=post, setup_in_progress=lambda: True)
         t2.start()
         t2.user_turn("hello", "console")
         t2.stop()
@@ -246,29 +246,39 @@ class TestFeedCount:
         assert not _by_name(sent, "feed_count") and not _by_name(sent, "memory_size")
 
 
-class TestSensitiveLatch:
-    def test_enabling_a_sensitive_integration_latches_content_off_in_config_and_says_which(self, settings, sent):
-        enabled = []
-        t = Telemetry(post=sent.append, sensitive_enabled=lambda: list(enabled))
+class TestSetupLatch:
+    def test_the_end_of_setup_latches_content_off_in_config_and_says_what_is_on(self, settings, sent):
+        in_setup = [True]
+        t = Telemetry(post=sent.append, setup_in_progress=lambda: in_setup[0])
         t.start()
         t.user_turn("hi", "console")
-        enabled.append("iMessage")
+        in_setup[0] = False
         t.user_turn("what did Alice write?", "console")
         t.stop()
         first, second = _by_name(sent, "user_turn")
         assert first["properties"]["query"] == "hi"
         assert "query" not in second["properties"]
         [off] = _by_name(sent, "content_off")
-        assert off["properties"]["integration"] == ["iMessage"]
+        assert off["properties"]["integrations"] == ["Tesla", "Weather"]
         assert ("telemetry.content", "false") in [c.args for c in ConfigStore.set_value.call_args_list]
 
-    def test_the_flag_is_read_from_the_enabled_list_not_the_class_switch(self, monkeypatch):
-        """The unit conftest stubs `Integration.enabled` to True for everything; the latch
-        must look at config.yaml's list, or every test install would latch at once."""
-        monkeypatch.setattr(config_module.config, "enabled_integrations", lambda: ["iMessage", "Tesla", "Weather"])
-        assert enabled_sensitive_integrations() == ["iMessage"]
-        monkeypatch.setattr(config_module.config, "enabled_integrations", lambda: ["Tesla", "Weather"])
-        assert enabled_sensitive_integrations() == []
+    def test_setup_coming_back_does_not_reopen_the_transcript(self, settings, sent):
+        """The latch is for good: once config says no, the FTUE's verdict is not asked again."""
+        settings["telemetry.content"] = False
+        asked = []
+        t = Telemetry(post=sent.append, setup_in_progress=lambda: asked.append(True) or True)
+        t.start()
+        t.user_turn("hi", "console")
+        t.stop()
+        [turn] = _by_name(sent, "user_turn")
+        assert "query" not in turn["properties"] and asked == []
+
+    def test_the_default_verdict_is_the_ftue_s(self, monkeypatch):
+        from assistant import FirstRun
+        monkeypatch.setattr(FirstRun, "in_ftue", lambda: False)
+        assert telemetry_module.setup_in_progress() is False
+        monkeypatch.setattr(FirstRun, "in_ftue", lambda: True)
+        assert telemetry_module.setup_in_progress() is True
 
 
 class TestConfigContract:
