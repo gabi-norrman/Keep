@@ -29,24 +29,35 @@ NO_ACCOUNT_HINT = ("No calendar account is configured. Add one under caldav.acco
 
 
 class CalendarAccess:
-    def __init__(self, accounts: list[CalendarAccount]):
+    def __init__(self, accounts: list[CalendarAccount], starting: bool = False):
         self._accounts = list(accounts)
+        # True while the launcher has not registered the integrations yet (the prompt sections
+        # start before them): the section polls again soon instead of showing "not configured".
+        self.starting = starting
 
     @classmethod
     def current(cls) -> "CalendarAccess":
         """The accounts of every registered CalendarSource whose config keys are set — resolved
         per call, so a restarted or newly configured integration is what the next read uses."""
-        from assistant.integration.IntegrationMonitor import IntegrationMonitor
+        from assistant.integration.IntegrationMonitor import IntegrationMonitor, DisabledIntegration, UnavailableIntegration
+        monitor = IntegrationMonitor.get_instance()
         accounts: list[CalendarAccount] = []
-        for integration in IntegrationMonitor.get_instance().of_type(CalendarSource):
+        sources = monitor.of_type(CalendarSource)
+        for integration in sources:
             missing = integration.missing_config_keys()
             if missing:
                 trace(f"Calendar: {integration.name} is enabled but not configured ({', '.join(missing)}), no accounts from it")
                 continue
             accounts.extend(integration.calendar_accounts())
-        if not accounts:
-            trace("Calendar: no calendar account configured")
-        return cls(accounts)
+        if accounts:
+            return cls(accounts)
+        placeholders = [p for p in monitor.of_type(DisabledIntegration) + monitor.of_type(UnavailableIntegration)
+                        if issubclass(p.cls, CalendarSource)]
+        if not sources and not placeholders:
+            trace("Calendar: no calendar integration registered yet — the integrations are still starting")
+            return cls([], starting=True)
+        trace("Calendar: no calendar account configured")
+        return cls([])
 
     @property
     def accounts(self) -> list[CalendarAccount]:

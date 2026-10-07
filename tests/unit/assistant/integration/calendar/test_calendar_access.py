@@ -345,3 +345,13 @@ class TestGatheringThroughTheMonitor:
     def test_nothing_registered_is_no_account(self, monitor):
         assert CalendarAccess.current().accounts == []
         assert CalendarAccess.current().coming_week() == NOT_CONFIGURED
+
+    def test_no_calendar_integration_registered_yet_means_still_starting(self, monitor):
+        """The prompt sections start before the launcher registers the integrations: an empty
+        monitor is "starting", a disabled calendar integration is "not configured"."""
+        from assistant.integration.IntegrationMonitor import DisabledIntegration
+        assert CalendarAccess.current().starting is True
+
+        monitor.register(DisabledIntegration(_Source))
+        access = CalendarAccess.current()
+        assert access.starting is False and access.accounts == []

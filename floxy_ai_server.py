@@ -113,13 +113,22 @@ def _announce_startup(server: "Server"):
     The startup row is already in the history, so a chat that draws the history (the TUI's
     Home tab) is skipped; a chat still connecting (Telegram) delivers it once it is up.
     Sent quietly: a restart is routine and may happen at night."""
+    from assistant import SystemNote
     from assistant.Notifier import notifier
     if not server.startup_announcement:
         trace("No startup announcement to send.")
+        migration_note = ConfigMigrations.take_note()
+        if migration_note:
+            SystemNote.system_note("Config", migration_note)
         return
     sent = notifier().send_message(server.startup_announcement, disable_notification=True, in_history=True)
     info(f"Startup announcement {'sent to the chats' if sent else 'not sent, no chat took it'}: "
          f"{server.startup_announcement!r}")
+    migration_note = ConfigMigrations.take_note()
+    if migration_note:
+        # What the config load moved, told once — here and not at build time, when no chat is up
+        # yet to take it (2026-10-07: the note reached the history but the Telegram push was dropped).
+        SystemNote.system_note("Config", migration_note)
 
 
 def _open_first_conversation(server: "Server | None" = None):
@@ -233,9 +242,6 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
 
     prompt_manager = PromptManager(running_as_testsuite)
     SystemNote.set_history(prompt_manager.message_history)   # integrations' notes land in the dialog
-    migration_note = ConfigMigrations.take_note()
-    if migration_note and not running_as_testsuite:
-        SystemNote.system_note("Config", migration_note)   # what the config load moved, told once
     if running_as_testsuite:
         prompt_manager.load_test_suite_history("res/testsuite_history.json")
 

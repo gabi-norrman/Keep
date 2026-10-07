@@ -18,3 +18,22 @@ class TestCalendarSectionGenerator:
         from common.Paths import RES_DIR
         template = (RES_DIR / "prompt.md").read_text(encoding="utf-8")
         assert "{" + CalendarSectionGenerator.key.upper() + "}" in template
+
+    def test_polls_again_soon_while_the_integrations_are_still_starting(self):
+        """2026-10-07: production's first fetch ran before CalDAV was registered and the prompt
+        said "not configured" for the whole 15-minute interval."""
+        from unittest.mock import Mock
+        starting = Mock(starting=True); starting.coming_week.return_value = "(Calendar not configured)"
+        ready = Mock(starting=False); ready.coming_week.return_value = "Family (CalDAV): Home\n\n(No upcoming events)"
+        waits = []
+        section = CalendarSectionGenerator(None)
+        with patch('assistant.prompt.sections.CalendarSectionGenerator.CalendarAccess.current', side_effect=[starting, ready, ready]):
+            def wait(seconds):
+                waits.append(seconds)
+                if len(waits) == 2:
+                    section._stop_event.set()
+                return False
+            section._wait = wait
+            section._start_monitoring()
+        assert waits == [CalendarSectionGenerator.STARTING_POLL_INTERVAL, CalendarSectionGenerator.UPDATE_INTERVAL]
+        assert section.content.startswith("Family (CalDAV)")
