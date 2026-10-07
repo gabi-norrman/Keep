@@ -380,13 +380,16 @@ class FloxyDatabase:
             # Until 2026-10 a still whose LLM call failed — including a 429 or 402 from the
             # provider, i.e. a rate limit or an empty prepaid account — was stored as skipped and
             # never looked at again; a beta install lost 2,368 photos that way in twenty minutes.
-            # A provider refusal now leaves the row unindexed, so the rows it already wrote go
-            # back in the queue. Videos keep theirs: the sub-2-second ones were re-queued above.
+            # A provider refusal now leaves the row unindexed, so the rows it already wrote are
+            # dropped — the feed does not come back for them (it fetches only assets after its
+            # cursor), so they wait for a manual index from the console's Photos tab. Videos
+            # keep theirs: the sub-2-second ones were re-queued above.
             cursor.execute("DELETE FROM photos WHERE photo_type = 'skipped' "
                            "AND short_description = 'Skipped (LLM analysis failed)' AND duration_seconds IS NULL")
             if cursor.rowcount:
-                note(f"Database migration: re-queued {cursor.rowcount} photos skipped when the LLM call failed "
-                     f"(a rate limit or empty credits is no longer a verdict on the photo).")
+                note(f"Database migration: forgot {cursor.rowcount} photos skipped when the LLM call failed "
+                     f"(a rate limit or empty credits is no longer a verdict on the photo). The feed does "
+                     f"not revisit them — index them by hand from the console's Photos tab.")
         if version < SCHEMA_VERSION:
             cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             trace(f"Database schema version {version} -> {SCHEMA_VERSION}")
