@@ -594,8 +594,10 @@ class Commands:
         try:
             secret = vault.add(kind, description, value)
         except DuplicateSecret as e:
-            info(f"vault_add: value already vaulted as '{e.existing_id}'")
-            return f"vault_add: that value is already in the vault as {{{{secret:{e.existing_id}}}}}"
+            # The value is in the vault, which is what was asked — not a failure. The id is
+            # in the prompt's vault section, so the LLM needs nothing back here.
+            info(f"vault_add: value already vaulted as '{e.existing_id}' — nothing new stored")
+            return ""
         except VaultError as e:
             return f"vault_add failed: {e}"
         info(f"vault_add: stored '{secret.id}' ({kind}) — redacted from the next request on")
@@ -1097,13 +1099,9 @@ class Commands:
             # between the two.
             if self._bg_outstanding == 0:
                 self.command_processor.background_command_start()
-                # Start a fresh result set only when there is no reply still waiting to be
-                # consumed. If a reply is pending (an earlier batch in this same turn already
-                # published), keep accumulating onto it so the combined publish never drops
-                # the earlier results.
-                if self.command_processor.command_reply is None:
-                    self._bg_results = {}
-                    self.bg_results_contain_error = False
+                # _bg_results is not reset here: an earlier batch of the same reply may have
+                # published already, and the next publish must carry its results too. The
+                # processor forgets them when the reply is consumed (forget_batch_results).
                 self._bg_batch_started = time.time()
                 self._bg_batch_count = 0
                 self._bg_busy_seconds = 0.0
@@ -1210,25 +1208,16 @@ class Commands:
         the commands, whatever order they finished in."""
         return [self._bg_results[k] for k in sorted(self._bg_results)]
 
-    # Runs on: a lane thread, under bg_lock. Combines everything accumulated this turn and
-    # publishes it as one reply. _bg_results holds all results for the turn
-    # (background_command only resets it when no reply is pending), so the overwriting
-    # set_command_reply here can't drop an earlier batch's results.
+    # Runs on: a lane thread, under bg_lock. Publishes everything accumulated since the
+    # reply was last consumed as one batch reply — every result, not only this batch's, so
+    # the processor can replace its batch part whole. What the synchronous path appended
+    # (errors, denials) is the processor's own and goes in front when it composes the reply.
     def _publish_bg_results(self):
         cp = self.command_processor
         contains_error = self.bg_results_contain_error
         results = self.accumulated_bg_results
         list_results = [r for r in results if isinstance(r, list)]
         str_results = [r for r in results if isinstance(r, str) and r.strip()]
-        # A sync command error appended earlier this round (append_command_reply) lives
-        # only in command_reply, not in the batch — fold it into the publish so the
-        # wholesale replace can't drop the error text or its framing.
-        if cp.command_reply_contains_error and cp.command_reply is not None:
-            contains_error = True
-            if isinstance(cp.command_reply, list):
-                list_results.insert(0, cp.command_reply)
-            else:
-                str_results.insert(0, cp.command_reply)
         if list_results:
             combined = []
             for lr in list_results:
@@ -1238,6 +1227,18 @@ class Commands:
             cp.set_command_reply(combined, contains_error=contains_error)
         elif str_results:
             cp.set_command_reply("\n\n".join(str_results), contains_error=contains_error)
+        else:
+            trace(f"{len(results)} background result(s), all empty — nothing to publish.")
+
+    # Runs on: the thread that consumed the reply (see CommandProcessor.clear_command_reply).
+    def forget_batch_results(self):
+        with self.bg_lock:
+            if self._bg_outstanding:
+                trace(f"Reply consumed with {self._bg_outstanding} background command(s) still "
+                      "running — their batch keeps the results published so far.")
+                return
+            self._bg_results = {}
+            self.bg_results_contain_error = False
 
     def list_commands(self) -> list[str]:
         # Name check first: getattr on every attribute would evaluate the properties too, and
@@ -1531,7 +1532,10 @@ class Commands:
             return f"Reading history from {parts[0]} to {parts[1]}"
         return "Reading history"
 
-    # Runs on: command worker thread (called from CommandProcessor._command_worker)
+    # Runs on: command worker thread (called from CommandProcessor._command_worker).
+    # Returns "" when the command ran and the reason when it did not — the contract of
+    # every cmd_ method (see CommandSet): a synchronous command has no result to hand back,
+    # one with data to return runs it through background_command.
     def run(self, command: str, params: list[str]) -> str:
         command = command.strip()
 
@@ -1555,4 +1559,5 @@ class Commands:
             return result if isinstance(result, str) else ""
         except Exception as e:
             error(f"Exception running command {command}({params_display}): {e}")
-            return str(e)
+            # An exception without a message (a bare TimeoutError()) would read as success.
+            return str(e) or f"{command} failed: {type(e).__name__}"

@@ -82,7 +82,7 @@ def _build_error_round_reply(command_reply, executed_commands: list) -> str | li
     note_line = ("Note: your previous reply was already spoken to the user. Decide the best "
                  "way to proceed given what the user already heard and what actually executed.")
     if isinstance(command_reply, list):
-        # The error text block is already in the list (append_command_reply inserts it).
+        # The error text block is already in the list (the processor composes it in front).
         preamble = ("Command execution report — some commands from your reply failed "
                     f"(see below).\n{succeeded_line}\n\n{note_line}")
         return [{"type": "text", "text": preamble}] + command_reply

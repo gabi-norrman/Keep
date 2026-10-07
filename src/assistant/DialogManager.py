@@ -320,7 +320,7 @@ class DialogManager:
         if self.is_killed:
             raise RequestKilledException()
         info(f"Sending to {self.ai.name()}...")
-        self.command_processor.command_reply = None
+        self.command_processor.clear_command_reply()
         t = time.time()
         time_shown = False
 

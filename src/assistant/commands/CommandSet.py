@@ -23,6 +23,11 @@ class CommandSet:
     channel profile and the request context on the host before every run. Integrations are
     looked up per call (`get_instance()`), never in the constructor: building the sets must
     stay as cheap as building `Commands` itself.
+
+    A `cmd_` method returns "" (or None) when it ran and the reason when it could not — that
+    text reaches the LLM as the command's error, and the round is framed as a failure. A
+    command with data to hand back does not return it: it hands the work to
+    `background_command`, whose return value is the reply.
     """
     # Each names commands of this set only; see the same-named sets on Commands.
     MULTI_PARAM_COMMANDS: frozenset = frozenset()

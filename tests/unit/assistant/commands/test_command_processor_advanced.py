@@ -701,12 +701,38 @@ class TestAppendCommandReply:
             processor.append_command_reply("second")
         assert processor.command_reply == "first\nsecond"
 
-    def test_set_replaces_appended(self, processor):
+    def test_set_keeps_appended_text_in_front(self, processor):
         with patch.object(processor, '_log_command_reply'):
             processor.append_command_reply("first")
             processor.append_command_reply("second")
-            processor.set_command_reply("replaced")
-        assert processor.command_reply == "replaced"
+            processor.set_command_reply("batch")
+        assert processor.command_reply == "first\nsecond\n\nbatch"
+
+    def test_second_set_replaces_only_the_batch_part(self, processor):
+        # A publish carries every result of the round, so the appended text goes in once.
+        with patch.object(processor, '_log_command_reply'):
+            processor.set_command_reply("one")
+            processor.append_command_reply("error")
+            processor.set_command_reply("one\n\ntwo")
+        assert processor.command_reply == "error\n\none\n\ntwo"
+        assert processor.command_reply_contains_error is True
+
+    def test_set_puts_appended_text_before_a_block_list(self, processor):
+        image = {"type": "image", "source": {"data": "xx"}}
+        with patch.object(processor, '_log_command_reply'):
+            processor.append_command_reply("error")
+            processor.set_command_reply([image])
+            processor.set_command_reply([image, {"type": "text", "text": "two"}])
+        assert processor.command_reply == [{"type": "text", "text": "error"}, image, {"type": "text", "text": "two"}]
+
+    def test_clear_forgets_both_parts(self, processor):
+        with patch.object(processor, '_log_command_reply'):
+            processor.append_command_reply("error")
+            processor.set_command_reply("batch", contains_error=True)
+            processor.clear_command_reply()
+            processor.set_command_reply("next")
+        assert processor.command_reply == "next"
+        assert processor.command_reply_contains_error is False
 
     def test_append_sets_error_flag(self, processor):
         assert processor.command_reply_contains_error is False
@@ -714,13 +740,84 @@ class TestAppendCommandReply:
             processor.append_command_reply("some error")
         assert processor.command_reply_contains_error is True
 
-    def test_set_command_reply_clears_error_flag(self, processor):
-        # set_command_reply replaces the reply wholesale (see test_set_replaces_appended),
-        # so a flag describing the discarded error text must not survive it.
+    def test_set_command_reply_keeps_the_error_flag_of_appended_text(self, processor):
         with patch.object(processor, '_log_command_reply'):
             processor.append_command_reply("some error")
             processor.set_command_reply("bg result")
-        assert processor.command_reply_contains_error is False
+        assert processor.command_reply_contains_error is True
+
+    def test_set_command_reply_alone_carries_its_own_flag(self, processor):
+        with patch.object(processor, '_log_command_reply'):
+            processor.set_command_reply("bg result")
+            assert processor.command_reply_contains_error is False
+            processor.set_command_reply("Command failed: boom", contains_error=True)
+        assert processor.command_reply_contains_error is True
+
+
+@pytest.mark.unit
+class TestRepliesAcrossBatches:
+    """The reply the LLM gets when a round runs more than one background batch — a fast
+    command publishes before the next one is dispatched — with a sync error in between.
+    Through the real processor and its Commands: the publish used to fold the processor's
+    reply back in, so every earlier result (or image) reached the LLM twice."""
+
+    @pytest.fixture
+    def processor(self):
+        cp = CommandProcessor(test_suite_mode=True)
+        with patch.object(cp, "_log_command_reply"):
+            yield cp
+        cp.kill()
+
+    @staticmethod
+    def run_batch(cp, result):
+        cp.commands.background_command(lambda _: result, None)
+        assert cp.commands.wait_for_background(timeout=5)
+
+    def test_sync_error_between_two_batches(self, processor):
+        self.run_batch(processor, "RESULT-A")
+        processor.append_command_reply("SYNC-ERR")
+        self.run_batch(processor, "RESULT-B")
+        assert processor.command_reply == "SYNC-ERR\n\nRESULT-A\n\nRESULT-B"
+        assert processor.command_reply_contains_error is True
+
+    def test_sync_error_while_a_batch_runs(self, processor):
+        gate = threading.Event()
+
+        def slow(_):
+            gate.wait(5)
+            return "RESULT-A"
+
+        processor.commands.background_command(slow, None)
+        processor.append_command_reply("SYNC-ERR")
+        gate.set()
+        assert processor.commands.wait_for_background(timeout=5)
+        self.run_batch(processor, "RESULT-B")
+        assert processor.command_reply == "SYNC-ERR\n\nRESULT-A\n\nRESULT-B"
+
+    def test_failed_background_command_then_another_batch(self, processor):
+        def boom(_):
+            raise RuntimeError("boom")
+
+        processor.commands.background_command(boom, None)
+        assert processor.commands.wait_for_background(timeout=5)
+        self.run_batch(processor, "RESULT-B")
+        assert processor.command_reply == "Command failed: boom\n\nRESULT-B"
+        assert processor.command_reply_contains_error is True
+
+    def test_images_go_once(self, processor):
+        image = {"type": "image", "source": {"data": "xx"}}
+        self.run_batch(processor, [{"type": "text", "text": "cams"}, image])
+        processor.append_command_reply("SYNC-ERR")
+        self.run_batch(processor, "RESULT-B")
+        assert processor.command_reply == [
+            {"type": "text", "text": "SYNC-ERR"}, {"type": "text", "text": "cams"}, image,
+            {"type": "text", "text": "RESULT-B"}]
+
+    def test_consumed_reply_does_not_return_with_the_next_batch(self, processor):
+        self.run_batch(processor, "RESULT-A")
+        processor.clear_command_reply()
+        self.run_batch(processor, "RESULT-B")
+        assert processor.command_reply == "RESULT-B"
 
 
 @pytest.mark.unit

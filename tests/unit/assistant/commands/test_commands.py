@@ -76,6 +76,12 @@ class TestRun:
         result = commands_instance.run("turn_on", ["kitchen"])
         assert "boom" in result
 
+    def test_exception_without_a_message_is_still_a_failure(self, commands_instance):
+        # "" means the command ran — a bare TimeoutError() must not read as success.
+        commands_instance.cmd_turn_on = Mock(side_effect=TimeoutError())
+        result = commands_instance.run("turn_on", ["kitchen"])
+        assert result and "TimeoutError" in result
+
 
 # ---------------------------------------------------------------------------
 # TestCmdFalsePositive
@@ -228,10 +234,10 @@ class TestBackgroundCommand:
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
             "Command failed: boom", contains_error=True)
 
-    def test_publish_merges_pending_sync_error_reply(self, commands_instance):
-        """A sync command error appended earlier this round (append_command_reply) lives
-        only in command_reply — the bg publish must fold it in with the error flag
-        preserved, not wholesale-replace it."""
+    def test_publish_leaves_the_pending_sync_reply_to_the_processor(self, commands_instance):
+        """A sync command error appended earlier this round is the processor's own part of
+        the reply — the publish hands over the batch alone, or the processor's composition
+        would carry the error (and, on a later publish, the earlier results) twice."""
         cp = commands_instance.command_processor
         cp.command_reply = "Command 'send_email' was denied by user."
         cp.command_reply_contains_error = True
@@ -240,8 +246,17 @@ class TestBackgroundCommand:
         commands_instance.background_command(fn, "params")
         commands_instance.wait_for_background(timeout=5)
 
-        cp.set_command_reply.assert_called_once_with(
-            "Command 'send_email' was denied by user.\n\nweather data", contains_error=True)
+        cp.set_command_reply.assert_called_once_with("weather data", contains_error=False)
+
+    def test_forget_batch_results_starts_the_next_publish_from_nothing(self, commands_instance):
+        cp = commands_instance.command_processor
+        commands_instance.background_command(Mock(side_effect=RuntimeError("boom")), None)
+        assert commands_instance.wait_for_background(timeout=5)
+        commands_instance.forget_batch_results()
+
+        commands_instance.background_command(Mock(return_value="two"), None)
+        assert commands_instance.wait_for_background(timeout=5)
+        cp.set_command_reply.assert_called_with("two", contains_error=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1282,10 +1297,10 @@ class TestCmdVaultAdd:
         assert result.startswith("vault_add failed: unknown kind 'ssn'")
         assert len(vault) == 0
 
-    def test_duplicate_value_names_existing_placeholder(self, commands_instance, vault):
+    def test_duplicate_value_is_not_a_failure(self, commands_instance, vault):
+        # The value is in the vault either way; the id is in the prompt's vault section.
         vault.add("phone", "Marcus mobile", "+46701234567")
-        result = commands_instance.cmd_vault_add("phone", "My phone", "070-123 45 67")
-        assert result == "vault_add: that value is already in the vault as {{secret:marcus-mobile}}"
+        assert commands_instance.cmd_vault_add("phone", "My phone", "070-123 45 67") == ""
         assert len(vault) == 1
 
     def test_invalid_value_reports_vault_error(self, commands_instance, vault):

@@ -419,7 +419,7 @@ class AutonomousActionManager:
                     messages.append({"role": "user", "content": reply})
                 else:
                     messages.append({"role": "user", "content": f"result:\n{reply}"})
-                command_processor.command_reply = None  # Reset for next iteration
+                command_processor.clear_command_reply()  # Reset for next iteration
                 # Save the *initial* (pre-loop) result on the first iteration only.
                 # On subsequent iterations the previous iteration already wrote
                 # the current `result` via _save_autonomous_result_to_history.

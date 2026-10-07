@@ -40,12 +40,21 @@ class CommandProcessor:
         self.test_mode_dont_actually_execute_commands = test_suite_mode
         self.command_running_in_background = False
         self.command_being_processed = False
+        # command_reply is composed from two sources and never edited in place: what the
+        # synchronous path appended this round (errors, denials, the unterminated-command
+        # report) and the background batch's results as last published. A publish carries
+        # every result of the round, so it replaces the batch part whole — composing from
+        # the parts is what keeps a result from going to the LLM twice when a later batch
+        # publishes after an error was appended.
         self.command_reply = None
+        self.command_reply_contains_error = False
+        self._sync_replies: list[str] = []
+        self._batch_reply: str | list | None = None
+        self._batch_reply_contains_error = False
         # Written on the command worker thread; read by _handle_background_commands after
         # the queue drains, so no lock is needed. A fresh CommandProcessor is built per
         # LLM round, which keeps both round-scoped.
         self.executed_commands: list[str] = []
-        self.command_reply_contains_error = False
         # Set by flush_buffer on the request thread, kept apart from command_reply: a command
         # still running from the same reply replaces command_reply wholesale when it finishes.
         self.unterminated_command_report: str | None = None
@@ -228,28 +237,45 @@ class CommandProcessor:
     def is_possibly_command(self, content: str) -> bool:
         return self.parser.is_possibly_command(content)
 
-    # Runs on: bg command worker thread
+    # Runs on: a background lane thread. `content` is the batch's results — all of the
+    # round's so far — and `contains_error` whether one of them failed.
     def set_command_reply(self, content: str | list, contains_error: bool = False):
         info("Command done.")
-        self.command_reply = content
-        # The reply was replaced wholesale — the flag must describe the new content,
-        # so callers that folded error text into it pass contains_error=True.
-        self.command_reply_contains_error = contains_error
+        self._batch_reply = content
+        self._batch_reply_contains_error = contains_error
+        self._compose_reply()
         self._log_command_reply(content)
         self._resolve_orphan_if_any()
 
-    # Only called with command errors and approval denials — flags the reply so
-    # _handle_background_commands frames the follow-up round as an error report.
+    # Only called with command errors, approval denials and the unterminated-command
+    # report — flags the reply so _handle_background_commands frames the follow-up round
+    # as an error report.
     def append_command_reply(self, content: str):
-        self.command_reply_contains_error = True
-        if self.command_reply is None:
-            self.command_reply = content
-        elif isinstance(self.command_reply, list):
-            self.command_reply.insert(0, {"type": "text", "text": content})
-        else:
-            self.command_reply += "\n" + content
+        self._sync_replies.append(content)
+        self._compose_reply()
         self._log_command_reply(content)
         self._resolve_orphan_if_any()
+
+    def _compose_reply(self):
+        """The synchronous parts first, one per line, then the batch: in front of a block
+        list as one text block, before a text reply with a blank line between."""
+        sync_text = "\n".join(self._sync_replies)
+        batch = self._batch_reply
+        if isinstance(batch, list):
+            self.command_reply = ([{"type": "text", "text": sync_text}] if sync_text else []) + batch
+        else:
+            self.command_reply = "\n\n".join(part for part in (sync_text, batch) if part) or None
+        self.command_reply_contains_error = bool(self._sync_replies) or self._batch_reply_contains_error
+
+    def clear_command_reply(self):
+        """The reply was consumed: the next one starts from nothing, the batch results
+        included — kept, the next publish would carry this reply's results again."""
+        self.command_reply = None
+        self.command_reply_contains_error = False
+        self._sync_replies = []
+        self._batch_reply = None
+        self._batch_reply_contains_error = False
+        self.commands.forget_batch_results()
 
     def _log_command_reply(self, content: str | list):
         from assistant.RequestProcessor import _save_image_to_log

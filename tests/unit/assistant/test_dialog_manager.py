@@ -35,6 +35,9 @@ class FakeCommandProcessor:
     def reset_parse_state(self):
         self.reset_parse_state_calls += 1
 
+    def clear_command_reply(self):
+        self.command_reply = None
+
     def process(self, content, dialog_manager):
         self.process_calls.append(content)
         if "turn_on(kitchen)" in content:
