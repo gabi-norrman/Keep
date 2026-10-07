@@ -305,7 +305,12 @@ class LongTermMemoryCurator:
                        'period_end': periods[-1][1].isoformat(timespec='minutes')}
             info(f"Rem: curating {start:%Y-%m-%d} .. {end:%Y-%m-%d} in {total} chunk(s) of up to "
                  f"{CURATION_CHUNK_DAYS} days" + (f", resuming at chunk {first_chunk + 1}" if first_chunk else ""))
-            for index, (period_start, period_end) in enumerate(periods[first_chunk:], start=first_chunk + 1):
+            for index, (period_start, planned_end) in enumerate(periods[first_chunk:], start=first_chunk + 1):
+                period_end = cls.live_end(planned_end)
+                if period_end != planned_end:
+                    info(f"Rem: chunk {index}/{total} was planned to end at {planned_end:%H:%M} — it runs now, "
+                         f"so it ends at {period_end:%H:%M}")
+                    summary['period_end'] = period_end.isoformat(timespec='minutes')
                 info(f"Rem: chunk {index}/{total} — {period_start:%Y-%m-%d %H:%M} .. {period_end:%Y-%m-%d %H:%M}")
                 try:
                     metadata = cls._curate_period(curator, period_start, period_end, history, record=total == 1)
@@ -339,8 +344,9 @@ class LongTermMemoryCurator:
         """The day-aligned (period_start, period_end exclusive) pairs that cover start..end
         (dates, end inclusive) in chunks of `chunk_days`; the last is shorter when the span
         is not a multiple. A chunk reaching into the future ends now, so a span that ends today
-        covers what has happened so far and nothing that hasn't. Deterministic apart from that
-        clamp, so a resumed span gets the same boundaries."""
+        covers what has happened so far and nothing that hasn't — `run_span` moves that end to
+        the now the chunk actually runs at (`live_end`). Deterministic apart from that clamp,
+        so a resumed span gets the same boundaries."""
         now = now or datetime.now()
         end = min(end, now.date())
         if end < start:
@@ -354,6 +360,20 @@ class LongTermMemoryCurator:
             periods.append((period_start, period_end))
             day = chunk_end
         return periods
+
+    @staticmethod
+    def live_end(planned_end: datetime, now: datetime = None) -> datetime:
+        """The end a chunk gets when it runs: a day-aligned end stays, an end `chunks` cut at
+        now (not midnight) is cut again at the now the chunk runs at, up to the midnight it was
+        reaching for. A span's chunks run one after another for minutes (the first curation of
+        an install took a quarter of an hour), and the last chunk — the one that describes the
+        present — would otherwise stop where the span was planned and write that stale
+        snapshot as the current state: the bank once said the Telegram bot was not set up,
+        written eight minutes after it was."""
+        if planned_end.time() == datetime.min.time():
+            return planned_end
+        midnight_after = datetime.combine(planned_end.date() + timedelta(days=1), datetime.min.time())
+        return max(planned_end, min(midnight_after, now or datetime.now()))
 
     @classmethod
     def _curate_period(cls, curator: 'LongTermMemoryCurator', period_start, period_end, history,

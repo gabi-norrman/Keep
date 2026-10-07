@@ -356,6 +356,26 @@ class TestChunks:
         with pytest.raises(ValueError):   # start in the future, once the end is clamped
             self._chunks(date(2026, 9, 20), date(2026, 9, 25))
 
+class TestLiveEnd:
+    """`live_end` re-cuts a chunk end that `chunks` clamped to now at the now the chunk runs at."""
+
+    def test_a_day_aligned_end_stays_whenever_it_runs(self):
+        planned = datetime(2026, 8, 10)
+        assert LongTermMemoryCurator.live_end(planned, now=datetime(2026, 8, 12, 9, 30)) == planned
+
+    def test_an_end_cut_at_now_moves_to_the_now_it_runs_at(self):
+        planned = datetime(2026, 10, 6, 18, 43)
+        assert LongTermMemoryCurator.live_end(planned, now=datetime(2026, 10, 6, 18, 58)) == datetime(2026, 10, 6, 18, 58)
+
+    def test_it_never_reaches_past_the_midnight_the_chunk_was_cut_from(self):
+        planned = datetime(2026, 10, 6, 23, 50)
+        assert LongTermMemoryCurator.live_end(planned, now=datetime(2026, 10, 7, 0, 20)) == datetime(2026, 10, 7)
+
+    def test_it_never_moves_backwards(self):
+        planned = datetime(2026, 10, 6, 18, 43)
+        assert LongTermMemoryCurator.live_end(planned, now=datetime(2026, 10, 6, 18, 40)) == planned
+
+
 def _span_curator(metadata_for=None):
     """A curator whose curate_memory answers ("bank", metadata) per call; `metadata_for(start)`
     picks the metadata by the chunk's start (default: a normal curated chunk)."""
@@ -384,6 +404,16 @@ class TestRunSpan:
         assert curator.save_memory.call_count == 3 and curator.save_debug_log.call_count == 3
         assert summary == {'chunks': 3, 'curated': 3, 'empty': 0, 'failed': 0, 'aborted': False, 'interaction_count': 6,
                            'period_start': '2026-08-01T00:00', 'period_end': '2026-08-10T00:00'}
+
+    def test_the_last_chunk_of_a_span_ending_today_ends_when_it_runs(self):
+        curator = _span_curator()
+        start, today = date.today() - timedelta(days=1), date.today()
+        moved_end = datetime.now() + timedelta(minutes=15)
+        with patch.object(LongTermMemoryCurator, "live_end", return_value=moved_end) as live:
+            summary = LongTermMemoryCurator.run_span(start, today, curator=curator)
+        assert live.call_count == 1 and live.call_args.args[0].date() == today   # the end chunks() cut at now
+        assert curator.curate_memory.call_args.args[1] == moved_end
+        assert summary['period_end'] == moved_end.isoformat(timespec='minutes')
 
     def test_empty_chunk_is_counted_and_not_saved(self):
         curator = _span_curator(lambda start: {'empty': True, 'interaction_count': 0}
