@@ -35,15 +35,10 @@ NEVER user `turn_off` or `turn_on` to run actions, you must always use `execute`
 
 The pool cover is normally closed, and you have no way of checking that.
 
-### Cameras
-The house has cameras around the house. You can get still images from all cameras:
-
-`fetch_camera_images()`
-
 ### Home automation logs
 To fetch the home automation system's latest error logs use:
 
 `home_automation_logs()`
 
 ### Stop-and-wait
-`fetch_camera_images()`, `home_automation_logs()` return data: emit them and stop generating; the result arrives in the next round.
+`home_automation_logs()` returns data: emit it and stop generating; the result arrives in the next round.

@@ -93,7 +93,7 @@ def test_testsuite_prompt_loaded_and_logged(prompt_test_environment, monkeypatch
     # The test suite sees every toolkit as one load_toolkit round after the history.
     assert messages == [{"role": "system", "content": expected_prompt}] + manager._test_toolkit_messages
     assert [m["role"] for m in manager._test_toolkit_messages] == ["assistant", "user"]
-    assert manager._test_toolkit_messages[0]["content"].startswith('load_toolkit("home", "web", ')
+    assert manager._test_toolkit_messages[0]["content"].startswith('load_toolkit("home", "cameras", "web", ')
     assert manager._test_toolkit_messages[1]["content"].startswith("result: \n# Toolkit: home\n")
     assert "# Toolkit: timers" in manager._test_toolkit_messages[1]["content"]
 

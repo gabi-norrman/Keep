@@ -15,6 +15,7 @@ import pyaarlo.constant
 from requests.adapters import HTTPAdapter
 
 from common.ConfigManager import ConfigManager
+from assistant.integration.CameraProvider import CameraProvider, select
 from assistant.integration.Integration import Integration, IntegrationState
 from common.logging import info, error, note, trace
 from .jpeg_freshness import looks_like_cached_thumbnail
@@ -150,7 +151,7 @@ class _ArloTfaHandler(TfaCodeHandler):
         return None
 
 
-class ArloCameraIntegration(Integration):
+class ArloCameraIntegration(Integration, CameraProvider):
     """Arlo camera snapshots.
 
     Fetches a fresh snapshot from an Arlo camera so Keep can say what it sees. Signing in takes
@@ -243,11 +244,11 @@ class ArloCameraIntegration(Integration):
         self._health_check_counter += 1
         if self._health_check_counter % self.REAL_CHECK_EVERY != 1 and self.state == IntegrationState.OK:
             return True
-        # Connect here rather than through get_camera_names, which swallows the error: the
+        # Connect here rather than through camera_names, which swallows the error: the
         # monitor records the message, and "auth cooldown; last attempt: 401" tells the user
         # what to fix where "health check returned False" would not.
         self._ensure_connected()
-        return len(self.get_camera_names()) > 0
+        return len(self.camera_names()) > 0
 
     def needs_2fa(self) -> bool:
         """No saved session yet — unless Arlo rejected the credentials, which no code fixes."""
@@ -500,15 +501,15 @@ class ArloCameraIntegration(Integration):
             return {"status": "not_initialized", "message": "Not connected to Arlo"}
         return {"status": "authenticated", "message": "Connected to Arlo"}
 
-    def _is_ignored(self, camera_name: str) -> bool:
-        name_lower = camera_name.lower()
-        return any(kw in name_lower for kw in self._ignore_keywords)
+    def _select(self, cameras, only: Optional[List[str]] = None) -> list:
+        chosen = select([cam.name for cam in cameras], self._ignore_keywords, only)
+        return [cam for cam in cameras if cam.name in chosen]
 
-    def get_camera_names(self) -> List[str]:
+    def camera_names(self) -> List[str]:
         try:
             self._ensure_connected()
             if self._arlo:
-                return [cam.name for cam in self._arlo.cameras if not self._is_ignored(cam.name)]
+                return [cam.name for cam in self._select(self._arlo.cameras)]
         except Exception as e:
             error(f"Failed to get Arlo camera names: {e}")
         return []
@@ -560,8 +561,8 @@ class ArloCameraIntegration(Integration):
             error(f"Arlo: Failed to get snapshot from {cam_name}: {e}")
             return [{"type": "text", "text": f"Camera '{cam_name}': error - {e}"}]
 
-    def fetch_all_snapshots(self, _params=None) -> list:
-        """Fetch snapshots from all cameras in parallel. Returns Anthropic-format content blocks."""
+    def fetch_snapshots(self, only: Optional[List[str]] = None) -> list:
+        """Snapshots from every camera (or the ones *only* names) in parallel, as content blocks."""
         from concurrent.futures import ThreadPoolExecutor
 
         self._ensure_connected()
@@ -570,23 +571,14 @@ class ArloCameraIntegration(Integration):
 
         all_cameras = self._arlo.cameras
         info(f"Arlo: Found {len(all_cameras)} cameras: {[c.name for c in all_cameras]}")
-        cameras = [cam for cam in all_cameras if not self._is_ignored(cam.name)]
+        cameras = self._select(all_cameras, only)
         if not cameras:
-            note("Arlo: No cameras available after filtering")
-            return [{"type": "text", "text": "No Arlo cameras found."}]
+            note(f"Arlo: No cameras selected (ignored {self._ignore_keywords}, asked for {only})")
+            return []
 
         with ThreadPoolExecutor(max_workers=5) as pool:
             results = list(pool.map(self._fetch_single_snapshot, cameras))
-
-        content_blocks = []
-        for blocks in results:
-            content_blocks.extend(blocks)
-
-        if not content_blocks:
-            return [{"type": "text", "text": "Failed to get snapshots from any camera."}]
-
-        content_blocks.insert(0, {"type": "text", "text": "Here are the current camera images from around the house:"})
-        return content_blocks
+        return [block for blocks in results for block in blocks]
 
     def refresh_connection(self):
         with self._connect_lock:

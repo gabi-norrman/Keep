@@ -23,7 +23,7 @@ class ArloTab(AuthTab):
     def _on_status(self, api):
         if self.status == "authenticated":
             try:
-                self._camera_names = api.get_camera_names()
+                self._camera_names = api.camera_names()
             except Exception:
                 self._camera_names = []
 

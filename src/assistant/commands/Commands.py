@@ -24,8 +24,7 @@ from assistant.Notifier import SecretRejected, notifier
 from assistant.SystemNote import system_note
 from assistant.Telemetry import Telemetry
 from .CommandEcho import describe_completion
-from integrations.arlo.ArloCameraIntegration import ArloCamera
-from integrations.ring.RingIntegration import RingIntegration
+from assistant.integration import CameraProvider as cameras
 from common.FloxyDatabase import FloxyDatabase
 from common.vault.Vault import Vault, VaultError, DuplicateSecret, KINDS
 
@@ -83,7 +82,7 @@ class Commands:
         "vault_request", "config_set", "load_toolkit", "schedule_wakeup",
         "load_watch", "save_watch", "delete_watch",
         "load_procedure", "save_procedure", "delete_procedure",
-        "create_event", "load_calendar",
+        "create_event", "load_calendar", "fetch_camera_images",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
@@ -543,46 +542,39 @@ class Commands:
         body = normalize_llm_escapes(body)
         return access.send(to, subject, body, account_name)
 
-    def cmd_fetch_camera_images(self, parameter_string: str):
-        self.background_command(self._fetch_all_camera_images, parameter_string)
+    def cmd_fetch_camera_images(self, *names: str):
+        """Stills from every camera of every enabled camera integration, or from the cameras
+        the arguments name (substring match)."""
+        only = [n.strip() for n in names if n and n.strip()] or None
+        self.background_command(self._fetch_all_camera_images, only)
 
     @staticmethod
-    def _fetch_arlo_snapshots() -> list:
+    def _provider_snapshots(provider, only) -> list:
         try:
-            arlo = ArloCamera.get_instance()
-            result = arlo.fetch_all_snapshots()
-            if isinstance(result, list):
-                return [b for b in result if not (b.get("type") == "text" and b.get("text", "").startswith("Here are"))]
-            return []
+            blocks = provider.fetch_snapshots(only)
+            info(f"Cameras: {provider.name} returned {sum(1 for b in blocks if b.get('type') == 'image')} image(s)")
+            return blocks
         except Exception as e:
-            error(f"Arlo snapshot fetch failed: {e}")
+            error(f"Cameras: {provider.name} snapshot fetch failed: {e}")
             return []
 
     @staticmethod
-    def _fetch_ring_snapshot() -> list:
-        try:
-            ring = RingIntegration.get_instance()
-            return ring.fetch_snapshot()
-        except Exception as e:
-            error(f"Ring snapshot fetch failed: {e}")
-            return []
-
-    @staticmethod
-    def _fetch_all_camera_images(_params) -> object:
+    def _fetch_all_camera_images(only) -> object:
         from concurrent.futures import ThreadPoolExecutor
 
-        results = []
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [
-                pool.submit(Commands._fetch_arlo_snapshots),
-                pool.submit(Commands._fetch_ring_snapshot),
-            ]
-            for f in futures:
-                result = f.result()
-                if isinstance(result, list):
-                    results.extend(result)
+        providers = cameras.active()
+        if not providers:
+            return cameras.no_provider_hint()
+        with ThreadPoolExecutor(max_workers=len(providers)) as pool:
+            futures = [pool.submit(Commands._provider_snapshots, p, only) for p in providers]
+            results = [block for f in futures for block in f.result()]
 
         if not results:
+            if only:
+                known = [name for p in providers for name in p.camera_names()]
+                info(f"Cameras: nothing matched {only}; the cameras are {known}")
+                return (f"No camera matches {', '.join(only)}. The cameras: {', '.join(known)}." if known
+                        else f"No camera matches {', '.join(only)}, and no camera is reachable right now.")
             return "No camera images available."
 
         results.insert(0, {"type": "text", "text": "Here are the current camera images from around the house:"})

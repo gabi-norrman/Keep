@@ -182,25 +182,25 @@ class TestRingIntegrationConnect:
         assert cam.get_auth_status()["status"] == "error"
 
 
-class TestRingIntegrationFetchSnapshot:
-    def test_fetch_snapshot_not_connected_raises(self):
+class TestRingIntegrationFetchSnapshots:
+    def test_fetch_snapshots_not_connected_raises(self):
         cam = RingIntegration(config=VALID_CONFIG)
         cam._ensure_connected = Mock(return_value=None)
         cam._ring = None
         with pytest.raises(RingCameraError, match="Not connected"):
-            cam.fetch_snapshot()
+            cam.fetch_snapshots()
 
-    def test_fetch_snapshot_no_doorbells(self):
+    def test_fetch_snapshots_no_doorbells(self):
         cam = RingIntegration(config=VALID_CONFIG)
         cam._ring = Mock()
         mock_devices = Mock()
         mock_devices.doorbells = []
         cam._ring.devices.return_value = mock_devices
         cam._ensure_connected = Mock()
-        result = cam.fetch_snapshot()
+        result = cam.fetch_snapshots()
         assert result == []
 
-    def test_fetch_snapshot_handles_single_doorbell_failure(self):
+    def test_fetch_snapshots_handles_single_doorbell_failure(self):
         cam = RingIntegration(config=VALID_CONFIG)
         cam._ring = Mock()
 
@@ -220,7 +220,7 @@ class TestRingIntegrationFetchSnapshot:
 
         cam._fetch_doorbell_snapshot = Mock(side_effect=side_effect)
 
-        result = cam.fetch_snapshot()
+        result = cam.fetch_snapshots()
         assert any("Front" in str(b) for b in result)
         assert any("error" in str(b) for b in result)
 

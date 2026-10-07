@@ -2,4 +2,5 @@
 arlo:
   username: your_arlo_email@example.com
   password: YOUR_ARLO_PASSWORD
+  # Cameras whose name contains one of these words are left out of the camera images.
   ignore_cameras: []

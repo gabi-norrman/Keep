@@ -35,6 +35,7 @@ from typing import Callable, Iterable, Optional
 
 import yaml
 
+from assistant.integration.CameraProvider import CameraProvider
 from assistant.integration.HomeAutomation import HomeAutomation
 from assistant.integration.calendar.CalendarSource import CalendarSource
 from assistant.integration.mail.MailSource import MailSource
@@ -171,10 +172,12 @@ def assemble(core: Iterable[Toolkit], discovered: Iterable[Toolkit], order: tupl
 
 
 CORE_TOOLKITS: tuple[Toolkit, ...] = (
-    Toolkit("home", "lights, actions, cameras and the home automation log, with the current state of every "
+    Toolkit("home", "lights, actions and the home automation log, with the current state of every "
                     "light, action and variable of the house",
-            ("turn_on", "turn_off", "dim", "execute", "fetch_camera_images", "home_automation_logs"),
+            ("turn_on", "turn_off", "dim", "execute", "home_automation_logs"),
             sections=("home",), needs=HomeAutomation),
+    Toolkit("cameras", "a still image from every camera of the house, or from the ones you name",
+            ("fetch_camera_images",), needs=CameraProvider),
     Toolkit("web", "read a web page or google something; anything that needs current information",
             ("open_url", "google"), sections=("web",)),
     Toolkit("browser", "drive a real browser when a page needs clicking, typing or a date picker before it "
@@ -205,7 +208,7 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
 
 # The order of the index, which is part of the prompt: a toolkit keeps its place wherever its
 # file lives. A toolkit not named here (a new folder's) comes after these, by name.
-INDEX_ORDER = ("home", "web", "browser", "x", "email", "imessage", "music", "photos", "location", "calendar",
+INDEX_ORDER = ("home", "cameras", "web", "browser", "x", "email", "imessage", "music", "photos", "location", "calendar",
                "shopping_list", "weather", "timers", "tesla", "history", "vault", "setup", "developer", "voice")
 
 TOOLKITS: tuple[Toolkit, ...] = assemble(CORE_TOOLKITS, discover(), INDEX_ORDER)
