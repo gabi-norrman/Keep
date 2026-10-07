@@ -1,0 +1,11 @@
+# Plejd lights over Bluetooth from the server's own Mac, no Plejd gateway needed; enable with `enabled_integrations: [Plejd]`.
+# The Plejd app's account gives the site (its lights, rooms, scenes and the mesh key); the lights are then switched
+# through whichever powered Plejd unit is in Bluetooth range of the server, so the server must stand within reach of one.
+# macOS asks once, on the server's screen, whether Terminal may use Bluetooth — allow it (it sticks under System Settings →
+# Privacy & Security → Bluetooth). A server started over ssh gets no dialog and is denied: start it from Terminal on the desktop that once.
+plejd:
+  username: YOUR_PLEJD_EMAIL        # the login of the Plejd app
+  password: YOUR_PLEJD_PASSWORD
+  site: ""              # the site's name (or id) when the account has several; the only site is taken as is, and the health check names them when a choice is missing
+  # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
+  prompt_filters: []

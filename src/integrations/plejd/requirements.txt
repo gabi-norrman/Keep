@@ -1,0 +1,5 @@
+# Plejd over Bluetooth: pyplejd (the library behind the Home Assistant Plejd component) and the
+# bleak it runs on — bleak 3 is why the root pins pyobjc 10.3, the first pyobjc it accepts
+pyplejd==0.22.0
+bleak==3.0.2
+bleak-retry-connector==4.7.1
