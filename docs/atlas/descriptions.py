@@ -23,6 +23,7 @@ GROUPS = {
     'src/integrations/aseko': ('aseko', 'The pool through the Aseko Cloud API: the unit’s readings and warnings, read-only.'),
     'src/integrations/caldav': ('caldav', 'Calendars over CalDAV: one calendar account per caldav.accounts entry, iCloud by preset, any other server by its url.'),
     'src/integrations/home_assistant': ('home_assistant', 'Home Assistant as the home automation backend: one websocket for state, commands and the event feed.'),
+    'src/integrations/husdata': ('husdata', 'The heat pump through a Husdata H60/H66 gateway: the readings in the prompt, the room target and hot water setpoint as commands.'),
     'src/integrations/icloud': ('icloud', 'The iCloud account: Find My locations and device pings, with its 2FA recovery.'),
     'src/integrations/imap': ('imap', 'Mail over IMAP/SMTP: one mail account per imap.accounts entry, iCloud and Gmail by preset, any other server by its hosts.'),
     'src/integrations/google': ('google', 'Gmail and Google Calendar: the mail (IMAP with the sign-in’s token) and calendars of one account per google.accounts entry, signed in once in a browser.'),

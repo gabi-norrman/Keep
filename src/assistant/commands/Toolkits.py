@@ -209,7 +209,7 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
 # The order of the index, which is part of the prompt: a toolkit keeps its place wherever its
 # file lives. A toolkit not named here (a new folder's) comes after these, by name.
 INDEX_ORDER = ("home", "cameras", "web", "browser", "x", "email", "imessage", "music", "photos", "location", "calendar",
-               "shopping_list", "weather", "timers", "tesla", "history", "vault", "setup", "developer", "voice")
+               "shopping_list", "weather", "timers", "tesla", "husdata", "history", "vault", "setup", "developer", "voice")
 
 TOOLKITS: tuple[Toolkit, ...] = assemble(CORE_TOOLKITS, discover(), INDEX_ORDER)
 trace(f"Toolkits: {len(CORE_TOOLKITS)} core, {len(TOOLKITS) - len(CORE_TOOLKITS)} from integration folders")

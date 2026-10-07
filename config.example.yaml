@@ -62,6 +62,8 @@ mail:
 
 # >> aseko: src/integrations/aseko/config.example.yaml
 
+# >> husdata: src/integrations/husdata/config.example.yaml
+
 # >> icloud: src/integrations/icloud/config.example.yaml
 
 # Photos library indexing: the "Photos" integration reads the Mac's Photos.app library and describes

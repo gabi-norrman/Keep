@@ -1,0 +1,10 @@
+# The heat pump through a Husdata H60 or H66 gateway (husdata.se), on the LAN. Enable with
+# "Husdata" in enabled_integrations.
+# SETUP, in the gateway's own web UI (http://<host>/): the API is off by default. Set API_ENABLED
+# to 2 (read/write) so the assistant can both read the pump and change the two settings, or to 1
+# (read only) to only show the readings — then restart the gateway (Settings → Restart, or power
+# cycle); the change takes effect only after the restart. Tell the user this when setting up.
+husdata:
+  host: 192.168.1.60              # the gateway's IP address or hostname
+  room_target_range: [15, 25]     # the room target (°C) set_room_target may write, lowest and highest
+  hot_water_range: [40, 60]       # the hot water setpoint (°C) set_hot_water may write, lowest and highest
