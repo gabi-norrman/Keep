@@ -164,6 +164,22 @@ def test_the_selected_integration_says_why_it_could_not_be_built(monitor):
     assert "no kettle section" in text
 
 
+def test_the_selected_integration_shows_each_accounts_verdict(monitor):
+    class MailboxesIntegration(FakeIntegration):
+        """Several mailboxes."""
+        name = named("Mailboxes")
+
+        def accounts_status(self):
+            return [{"name": "Personal", "state": "ok", "last_error": None},
+                    {"name": "Work", "state": "error", "last_error": "auth failed"}]
+
+    working(monitor, MailboxesIntegration)
+
+    text = "\n".join(rows(CatalogTab(), width=180, height=40))
+
+    assert "Personal ok" in text and "Work: auth failed" in text
+
+
 def test_the_selected_integration_names_the_config_keys_it_misses(monitor):
     enable(monitor, ToasterIntegration)
 

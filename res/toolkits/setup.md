@@ -8,7 +8,7 @@ settings are set, and whether it can be restarted from here.
 `config_help(section: str = "")` — one section of config.example.yaml, comments included: what each key is for and
 where the user gets the value (an app password, an API key). Without an argument it lists the sections.
 
-`config_request(key: str)` — opens a masked prompt in the chat for one setting, e.g. `config_request("email.password")`.
+`config_request(key: str)` — opens a masked prompt in the chat for one setting, e.g. `config_request("imap.accounts[0].password")`.
 The user types the value there, it is written to config.yaml on the server, and you get "saved" back — the value itself
 never reaches you. One key per turn, and stop after emitting it.
 
@@ -34,14 +34,14 @@ opt-in alternatives: to speak through one, enable it and disable ElevenLabs TTS.
 voice requests are answered as text.
 
 `restart_integration(name: str)` — rebuilds an integration with the current config and reports its state, e.g.
-`restart_integration("Gmail")`.
+`restart_integration("IMAP Mail")`.
 
 The Telegram bot the user chats through is listed as "Telegram" — not configured until `telegram_bot.bot_token` is set.
 Its setup is `config_request("telegram_bot.bot_token")`, then `restart_integration("Telegram")`; the bot starts at once,
 no server restart. Its switch is `interfaces.telegram.enabled` (`config_set`), not `enable_integration`.
 
 `enable_integration(name: str)` / `disable_integration(name: str)` — switches an integration on or off by the name
-`list_integrations` shows, restarts it and reports its state, e.g. `enable_integration("Gmail")`. Enabling one that
+`list_integrations` shows, restarts it and reports its state, e.g. `enable_integration("IMAP Mail")`. Enabling one that
 is not configured yet is fine: it comes back "not configured" with the keys it still needs.
 
 `telegram_login(phone: str)` — signs the Telegram Feed (the user's own Telegram account, read into the history) in, e.g.
@@ -52,6 +52,21 @@ enabled and reports "needs 2FA". It sends the code to the user's Telegram app (b
 in), opens the masked prompt for it, then for the account's two-step verification password when it has one, and
 starts the feed. A code that expired or a cancelled prompt comes back as text; run it again for a new code.
 
+`microsoft_login(account: str)` — signs a Microsoft 365 account (an entry of `microsoft.accounts`, by its name) in, e.g.
+`microsoft_login("Work")`, from any chat. It comes back with a code and the address to type it at
+(microsoft.com/devicelogin); tell the user both, nothing comes back to paste. The code lives about fifteen minutes;
+a system note says when the account is signed in (or that the code expired — run it again for a new one). Needs
+`microsoft.app.client_id` set and the integration enabled; list_integrations shows the accounts still to sign in.
+
+`google_login(account: str)` — signs a Google account (an entry of `google.accounts`, by its name) in, e.g.
+`google_login("Personal")`, from any chat. It comes back with a link: the user opens it in any browser, signs in,
+and lands on a http://localhost:18722/... page that does not load — that is expected. Tell the user to copy that
+page's whole address from the address bar and paste it into the chat; then run `google_login_code(pasted: str)`
+with it, quoted, e.g. `google_login_code("http://localhost:18722/?state=...&code=...")` (the bare code works too).
+The link lives about ten minutes; an expired or reused code comes back as text — run google_login again. Needs
+`google.oauth.client_id` and `client_secret` set and the integration enabled; list_integrations shows the accounts
+still to sign in.
+
 When the user asks for something whose integration is disabled or not configured (the list above, a command that
 answers "not configured", or list_integrations): run `config_help` for its section, tell the user what you need and where
 they get it, and ask whether to set it up now. Then `config_request` each key in turn, then
@@ -60,4 +75,4 @@ the state it came back with — if it failed, say why and offer to re-enter the 
 the chat, and never guess a key that config_help does not list.
 
 ### Stop-and-wait
-`list_integrations()`, `config_help()`, `config_request()`, `config_set()`, `restart_integration()`, `enable_integration()`, `disable_integration()`, `telegram_login()` return data: emit them and stop generating; the result arrives in the next round.
+`list_integrations()`, `config_help()`, `config_request()`, `config_set()`, `restart_integration()`, `enable_integration()`, `disable_integration()`, `telegram_login()`, `microsoft_login()`, `google_login()`, `google_login_code()` return data: emit them and stop generating; the result arrives in the next round.

@@ -7,8 +7,8 @@
 # `# >> section: path` stands where it belongs, and config_help(section) shows the section whole.
 
 # Every integration is off until it is listed here (Web Access and ElevenLabs TTS are on regardless).
-# Use the names list_integrations shows: Arlo, CalDAV, Gmail, iCloud, iCloud Email, iMessage, Indigo,
-# Photos, Reminders, Ring, Self Improvement, Sonos & Spotify, Telegram Feed, Tesla, X, YR Weather.
+# Use the names list_integrations shows: Arlo, CalDAV, Google, iCloud, IMAP Mail, iMessage, Indigo,
+# Microsoft 365, Photos, Reminders, Ring, Self Improvement, Sonos & Spotify, Telegram Feed, Tesla, X, YR Weather.
 # The TTS engines voice speaks through are integrations too — ElevenLabs TTS (on by default), Gemini TTS,
 # Chirp 3 HD, Cartesia Sonic TTS, Fish Audio TTS, Grok TTS, Supertonic TTS: a request speaks through the
 # first enabled and configured one, Swedish preferring Gemini TTS, so a Swedish install enables Gemini TTS
@@ -44,11 +44,19 @@ google_service_account:
   auth_provider_x509_cert_url: https://www.googleapis.com/oauth2/v1/certs
   client_x509_cert_url: https://www.googleapis.com/robot/v1/metadata/x509/YOUR_CLIENT_EMAIL
 
-# >> calendar: src/integrations/caldav/config.example.yaml
+# >> caldav: src/integrations/caldav/config.example.yaml
 
-# >> email: src/integrations/gmail/config.example.yaml
+# >> google: src/integrations/google/config.example.yaml
 
-# >> icloud_email: src/integrations/icloud_email/config.example.yaml
+# >> imap: src/integrations/imap/config.example.yaml
+
+# >> microsoft: src/integrations/microsoft/config.example.yaml
+
+# Mail, whichever integrations bring the accounts (IMAP Mail today). send_from names the account
+# send_email sends from unless the assistant is told another one; unset, the first configured
+# account sends. The nightly code-quality report is mailed from the same account to its own address.
+mail:
+  send_from: Personal
 
 # >> tesla: src/integrations/tesla/config.example.yaml
 

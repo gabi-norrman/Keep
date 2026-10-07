@@ -591,14 +591,14 @@ class TestEmailAutoDetection:
         # Regression: the real link-preserving strip_html would surface URL
         # digits (e.g. .../track/482910) that could be matched ahead of the
         # actual code. Code extraction must use the plain-text variant.
-        from assistant.integration.EmailProvider import EmailProvider
+        from assistant.integration.mail.MailAccount import MailAccount
         handler = _ArloTfaHandler()
         gmail = Mock()
         html = '<p><a href="https://arlo.com/track/482910">View</a> Code: 654321</p>'
         gmail.fetch_recent_raw.return_value = [
             self._make_mock_message(text="", html=html)
         ]
-        gmail.strip_html_plain.side_effect = EmailProvider.strip_html_plain
+        gmail.strip_html_plain.side_effect = MailAccount.strip_html_plain
         code = handler._try_extract_code_from_email(gmail)
         assert code == "654321"
 
@@ -642,19 +642,18 @@ class TestEmailAutoDetection:
         icloud.fetch_recent_raw.assert_called_once()
         mock_sleep.assert_not_called()
 
-    def test_email_providers_follow_the_config(self):
-        """Gmail comes from the `email` section, iCloud Email from `icloud_email`; an
-        unconfigured account is not built."""
-        from integrations.gmail.GmailIntegration import GmailIntegration
-        from integrations.icloud_email.ICloudEmailIntegration import ICloudEmailIntegration
-        config = Mock()
-        config.get.side_effect = lambda key, default="": {"icloud_email.address": "me@icloud.com"}.get(key, default)
-        with patch('common.ConfigManager.ConfigManager.get_instance', return_value=config), \
-             patch.object(GmailIntegration, 'get_instance') as gmail_instance, \
-             patch.object(ICloudEmailIntegration, 'get_instance', return_value=Mock(name="icloud")) as icloud_instance:
+    def test_email_providers_are_the_accounts_the_mail_commands_see(self):
+        """Every enabled and configured mail account, whichever integration brings it — the
+        Arlo account's address could be on any of them."""
+        icloud = Mock(name="icloud")
+        with patch('assistant.integration.mail.MailAccess.MailAccess.current') as current:
+            current.return_value.accounts = [icloud]
             providers = _ArloTfaHandler._email_providers()
-        assert providers == [icloud_instance.return_value]
-        gmail_instance.assert_not_called()
+        assert providers == [icloud]
+
+    def test_a_failure_to_gather_the_accounts_polls_nothing(self):
+        with patch('assistant.integration.mail.MailAccess.MailAccess.current', side_effect=RuntimeError("no monitor")):
+            assert _ArloTfaHandler._email_providers() == []
 
 class TestAutoDetectionTelegramNotification:
     """Email-based auto-detection (added in d6574333) must surface a Telegram

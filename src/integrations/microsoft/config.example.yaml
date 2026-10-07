@@ -1,0 +1,27 @@
+# Microsoft 365 (Outlook.com, Hotmail, and work or school accounts), the "Microsoft 365" integration:
+# mail and calendar of every account under microsoft.accounts, through the Graph API. It needs an app
+# registration of your own, once per install, at https://entra.microsoft.com > App registrations > New
+# registration: any name, supported account types "Accounts in any organizational directory and personal
+# Microsoft accounts", platform "Mobile and desktop applications" with no redirect URI needed; then under
+# Authentication turn "Allow public client flows" on (the device-code sign-in needs it), and under API
+# permissions add the delegated Microsoft Graph permissions Mail.ReadWrite, Mail.Send, Calendars.ReadWrite
+# and User.Read. client_id is the registration's "Application (client) ID"; tenant stays `common` unless
+# the registration allows one organisation only, then it is that organisation's tenant id. An account is
+# signed in with microsoft_login(name) from the chat, or the console's Microsoft tab: a code to type at
+# microsoft.com/devicelogin, nothing to paste back; the tokens are kept in cache/oauth/. `name` is what
+# the assistant calls the account, what mail.send_from and the account argument of send_email name, where
+# the id prefix of its mails in a listing (WO-AB) comes from, and what `Account/Calendar` names in
+# load_calendar and create_event; names must be unique. Add a second account as microsoft.accounts[1].name.
+microsoft:
+  app:
+    client_id: YOUR_APPLICATION_CLIENT_ID
+    tenant: common
+  accounts:
+    - name: Work
+      address: your_address@outlook.com   # the account's own address: the From of what it sends
+      mail: true                          # read, search, file and send its mail
+      calendar: true                      # read its calendars and create events in them
+      default_calendar: Calendar          # where create_event puts an event that names no calendar
+      # Calendars whose events are always in the prompt, e.g. [Calendar, Birthdays]. The others are only
+      # listed by name and the assistant loads one when it needs it. Empty shows every calendar.
+      shown_calendars: []

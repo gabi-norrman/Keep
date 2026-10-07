@@ -100,7 +100,7 @@ class IntegrationMonitor:
     def register(self, integration: Integration):
         for key in integration.config_keys:
             try:
-                present = self._config_manager.get(key) not in (None, "")
+                present = self._config_manager.get(key) not in (None, "", [], {})
             except KeyError:
                 present = False
             if not present:   # absent or empty, the same verdict Integration.missing_config_keys gives
@@ -340,6 +340,7 @@ class IntegrationMonitor:
             "config_keys": list(integration.config_keys),
             "restartable": restartable,
             "sensitive": (integration.cls if isinstance(integration, DisabledIntegration) else type(integration)).sensitive,
+            "accounts": integration.accounts_status(),
         }
         if isinstance(integration, Feed):
             # The feed's own axis (catching up / live / stopped), next to the health state.

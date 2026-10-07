@@ -1,0 +1,29 @@
+# Google (Gmail and Google Calendar), the "Google" integration: the mail and calendars of every account
+# under google.accounts, signed in with Google (OAuth) — Gmail by app password is the IMAP Mail integration
+# with preset gmail instead. It needs an OAuth client of your own, once per install, at
+# https://console.cloud.google.com > APIs & Services: enable the Gmail API and the Google Calendar API
+# (Library), then Credentials > Create credentials > OAuth client ID, application type "Desktop app", any
+# name; client_id and client_secret are shown when it is created. On the OAuth consent screen (Audience)
+# set the publishing status to "In production" — no verification is asked for a client only you use, and
+# a client left in "Testing" expires every refresh token after 7 days, so each account would have to sign
+# in again every week; while it is still in Testing, add each account's address as a test user. An account
+# is signed in with google_login(name) from the chat, or the console's Google tab: it gives a link to open
+# in any browser; after the sign-in the browser lands on a http://localhost:18722/... page that does not
+# load — that is expected — and that page's address is pasted back (google_login_code, or Ctrl-E in the
+# tab). The tokens are kept in cache/oauth/. `name` is what the assistant calls the account, what
+# mail.send_from and the account argument of send_email name, where the id prefix of its mails in a
+# listing (PE-AB) comes from, and what `Account/Calendar` names in load_calendar and create_event; names
+# must be unique. Add a second account as google.accounts[1].name.
+google:
+  oauth:
+    client_id: YOUR_CLIENT_ID.apps.googleusercontent.com
+    client_secret: YOUR_CLIENT_SECRET
+  accounts:
+    - name: Personal
+      address: your_address@gmail.com      # the account signing in: the From of what it sends
+      mail: true                           # read, search, file and send its Gmail (IMAP with the sign-in's token)
+      calendar: true                       # read its Google calendars and create events in them
+      default_calendar: primary            # where create_event puts an event that names no calendar; "primary" is the account's own
+      # Calendars whose events are always in the prompt, e.g. [primary, Family]. The others are only
+      # listed by name and the assistant loads one when it needs it. Empty shows every calendar.
+      shown_calendars: []

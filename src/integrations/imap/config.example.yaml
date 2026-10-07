@@ -1,0 +1,22 @@
+# Mail over IMAP/SMTP, the "IMAP Mail" integration: one entry per account, as many as the household
+# has. `preset: icloud` or `preset: gmail` fills in the hosts and folders; any other server takes
+# its imap_host / smtp_host instead. Both presets sign in with an app password, never the account
+# password: iCloud at appleid.apple.com > Sign-In and Security > App-Specific Passwords (needs
+# two-factor authentication on), Gmail at https://myaccount.google.com/apppasswords (needs 2-Step
+# Verification on). `name` is what the assistant calls the account, what mail.send_from and the
+# account argument of send_email name, and where the id prefix of its mails in a listing (PE-AB)
+# comes from; names must be unique. Add a second account as imap.accounts[1].name and so on.
+# A Gmail account lists "[Gmail]/All Mail", and moving a mail out of it trashes the mail, so the
+# assistant lists a label (e.g. "@SaneLater") before moving from it.
+imap:
+  accounts:
+    - name: Personal
+      preset: icloud            # icloud | gmail; leave the line out for a server of your own
+      address: your_address@icloud.com
+      password: YOUR_APP_SPECIFIC_PASSWORD
+      # A server without a preset gives its hosts instead (the first two are needed, the rest optional):
+      # imap_host: imap.company.example
+      # smtp_host: smtp.company.example
+      # smtp_port: 587
+      # folder: INBOX           # the folder latest_email lists when it names none
+      # sent_folder: Sent       # where a copy of a sent mail is filed; leave out when the server does that itself

@@ -16,6 +16,7 @@ from .sections.IntegrationsSectionGenerator import IntegrationsSectionGenerator
 from .sections.VaultSectionGenerator import VaultSectionGenerator
 from .sections.HomeSectionGenerator import HomeSectionGenerator
 from .sections.WebSectionGenerator import WebSectionGenerator
+from .sections.CalendarSectionGenerator import CalendarSectionGenerator
 from .MessageHistory import MessageHistory, THINKING_TAG_INSTRUCTION
 from common.FloxyDatabase import FloxyDatabase
 from common.ConfigManager import config
@@ -131,6 +132,7 @@ class PromptManager:
             'vault': VaultSectionGenerator(self),
             'home': HomeSectionGenerator(self),
             'web': WebSectionGenerator(self),
+            'calendar': CalendarSectionGenerator(self),
         }
         for cls in generator_classes:
             if not cls.key:

@@ -68,9 +68,11 @@ To fetch the long term weather forecast use:
 
 ## Calendars
 The CALENDAR EVENTS COMING WEEK section below holds the coming week of the calendars shown by default. It opens with
-the names of the calendars it shows and of the family's other calendars, which it leaves out.
+one line per calendar account naming the calendars it shows and the account's other calendars, which it leaves out,
+then the events of every account in one list; an event names its calendar in brackets when more than one is shown.
 
-`load_calendar(name: str, ...)` — the coming week's events of a calendar that is not shown.
+`load_calendar(name: str, ...)` — the coming week's events of a calendar that is not shown; `Account/Name` when two
+accounts have a calendar by that name.
 
 ## Memory
 Your memory has three parts. Put each thing where it belongs.

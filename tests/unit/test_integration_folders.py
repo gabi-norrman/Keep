@@ -14,20 +14,17 @@ CORE_PACKAGES = ("assistant", "common")
 
 # core module -> the integration folders it still imports by name
 CORE_IMPORTS_BY_NAME = {
-    # mails the nightly report through Gmail; Self Improvement is the integration that switches it on
-    "assistant/agents/CodeQualityMaintainer.py": {"gmail", "self_improvement"},
-    # the nightly curation reads the calendar's coming events to judge what in the bank is still current
-    "assistant/agents/LongTermMemoryCurator.py": {"caldav"},
-    # fetch_camera_images asks Arlo and Ring; the mail commands build their providers from Gmail and iCloud Email
-    "assistant/commands/Commands.py": {"arlo", "gmail", "icloud_email", "ring"},
+    # Self Improvement is the integration that switches the nightly runs on
+    "assistant/agents/CodeQualityMaintainer.py": {"self_improvement"},
+    # fetch_camera_images asks Arlo and Ring
+    "assistant/commands/Commands.py": {"arlo", "ring"},
     # //wipe logs the Telegram Feed session out on the account before its file is deleted
     "assistant/commands/DebugCommands.py": {"telegram_feed"},
 }
 
-# (folder, the folder it imports): the cameras' 2FA codes arrive by mail or iMessage, iMessage
-# hands the codes it sees to iCloud and Ring, Photos downloads through the iCloud session
+# (folder, the folder it imports): the cameras' 2FA codes arrive by iMessage, which hands
+# the codes it sees to iCloud and Ring; Photos downloads through the iCloud session
 FOLDER_IMPORTS_FOLDER = {
-    ("arlo", "gmail"), ("arlo", "icloud_email"),
     ("imessage", "icloud"), ("imessage", "ring"),
     ("photos", "icloud"),
 }

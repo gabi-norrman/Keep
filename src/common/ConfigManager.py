@@ -3,6 +3,7 @@ import re
 import yaml
 import os
 
+from common import ConfigMigrations
 from common.Paths import CONFIG_PATH
 from common.logging import info
 from typing import Optional, Any
@@ -74,12 +75,21 @@ class ConfigManager:
                 f.write(SKELETON)
             self.created_skeleton = True
 
+        data = self._read(config_path)
+        if ConfigMigrations.needed(data):
+            # A release moved sections: rewrite the file before anything reads them, then read again.
+            info(f"Config at {config_path} has sections a release moved — migrating")
+            if ConfigMigrations.run(config_path):
+                data = self._read(config_path)
+        self._config = data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _read(config_path: str):
         try:
             with open(config_path, 'r') as f:
-                data = yaml.safe_load(f)
+                return yaml.safe_load(f)
         except yaml.YAMLError as e:
             raise ValueError(f"Invalid YAML in config file: {e}")
-        self._config = data if isinstance(data, dict) else {}
 
     def enabled_integrations(self) -> list[str]:
         """The `enabled_integrations` list as written in config.yaml (a scalar is taken as one name)."""

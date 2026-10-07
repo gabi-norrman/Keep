@@ -115,7 +115,7 @@ class Integration(SingletonMixin, ABC):
                 value = config.get(key)
             except KeyError:
                 value = None
-            if value in (None, ""):
+            if value in (None, "", [], {}):   # an empty accounts list or section is not set either
                 missing.append(key)
         return missing
 
@@ -152,6 +152,11 @@ class Integration(SingletonMixin, ABC):
         """Called when the integration requires 2FA. Override to attempt auto-resolution
         (e.g. polling email for verification codes)."""
         pass
+
+    def accounts_status(self) -> list[dict]:
+        """One dict per account an account-holding integration (mail, calendar) has — name,
+        state, last_error — for list_integrations and the Catalog tab; none for the rest."""
+        return []
 
     @property
     def consecutive_failures(self) -> int:

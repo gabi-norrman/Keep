@@ -1,8 +1,17 @@
-calendar:
-  username: your_icloud_email@me.com
-  password: YOUR_CALENDAR_PASSWORD_HERE (for iCloud this is an app password)
-  default_calendar: Home  # Name of the iCloud calendar to create events in
-  # Calendars whose events are always in the prompt, e.g. [Home, Family]. The others are only
-  # listed by name and the assistant loads one when it needs it. Empty shows every calendar;
-  # add one with config_set("calendar.shown_calendars[0]", "Home").
-  shown_calendars: []
+# Calendars over CalDAV, the "CalDAV" integration: one entry per account. `preset: icloud` is the
+# iCloud calendar server, signed in with an app-specific password from appleid.apple.com > Sign-In
+# and Security > App-Specific Passwords; any other server (Fastmail, Nextcloud, …) gives its url
+# instead. `name` is what the assistant calls the account and what `Account/Calendar` names in
+# load_calendar and create_event; names must be unique. Add a second account as
+# caldav.accounts[1].name and so on.
+caldav:
+  accounts:
+    - name: Family
+      preset: icloud            # or url: https://caldav.fastmail.com/
+      username: your_icloud_email@me.com
+      password: YOUR_APP_SPECIFIC_PASSWORD
+      default_calendar: Home    # where create_event puts an event that names no calendar (the first account's is used)
+      # Calendars whose events are always in the prompt, e.g. [Home, Family]. The others are only
+      # listed by name and the assistant loads one when it needs it. Empty shows every calendar;
+      # add one with config_set("caldav.accounts[0].shown_calendars[0]", "Home").
+      shown_calendars: []

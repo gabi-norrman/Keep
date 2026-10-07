@@ -6,10 +6,9 @@ import urllib.parse
 from collections import deque
 from typing import Callable, Optional
 
-from assistant.integration.CompositeEmailAccess import CompositeEmailAccess
-from integrations.gmail.GmailIntegration import GmailAccess
-from assistant.integration.EmailProvider import NotConfiguredEmail
-from integrations.icloud_email.ICloudEmailIntegration import ICloudEmailAccess
+from assistant.integration.Accounts import render_accounts_status
+from assistant.integration.mail.MailAccess import MailAccess
+from assistant.integration.calendar.CalendarAccess import CalendarAccess
 from assistant.integration import HomeAutomation as home
 from assistant.tools.WebAccess import WebAccess
 from assistant.agents.AutonomousActionManager import AutonomousActionManager
@@ -84,10 +83,11 @@ class Commands:
         "vault_request", "config_set", "load_toolkit", "schedule_wakeup",
         "load_watch", "save_watch", "delete_watch",
         "load_procedure", "save_procedure", "delete_procedure",
+        "create_event", "load_calendar",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
-    PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch"})
+    PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch", "load_calendar"})
     AI_MESSAGE_SUFFIX = "[Sent with the help of AI 🤖]"
 
     # Integrations are looked up per call: get_instance() is the cache, so a restarted
@@ -101,8 +101,8 @@ class Commands:
         return self._get_web_access()
 
     @property
-    def _email_provider(self):
-        return self._create_email_provider()
+    def _email_provider(self) -> MailAccess:
+        return self._mail_access()
 
     false_positive_timestamps = deque(maxlen=10)
     # Installed by the launcher when the voice interface is running
@@ -173,21 +173,11 @@ class Commands:
         return sorted(names)
 
     @staticmethod
-    def _create_email_provider():
-        """The monitored singletons (their short-id caches must survive between a listing
-        and a read), wrapped per call so a restarted or newly configured account is used."""
-        config = ConfigManager.get_instance()
-        providers = []
-        if config.get("email.address", ""):
-            providers.append(GmailAccess.get_instance())
-        if config.get("icloud_email.address", ""):
-            providers.append(ICloudEmailAccess.get_instance())
-        if len(providers) > 1:
-            return CompositeEmailAccess(providers)
-        if providers:
-            return providers[0]
-        trace("No email account configured — mail commands answer with the setup hint")
-        return NotConfiguredEmail()
+    def _mail_access() -> MailAccess:
+        """Every mail account of the enabled and configured integrations (their short-id
+        caches live on the monitored singletons, so they survive between a listing and a
+        read), gathered per call so a restarted or newly configured account is used."""
+        return MailAccess.current()
 
     def cmd_home_automation_logs(self, parameter_string: str):
         self.background_command(self._fetch_home_automation_logs, None)
@@ -358,6 +348,45 @@ class Commands:
     def cmd_list_folders(self, parameter_string: str):
         self.background_command(self._email_provider.list_folders, parameter_string)
 
+    def cmd_create_event(self, *args: str):
+        self.background_command(self._run_create_event, list(args))
+
+    _TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
+
+    @classmethod
+    def _run_create_event(cls, *args: str) -> str:
+        try:
+            if len(args) < 4:
+                return "create_event failed: expected 4 parameters (title, date, start_time, end_time)"
+            args = [a.strip() for a in args]
+            # A fifth argument names the calendar; the end time is the last argument otherwise.
+            calendar_name = ""
+            if len(args) > 4 and not cls._TIME_RE.match(args[-1]) and cls._TIME_RE.match(args[-2]):
+                calendar_name = args.pop().strip("'\"")
+            # If the LLM under-quoted and produced extra tokens, the title may have
+            # been split at internal commas — re-join leading tokens into the title
+            # and pull the last 3 tokens as date/start/end.
+            title = ", ".join(args[:-3])
+            date_str, start_time, end_time = args[-3:]
+            CalendarAccess.current().create(title, date_str, start_time, end_time, calendar_name)
+            return ""
+        except Exception as e:
+            return f"create_event failed: {e}"
+
+    def cmd_load_calendar(self, *names: str):
+        self.background_command(self._run_load_calendar, list(names))
+
+    @staticmethod
+    def _run_load_calendar(*names: str) -> str:
+        """The named calendars over the window the prompt's calendar section covers."""
+        names = [n for n in names if n and n.strip()]
+        if not names:
+            return "load_calendar failed: expected a calendar's name"
+        try:
+            return CalendarAccess.current().load(names)
+        except Exception as e:
+            return f"load_calendar failed: {e}"
+
     def cmd_schedule_wakeup(self, *args: str):
         """schedule_wakeup(in_minutes, reason): the reason travels with the wake-up so the check
         it triggers knows what it is for even after the history window has moved on. Unquoted
@@ -495,6 +524,14 @@ class Commands:
     def cmd_send_email(self, *args: str) -> str:
         if len(args) < 3:
             return "send_email failed: expected 'to, subject, body' parameters"
+        access = self._email_provider
+        args = list(args)
+        account_name = ""
+        # A fourth argument is the sending account — but only when it names one: anything else
+        # is the tail of an under-quoted body, which the re-join below puts back.
+        if len(args) > 3 and access.named(args[-1]) is not None:
+            account_name = args.pop().strip().strip("'\"")
+            trace(f"send_email: sending from the named account {account_name!r}")
         to = args[0].strip()
         subject = args[1].strip()
         # Re-join trailing tokens so an under-quoted body with commas survives.
@@ -504,7 +541,7 @@ class Commands:
 
         # LLM emits literal "\n" escape sequences — turn them into real newlines.
         body = normalize_llm_escapes(body)
-        return ICloudEmailAccess.get_instance().send(to, subject, body)
+        return access.send(to, subject, body, account_name)
 
     def cmd_fetch_camera_images(self, parameter_string: str):
         self.background_command(self._fetch_all_camera_images, parameter_string)
@@ -731,8 +768,8 @@ class Commands:
         from assistant.integration.IntegrationMonitor import IntegrationMonitor
         return IntegrationMonitor.get_instance()
 
-    # What a command set in an integration folder (telegram_login, load_calendar, show_photo,
-    # search_photos) uses of the core's helpers; it reaches them through its host.
+    # What a command set in an integration folder (telegram_login, show_photo, search_photos)
+    # uses of the core's helpers; it reaches them through its host.
     def integration_monitor(self):
         return self._integration_monitor()
 
@@ -753,7 +790,7 @@ class Commands:
 
     @staticmethod
     def _keys_summary(keys: list[dict]) -> str:
-        return ", ".join(f"{k['key']}: {'set' if k['set'] else 'not set'}" for k in keys)
+        return ", ".join(f"{k['key']}: {k.get('summary') or ('set' if k['set'] else 'not set')}" for k in keys)
 
     def cmd_list_integrations(self, parameter_string: str = ""):
         self.background_command(self._run_list_integrations, "")
@@ -774,6 +811,8 @@ class Commands:
                 line += f" (checked {self._age(status['last_check_time'])})"
             if status["keys"]:
                 line += f" [{self._keys_summary(status['keys'])}]"
+            if status.get("accounts"):
+                line += f"; accounts: {render_accounts_status(status['accounts'])}"
             if "feed" in status:
                 from assistant.integration.FeedRunner import describe_feed_status
                 # A disabled feed has no runner to describe, but it is still a feed.
@@ -823,7 +862,7 @@ class Commands:
         machinery with a config-writing accept) — the LLM gets 'saved', never the value."""
         key = ConfigSchema.normalize_key(parameter_string.strip().strip('"\''))
         if not key:
-            return "config_request failed: expected a setting key such as email.password"
+            return "config_request failed: expected a setting key such as imap.accounts[0].password"
         try:
             ConfigStore.check_key(key)
         except ConfigStoreError as e:
@@ -1473,6 +1512,10 @@ class Commands:
             return f"Moving email '{s}' to {folder}"
         return f"Moving email to {folder}"
     def describe_list_folders(self, p):           return "Listing email folders"
+    def describe_load_calendar(self, p):          return f"Looking at the calendar: {self._first_argument(p)}" if p.strip() else "Looking at a calendar"
+    def describe_create_event(self, p):
+        title = p.split(",", 1)[0].strip()
+        return f"Creating calendar event '{title}'" if title else "Creating calendar event"
     def describe_schedule_wakeup(self, p):
         minutes, _, reason = p.partition(",")
         return f"Scheduling wakeup in {minutes.strip()} min" + (f": {reason.strip()}" if reason.strip() else "")

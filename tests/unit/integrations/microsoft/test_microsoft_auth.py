@@ -1,0 +1,148 @@
+"""MicrosoftAuth: the device-code flow in two steps over a faked MSAL application, and the
+token cache file it keeps — written 0600, read for the signed-in state without the network,
+deleted on sign-out and when the integration loses its config."""
+import json
+import stat
+import time
+from unittest.mock import patch
+
+import pytest
+
+from integrations.microsoft import MicrosoftAuth as auth_module
+from integrations.microsoft.MicrosoftAuth import MicrosoftAuth, NotSignedIn, delete_all_token_files, token_path
+
+MSAL_APP = "integrations.microsoft.MicrosoftAuth.msal.PublicClientApplication"
+EXPIRES = int(time.time()) + 3000
+
+
+def cache_state(username="marcus@example.com", expires_on=EXPIRES) -> str:
+    """A serialized MSAL cache holding one account and one access token."""
+    return json.dumps({
+        "Account": {"uid.utid-login.microsoftonline.com-common": {
+            "home_account_id": "uid.utid", "environment": "login.microsoftonline.com", "realm": "common",
+            "local_account_id": "uid", "username": username, "authority_type": "MSSTS"}},
+        "AccessToken": {"uid.utid-login.microsoftonline.com-accesstoken-client-common-scopes": {
+            "credential_type": "AccessToken", "secret": "at", "home_account_id": "uid.utid",
+            "environment": "login.microsoftonline.com", "client_id": "client", "target": "Mail.Read",
+            "realm": "common", "expires_on": str(expires_on), "cached_at": str(int(time.time()))}}})
+
+
+class FakeApp:
+    """What MSAL does with the cache it was handed: the device flow writes an account into it."""
+
+    def __init__(self, client_id, authority=None, token_cache=None):
+        self.client_id, self.authority, self.cache = client_id, authority, token_cache
+        self.flow = {"user_code": "ABCD-1234", "verification_uri": "https://microsoft.com/devicelogin",
+                     "expires_at": time.time() + 900, "device_code": "dc", "message": "..."}
+        self.finish_result = {"access_token": "at"}
+
+    def initiate_device_flow(self, scopes=None):
+        self.scopes = scopes
+        return dict(self.flow)
+
+    def acquire_token_by_device_flow(self, flow):
+        if "access_token" in self.finish_result:
+            self.cache.deserialize(cache_state())
+            self.cache.has_state_changed = True
+        return self.finish_result
+
+    def get_accounts(self, username=None):
+        return list(self.cache.search("Account"))
+
+    def acquire_token_silent(self, scopes, account=None):
+        return {"access_token": "fresh-token"}
+
+    def remove_account(self, account):
+        self.cache.deserialize("{}")
+        self.cache.has_state_changed = True
+
+
+@pytest.fixture
+def token_dir(tmp_path):
+    with patch.object(auth_module, "TOKEN_DIR", tmp_path / "oauth"):
+        yield tmp_path / "oauth"
+
+
+def auth(name="Work", client_id="client-1", tenant="common") -> MicrosoftAuth:
+    return MicrosoftAuth(name, lambda: (client_id, tenant))
+
+
+@pytest.mark.unit
+class TestDeviceFlow:
+    def test_begin_hands_over_the_code_and_the_url_and_finish_leaves_a_0600_token_file(self, token_dir):
+        with patch(MSAL_APP, FakeApp):
+            a = auth()
+            assert not a.signed_in()
+            flow = a.begin()
+            assert (flow.user_code, flow.verification_uri) == ("ABCD-1234", "https://microsoft.com/devicelogin")
+            assert "ABCD-1234" in flow.instructions and "devicelogin" in flow.instructions
+            assert a.finish(flow) == ""
+            assert a.signed_in() and a.signed_in_as() == "marcus@example.com"
+            assert a.token() == "fresh-token"
+            assert a._application.authority == "https://login.microsoftonline.com/common"
+            assert "offline_access" not in a._application.scopes and "Mail.Send" in a._application.scopes
+        path = token_path("Work")
+        assert path == token_dir / "microsoft-work.json" and path.exists()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert int(a.expires_at().timestamp()) == EXPIRES
+
+    def test_a_flow_that_expires_says_so(self, token_dir):
+        with patch(MSAL_APP, FakeApp):
+            a = auth()
+            flow = a.begin()
+            a._application.finish_result = {"error": "expired_token", "error_description": "AADSTS70020: The provided value for the input parameter 'device_code' is not valid. The code has expired."}
+            assert a.finish(flow) == "the code expired before it was entered"
+            assert not a.signed_in() and not token_path("Work").exists()
+
+    def test_a_registration_entra_refuses_cannot_start(self, token_dir):
+        with patch(MSAL_APP, FakeApp):
+            a = auth()
+            a._app().flow = {"error": "invalid_client", "error_description": "AADSTS7000218: client assertion needed"}
+            with pytest.raises(RuntimeError) as raised:
+                a.begin()
+        assert "AADSTS7000218" in str(raised.value)
+
+    def test_without_a_client_id_nothing_is_built(self, token_dir):
+        with patch(MSAL_APP, FakeApp) as app:
+            a = auth(client_id="")
+            assert not a.signed_in()
+            with pytest.raises(NotSignedIn):
+                a.begin()
+
+
+@pytest.mark.unit
+class TestTokenFile:
+    def test_a_token_file_from_an_earlier_run_means_signed_in_without_touching_msal(self, token_dir):
+        token_dir.mkdir()
+        token_path("Work").write_text(cache_state())
+        with patch(MSAL_APP, side_effect=AssertionError("built the application")):
+            a = auth()
+            assert a.signed_in() and a.signed_in_as() == "marcus@example.com"
+
+    def test_without_a_token_asking_for_one_says_to_sign_in(self, token_dir):
+        with patch(MSAL_APP, FakeApp):
+            with pytest.raises(NotSignedIn) as raised:
+                auth().token()
+        assert 'microsoft_login("Work")' in str(raised.value)
+
+    def test_sign_out_and_losing_the_config_delete_the_files(self, token_dir):
+        token_dir.mkdir()
+        token_path("Work").write_text(cache_state())
+        token_path("Charlotte's").write_text(cache_state("charlotte@example.com"))
+        with patch(MSAL_APP, FakeApp):
+            a = auth()
+            a.sign_out()
+            assert not a.signed_in() and not token_path("Work").exists()
+        assert token_path("Charlotte's").name == "microsoft-charlotte-s.json" and token_path("Charlotte's").exists()
+        assert delete_all_token_files() == 1 and list(token_dir.iterdir()) == []
+        assert delete_all_token_files() == 0
+
+    def test_a_silent_refresh_that_fails_is_a_not_signed_in(self, token_dir):
+        token_dir.mkdir()
+        token_path("Work").write_text(cache_state())
+        app = FakeApp("client-1")
+        with patch(MSAL_APP, lambda *a, **k: (setattr(app, "cache", k["token_cache"]) or app)):
+            app.acquire_token_silent = lambda scopes, account=None: {"error": "interaction_required", "error_description": "consent revoked"}
+            with pytest.raises(NotSignedIn) as raised:
+                auth().token()
+        assert "expired" in str(raised.value) and "microsoft_login" in str(raised.value)

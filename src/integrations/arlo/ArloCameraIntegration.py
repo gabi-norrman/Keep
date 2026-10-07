@@ -47,7 +47,7 @@ class _ArloTfaHandler(TfaCodeHandler):
     """pyaarlo TFA handler — adds email auto-detection on top of the shared base."""
 
     service_name = "Arlo"
-    detection_source = "email auto-detection (Gmail / iCloud Email) + TUI"
+    detection_source = "email auto-detection (every mail account) + TUI"
 
     def __init__(self):
         super().__init__()
@@ -118,20 +118,14 @@ class _ArloTfaHandler(TfaCodeHandler):
 
     @staticmethod
     def _email_providers() -> list:
-        """Every configured email account (Gmail, iCloud Email), like the mail commands
-        see them; the Arlo account's address could be on either."""
-        providers = []
+        """Every configured email account, like the mail commands see them; the Arlo
+        account's address could be on any of them."""
         try:
-            config = ConfigManager.get_instance()
-            if config.get("email.address", ""):
-                from integrations.gmail.GmailIntegration import GmailIntegration
-                providers.append(GmailIntegration.get_instance())
-            if config.get("icloud_email.address", ""):
-                from integrations.icloud_email.ICloudEmailIntegration import ICloudEmailIntegration
-                providers.append(ICloudEmailIntegration.get_instance())
+            from assistant.integration.mail.MailAccess import MailAccess
+            return MailAccess.current().accounts
         except Exception as e:
             error(f"Arlo: Could not set up the email providers for 2FA polling: {e}")
-        return providers
+            return []
 
     @staticmethod
     def _try_extract_code_from_email(provider) -> Optional[str]:
