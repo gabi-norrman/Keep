@@ -40,12 +40,24 @@ class TestRender:
                       date(2025, 6, 15), date(2025, 6, 20))
         assert line == "2025-06-15 10:00 - 2025-06-17 13:00: Conference"
 
-    def test_an_all_day_event_spans_its_days_as_midnight_utc(self):
-        # The CalDAV backend hands a plain date over as its midnight UTC; the line shows that
-        # instant in local time, as it always has.
+    def test_an_all_day_event_is_its_date_without_times(self):
+        # The CalDAV backend hands a plain date over as its midnight UTC, DTEND being the
+        # midnight after the last day; the line is the day, not two timestamps in local time.
         line = render([_event("Holiday", datetime(2025, 6, 17, tzinfo=UTC), datetime(2025, 6, 18, tzinfo=UTC), all_day=True)],
                       date(2025, 6, 15), date(2025, 6, 20))
-        assert line == "2025-06-17 02:00 - 2025-06-18 02:00: Holiday"
+        assert line == "2025-06-17: Holiday"
+
+    def test_a_multi_day_all_day_event_writes_its_first_and_last_day(self):
+        line = render([_event("Trip", datetime(2025, 6, 17, tzinfo=UTC), datetime(2025, 6, 20, tzinfo=UTC), all_day=True)],
+                      date(2025, 6, 15), date(2025, 6, 20))
+        assert line == "2025-06-17 - 2025-06-19: Trip"
+
+    def test_tagged_lines_name_the_calendar_after_the_time(self):
+        events = [_event("Standup", datetime(2025, 6, 15, 7, 0, tzinfo=UTC), datetime(2025, 6, 15, 8, 0, tzinfo=UTC), calendar="Work"),
+                  _event("Holiday", datetime(2025, 6, 17, tzinfo=UTC), datetime(2025, 6, 18, tzinfo=UTC), calendar="Home", all_day=True)]
+        text = render(events, date(2025, 6, 15), date(2025, 6, 20), tag_calendars=True)
+        assert text.splitlines() == ["2025-06-15 09:00 - 10:00 [Work]: Standup", "2025-06-17 [Home]: Holiday"]
+        assert "[" not in render(events, date(2025, 6, 15), date(2025, 6, 20))
 
     def test_events_come_in_start_order_whatever_the_input_order(self):
         text = render([_event("Afternoon", datetime(2025, 6, 15, 14, 0, tzinfo=UTC), datetime(2025, 6, 15, 15, 0, tzinfo=UTC)),

@@ -3,6 +3,7 @@ import time
 from datetime import timedelta
 from typing import Dict, FrozenSet, List, NamedTuple, Optional, Tuple
 
+from assistant.integration.Accounts import render_accounts_status, STATE_OK
 from assistant.integration.Feed import Feed
 from assistant.integration.Integration import Integration, IntegrationState
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
@@ -236,6 +237,10 @@ class CatalogTab(TabView):
                          if checked else Fact("Last check", "not yet", Theme.COLOR_DIM))
             if integration.last_error:
                 facts += self._wrapped("Problem", integration.last_error, value_w, status.color, ERROR_MAX_ROWS)
+            accounts = integration.accounts_status()
+            if accounts:
+                color = Theme.COLOR_TEXT if all(a["state"] == STATE_OK for a in accounts) else status.color
+                facts += self._wrapped("Accounts", render_accounts_status(accounts), value_w, color, ERROR_MAX_ROWS)
             missing = integration.missing_config_keys()
             if missing:
                 facts += self._wrapped("Missing", ", ".join(missing), value_w, Theme.COLOR_YELLOW, ERROR_MAX_ROWS)

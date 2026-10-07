@@ -1,23 +1,25 @@
 """The one mailbox the commands and agents use: every mail account of every enabled and configured
 integration, presented as one.
 
-Listings, searches and folder lists fan out to all accounts in parallel, one `--- Name ---` block
-per account when there are several (a single account answers bare, as it always did); per-email
-operations are routed by the id prefix (GM-/IC-) each account stamps on its short ids. No account
-at all answers every operation with the setup hint, so the assistant offers to set one up instead
-of failing on a missing singleton."""
+Listings, searches and folder lists fan out to all accounts in parallel, one
+`--- Name (address) ---` block per account when there are several (a single account answers
+bare, as it always did); per-email operations are routed by the id prefix (PE-/WO-) each account
+stamps on its short ids. `sender` is the account a mail goes out from: the one named, else
+`mail.send_from`, else the first. No account at all answers every operation with the setup hint,
+so the assistant offers to set one up instead of failing on a missing singleton."""
 from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from typing import List, Optional
 
+from common.ConfigManager import ConfigManager
 from common.logging import error, trace, info
 from .MailAccount import MailAccount
 from .MailSource import MailSource
 
-HINT = ("Email is not configured (email.address / email.password for Gmail, icloud_email.address / "
-        "icloud_email.password for iCloud). Use list_integrations and config_help to set it up.")
-# The preset `sender()` prefers until config names the account to send from (phase 2).
-PREFERRED_SENDER_PRESET = "icloud"
+HINT = ("Email is not configured. Add an account under imap.accounts (name, preset icloud or gmail, address, "
+        "password) — see Setting things up: list_integrations, config_help(\"imap\"), config_request.")
+# The account send_email sends from unless the LLM names one; the first account when unset.
+SEND_FROM_KEY = "mail.send_from"
 
 
 class MailAccess:
@@ -38,7 +40,13 @@ class MailAccess:
             if missing:
                 trace(f"Mail: {integration.name} is enabled but not configured ({', '.join(missing)}), no accounts from it")
                 continue
-            accounts.extend(integration.mail_accounts())
+            for account in integration.mail_accounts():
+                clash = next((a for a in accounts if a.name.lower() == account.name.lower() or a.id_prefix == account.id_prefix), None)
+                if clash is not None:
+                    info(f"Mail: {integration.name}'s account '{account.name}' ({account.id_prefix}) clashes with "
+                         f"'{clash.name}' ({clash.id_prefix}) of another integration, skipped — rename it")
+                    continue
+                accounts.append(account)
         if not accounts:
             trace("No email account configured — mail commands answer with the setup hint")
         return cls(accounts)
@@ -56,22 +64,34 @@ class MailAccess:
         info(f"Mail: no account with the address {address!r} among {[a.name for a in self._accounts]}")
         return None
 
+    def named(self, name: str) -> Optional[MailAccount]:
+        """The account called *name* (case does not matter), or None."""
+        wanted = (name or "").strip().strip("'\"").lower()
+        return next((a for a in self._accounts if a.name.lower() == wanted), None) if wanted else None
+
     def sender(self, name: str = "") -> Optional[MailAccount]:
-        """The account `send_email` sends from: the one named, else the preferred preset's, else
-        the first; None without accounts."""
+        """The account `send_email` sends from: the one named, else `mail.send_from`, else the
+        first; None without accounts."""
         if name:
-            for account in self._accounts:
-                if account.name.lower() == name.strip().lower():
-                    return account
+            account = self.named(name)
+            if account is not None:
+                trace(f"Mail: sending from {account.name}, as named")
+                return account
             info(f"Mail: no account named {name!r}, sending from the default one")
-        preferred = [a for a in self._accounts if a.preset == PREFERRED_SENDER_PRESET]
-        chosen = (preferred or self._accounts or [None])[0]
+        configured = str(ConfigManager.get_instance().get(SEND_FROM_KEY, "") or "")
+        if configured:
+            account = self.named(configured)
+            if account is not None:
+                trace(f"Mail: sending from {account.name} ({SEND_FROM_KEY})")
+                return account
+            info(f"Mail: {SEND_FROM_KEY} names '{configured}', which is not a configured account — sending from the first")
+        chosen = self._accounts[0] if self._accounts else None
         if chosen is not None:
-            trace(f"Mail: sending from {chosen.name}")
+            trace(f"Mail: sending from {chosen.name}, the first account")
         return chosen
 
-    def send(self, to: str, subject: str, body: str) -> str:
-        account = self.sender()
+    def send(self, to: str, subject: str, body: str, account_name: str = "") -> str:
+        account = self.sender(account_name)
         if account is None:
             info("Email send skipped: no mail account configured")
             return HINT
@@ -118,7 +138,7 @@ class MailAccess:
         if len(self._accounts) == 1:
             return self._accounts[0].move(email_id, dest_folder)
         return (f"Could not route email id '{email_id}' to a provider — "
-                f"use the prefixed id from the listing (e.g. GM-AB).")
+                f"use the prefixed id from the listing (e.g. {self._accounts[0].id_prefix}-AB).")
 
     def subject_for(self, email_id) -> Optional[str]:
         if not self._accounts:
@@ -132,7 +152,7 @@ class MailAccess:
         return None
 
     def _route(self, email_id: str) -> Optional[MailAccount]:
-        """The account whose prefix a `GM-AB` id carries, None for a bare or unknown one."""
+        """The account whose prefix a `PE-AB` id carries, None for a bare or unknown one."""
         if "-" not in email_id:
             return None
         return self._prefix_map.get(email_id.split("-", 1)[0])
@@ -151,4 +171,8 @@ class MailAccess:
                 except Exception as e:
                     error(f"Error fetching from {account.name}: {e}")
                     results[account.name] = f"Error fetching from {account.name}: {e}"
-        return "\n\n".join(f"--- {a.name.title()} ---\n{results[a.name]}" for a in self._accounts)
+        return "\n\n".join(f"--- {self._label(a)} ---\n{results[a.name]}" for a in self._accounts)
+
+    @staticmethod
+    def _label(account: MailAccount) -> str:
+        return f"{account.name} ({account.address})" if account.address else account.name

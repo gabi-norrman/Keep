@@ -8,7 +8,7 @@ settings are set, and whether it can be restarted from here.
 `config_help(section: str = "")` — one section of config.example.yaml, comments included: what each key is for and
 where the user gets the value (an app password, an API key). Without an argument it lists the sections.
 
-`config_request(key: str)` — opens a masked prompt in the chat for one setting, e.g. `config_request("email.password")`.
+`config_request(key: str)` — opens a masked prompt in the chat for one setting, e.g. `config_request("imap.accounts[0].password")`.
 The user types the value there, it is written to config.yaml on the server, and you get "saved" back — the value itself
 never reaches you. One key per turn, and stop after emitting it.
 
@@ -34,14 +34,14 @@ opt-in alternatives: to speak through one, enable it and disable ElevenLabs TTS.
 voice requests are answered as text.
 
 `restart_integration(name: str)` — rebuilds an integration with the current config and reports its state, e.g.
-`restart_integration("Gmail")`.
+`restart_integration("IMAP Mail")`.
 
 The Telegram bot the user chats through is listed as "Telegram" — not configured until `telegram_bot.bot_token` is set.
 Its setup is `config_request("telegram_bot.bot_token")`, then `restart_integration("Telegram")`; the bot starts at once,
 no server restart. Its switch is `interfaces.telegram.enabled` (`config_set`), not `enable_integration`.
 
 `enable_integration(name: str)` / `disable_integration(name: str)` — switches an integration on or off by the name
-`list_integrations` shows, restarts it and reports its state, e.g. `enable_integration("Gmail")`. Enabling one that
+`list_integrations` shows, restarts it and reports its state, e.g. `enable_integration("IMAP Mail")`. Enabling one that
 is not configured yet is fine: it comes back "not configured" with the keys it still needs.
 
 `telegram_login(phone: str)` — signs the Telegram Feed (the user's own Telegram account, read into the history) in, e.g.

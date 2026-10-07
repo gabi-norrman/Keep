@@ -6,6 +6,7 @@ import urllib.parse
 from collections import deque
 from typing import Callable, Optional
 
+from assistant.integration.Accounts import render_accounts_status
 from assistant.integration.mail.MailAccess import MailAccess
 from assistant.integration.calendar.CalendarAccess import CalendarAccess
 from assistant.integration import HomeAutomation as home
@@ -350,19 +351,24 @@ class Commands:
     def cmd_create_event(self, *args: str):
         self.background_command(self._run_create_event, list(args))
 
-    @staticmethod
-    def _run_create_event(*args: str) -> str:
+    _TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
+
+    @classmethod
+    def _run_create_event(cls, *args: str) -> str:
         try:
             if len(args) < 4:
                 return "create_event failed: expected 4 parameters (title, date, start_time, end_time)"
+            args = [a.strip() for a in args]
+            # A fifth argument names the calendar; the end time is the last argument otherwise.
+            calendar_name = ""
+            if len(args) > 4 and not cls._TIME_RE.match(args[-1]) and cls._TIME_RE.match(args[-2]):
+                calendar_name = args.pop().strip("'\"")
             # If the LLM under-quoted and produced extra tokens, the title may have
             # been split at internal commas — re-join leading tokens into the title
             # and pull the last 3 tokens as date/start/end.
-            title = ", ".join(a.strip() for a in args[:-3])
-            date_str = args[-3].strip()
-            start_time = args[-2].strip()
-            end_time = args[-1].strip()
-            CalendarAccess.current().create(title, date_str, start_time, end_time)
+            title = ", ".join(args[:-3])
+            date_str, start_time, end_time = args[-3:]
+            CalendarAccess.current().create(title, date_str, start_time, end_time, calendar_name)
             return ""
         except Exception as e:
             return f"create_event failed: {e}"
@@ -518,6 +524,14 @@ class Commands:
     def cmd_send_email(self, *args: str) -> str:
         if len(args) < 3:
             return "send_email failed: expected 'to, subject, body' parameters"
+        access = self._email_provider
+        args = list(args)
+        account_name = ""
+        # A fourth argument is the sending account — but only when it names one: anything else
+        # is the tail of an under-quoted body, which the re-join below puts back.
+        if len(args) > 3 and access.named(args[-1]) is not None:
+            account_name = args.pop().strip().strip("'\"")
+            trace(f"send_email: sending from the named account {account_name!r}")
         to = args[0].strip()
         subject = args[1].strip()
         # Re-join trailing tokens so an under-quoted body with commas survives.
@@ -527,7 +541,7 @@ class Commands:
 
         # LLM emits literal "\n" escape sequences — turn them into real newlines.
         body = normalize_llm_escapes(body)
-        return self._email_provider.send(to, subject, body)
+        return access.send(to, subject, body, account_name)
 
     def cmd_fetch_camera_images(self, parameter_string: str):
         self.background_command(self._fetch_all_camera_images, parameter_string)
@@ -776,7 +790,7 @@ class Commands:
 
     @staticmethod
     def _keys_summary(keys: list[dict]) -> str:
-        return ", ".join(f"{k['key']}: {'set' if k['set'] else 'not set'}" for k in keys)
+        return ", ".join(f"{k['key']}: {k.get('summary') or ('set' if k['set'] else 'not set')}" for k in keys)
 
     def cmd_list_integrations(self, parameter_string: str = ""):
         self.background_command(self._run_list_integrations, "")
@@ -797,6 +811,8 @@ class Commands:
                 line += f" (checked {self._age(status['last_check_time'])})"
             if status["keys"]:
                 line += f" [{self._keys_summary(status['keys'])}]"
+            if status.get("accounts"):
+                line += f"; accounts: {render_accounts_status(status['accounts'])}"
             if "feed" in status:
                 from assistant.integration.FeedRunner import describe_feed_status
                 # A disabled feed has no runner to describe, but it is still a feed.
@@ -846,7 +862,7 @@ class Commands:
         machinery with a config-writing accept) — the LLM gets 'saved', never the value."""
         key = ConfigSchema.normalize_key(parameter_string.strip().strip('"\''))
         if not key:
-            return "config_request failed: expected a setting key such as email.password"
+            return "config_request failed: expected a setting key such as imap.accounts[0].password"
         try:
             ConfigStore.check_key(key)
         except ConfigStoreError as e:

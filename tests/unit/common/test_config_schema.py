@@ -133,10 +133,11 @@ def test_real_example_parses_and_has_the_known_sections():
         mp.setattr(ConfigSchema, "EXAMPLE_PATH", AISERVER_DIR / "config.example.yaml")
         ConfigSchema.reset()
         names = ConfigSchema.sections()
-        assert {"email", "icloud_email", "tesla", "ai", "vault"} <= set(names)
+        assert {"imap", "caldav", "mail", "tesla", "ai", "vault"} <= set(names)
         assert "photos" not in names   # its videos block is defaults only, nothing the LLM should be offered to tune
         assert ConfigSchema.leaf_type("ai.fast.llm") is str
-        assert ConfigSchema.section_text("email").startswith("email:")
+        assert "\nmail:\n  send_from:" in ConfigSchema.section_text("mail")
+        assert ConfigSchema.section_text("imap").rstrip().endswith("the server does that itself")   # the fragment, pointed at from the root
         # Optional keys ship uncommented: a commented-out leaf has no type, and config_set on
         # it would store text where a list belongs (exclude_mics, 2026-09-15).
         assert ConfigSchema.is_scalar_list("local_outposts.exclude_mics") is True

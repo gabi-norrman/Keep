@@ -47,7 +47,7 @@ class _ArloTfaHandler(TfaCodeHandler):
     """pyaarlo TFA handler — adds email auto-detection on top of the shared base."""
 
     service_name = "Arlo"
-    detection_source = "email auto-detection (Gmail / iCloud Email) + TUI"
+    detection_source = "email auto-detection (every mail account) + TUI"
 
     def __init__(self):
         super().__init__()

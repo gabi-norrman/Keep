@@ -25,7 +25,7 @@ from colorama import init
 import common.DevelopmentConfig as DevelopmentConfig
 from common.DevelopmentConfig import PREPEND_USER_QUERY_OVERRIDE
 from common.logging import error, info, trace, note
-from common import Migrations, Version
+from common import ConfigMigrations, Migrations, Version
 from common.ConfigManager import config, REQUIRED_KEYS
 from common.RequirementsChecker import RequirementsChecker, AUTO_INSTALL_KEY
 from common.StderrLogger import StderrLogger
@@ -233,6 +233,9 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
 
     prompt_manager = PromptManager(running_as_testsuite)
     SystemNote.set_history(prompt_manager.message_history)   # integrations' notes land in the dialog
+    migration_note = ConfigMigrations.take_note()
+    if migration_note and not running_as_testsuite:
+        SystemNote.system_note("Config", migration_note)   # what the config load moved, told once
     if running_as_testsuite:
         prompt_manager.load_test_suite_history("res/testsuite_history.json")
 

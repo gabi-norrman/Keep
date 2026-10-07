@@ -21,8 +21,18 @@ class TestCreateEvent:
         # multiple tokens at parse time. The handler re-joins leading tokens.
         with patch(CURRENT) as current:
             result = commands._run_create_event("Dinner with Bob", "Carol", "2025-10-28", "18:00", "19:00")
-        current.return_value.create.assert_called_once_with("Dinner with Bob, Carol", "2025-10-28", "18:00", "19:00")
+        current.return_value.create.assert_called_once_with("Dinner with Bob, Carol", "2025-10-28", "18:00", "19:00", "")
         assert result == ""
+
+    def test_a_fifth_argument_after_the_end_time_names_the_calendar(self, commands):
+        with patch(CURRENT) as current:
+            commands._run_create_event("Football", "2025-10-28", "16:00", "17:00", '"Kids"')
+        current.return_value.create.assert_called_once_with("Football", "2025-10-28", "16:00", "17:00", "Kids")
+
+    def test_an_under_quoted_title_with_a_calendar_still_splits_at_the_times(self, commands):
+        with patch(CURRENT) as current:
+            commands._run_create_event("Dinner with Bob", "Carol", "2025-10-28", "18:00", "19:00", "Work/Calendar")
+        current.return_value.create.assert_called_once_with("Dinner with Bob, Carol", "2025-10-28", "18:00", "19:00", "Work/Calendar")
 
     def test_too_few_parameters_or_a_refusing_calendar_is_a_failure_message(self, commands):
         assert "create_event failed" in commands._run_create_event("Dentist", "2025-10-28")
@@ -35,7 +45,7 @@ class TestCreateEvent:
         commands.background_command = Mock()
         commands.cmd_create_event("Dentist", "2025-10-28", "10:00", "11:00")
         function, params = commands.background_command.call_args.args[:2]
-        assert params == ["Dentist", "2025-10-28", "10:00", "11:00"] and function is commands._run_create_event
+        assert params == ["Dentist", "2025-10-28", "10:00", "11:00"] and function == commands._run_create_event
         assert commands.is_multi_param("create_event")
         assert commands.describe("create_event", "Dentist, 2025-10-28, 10:00, 11:00") == "Creating calendar event 'Dentist'"
 

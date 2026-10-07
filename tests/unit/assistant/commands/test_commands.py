@@ -908,13 +908,30 @@ class TestCmdFindPhone:
 
 
 class TestCmdSendEmail:
+    @staticmethod
+    def _accounts(mock_email_provider, *names):
+        mock_email_provider.return_value.named.side_effect = (
+            lambda name: Mock() if name.strip().strip("'\"").lower() in {n.lower() for n in names} else None)
+
     def test_returns_send_result_synchronously(self, commands_instance, mock_email_provider):
+        self._accounts(mock_email_provider, "Personal")
         mock_email_provider.return_value.send.return_value = ""
         result = commands_instance.cmd_send_email("alice@example.com", "Hi", "Hello there")
         assert result == ""
-        mock_email_provider.return_value.send.assert_called_once_with("alice@example.com", "Hi", "Hello there")
+        mock_email_provider.return_value.send.assert_called_once_with("alice@example.com", "Hi", "Hello there", "")
+
+    def test_a_fourth_argument_naming_an_account_sends_from_it(self, commands_instance, mock_email_provider):
+        self._accounts(mock_email_provider, "Personal", "Work")
+        commands_instance.cmd_send_email("alice@example.com", "Hi", "Hello there", '"Work"')
+        mock_email_provider.return_value.send.assert_called_once_with("alice@example.com", "Hi", "Hello there", "Work")
+
+    def test_a_trailing_token_that_is_no_account_stays_part_of_the_body(self, commands_instance, mock_email_provider):
+        self._accounts(mock_email_provider, "Personal", "Work")
+        commands_instance.cmd_send_email("alice@example.com", "Hi", "Bring Bob", "Carol and Dave")
+        mock_email_provider.return_value.send.assert_called_once_with("alice@example.com", "Hi", "Bring Bob, Carol and Dave", "")
 
     def test_email_body_carries_no_ai_footer(self, commands_instance, mock_email_provider):
+        self._accounts(mock_email_provider)
         commands_instance.cmd_send_email("alice@example.com", "Hi", "Hello there")
         assert commands_instance.AI_MESSAGE_SUFFIX not in mock_email_provider.return_value.send.call_args[0][2]
 
@@ -924,6 +941,7 @@ class TestCmdSendEmail:
         assert "send_email failed" in result
 
     def test_empty_recipient_returns_error(self, commands_instance, mock_email_provider):
+        self._accounts(mock_email_provider)
         result = commands_instance.cmd_send_email("", "Subject", "body")
         mock_email_provider.return_value.send.assert_not_called()
         assert "send_email failed" in result
@@ -1533,10 +1551,22 @@ def _secret_notifier(*answers, decision="accepted"):
 
 class TestCmdListIntegrations:
     @staticmethod
-    def _status(name, state, keys=(), last_error=None, restartable=True, checked=None):
+    def _status(name, state, keys=(), last_error=None, restartable=True, checked=None, accounts=()):
         return {"name": name, "state": state, "last_error": last_error, "last_check_time": checked,
                 "consecutive_failures": 0, "config_keys": [], "restartable": restartable,
-                "keys": [{"key": k, "set": v} for k, v in keys]}
+                "keys": [{"key": k, "set": v} for k, v in keys], "accounts": list(accounts)}
+
+    def test_an_account_holding_integration_lists_each_accounts_verdict_and_a_lists_summary(self, commands_instance):
+        monitor = Mock()
+        status = self._status("IMAP Mail", "warning", last_error="Work: auth failed",
+                              accounts=[{"name": "Personal", "state": "ok", "last_error": None},
+                                        {"name": "Work", "state": "error", "last_error": "auth failed"}])
+        status["keys"] = [{"key": "imap.accounts", "set": True, "summary": "2 accounts, 1 without password"}]
+        monitor.describe_all.return_value = [status]
+        with patch.object(Commands, "_integration_monitor", return_value=monitor):
+            line, = commands_instance._run_list_integrations().splitlines()
+        assert "accounts: Personal ok, Work: auth failed" in line
+        assert "[imap.accounts: 2 accounts, 1 without password]" in line
 
     def test_one_line_per_integration_sorted_with_state_keys_and_restartability(self, commands_instance):
         monitor = Mock()
@@ -1763,7 +1793,7 @@ class TestCmdConfigRequest:
             assert commands_instance.cmd_config_request("vault.key") == \
                 "config_request failed: 'vault.key' cannot be changed from here"
             assert commands_instance.cmd_config_request("") == \
-                "config_request failed: expected a setting key such as email.password"
+                "config_request failed: expected a setting key such as imap.accounts[0].password"
         bg.assert_not_called()
 
     def test_accepted_value_is_written_and_the_reply_never_carries_it(self, commands_instance, capsys):

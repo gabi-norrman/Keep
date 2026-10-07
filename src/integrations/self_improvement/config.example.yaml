@@ -11,7 +11,7 @@
 #   2. Optional: a claude.ai subscription (Pro/Max) instead of the key — open a terminal ON the
 #      server machine, run `claude` and complete /login. Do not log in over SSH — a login made
 #      in an SSH session is not seen by the server process. A login takes precedence over the key.
-#   3. Optional: email.address / email.password, where the nightly reports go.
+#   3. Optional: a mail account (imap.accounts): the nightly report is mailed from the account send_email uses to its own address.
 # The health check runs `claude auth status` (a free local call) every 15 minutes, first ~10 s
 # after start; a missing CLI, or one with neither a login nor the key, shows as the error in
 # list_integrations. The model the runs use is ai.code_quality.model.

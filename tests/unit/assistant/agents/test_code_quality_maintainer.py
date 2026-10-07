@@ -990,51 +990,47 @@ class TestMarkdownToHtml:
 
 @pytest.mark.unit
 class TestSendEmail:
-    """The report goes out through the mail account that owns `email.address` (the Gmail one),
-    so it gets the same SMTP handling and Sent-folder treatment as every other mail the server
-    sends."""
+    """The report goes out through the account send_email sends from (`mail.send_from`, else the
+    first configured one), to that account's own address, so it gets the same SMTP handling and
+    Sent-folder treatment as every other mail the server sends."""
 
     MAIL_ACCESS = 'assistant.integration.mail.MailAccess.MailAccess.current'
 
-    @patch('assistant.agents.CodeQualityMaintainer.ConfigManager')
-    def test_report_is_handed_to_the_account_of_the_configured_address(self, mock_cm_class, maintainer):
-        mock_cm_class.return_value.get.side_effect = lambda k, default=None: {
-            "email.address": "me@example.com", "email.password": "pw"}.get(k, default)
+    @staticmethod
+    def _sender(current, address="m@mlab.test", name="Personal", result=""):
+        account = current.return_value.sender.return_value
+        account.address = address
+        account.name = name
+        account.send_message.return_value = result
+        return account
+
+    def test_report_is_mailed_from_the_sending_account_to_its_own_address(self, maintainer):
         with patch(self.MAIL_ACCESS) as current:
-            account = current.return_value.account_for.return_value
-            account.send_message.return_value = ""
+            account = self._sender(current)
             CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
-            current.return_value.account_for.assert_called_once_with("me@example.com")
+            current.return_value.sender.assert_called_once_with()
             msg, recipients = account.send_message.call_args[0]
-        assert recipients == ["me@example.com"]
-        assert msg["To"] == "me@example.com"
+        assert recipients == ["m@mlab.test"]
+        assert msg["To"] == "m@mlab.test"
         assert msg["Subject"] == "Subject"
         assert "<p>Body</p>" in msg.get_payload()[0].get_payload()
 
-    @patch('assistant.agents.CodeQualityMaintainer.ConfigManager')
-    def test_a_refused_send_raises(self, mock_cm_class, maintainer):
-        mock_cm_class.return_value.get.side_effect = lambda k, default=None: {
-            "email.address": "me@example.com", "email.password": "pw"}.get(k, default)
+    def test_a_refused_send_raises(self, maintainer):
         with patch(self.MAIL_ACCESS) as current:
-            current.return_value.account_for.return_value.send_message.return_value = "SMTP error: boom"
+            self._sender(current, result="SMTP error: boom")
             with pytest.raises(RuntimeError, match="boom"):
                 CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
 
-    @patch('assistant.agents.CodeQualityMaintainer.ConfigManager')
-    def test_no_enabled_account_for_the_address_raises(self, mock_cm_class, maintainer):
-        mock_cm_class.return_value.get.side_effect = lambda k, default=None: {
-            "email.address": "me@example.com", "email.password": "pw"}.get(k, default)
+    def test_without_a_mail_account_nothing_is_sent(self, maintainer):
         with patch(self.MAIL_ACCESS) as current:
-            current.return_value.account_for.return_value = None
-            with pytest.raises(RuntimeError, match="me@example.com"):
-                CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
-
-    @patch('assistant.agents.CodeQualityMaintainer.ConfigManager')
-    def test_without_credentials_nothing_is_sent(self, mock_cm_class, maintainer):
-        mock_cm_class.return_value.get.side_effect = lambda k, default=None: None
-        with patch(self.MAIL_ACCESS) as current:
+            current.return_value.sender.return_value = None
             CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
-            current.assert_not_called()
+
+    def test_an_account_without_an_address_sends_nothing(self, maintainer):
+        with patch(self.MAIL_ACCESS) as current:
+            account = self._sender(current, address="")
+            CodeQualityMaintainer._send_email("Subject", "<p>Body</p>")
+            account.send_message.assert_not_called()
 
 @pytest.mark.unit
 class TestNightlySkipReason:

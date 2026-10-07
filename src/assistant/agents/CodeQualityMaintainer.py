@@ -1035,12 +1035,14 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def _send_email(subject: str, html_body: str):
-        cfg = ConfigManager()
-        address = cfg.get("email.address")
-        password = cfg.get("email.password")
-        if not address or not password:
-            error("CodeQualityMaintainer: email credentials not configured, skipping send.")
+        """The report goes to the household's own address: the account `send_email` sends from
+        (`mail.send_from`, else the first configured one) mails it to itself."""
+        from assistant.integration.mail.MailAccess import MailAccess
+        account = MailAccess.current().sender()
+        if account is None or not account.address:
+            error("CodeQualityMaintainer: no mail account configured, skipping send.")
             return
+        address = account.address
 
         full_html = (
             '<html><head>'
@@ -1057,11 +1059,7 @@ class CodeQualityMaintainer:
         msg["To"] = address
         msg.attach(MIMEText(full_html, "html"))
 
-        from assistant.integration.mail.MailAccess import MailAccess
-        account = MailAccess.current().account_for(address)
-        if account is None:
-            raise RuntimeError(f"report email not sent: no enabled mail account for {address}")
         err = account.send_message(msg, [address])
         if err:
             raise RuntimeError(f"report email not sent: {err}")
-        info(f"CodeQualityMaintainer: email sent to {address}")
+        info(f"CodeQualityMaintainer: email sent to {address} from {account.name}")

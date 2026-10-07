@@ -407,7 +407,33 @@ def expand(key: str) -> list[str]:
 
 
 def describe_key(key: str) -> dict:
-    return {"key": key, "set": is_set(key)}
+    """`{"key", "set"}`; a list of sections (imap.accounts, icloud.devices) also carries a
+    `summary` — "2 accounts, 1 without password" — since set / not set says little about a list."""
+    described = {"key": key, "set": is_set(key)}
+    if ConfigSchema.leaf_type(key) is list and not ConfigSchema.is_scalar_list(key):
+        described["summary"] = _list_summary(key)
+    return described
+
+
+def _list_summary(key: str) -> str:
+    """How many items config.yaml holds at a list of sections and how many lack a value the
+    example marks as one to fill in (a placeholder such as YOUR_APP_PASSWORD) — by count and
+    field name, never by value."""
+    try:
+        items = _current_value(key)
+    except (KeyError, ValueError):
+        items = None
+    items = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+    noun = key.rsplit(".", 1)[-1].rstrip("s")
+    text = f"{len(items)} {noun}{'s' if len(items) != 1 else ''}"
+    shape = ConfigSchema.example_value(f"{key}[0]")
+    required = [field for field, value in (shape or {}).items() if looks_like_placeholder(value)] if isinstance(shape, dict) else []
+    for field in required:
+        lacking = sum(1 for item in items if item.get(field) in (None, "") or looks_like_placeholder(item.get(field)))
+        if lacking:
+            text += f", {lacking} without {field}"
+    trace(f"Config: {key} holds {text}")
+    return text
 
 
 def describe_keys(keys: list[str]) -> list[dict]:
@@ -420,8 +446,8 @@ def describe_keys(keys: list[str]) -> list[dict]:
 
 
 def summary(keys: list[str]) -> str:
-    """'email.address: set, email.password: not set' — the shape the assistant reads."""
-    return ", ".join(f"{d['key']}: {'set' if d['set'] else 'not set'}" for d in describe_keys(keys))
+    """'imap.accounts: 2 accounts, 1 without password, mail.send_from: not set' — the shape the assistant reads."""
+    return ", ".join(f"{d['key']}: {d.get('summary') or ('set' if d['set'] else 'not set')}" for d in describe_keys(keys))
 
 
 def section_summary(section: str) -> Optional[str]:

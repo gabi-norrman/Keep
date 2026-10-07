@@ -31,6 +31,10 @@ class CalDavCalendarAccount(CalendarAccount):
         return self._name
 
     @property
+    def service(self) -> str:
+        return "CalDAV"
+
+    @property
     def shown_calendars(self) -> list[str]:
         return self._shown_calendars()
 

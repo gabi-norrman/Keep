@@ -17,9 +17,9 @@ local_outposts:
   enabled: true
   exclude_mics: []          # name substrings of mics to skip
 
-email:
-  address: your_gmail_address@gmail.com
-  password: YOUR_GMAIL_APP_PASSWORD  # Generate at https://myaccount.google.com/apppasswords
+pager:
+  address: your_pager_address@example.com
+  password: YOUR_PAGER_APP_PASSWORD  # Generate at https://pager.example/apppasswords
 
 telegram_feed:
   api_id: 0          # Get from https://my.telegram.org/apps
@@ -122,10 +122,10 @@ class TestSetValue:
         assert "# paid account" in files.read_text()
 
     def test_creates_a_missing_section_and_key(self, files):
-        ConfigStore.set_value("email.address", "me@gmail.com")
-        ConfigStore.set_value("email.password", "abcd efgh")
+        ConfigStore.set_value("pager.address", "m@mlab.test")
+        ConfigStore.set_value("pager.password", "abcd efgh")
         data = _load(files)
-        assert data["email"] == {"address": "me@gmail.com", "password": "abcd efgh"}
+        assert data["pager"] == {"address": "m@mlab.test", "password": "abcd efgh"}
         assert data["owner_name"] == "Marcus"
 
     def test_running_config_sees_the_new_value(self, files):
@@ -165,7 +165,7 @@ class TestSetValue:
         ("interfaces.http.enabled", "cannot be changed"),
         ("interfaces", "not a single value"),
         ("gmail.password", "not a known setting"),
-        ("email/password", "not a known setting"),
+        ("pager/password", "not a known setting"),
         ("tesla.vehicles", "is a list — address one item's field"),
         ("api_keys", "not a single value"),
     ])
@@ -176,8 +176,8 @@ class TestSetValue:
             ConfigStore.set_value(key, "x")
 
     def test_a_key_the_example_lacks_under_a_known_section_is_stored_as_text(self, files):
-        ConfigStore.set_value("email.imap_host", "imap.example.org")
-        assert _load(files)["email"]["imap_host"] == "imap.example.org"
+        ConfigStore.set_value("pager.imap_host", "imap.example.org")
+        assert _load(files)["pager"]["imap_host"] == "imap.example.org"
 
     def test_backs_up_before_writing_and_keeps_only_the_newest(self, files, monkeypatch):
         monkeypatch.setattr(ConfigStore, "BACKUPS_KEPT", 2)
@@ -208,13 +208,13 @@ class TestSetValue:
         assert ConfigStore._stamp() == "20260829-104000-999999"
 
     def test_logs_the_key_but_never_the_value(self, files, capsys):
-        ConfigStore.set_value("email.password", "hunter2-app-pw")
+        ConfigStore.set_value("pager.password", "hunter2-app-pw")
         out = capsys.readouterr().out
-        assert "Config: set email.password (new)" in out
+        assert "Config: set pager.password (new)" in out
         assert "hunter2" not in out
-        ConfigStore.set_value("email.password", "hunter3-app-pw")
+        ConfigStore.set_value("pager.password", "hunter3-app-pw")
         out = capsys.readouterr().out
-        assert "Config: set email.password (replaced)" in out
+        assert "Config: set pager.password (replaced)" in out
         assert "hunter3" not in out
 
 
@@ -223,7 +223,7 @@ class TestDescribe:
     def test_set_means_present_and_not_a_placeholder(self, files):
         assert ConfigStore.is_set("api_keys.openai")
         assert not ConfigStore.is_set("api_keys.grok")          # copied YOUR_…_HERE
-        assert not ConfigStore.is_set("email.address")          # absent
+        assert not ConfigStore.is_set("pager.address")          # absent
         assert not ConfigStore.is_set("telegram_feed.api_id")  # the example's 0
         assert ConfigStore.is_set("vault.default_country_code")   # a real number
         assert ConfigStore.is_set("owner_name")
@@ -236,8 +236,8 @@ class TestDescribe:
         assert not ConfigStore.is_set("tesla.vehicles")
 
     def test_summary_expands_sections_to_their_leaves(self, files):
-        assert ConfigStore.summary(["email"]) == "email.address: not set, email.password: not set"
-        assert ConfigStore.summary(["tesla"]) == "tesla.tessie_access_token: set, tesla.vehicles: set"
+        assert ConfigStore.summary(["pager"]) == "pager.address: not set, pager.password: not set"
+        assert ConfigStore.summary(["tesla"]) == "tesla.tessie_access_token: set, tesla.vehicles: 1 vehicle"
         assert ConfigStore.summary(["api_keys.grok", "owner_name"]) == "api_keys.grok: not set, owner_name: set"
 
     def test_a_key_outside_the_example_is_reported_by_itself(self, files):
@@ -245,13 +245,27 @@ class TestDescribe:
 
     def test_section_summary_counts(self, files):
         assert ConfigStore.section_summary("api_keys") == "1 of 2 set"
-        assert ConfigStore.section_summary("email") == "0 of 2 set"
+        assert ConfigStore.section_summary("pager") == "0 of 2 set"
         assert ConfigStore.section_summary("owner_name") == "1 of 1 set"
         assert ConfigStore.section_summary("nope") is None
 
     def test_describe_never_returns_values(self, files):
         described = ConfigStore.describe_keys(["api_keys", "vault"])
         assert all(set(d) == {"key", "set"} for d in described)
+
+    def test_a_list_of_sections_is_summarised_by_count_and_by_the_placeholder_fields_still_to_fill(self, files):
+        """The example marks a device's id as a placeholder to replace (DEVICE_UUID…), so the
+        summary counts the devices that still lack one — by count and field, never by value."""
+        ConfigStore.set_value("icloud.devices[0].display_name", "dad")
+        ConfigStore.set_value("icloud.devices[1].display_name", "mum")
+        ConfigStore.set_value("icloud.devices[1].id", "7f1a-fictional-device")
+
+        described, = ConfigStore.describe_keys(["icloud.devices"])
+
+        assert described["summary"] == "2 devices, 1 without id"
+        assert described["set"] is True
+        assert "dad" not in str(described) and "7f1a" not in str(described)
+        assert ConfigStore.summary(["icloud.devices"]) == "icloud.devices: 2 devices, 1 without id"
 
 
 @pytest.mark.unit
@@ -351,7 +365,7 @@ class TestSetPlain:
         assert ConfigStore.set_value(key, "42") == f"{key} saved"
         assert ConfigStore.is_set(key)
 
-    @pytest.mark.parametrize("key", ["api_keys.openai", "email.password", "telegram_feed.api_hash",
+    @pytest.mark.parametrize("key", ["api_keys.openai", "pager.password", "telegram_feed.api_hash",
                                      "tesla.tessie_access_token"])
     def test_credential_looking_keys_are_written_too(self, files, key):
         """An API key the assistant read off a web page goes straight in (2026-09-16)."""
@@ -364,7 +378,7 @@ class TestIsSetForLists:
         files.write_text(files.read_text() + "\nicloud:\n  apple_id: me@icloud.com\n  devices: []\n")
         ConfigManager.reset_instance()
         assert ConfigStore.is_set("icloud.devices") is False
-        assert ConfigStore.summary(["icloud"]) == "icloud.apple_id: set, icloud.devices: not set"
+        assert ConfigStore.summary(["icloud"]) == "icloud.apple_id: set, icloud.devices: 0 devices"
         ConfigStore.set_value("icloud.devices[0].id", "uuid-1")
         assert ConfigStore.is_set("icloud.devices") is True
 
@@ -426,10 +440,10 @@ class TestEnableIntegration:
 
     def test_enable_appends_by_name_and_never_displaces(self, files):
         assert ConfigStore.enable_integration("iMessage") == "iMessage enabled"
-        assert ConfigStore.enable_integration("Gmail") == "Gmail enabled"
+        assert ConfigStore.enable_integration("Ring") == "Ring enabled"
         assert ConfigStore.enable_integration("Photos") == "Photos enabled"
-        assert self._enabled(files) == ["iMessage", "Gmail", "Photos"]
-        assert ConfigManager.get_instance().enabled_integrations() == ["iMessage", "Gmail", "Photos"]
+        assert self._enabled(files) == ["iMessage", "Ring", "Photos"]
+        assert ConfigManager.get_instance().enabled_integrations() == ["iMessage", "Ring", "Photos"]
 
     def test_any_spelling_already_listed_is_a_no_op(self, files):
         ConfigStore.enable_integration("Sonos & Spotify")

@@ -35,6 +35,11 @@ class CalendarAccount(ABC):
     def name(self) -> str: ...
 
     @property
+    def service(self) -> str:
+        """The service the account is at (CalDAV, Google), shown beside its name in the prompt."""
+        return ""
+
+    @property
     def shown_calendars(self) -> list[str]:
         """The calendars whose events the prompt always carries; empty means all of them."""
         return []

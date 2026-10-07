@@ -65,8 +65,7 @@ class MailAccount(ABC):
     MAX_BODY_LENGTH = 8000
     # The folder a listing shows when the LLM names none.
     default_folder: str = "INBOX"
-    # The preset the account was built from ("icloud", "gmail"), "" for a hand-configured one;
-    # what MailAccess picks the sending account by until config names one.
+    # The preset the account was built from ("icloud", "gmail"), "" for a hand-configured one.
     preset: str = ""
     AUTH_HELP = "check the account password"
 

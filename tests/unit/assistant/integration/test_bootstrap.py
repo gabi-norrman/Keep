@@ -24,13 +24,13 @@ class TestDiscoverIntegrations:
         from integrations.icloud.ICloudIntegration import ICloudIntegration
         from integrations.tesla.TeslaIntegration import TeslaIntegration
         from integrations.ring.RingIntegration import RingIntegration
-        from integrations.gmail.GmailIntegration import GmailIntegration
+        from integrations.imap.ImapMailIntegration import ImapMailIntegration
         from assistant.tools.WebAccess import WebAccess
 
         assert bootstrap.discover_integrations() is monitor
 
         registered = [call.args[0] for call in monitor.register_class.call_args_list]
-        for cls in (ICloudIntegration, TeslaIntegration, RingIntegration, GmailIntegration, WebAccess):
+        for cls in (ICloudIntegration, TeslaIntegration, RingIntegration, ImapMailIntegration, WebAccess):
             assert registered.count(cls) == 1, cls.__name__
         # Only concrete integrations: never the base class, and none twice even though
         # subpackages re-export what they import.

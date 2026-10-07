@@ -1,5 +1,5 @@
 """The CalDAV folder: the account that turns the library's calendars and vobject events into
-CalendarInfo and Event, the integration that builds it from the `calendar` section, and the
+CalendarInfo and Event, the integration that builds one per `caldav.accounts` entry, and the
 icalendar pins the library needs."""
 from datetime import date, datetime, timedelta
 from unittest.mock import MagicMock, Mock, patch
@@ -12,7 +12,7 @@ from assistant.integration.calendar.Event import Event
 from integrations.caldav.CalDavCalendarAccount import CalDavCalendarAccount
 
 CALDAV = 'integrations.caldav.CalDavCalendarAccount.caldav'
-CONFIG = 'integrations.caldav.CalDAVIntegration.config'
+CONFIG = 'integrations.caldav.CalDAVIntegration.ConfigManager.get_instance'
 UTC = pytz.UTC
 
 
@@ -164,56 +164,80 @@ class TestCheck:
             _account().check()
 
 
-def _config_mock(values):
+def _config(accounts):
+    """ConfigManager.get as the integration reads it, serving `caldav.accounts`."""
     config = MagicMock()
-    config.get.side_effect = lambda key, *default: values[key] if key in values else (default[0] if default else None)
-    return config
+    config.get.side_effect = lambda key, *default: accounts if key == "caldav.accounts" else (default[0] if default else None)
+    return patch(CONFIG, return_value=config)
 
 
 @pytest.mark.unit
 class TestCalDAVIntegration:
+    @pytest.fixture(autouse=True)
+    def fresh(self):
+        from integrations.caldav.CalDAVIntegration import CalDAVIntegration
+        CalDAVIntegration.reset_instance()
+        yield
+        CalDAVIntegration.reset_instance()
+
     def _integration(self):
         from integrations.caldav.CalDAVIntegration import CalDAVIntegration
         return CalDAVIntegration()
 
-    def test_is_a_calendar_source_with_one_icloud_account_read_from_the_calendar_section(self):
-        values = {"calendar.username": "m@mlab.test", "calendar.password": "app-password",
-                  "calendar.shown_calendars": ["Home, Family", "Work"], "calendar.default_calendar": "Family"}
-        with patch(CONFIG, new=_config_mock(values)):
+    def test_builds_one_account_per_entry_the_icloud_preset_giving_the_url_a_contract_with_caldav_accounts(self):
+        entries = [{"name": "Family", "preset": "icloud", "username": "m@mlab.test", "password": "app-password",
+                    "shown_calendars": ["Home, Family", "Work"], "default_calendar": "Family"},
+                   {"name": "Work", "url": "https://caldav.example/", "username": "marcus@example.com", "password": "pw"}]
+        with _config(entries):
             integration = self._integration()
-            account, = integration.calendar_accounts()
-            assert isinstance(integration, CalendarSource) and integration.config_keys == ["calendar"]
-            assert account.name == "iCloud" and account._url == "https://caldav.icloud.com/"
-            assert account._credentials() == ("m@mlab.test", "app-password")
-            assert account.shown_calendars == ["Home", "Family", "Work"]
-            assert account.default_calendar == "Family"
+            family, work = integration.calendar_accounts()
+            assert isinstance(integration, CalendarSource) and integration.config_keys == ["caldav.accounts"]
+            assert family.name == "Family" and family._url == "https://caldav.icloud.com/" and family.service == "CalDAV"
+            assert family._credentials() == ("m@mlab.test", "app-password")
+            assert family.shown_calendars == ["Home", "Family", "Work"] and family.default_calendar == "Family"
+            assert work._url == "https://caldav.example/" and work._credentials() == ("marcus@example.com", "pw")
+            assert work.shown_calendars == [] and work.default_calendar == "Home"
 
-    def test_the_default_calendar_is_home_and_no_shown_setting_means_no_names(self, tmp_path, monkeypatch):
-        """Through the real ConfigManager.get: a stub returning None for the absent key hid the KeyError it raises."""
-        from common.ConfigManager import ConfigManager
-        path = tmp_path / "config.yaml"
-        path.write_text("calendar:\n  username: m@mlab.test\n  password: app-password\n"
-                        "location:\n  home:\n    timezone: Europe/Stockholm\n")
-        monkeypatch.setenv("FLOXY_CONFIG", str(path))
-        monkeypatch.setattr(CONFIG, ConfigManager())
+    def test_the_credentials_are_read_from_config_at_call_time(self):
+        entries = [{"name": "Family", "preset": "icloud", "username": "m@mlab.test", "password": "old"}]
+        with _config(entries):
+            account, = self._integration().calendar_accounts()
+            entries[0]["password"] = "new"
+            assert account._credentials() == ("m@mlab.test", "new")
 
-        account, = self._integration().calendar_accounts()
-
-        assert account.shown_calendars == [] and account.default_calendar == "Home"
+    def test_an_entry_without_a_preset_or_url_an_unknown_preset_or_a_repeated_name_is_skipped(self):
+        entries = [{"name": "Family", "username": "m@mlab.test", "password": "pw"},
+                   {"name": "Work", "preset": "exchange", "username": "x", "password": "y"},
+                   {"name": "Kids", "preset": "icloud", "username": "k@example.com", "password": "pw"},
+                   {"name": "kids", "preset": "icloud", "username": "other@example.com", "password": "pw"}]
+        with _config(entries):
+            accounts = self._integration().calendar_accounts()
+        assert [a.name for a in accounts] == ["Kids"]
 
     def test_the_example_config_lists_shown_calendars_as_plain_values_so_config_set_can_add_one_by_index(self):
         from common import ConfigSchema
-        assert ConfigSchema.is_scalar_list("calendar.shown_calendars")
-        assert ConfigSchema.example_value("calendar.shown_calendars") == []
+        assert ConfigSchema.is_scalar_list("caldav.accounts[0].shown_calendars")
+        assert ConfigSchema.example_value("caldav.accounts[0].shown_calendars") == []
 
-    def test_health_fails_without_credentials_and_is_the_accounts_check_with_them(self):
-        with patch(CONFIG, new=_config_mock({"calendar.username": "", "calendar.password": ""})):
-            assert self._integration().check_health() is False
-        with patch(CONFIG, new=_config_mock({"calendar.username": "m@mlab.test", "calendar.password": "pw"})):
+    def test_health_checks_every_account_and_names_the_failing_ones(self):
+        entries = [{"name": "Family", "preset": "icloud", "username": "a", "password": "b"},
+                   {"name": "Work", "preset": "icloud", "username": "c", "password": "d"}]
+        with _config(entries):
             integration = self._integration()
-            with patch.object(integration._account, "check", return_value=True) as check:
-                assert integration.check_health() is True
-            check.assert_called_once()
+        family, work = integration.calendar_accounts()
+        with patch.object(family, "check", return_value=True), patch.object(work, "check", side_effect=ConnectionError("down")):
+            with pytest.raises(RuntimeError) as raised:
+                integration.check_health()
+        assert "Work" in str(raised.value) and "down" in str(raised.value) and "Family" not in str(raised.value)
+        assert [(a["name"], a["state"]) for a in integration.accounts_status()] == [("Family", "ok"), ("Work", "error")]
+        with patch.object(family, "check", return_value=True), patch.object(work, "check", return_value=True):
+            assert integration.check_health() is True
+        assert all(a["state"] == "ok" for a in integration.accounts_status())
+
+    def test_without_an_account_health_fails_and_the_status_is_empty(self):
+        with _config([]):
+            integration = self._integration()
+            assert integration.check_health() is False and integration.accounts_status() == []
 
 
 class TestIcalendarDependencyCompatibility:

@@ -32,6 +32,8 @@ class _Account(CalendarAccount):
     """A calendar account over dicts: `calendars` maps a name to its events (None for a
     Reminders list), `created` records what create_event was handed."""
 
+    service_name = "dicts"
+
     def __init__(self, name="iCloud", calendars=None, shown=(), default="Home", failing=False):
         self._name = name
         self._calendars = calendars or {}
@@ -44,6 +46,10 @@ class _Account(CalendarAccount):
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def service(self) -> str:
+        return self.service_name
 
     @property
     def shown_calendars(self) -> list[str]:
@@ -89,11 +95,18 @@ class TestFetch:
         assert "Dentist Charlotte" in text and "Dinner at Ingeborg's" in text
         assert "Budget review" not in text
 
-    def test_the_calendars_left_out_are_named_with_the_command_that_loads_them(self):
-        shown, left_out = CalendarAccess([_household(shown=["Home", "Family"])]).fetch(*WEEK).split("\n\n")[0].split("\n")
-        assert "Home" in shown and "Family" in shown and "Work" not in shown
-        assert "load_calendar" in left_out and "Work" in left_out
+    def test_the_header_names_the_account_the_calendars_shown_and_the_ones_left_out(self):
+        header = CalendarAccess([_household(shown=["Home", "Family"])]).fetch(*WEEK).split("\n\n")[0]
+        shown, left_out = header.split(" — ")
+        assert shown.startswith("iCloud (dicts): ") and "Home" in shown and "Family" in shown and "Work" not in shown
+        assert left_out.startswith("not shown") and "Work" in left_out
         assert "Home" not in left_out and "Family" not in left_out
+
+    def test_an_account_without_a_service_is_headed_by_its_name_alone_and_nothing_hidden_adds_nothing(self):
+        account = _Account("Plain", {"Home": [_event("Dentist Charlotte", date(2025, 6, 15), 9)]})
+        account.service_name = ""
+        header = CalendarAccess([account]).fetch(*WEEK).split("\n\n")[0]
+        assert header == "Plain: Home"
 
     def test_a_reminders_list_is_searched_but_never_named(self):
         account = _household(shown=["Home"])
@@ -110,8 +123,21 @@ class TestFetch:
 
     def test_a_shown_name_the_account_lacks_shows_nothing_but_names_the_rest(self):
         text = CalendarAccess([_household(shown=["Nope"])]).fetch(*WEEK)
-        assert text.startswith("Calendars shown below: none")
+        assert text.startswith("iCloud (dicts): none shown — not shown: ")
         assert "Work" in text and text.endswith(NO_EVENTS)
+
+    def test_lines_carry_their_calendar_only_when_more_than_one_is_shown(self):
+        one = CalendarAccess([_household(shown=["Home"])]).fetch(*WEEK)
+        assert "2025-06-15 11:00 - 12:00: Dentist Charlotte" in one and "[Home]" not in one
+        two = CalendarAccess([_household(shown=["Home", "Work"])]).fetch(*WEEK)
+        assert "2025-06-15 11:00 - 12:00 [Home]: Dentist Charlotte" in two and "[Work]: Budget review" in two
+
+    def test_one_calendar_in_each_of_two_accounts_still_tags_the_lines(self):
+        day = date(2025, 6, 16)
+        first = _Account("Family", {"Home": [_event("Late", day, 15)]})
+        second = _Account("Google", {"Work": [_event("Early", day, 8, "Work")]})
+        text = CalendarAccess([first, second]).fetch(*WEEK)
+        assert "[Work]: Early" in text and "[Home]: Late" in text
 
     def test_events_of_several_accounts_are_one_list_in_time_order(self):
         day = date(2025, 6, 16)
@@ -121,8 +147,8 @@ class TestFetch:
         text = CalendarAccess([first, second]).fetch(*WEEK)
 
         assert text.index("Early") < text.index("Late")
-        header = text.split("\n\n")[0]
-        assert "Family" in header and "Google" in header
+        header = text.split("\n\n")[0].split("\n")
+        assert header[0].startswith("Family") and header[1].startswith("Google")
 
     def test_one_failing_account_is_named_while_the_others_still_show(self):
         broken = _Account("Broken", failing=True)
@@ -166,13 +192,31 @@ class TestLoad:
         assert "failed" in text and "Home" in text and "Shopping" not in text.split("\n\n")[0]
         assert "Budget review" in text
 
-    def test_a_calendar_of_a_second_account_is_found_too(self):
+    def test_a_calendar_of_a_second_account_is_found_too_and_headed_with_its_account(self):
         tomorrow = date.today() + timedelta(days=1)
         second = _Account("Google", {"Kids": [_event("Football", tomorrow, 16, "Kids")]})
 
         text = CalendarAccess([_Account(), second]).load(["kids"])
 
-        assert "Football" in text
+        assert "Football" in text and text.startswith("Calendar 'Google/Kids'")
+
+    def test_a_name_two_accounts_share_must_be_qualified_with_the_account(self):
+        tomorrow = date.today() + timedelta(days=1)
+        family = _Account("Family", {"Kids": [_event("Football", tomorrow, 16, "Kids")]})
+        google = _Account("Google", {"Kids": [_event("Piano", tomorrow, 17, "Kids")]})
+        access = CalendarAccess([family, google])
+
+        bare = access.load(["Kids"])
+        assert "failed" in bare and "Family/Kids" in bare and "Google/Kids" in bare and "Football" not in bare
+
+        qualified = access.load(["google/kids"])
+        assert "Piano" in qualified and "Football" not in qualified
+
+    def test_an_unknown_name_across_accounts_lists_the_calendars_by_account(self):
+        tomorrow = date.today() + timedelta(days=1)
+        access = CalendarAccess([_Account("Family", {"Home": []}), _Account("Google", {"Work": [_event("x", tomorrow, 9)]})])
+        text = access.load(["School"])
+        assert "Family/Home" in text and "Google/Work" in text
 
     def test_without_an_account_loading_raises_the_hint(self):
         with pytest.raises(ValueError, match="list_integrations"):
@@ -194,6 +238,37 @@ class TestCreate:
     def test_a_missing_default_calendar_raises_and_names_the_available_ones(self):
         with pytest.raises(ValueError, match="Calendar 'Nope' not found") as raised:
             CalendarAccess([_household(default="Nope")]).create("Dentist", "2025-10-28", "10:00", "11:00")
+        assert "Home" in str(raised.value)
+
+    def test_without_a_default_calendar_the_accounts_first_event_calendar_takes_it(self):
+        account = _household(default="")
+        CalendarAccess([account]).create("Dentist", "2025-10-28", "10:00", "11:00")
+        (calendar_name, _), = account.created
+        assert calendar_name == "Home"
+
+    def test_the_default_is_the_first_accounts_even_when_a_later_one_has_its_own(self):
+        first, second = _household(default="Family"), _Account("Google", {"Work": []}, default="Work")
+        CalendarAccess([first, second]).create("Dentist", "2025-10-28", "10:00", "11:00")
+        assert [c for c, _ in first.created] == ["Family"] and second.created == []
+
+    def test_a_named_calendar_of_any_account_takes_the_event(self):
+        first, second = _household(), _Account("Google", {"Kids": []})
+        where = CalendarAccess([first, second]).create("Football", "2025-10-28", "16:00", "17:00", "kids")
+        (calendar_name, event), = second.created
+        assert calendar_name == "Kids" and event.account == "Google" and where == "Google/Kids"
+        assert first.created == []
+
+    def test_a_shared_name_needs_the_account_and_the_qualified_form_resolves_it(self):
+        family, google = _Account("Family", {"Kids": []}), _Account("Google", {"Kids": []})
+        access = CalendarAccess([family, google])
+        with pytest.raises(ValueError, match="Family/Kids"):
+            access.create("Football", "2025-10-28", "16:00", "17:00", "Kids")
+        access.create("Football", "2025-10-28", "16:00", "17:00", "Google/Kids")
+        assert len(google.created) == 1 and family.created == []
+
+    def test_an_unknown_calendar_name_raises_with_the_available_ones(self):
+        with pytest.raises(ValueError, match="no calendar named 'Nope'") as raised:
+            CalendarAccess([_household()]).create("Dentist", "2025-10-28", "10:00", "11:00", "Nope")
         assert "Home" in str(raised.value)
 
     def test_without_an_account_creating_raises_the_hint(self):

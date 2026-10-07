@@ -8,7 +8,7 @@ import pytest
 
 from assistant.integration.Integration import Integration, IntegrationState
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
-from assistant.integration.mail.MailAccess import MailAccess, HINT
+from assistant.integration.mail.MailAccess import MailAccess, HINT, SEND_FROM_KEY
 from assistant.integration.mail.MailAccount import MailAccount
 from assistant.integration.mail.MailSource import MailSource
 
@@ -30,15 +30,21 @@ def _account(name: str, id_prefix: str, fetch_result="", search_result="", read_
 
 @pytest.mark.unit
 class TestFetchLatest:
-    def test_merges_results_from_several_accounts_under_headers(self):
-        gmail = _account("gmail", "GM", fetch_result="[GM-AA] Mar 15 | From: a@example.com | Subject: Hi")
-        icloud = _account("icloud", "IC", fetch_result="[IC-AA] Mar 16 | From: c@example.com | Subject: Hey")
+    def test_merges_results_from_several_accounts_under_headers_naming_each_with_its_address(self):
+        personal = _account("Personal", "PE", fetch_result="[PE-AA] Mar 15 | From: a@example.com | Subject: Hi",
+                            address="m@mlab.test")
+        work = _account("Work", "WO", fetch_result="[WO-AA] Mar 16 | From: c@example.com | Subject: Hey",
+                        address="marcus@example.com")
 
-        result = MailAccess([gmail, icloud]).fetch_latest(None)
+        result = MailAccess([personal, work]).fetch_latest(None)
 
-        assert "--- Gmail ---" in result and "--- Icloud ---" in result
-        assert "[GM-AA]" in result and "[IC-AA]" in result
-        assert result.index("--- Gmail ---") < result.index("--- Icloud ---")
+        assert "--- Personal (m@mlab.test) ---" in result and "--- Work (marcus@example.com) ---" in result
+        assert "[PE-AA]" in result and "[WO-AA]" in result
+        assert result.index("--- Personal") < result.index("--- Work")
+
+    def test_an_account_without_a_known_address_is_headed_by_its_name_alone(self):
+        result = MailAccess([_account("Personal", "PE", fetch_result="x"), _account("Work", "WO", fetch_result="y")]).fetch_latest(None)
+        assert "--- Personal ---" in result and "--- Work ---" in result
 
     def test_forwards_the_arguments_to_every_account(self):
         gmail, icloud = _account("gmail", "GM", fetch_result="x"), _account("icloud", "IC", fetch_result="y")
@@ -162,39 +168,52 @@ class TestMoveAndSubject:
         gmail.subject_for.assert_not_called()
 
 
+def _send_from(name):
+    """config.yaml's mail.send_from, as MailAccess reads it."""
+    config = Mock()
+    config.get.side_effect = lambda key, default=None: name if key == SEND_FROM_KEY else default
+    return patch("assistant.integration.mail.MailAccess.ConfigManager.get_instance", return_value=config)
+
+
 @pytest.mark.unit
 class TestSender:
-    def test_the_icloud_preset_is_preferred_over_the_first_account(self):
-        gmail = _account("Gmail", "GM", preset="gmail")
-        icloud = _account("iCloud Email", "IC", preset="icloud")
+    def test_the_account_mail_send_from_names_is_the_default_sender_whatever_its_place(self):
+        personal, work = _account("Personal", "PE"), _account("Work", "WO")
+        with _send_from("work"):
+            assert MailAccess([personal, work]).sender() is work
 
-        assert MailAccess([gmail, icloud]).sender() is icloud
+    def test_without_the_setting_the_first_account_sends(self):
+        personal, work = _account("Personal", "PE"), _account("Work", "WO")
+        with _send_from(""):
+            assert MailAccess([personal, work]).sender() is personal
 
-    def test_without_an_icloud_account_the_first_one_sends(self):
-        gmail = _account("Gmail", "GM", preset="gmail")
-        work = _account("Work", "WO")
+    def test_a_setting_naming_no_account_falls_back_to_the_first(self):
+        personal, work = _account("Personal", "PE"), _account("Work", "WO")
+        with _send_from("Gone"):
+            assert MailAccess([personal, work]).sender() is personal
 
-        assert MailAccess([gmail, work]).sender() is gmail
-
-    def test_a_named_account_wins_whatever_its_preset(self):
-        gmail = _account("Gmail", "GM", preset="gmail")
-        icloud = _account("iCloud Email", "IC", preset="icloud")
-
-        assert MailAccess([gmail, icloud]).sender("gmail") is gmail
+    def test_a_named_account_wins_over_the_setting(self):
+        personal, work = _account("Personal", "PE"), _account("Work", "WO")
+        with _send_from("Personal"):
+            assert MailAccess([personal, work]).sender("work") is work
 
     def test_an_unknown_name_falls_back_to_the_default(self):
-        gmail = _account("Gmail", "GM", preset="gmail")
-        icloud = _account("iCloud Email", "IC", preset="icloud")
+        personal, work = _account("Personal", "PE"), _account("Work", "WO")
+        with _send_from("Work"):
+            assert MailAccess([personal, work]).sender("Gone") is work
 
-        assert MailAccess([gmail, icloud]).sender("Work") is icloud
+    def test_send_goes_through_the_sender_it_was_given(self):
+        personal, work = _account("Personal", "PE"), _account("Work", "WO")
+        with _send_from(""):
+            assert MailAccess([personal, work]).send("alice@example.com", "Hi", "Hello", "Work") == ""
+        work.send.assert_called_once_with("alice@example.com", "Hi", "Hello")
+        personal.send.assert_not_called()
 
-    def test_send_goes_through_the_sender(self):
-        gmail = _account("Gmail", "GM", preset="gmail")
-        icloud = _account("iCloud Email", "IC", preset="icloud")
-
-        assert MailAccess([gmail, icloud]).send("alice@example.com", "Hi", "Hello") == ""
-        icloud.send.assert_called_once_with("alice@example.com", "Hi", "Hello")
-        gmail.send.assert_not_called()
+    def test_named_finds_an_account_whatever_the_case_and_quoting(self):
+        personal, work = _account("Personal", "PE"), _account("Work", "WO")
+        access = MailAccess([personal, work])
+        assert access.named('"work"') is work and access.named("PERSONAL") is personal
+        assert access.named("Nope") is None and access.named("") is None
 
     def test_account_for_matches_the_address_whatever_its_case(self):
         gmail = _account("Gmail", "GM", address="Marcus@example.com")
@@ -219,6 +238,9 @@ class TestNoAccount:
 
     def test_sending_without_an_account_is_the_hint_not_an_exception(self):
         assert MailAccess([]).send("alice@example.com", "Hi", "Hello") == HINT
+
+    def test_the_hint_names_the_accounts_section_and_the_setup_commands(self):
+        assert "imap.accounts" in HINT and "config_request" in HINT and "list_integrations" in HINT
 
 
 class _Source(Integration, MailSource):
@@ -297,6 +319,13 @@ class TestGatheringThroughTheMonitor:
 
         assert unconfigured.state is IntegrationState.NOT_CONFIGURED
         assert MailAccess.current().accounts == [gmail]
+
+    def test_an_account_whose_name_or_prefix_another_integration_took_is_skipped(self, monitor):
+        personal = _account("Personal", "PE")
+        monitor.register(_Source("IMAP Mail", [], [personal]))
+        monitor.register(_Source("Google", [], [_account("personal", "GO"), _account("Pets", "PE"), _account("Work", "WO")]))
+
+        assert [a.name for a in MailAccess.current().accounts] == ["Personal", "Work"]
 
     def test_a_disabled_source_is_never_built(self, monitor):
         with patch.object(Integration, "enabled", classmethod(lambda cls, config: False)):
