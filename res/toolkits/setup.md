@@ -52,6 +52,12 @@ enabled and reports "needs 2FA". It sends the code to the user's Telegram app (b
 in), opens the masked prompt for it, then for the account's two-step verification password when it has one, and
 starts the feed. A code that expired or a cancelled prompt comes back as text; run it again for a new code.
 
+`microsoft_login(account: str)` — signs a Microsoft 365 account (an entry of `microsoft.accounts`, by its name) in, e.g.
+`microsoft_login("Work")`, from any chat. It comes back with a code and the address to type it at
+(microsoft.com/devicelogin); tell the user both, nothing comes back to paste. The code lives about fifteen minutes;
+a system note says when the account is signed in (or that the code expired — run it again for a new one). Needs
+`microsoft.app.client_id` set and the integration enabled; list_integrations shows the accounts still to sign in.
+
 When the user asks for something whose integration is disabled or not configured (the list above, a command that
 answers "not configured", or list_integrations): run `config_help` for its section, tell the user what you need and where
 they get it, and ask whether to set it up now. Then `config_request` each key in turn, then
@@ -60,4 +66,4 @@ the state it came back with — if it failed, say why and offer to re-enter the 
 the chat, and never guess a key that config_help does not list.
 
 ### Stop-and-wait
-`list_integrations()`, `config_help()`, `config_request()`, `config_set()`, `restart_integration()`, `enable_integration()`, `disable_integration()`, `telegram_login()` return data: emit them and stop generating; the result arrives in the next round.
+`list_integrations()`, `config_help()`, `config_request()`, `config_set()`, `restart_integration()`, `enable_integration()`, `disable_integration()`, `telegram_login()`, `microsoft_login()` return data: emit them and stop generating; the result arrives in the next round.

@@ -37,6 +37,7 @@ tzlocal==5.3.1
 # What only one integration needs is pinned in its folder (src/integrations/<name>/requirements.txt)
 -r src/integrations/arlo/requirements.txt
 -r src/integrations/caldav/requirements.txt
+-r src/integrations/microsoft/requirements.txt
 -r src/integrations/music/requirements.txt
 -r src/integrations/ring/requirements.txt
 -r src/integrations/telegram_feed/requirements.txt
