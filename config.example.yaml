@@ -108,9 +108,12 @@ telegram_bot:
 feeds:
   imessage: { backfill_months: 60 }   # five years; chat.db rows are cheap
   telegram_feed: { backfill_months: 1 }
-  photos: { backfill_months: 1 }   # one LLM call per photo or video, on the ai.photo_indexing tier (Gemini 3.8 Flash by default)
+  photos: { backfill_months: 1, backfill_batch: true }   # one LLM call per photo or video, on the ai.photo_indexing tier (Gemini 3.8 Flash by default)
   # On a fresh install the first-run pipeline raises photos to 36 once the first memory bank is curated
   # (plans/FTUE_PIPELINE_PLAN.md); a wider value set by hand is left alone.
+  # backfill_batch: while the Photos feed catches up, stills go through the provider's batch API — every
+  # token at half price, each fetch of up to 100 photos answered in minutes (Gemini's own target is 24 h).
+  # New photos always go live and are described within seconds. false = everything live.
 
 # Which interfaces the server starts (floxy_ai_server.py). A disabled interface's module
 # is never imported: with voice off, no audio/Whisper/torch/spaCy library is loaded. The

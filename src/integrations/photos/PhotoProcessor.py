@@ -162,6 +162,26 @@ VIDEO_THREADS = 5
 # requests it cannot cancel. Two workers: one image in the model while the other one's
 # iCloud read, HEIC conversion and encoding happen, so the model never waits for a photo.
 LOCAL_PHOTO_THREADS = 2
+# The backfill (a feed fetch while the Photos feed is catching up) sends its stills through the
+# provider's batch API at half price: one job per fetch of up to FETCH_BATCH_SIZE photos, answered
+# in minutes on a quiet day. A job that has not ended by then is cancelled and its photos are
+# indexed live, so the backfill never stalls on the provider. `feeds.photos.backfill_batch: false`
+# keeps every photo on the live path.
+BATCH_MAX_WAIT_SECONDS = 1800
+
+
+@dataclass
+class _PreparedPhoto:
+    """A still with its bytes and context in hand, ready for the LLM — the point where the live
+    path and the batch path part."""
+    row: dict
+    jpeg: bytes
+    photo_type: str
+    albums: str
+    persons: str
+    location_text: str
+    user_message: str
+    started: float
 
 ASSET_COLUMNS = """a.ZUUID, a.ZFILENAME, a.ZDIRECTORY, a.ZDATECREATED, a.ZLATITUDE, a.ZLONGITUDE,
            a.ZKINDSUBTYPE, a.ZKIND, a.ZDURATION, m.ZCLOUDMASTERGUID, a.ZCLOUDASSETGUID,
@@ -502,22 +522,32 @@ class PhotoProcessor:
             error(f"Photos: process_bulk_unprocessed failed: {e}")
             return ("error", f"Error: {e}")
 
-    def process_rows(self, rows: list, on_progress=None) -> tuple[list[str], list[str]]:
+    def process_rows(self, rows: list, on_progress=None, batched: bool = False) -> tuple[list[str], list[str]]:
         """Index `rows` concurrently (PHOTO_THREADS stills, VIDEO_THREADS clips at a time) and
         wait for all of them. Assets whose original is still downloading from iCloud go to the
-        pending set for `_retry_icloud_pending`. Returns (descriptions stored, filenames failed)."""
+        pending set for `_retry_icloud_pending`. With `batched` (the backfill) the stills go
+        through the batch API first and only the ones it did not answer run live; videos always
+        run live. Returns (descriptions stored, filenames failed)."""
         t0 = time.time()
         num_videos = sum(1 for row in rows if row.get("kind") == "video")
-        photo_threads = LOCAL_PHOTO_THREADS if self._indexing_backend_is_local() else PHOTO_THREADS
+        local = self._indexing_backend_is_local()
+        photo_threads = LOCAL_PHOTO_THREADS if local else PHOTO_THREADS
         info(f"Photos: processing {len(rows) - num_videos} photo(s) with {photo_threads} threads"
-             + (f" and {num_videos} video(s) with {VIDEO_THREADS} threads" if num_videos else ""))
+             + (f" and {num_videos} video(s) with {VIDEO_THREADS} threads" if num_videos else "")
+             + (" — stills through the batch API first" if batched and not local else ""))
         succeeded: list[str] = []
         failed: list[str] = []
         lock = threading.Lock()
+        settled: dict[str, bool] = {}
+        if batched and not local and self._batch_enabled():
+            settled = self._process_stills_batched([row for row in rows if row.get("kind") != "video"])
 
         def worker(row):
             try:
-                needs_icloud = self._process_one(row)
+                if row["uuid"] in settled:
+                    needs_icloud = settled[row["uuid"]]
+                else:
+                    needs_icloud = self._process_one(row)
                 if needs_icloud:
                     with self._icloud_lock:
                         if row["uuid"] not in self._pending_icloud:
@@ -561,6 +591,103 @@ class PhotoProcessor:
              f"{elapsed:.1f}s total, {avg:.1f}s avg/asset"
              + (f", {pending_count} awaiting iCloud download" if pending_count else ""))
         return succeeded, failed
+
+    @staticmethod
+    def _batch_enabled() -> bool:
+        from common.ConfigManager import ConfigManager
+        return bool(ConfigManager.get_instance().get('feeds.photos.backfill_batch', True))
+
+    def _process_stills_batched(self, rows: list) -> dict[str, bool]:
+        """The backfill's stills through the batch API. Every row is prepared (downloaded, its
+        context read) on the usual fan-out, the prepared ones go out as one batch, and each
+        answered photo is stored. Returns the rows this settled, uuid -> "needs an iCloud retry"
+        (False for stored or skipped); a row that is missing — the batch did not answer it, its
+        reply did not parse, there is no batch API — is left for the live path, which still has
+        the full fan-out for it."""
+        settled: dict[str, bool] = {}
+        prepared: list[_PreparedPhoto] = []
+        lock = threading.Lock()
+        db = FloxyDatabase.get_instance()
+
+        def prepare(row):
+            uuid = row["uuid"]
+            with PhotoProcessor._processing_lock:
+                if uuid in PhotoProcessor._processing_uuids:
+                    trace(f"Photos: {uuid} already being processed by another thread, skipping")
+                    with lock:
+                        settled[uuid] = False
+                    return
+                PhotoProcessor._processing_uuids.add(uuid)
+            try:
+                photo, retry = self._prepare_photo(row, db)
+            except Exception as e:
+                error(f"Photos: preparing {uuid} for the batch failed: {e}")
+                photo, retry = None, False
+            with lock:
+                if photo is None:
+                    settled[uuid] = retry
+                    with PhotoProcessor._processing_lock:
+                        PhotoProcessor._processing_uuids.discard(uuid)
+                else:
+                    prepared.append(photo)    # stays marked as processing until stored or handed back
+
+        semaphore = threading.Semaphore(PHOTO_THREADS)
+
+        def throttled(row):
+            with semaphore:
+                prepare(row)
+
+        threads = [threading.Thread(target=throttled, args=(row,), daemon=True) for row in rows]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        if not prepared:
+            trace(f"Photos: nothing to batch — {len(settled)} row(s) settled while preparing")
+            return settled
+
+        size_mb = sum(len(p.jpeg) for p in prepared) / 1024 / 1024
+        info(f"Photos: {len(prepared)} photo(s) ({size_mb:.1f} MB) go to the batch API, "
+             f"{len(settled)} settled while preparing")
+        t0 = time.time()
+        system = self._photo_system_prompt()
+        try:
+            replies = self._get_llm().think_batched_with_images(
+                system, [(p.user_message, p.jpeg) for p in prepared], max_wait_seconds=BATCH_MAX_WAIT_SECONDS)
+        except Exception as e:
+            error(f"Photos: the batch failed ({e}) — these photos are indexed live")
+            replies = None
+        if replies is None:
+            info(f"Photos: no batch answer for {len(prepared)} photo(s) — indexing them live")
+            replies = [None] * len(prepared)
+
+        stored = unanswered = unparsed = 0
+        for photo, reply in zip(prepared, replies):
+            uuid = photo.row["uuid"]
+            result = None
+            if reply:
+                try:
+                    result = self._parse_analysis(reply)
+                except (json.JSONDecodeError, KeyError, ValueError) as e:
+                    trace(f"Photos: batch reply for {uuid} did not parse ({e}), indexing it live")
+                    unparsed += 1
+            else:
+                unanswered += 1
+            try:
+                if result is not None:
+                    photo.started = time.time()
+                    self._finish_photo(db, photo, result)
+                    stored += 1
+                    settled[uuid] = False
+            except Exception as e:
+                error(f"Photos: storing the batch result for {uuid} failed: {e}")
+                settled[uuid] = False
+            finally:
+                with PhotoProcessor._processing_lock:
+                    PhotoProcessor._processing_uuids.discard(uuid)
+        info(f"Photos: batch done in {time.time() - t0:.0f}s — {stored} stored, "
+             f"{unanswered} unanswered and {unparsed} unparsed go to the live path")
+        return settled
 
     def _retry_icloud_pending(self):
         with self._icloud_lock:
@@ -686,6 +813,25 @@ class PhotoProcessor:
         if row.get("kind") == "video":
             return self._process_video(row, db)
 
+        photo, retry = self._prepare_photo(row, db)
+        if photo is None:
+            return retry
+        PhotoProcessor._worker.queued_s = 0.0
+        result = self._analyze_with_llm(photo.jpeg, self._home_time(row["creation_ts"]), photo.location_text,
+                                        photo.albums, photo.persons, photo.photo_type)
+        if result is None:
+            error(f"Photos: {uuid} permanently failed LLM analysis, skipping")
+            self._store_skipped(db, asset_guid, row["creation_ts"], row, reason="LLM analysis failed")
+            return False
+        self._finish_photo(db, photo, result)
+        return False
+
+    def _prepare_photo(self, row: dict, db) -> tuple[Optional[_PreparedPhoto], bool]:
+        """The still's bytes and context, or (None, retry): True when its original is still
+        coming from iCloud and the row must be tried again later, False when it was stored as
+        skipped or cannot be indexed at all."""
+        uuid = row["uuid"]
+        asset_guid = row["cloud_asset_guid"]
         original_path = os.path.join(PHOTOS_ORIGINALS_DIR, row["directory"], row["filename"])
         placeholder = self._icloud_placeholder_type(original_path)
 
@@ -697,11 +843,11 @@ class PhotoProcessor:
             except CorruptImageError as e:
                 error(f"Photos: {uuid} has permanently corrupt image data: {e}")
                 self._store_skipped(db, asset_guid, row["creation_ts"], row, reason="corrupt image")
-                return False
+                return None, False
             except PhotoNotInCloudError:
                 info(f"Photos: {uuid} not found in any iCloud zone, skipping permanently")
                 self._store_skipped(db, asset_guid, row["creation_ts"], row, reason="not in iCloud library")
-                return False
+                return None, False
             if jpeg_bytes:
                 fine(f"Photos: {uuid} downloaded via iCloud API ({placeholder})")
             else:
@@ -709,26 +855,22 @@ class PhotoProcessor:
                 if placeholder == "dataless":
                     self._trigger_icloud_download(original_path)
                     trace(f"Photos: {uuid} is iCloud-only (dataless), triggered download")
-                    return True
+                    return None, True
                 if placeholder == "evicted":
                     self._trigger_icloud_download_brctl(original_path)
                     trace(f"Photos: {uuid} not on disk yet (evicted), triggered brctl download, will retry")
-                    return True
+                    return None, True
                 if placeholder == "truncated":
                     # The file is "local" as far as iCloud is concerned, so no download to
                     # trigger — only the API can supply the bytes, try again later.
                     trace(f"Photos: {uuid} original is truncated on disk and the iCloud API failed, will retry")
-                    return True
+                    return None, True
                 # stub — no brctl fallback
                 trace(f"Photos: {uuid} is iCloud-only (.icloud stub), cannot download")
-                return False
+                return None, False
 
         t0 = time.time()
-
         creation_ts = row["creation_ts"]
-        lat = row["latitude"]
-        lon = row["longitude"]
-
         photo_type = self._describe_subtypes(row["kind_subtype"])
         albums = self._get_albums(uuid)
         persons = self._get_persons(uuid)
@@ -738,44 +880,47 @@ class PhotoProcessor:
             jpeg_bytes = self._get_image_bytes(row["directory"], row["filename"])
             if jpeg_bytes is None:
                 trace(f"Photos: skipping {uuid}, could not extract image")
-                return False
+                return None, False
 
         max_size = 5 * 1024 * 1024
         if len(jpeg_bytes) > max_size:
             info(f"Photos: skipping {uuid}, image too large ({len(jpeg_bytes) / 1024 / 1024:.1f} MB)")
             self._store_skipped(db, asset_guid, creation_ts, row)
-            return False
+            return None, False
 
-        date_str = self._home_time(creation_ts)
-        PhotoProcessor._worker.queued_s = 0.0
-        result = self._analyze_with_llm(jpeg_bytes, date_str, location_text, albums, persons, photo_type)
-        if result is None:
-            error(f"Photos: {uuid} permanently failed LLM analysis, skipping")
-            self._store_skipped(db, asset_guid, creation_ts, row, reason="LLM analysis failed")
-            return False
+        _, user_message = self._photo_prompt(self._home_time(creation_ts), location_text, albums, persons, photo_type)
+        return _PreparedPhoto(row=row, jpeg=jpeg_bytes, photo_type=photo_type, albums=albums, persons=persons,
+                              location_text=location_text, user_message=user_message, started=t0), False
 
+    def _finish_photo(self, db, photo: _PreparedPhoto, result: dict):
+        """Store an analysed still and log it; `photo.started` dates the timing line."""
+        row = photo.row
+        uuid = row["uuid"]
         pretty = result["pretty_score"]
         family = result["family_importance_score"]
 
-        if "screenshot" in photo_type:
+        if "screenshot" in photo.photo_type:
             pretty //= 2
             family //= 2
 
-        if not self._store_analysis(db, row, result, photo_type, location_text, albums, persons, pretty, family):
-            return False
+        if not self._store_analysis(db, row, result, photo.photo_type, photo.location_text, photo.albums,
+                                    photo.persons, pretty, family):
+            return
 
-        elapsed = time.time() - t0
+        lat = row["latitude"]
+        lon = row["longitude"]
+        elapsed = time.time() - photo.started
         coords = f"[{lat:.5f},{lon:.5f}]" if lat is not None and lon is not None else "no coords"
         # A local backend serves one image at a time, so a worker's clock includes the time its
         # photo queued behind the other worker's — say so, or every photo looks twice as slow.
-        queued = PhotoProcessor._worker.queued_s
+        queued = getattr(PhotoProcessor._worker, "queued_s", 0.0)
         timing = f"in {elapsed:.1f}s" + (f" ({queued:.1f}s of it queued for the model)" if queued >= 1 else "")
-        line = f"Photo processed '{result['short_description']}' ({photo_type}, [{persons}], {location_text}, {coords}) {timing} ({uuid})."
+        line = (f"Photo processed '{result['short_description']}' ({photo.photo_type}, [{photo.persons}], "
+                f"{photo.location_text}, {coords}) {timing} ({uuid}).")
         if elapsed > 10:
             info(line)
         else:
             trace(line)
-        return False
 
     def _process_video(self, row: dict, db) -> bool:
         """The video half of _process_one_inner. Returns True when the download should be
@@ -1142,10 +1287,16 @@ class PhotoProcessor:
     def _escape_braces(text: str) -> str:
         return text.replace("{", "{{").replace("}", "}}")
 
-    def _analyze_with_llm(self, jpeg_bytes: bytes, date_str: str, location: str,
-                          albums: str, persons: str, photo_type: str) -> Optional[dict]:
-        system = ANALYSIS_PROMPT_SYSTEM.format(
+    def _photo_system_prompt(self) -> str:
+        """The part of a still's prompt that is the same for every photo: the instructions and the
+        memory bank. Identical text from photo to photo is what a provider's prefix or explicit
+        cache keys on, so nothing per-photo may go in here."""
+        return ANALYSIS_PROMPT_SYSTEM.format(
             current_memory=self._escape_braces(self._read_memory() or "(no memory available)"))
+
+    def _photo_prompt(self, date_str: str, location: str, albums: str, persons: str,
+                      photo_type: str) -> tuple[str, str]:
+        """(system, user) for one still; the per-photo fields are all in the user half."""
         user = ANALYSIS_PROMPT_USER.format(
             date=date_str,
             location=self._escape_braces(location or "unknown"),
@@ -1153,6 +1304,11 @@ class PhotoProcessor:
             persons=self._escape_braces(persons or "none"),
             photo_type=photo_type,
         )
+        return self._photo_system_prompt(), user
+
+    def _analyze_with_llm(self, jpeg_bytes: bytes, date_str: str, location: str,
+                          albums: str, persons: str, photo_type: str) -> Optional[dict]:
+        system, user = self._photo_prompt(date_str, location, albums, persons, photo_type)
         llm = self._get_llm()
 
         for attempt in range(2):

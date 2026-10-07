@@ -163,6 +163,22 @@ class AbstractLLM(ABC):
         Default: no batch API. Override in backends that have one (ClaudeLLM)."""
         return None
 
+    def think_batched_with_images(self, system_message: str, requests: list[tuple[str, bytes]],
+                                  max_wait_seconds: float = 1800) -> list[str | None] | None:
+        """`think` with one image per request, for a pile of work nobody is waiting on (the photo
+        backfill), through the provider's batch API where it has one: half price, the answers
+        within minutes to hours. `requests` are (user_message, image bytes) pairs under one shared
+        system message. Returns one reply per request in order, None for a request the batch did
+        not answer — or None as a whole when there is no batch API or the job gave nothing, and
+        the caller makes the ordinary calls instead. Not retried: a retry would pay twice."""
+        return self.create_batched_image_completions(system_message, requests, max_wait_seconds=max_wait_seconds)
+
+    def create_batched_image_completions(self, system_message: str, requests: list[tuple[str, bytes]],
+                                         max_wait_seconds: float = 1800) -> list[str | None] | None:
+        """The image completions through the provider's batch API, or None (see
+        `think_batched_with_images`). Default: no batch API. Override in backends that have one."""
+        return None
+
     def supports_video(self) -> bool:
         """True if this LLM accepts a video clip as input. Override in backends that do (Gemini)."""
         return False

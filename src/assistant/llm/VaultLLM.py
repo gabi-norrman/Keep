@@ -50,6 +50,15 @@ class VaultLLM(AbstractLLM):
         return self._restored(self.llm.create_batched_completion(
             self.redactor.redact_messages(messages), thinking=thinking, max_wait_seconds=max_wait_seconds))
 
+    def create_batched_image_completions(self, system_message: str, requests: list[tuple[str, bytes]],
+                                         max_wait_seconds: float = 1800) -> list[str | None] | None:
+        # Explicit like create_batched_completion: every user message is redacted on the way
+        # out and every reply restored on the way back; a None reply stays None.
+        system_message, _ = self.redactor.redact(system_message)
+        redacted = [(self.redactor.redact(user)[0], image) for user, image in requests]
+        replies = self.llm.create_batched_image_completions(system_message, redacted, max_wait_seconds=max_wait_seconds)
+        return None if replies is None else [self._restored(reply) for reply in replies]
+
     def is_local(self) -> bool:
         return self.llm.is_local()
 

@@ -218,7 +218,8 @@ class PhotosIntegration(Integration, Feed):
                 num_videos = sum(1 for r in todo if r["kind"] == "video")
                 info(f"Photos: {len(todo) - num_videos} photo(s) and {num_videos} video(s) to index"
                      + (" (catching up)" if backfill else ""))
-                processor.process_rows(todo)
+                # The catch-up is the work nobody waits for: its stills go through the batch API.
+                processor.process_rows(todo, batched=backfill)
             else:
                 trace(f"Photos: {len(rows)} asset(s) after the cursor, all indexed or awaiting iCloud")
         new_cursor, held = self.advance_cursor(after, rows, time.time())

@@ -1,13 +1,16 @@
 import base64
+import hashlib
 import io
+import threading
 import time
+from dataclasses import dataclass
 from typing import Generator
 from google.genai.types import ThinkingLevel
 
 from .AbstractLLM import AbstractLLM
 from google import genai
 from google.genai import types
-from common.logging import trace, info
+from common.logging import trace, info, error
 from common.ConfigManager import config
 
 # Gemini rejects requests over 20 MB, so clips above this go through the Files API instead of an
@@ -18,6 +21,29 @@ MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024
 FILE_PROCESSING_TIMEOUT = 120
 FILE_POLL_INTERVAL = 1.0
 
+# Explicit context cache of a bulk request's system instruction (the photo indexer's memory bank
+# and instructions, 2–7k tokens that are identical from photo to photo). Cached tokens are billed
+# at a tenth of the input price; storage is $0.50 per million tokens per hour, so a cache is kept
+# only as long as requests keep arriving: every use that finds it in the last half of its life
+# extends it by one more TTL, and a trickle lets it lapse. A batch job can take long to start,
+# so a cache made for one lives longer and is extended while the job is polled.
+SYSTEM_CACHE_TTL_SECONDS = 600
+BATCH_CACHE_TTL_SECONDS = 3600
+# Inline batch jobs must stay under 20 MB in total; the photo indexer's 1024 px JPEGs are
+# ~150 kB each, so a 100-photo fetch fits in one job and a heavier one is split.
+INLINE_BATCH_LIMIT = 18 * 1024 * 1024
+BATCH_POLL_SECONDS = 15
+_BATCH_ENDED = ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED",
+                "JOB_STATE_PARTIALLY_SUCCEEDED")
+
+
+@dataclass
+class _SystemCache:
+    name: str
+    tokens: int
+    ttl: float
+    expires_at: float    # time.monotonic()
+
 
 class GeminiLLM(AbstractLLM):
     """Talks to Google Gemini through the google-genai client, with native thinking levels."""
@@ -27,6 +53,9 @@ class GeminiLLM(AbstractLLM):
     def __init__(self, model: str = "gemini-3.5-flash"):
         self.model = model
         self.client = None
+        # system-instruction digest -> cache; None marks text Gemini refused to cache (too short)
+        self._system_caches: dict[str, _SystemCache | None] = {}
+        self._cache_lock = threading.Lock()
 
     @property
     def api_key(self) -> str | None:
@@ -166,19 +195,226 @@ class GeminiLLM(AbstractLLM):
                         data=base64.b64decode(img), mime_type="image/jpeg"
                     ))
 
-        config_params = {}
-        if system_instruction:
-            config_params['system_instruction'] = system_instruction
-
-        generation_config = types.GenerateContentConfig(**config_params) if config_params else None
-
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=gemini_messages,
-            config=generation_config
-        )
-
+        # Bulk work (the photo indexer) repeats one long system instruction per image: serve it
+        # from an explicit cache. A user's own image question is one-off and goes as is.
+        cache = self._cached_system(system_instruction, SYSTEM_CACHE_TTL_SECONDS) if background else None
+        response = self._generate_with_cache(gemini_messages, system_instruction, cache)
+        self._log_usage(response, "image")
         return self._text_or_empty(response, "image")
+
+    def _generate_with_cache(self, contents, system_instruction: str | None, cache: _SystemCache | None):
+        """generate_content through `cache` when there is one; a cache Gemini no longer knows
+        (expired between the check and the call, deleted elsewhere) is dropped and the request
+        repeated with the system instruction inline, so no image is lost to the cache."""
+        if cache is not None:
+            try:
+                return self.client.models.generate_content(
+                    model=self.model, contents=contents,
+                    config=types.GenerateContentConfig(cached_content=cache.name))
+            except Exception as e:
+                if not self._is_missing_cache_error(e):
+                    raise
+                info(f"Gemini: cache {cache.name} is gone ({str(e)[:80]}) — resending with the system instruction inline")
+                self._forget_cache(cache)
+        config_params = {'system_instruction': system_instruction} if system_instruction else {}
+        return self.client.models.generate_content(
+            model=self.model, contents=contents,
+            config=types.GenerateContentConfig(**config_params) if config_params else None)
+
+    @staticmethod
+    def _is_missing_cache_error(e: Exception) -> bool:
+        text = str(e)
+        return "cachedContent" in text or "CachedContent" in text or ("403" in text and "cache" in text.lower())
+
+    def _cached_system(self, system_instruction: str | None, ttl: float) -> _SystemCache | None:
+        """The explicit cache holding `system_instruction` for this model, created on first use and
+        extended on every use that finds it past half its life. None when there is nothing to
+        cache, when Gemini refused the text (below its minimum size — remembered, so a short bank
+        costs one failed attempt and not one per photo) or when the cache call itself failed:
+        the request then goes out with the instruction inline, as before."""
+        if not system_instruction:
+            return None
+        key = hashlib.sha256(f"{self.model}\n{system_instruction}".encode()).hexdigest()
+        with self._cache_lock:
+            if key in self._system_caches:
+                cache = self._system_caches[key]
+                if cache is None:
+                    return None
+                # Good for at least half the life the caller asks for: a batch job (an hour) may
+                # pick up a cache the live path made for ten minutes, and then it is lengthened.
+                if cache.expires_at - time.monotonic() >= ttl / 2:
+                    return cache
+                try:
+                    self.client.caches.update(name=cache.name, config=types.UpdateCachedContentConfig(ttl=f"{int(ttl)}s"))
+                    cache.ttl = ttl
+                    cache.expires_at = time.monotonic() + ttl
+                    trace(f"Gemini: cache {cache.name} extended by {ttl:.0f}s")
+                    return cache
+                except Exception as e:
+                    info(f"Gemini: could not extend cache {cache.name} ({str(e)[:80]}) — making a new one")
+                    del self._system_caches[key]
+            try:
+                created = self.client.caches.create(model=self.model, config=types.CreateCachedContentConfig(
+                    system_instruction=system_instruction, ttl=f"{int(ttl)}s", display_name="floxy-system"))
+            except Exception as e:
+                if "minimum" in str(e).lower() or "too small" in str(e).lower() or "400" in str(e):
+                    info(f"Gemini: system instruction of {len(system_instruction)} chars is below the cache minimum "
+                         f"({str(e)[:100]}) — sending it inline from now on")
+                    self._system_caches[key] = None
+                else:
+                    info(f"Gemini: could not create a context cache ({str(e)[:120]}) — sending the system instruction inline")
+                return None
+            tokens = getattr(getattr(created, 'usage_metadata', None), 'total_token_count', 0) or 0
+            cache = _SystemCache(name=created.name, tokens=tokens, ttl=ttl, expires_at=time.monotonic() + ttl)
+            self._system_caches[key] = cache
+            info(f"Gemini: cached the system instruction as {created.name} ({tokens} tokens, ttl {ttl:.0f}s) "
+                 f"— every request on it pays a tenth for those tokens")
+            return cache
+
+    def _forget_cache(self, cache: _SystemCache):
+        with self._cache_lock:
+            for key, known in list(self._system_caches.items()):
+                if known is not None and known.name == cache.name:
+                    del self._system_caches[key]
+
+    def create_batched_image_completions(self, system_message: str, requests: list[tuple[str, bytes]],
+                                         max_wait_seconds: float = 1800) -> list[str | None] | None:
+        """The requests as inline batch jobs (one per INLINE_BATCH_LIMIT of images), every token at
+        half price, polled until they end or `max_wait_seconds` pass — a job still running then is
+        cancelled and its requests reported unanswered. The system message rides in an explicit
+        cache when Gemini takes it, so a batched photo pays half of a tenth for the memory bank."""
+        self._ensure_initialized()
+        if not requests:
+            return []
+        system_instruction = self.strip_cache_markers(system_message)
+        cache = self._cached_system(system_instruction, BATCH_CACHE_TTL_SECONDS)
+        request_config = {'cached_content': cache.name} if cache else {'system_instruction': system_instruction}
+        jobs: list[tuple[object, list[int]]] = []    # (job, indexes of `requests` it carries)
+        t_start = time.time()
+        for indexes in self._batch_chunks(requests):
+            inline = [{
+                'contents': [{'role': 'user', 'parts': [
+                    {'inline_data': {'data': requests[i][1], 'mime_type': self._image_mime(requests[i][1])}},
+                    {'text': requests[i][0]}]}],
+                'config': request_config,
+            } for i in indexes]
+            size_mb = sum(len(requests[i][1]) for i in indexes) / 1024 / 1024
+            try:
+                job = self.client.batches.create(model=self.model, src=inline,
+                                                 config={'display_name': 'floxy-photo-index'})
+            except Exception as e:
+                # Tier 1 allows 3M enqueued tokens at a time: a refused job means the caller indexes
+                # these photos live, at full price, and the log says why.
+                error(f"Gemini batch: could not submit {len(indexes)} image request(s) ({size_mb:.1f} MB): {str(e)[:160]}")
+                self._cancel_jobs(jobs)
+                return None
+            info(f"Gemini batch {job.name}: {len(indexes)} image request(s) ({size_mb:.1f} MB) submitted, "
+                 f"waiting up to {max_wait_seconds / 60:.0f} min")
+            jobs.append((job, indexes))
+
+        replies: list[str | None] = [None] * len(requests)
+        deadline = t_start + max_wait_seconds
+        pending = list(jobs)
+        while pending:
+            if cache is not None:
+                self._cached_system(system_instruction, BATCH_CACHE_TTL_SECONDS)    # keep it alive for the job
+            still = []
+            for job, indexes in pending:
+                try:
+                    job = self.client.batches.get(name=job.name)
+                except Exception as e:
+                    info(f"Gemini batch {job.name}: poll failed ({str(e)[:80]}), looking again later")
+                    still.append((job, indexes))
+                    continue
+                state = self._job_state(job)
+                if state not in _BATCH_ENDED:
+                    trace(f"Gemini batch {job.name}: {state}")
+                    still.append((job, indexes))
+                    continue
+                answered = self._collect_batch(job, indexes, replies)
+                info(f"Gemini batch {job.name}: {state} after {(time.time() - t_start) / 60:.1f} min, "
+                     f"{answered}/{len(indexes)} answered")
+            pending = still
+            if pending and time.time() >= deadline:
+                info(f"Gemini batch: {len(pending)} job(s) still running after {max_wait_seconds / 60:.0f} min — "
+                     f"cancelling, the caller indexes those photos live")
+                self._cancel_jobs(pending)
+                break
+            if pending:
+                time.sleep(BATCH_POLL_SECONDS)
+        return replies
+
+    @staticmethod
+    def _batch_chunks(requests: list[tuple[str, bytes]]) -> list[list[int]]:
+        chunks: list[list[int]] = [[]]
+        size = 0
+        for i, (_, image) in enumerate(requests):
+            if chunks[-1] and size + len(image) > INLINE_BATCH_LIMIT:
+                chunks.append([])
+                size = 0
+            chunks[-1].append(i)
+            size += len(image)
+        return chunks
+
+    @staticmethod
+    def _image_mime(image: bytes) -> str:
+        return "image/png" if image[:4] == b'\x89PNG' else "image/jpeg"
+
+    @staticmethod
+    def _job_state(job) -> str:
+        state = getattr(job, 'state', None)
+        return getattr(state, 'name', None) or str(state or "")
+
+    def _collect_batch(self, job, indexes: list[int], replies: list[str | None]) -> int:
+        """Copy a finished job's replies into `replies` (by request index); returns how many it
+        answered. One usage line per job: the per-image accounting the live path logs, summed."""
+        responses = list(getattr(getattr(job, 'dest', None), 'inlined_responses', None) or [])
+        if len(responses) != len(indexes):
+            info(f"Gemini batch {job.name}: {len(responses)} response(s) for {len(indexes)} request(s)")
+        answered = 0
+        prompt = cached = out = thoughts = 0
+        for i, item in zip(indexes, responses):
+            response = getattr(item, 'response', None)
+            if response is None:
+                trace(f"Gemini batch {job.name}: request {i} failed: {str(getattr(item, 'error', ''))[:120]}")
+                continue
+            usage = getattr(response, 'usage_metadata', None)
+            if usage is not None:
+                prompt += usage.prompt_token_count or 0
+                cached += usage.cached_content_token_count or 0
+                out += usage.candidates_token_count or 0
+                thoughts += usage.thoughts_token_count or 0
+            text = self._text_or_empty(response, "batched image")
+            if text:
+                replies[i] = text
+                answered += 1
+        info(f"Gemini batch {job.name}: {answered} reply(ies) used {prompt} prompt tokens ({cached} cached), "
+             f"{out} output, {thoughts} thinking — all at batch (half) price")
+        return answered
+
+    def _cancel_jobs(self, jobs):
+        for job, _ in jobs:
+            try:
+                self.client.batches.cancel(name=job.name)
+                trace(f"Gemini batch {job.name}: cancelled")
+            except Exception as e:
+                trace(f"Gemini batch {job.name}: could not cancel: {e}")
+
+    @staticmethod
+    def _log_usage(response, what: str):
+        """One line of token accounting per media request: the prompt tokens (the image or clip
+        plus the memory bank and the instructions), how many of them Gemini's implicit cache
+        served, and the output split into reply and thinking. The photo backfill is thousands of
+        these calls, so this line is where its cost is read off the log."""
+        usage = getattr(response, 'usage_metadata', None)
+        if usage is None:
+            trace(f"Gemini: {what} request returned no usage metadata")
+            return
+        info(f"Gemini: {what} request used {getattr(usage, 'prompt_token_count', '?')} prompt tokens "
+             f"({getattr(usage, 'cached_content_token_count', None) or 0} cached), "
+             f"{getattr(usage, 'candidates_token_count', '?')} output, "
+             f"{getattr(usage, 'thoughts_token_count', None) or 0} thinking, "
+             f"{getattr(usage, 'total_token_count', '?')} total")
 
     @staticmethod
     def _text_or_empty(response, what: str) -> str:
@@ -245,10 +481,7 @@ class GeminiLLM(AbstractLLM):
             if uploaded is not None:
                 self._delete_file(uploaded)
 
-        usage = getattr(response, 'usage_metadata', None)
-        if usage is not None:
-            info(f"Gemini: video request used {getattr(usage, 'prompt_token_count', '?')} prompt tokens, "
-                 f"{getattr(usage, 'total_token_count', '?')} total")
+        self._log_usage(response, "video")
         return self._text_or_empty(response, "video")
 
     def _upload_video(self, video_bytes: bytes, mime_type: str):

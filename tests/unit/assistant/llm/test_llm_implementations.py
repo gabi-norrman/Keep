@@ -1384,6 +1384,204 @@ class TestGeminiLLMVideo:
 
         assert llm.think("sys", "describe", images=[b'\xff\xd8\xff' + b'\x00' * 10]) == ""
 
+    @patch('assistant.llm.GeminiLLM.info')
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_image_request_logs_token_usage_with_cache_hits(self, mock_types, mock_config, mock_info):
+        """The photo backfill is thousands of image calls; the log has to show what each one cost
+        and how much of the prompt the implicit cache served — the video path logged it, the
+        image path did not."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.GeminiLLM import GeminiLLM
+        llm = GeminiLLM()
+        llm.client = Mock()
+        usage = Mock(prompt_token_count=8900, cached_content_token_count=6500,
+                     candidates_token_count=480, thoughts_token_count=None, total_token_count=9380)
+        llm.client.models.generate_content.return_value = Mock(text="{}", usage_metadata=usage)
+
+        llm.think("sys", "describe", images=[b'\xff\xd8\xff' + b'\x00' * 10])
+
+        usage_lines = [c.args[0] for c in mock_info.call_args_list if "image request used" in c.args[0]]
+        assert len(usage_lines) == 1
+        assert "8900" in usage_lines[0] and "6500 cached" in usage_lines[0] and "480 output" in usage_lines[0]
+
+
+@pytest.mark.unit
+class TestGeminiSystemCache:
+    """Bulk image work (background=True) serves its long, identical system instruction from an
+    explicit context cache — a tenth of the input price for those tokens — and a user's one-off
+    image question does not pay for a cache it would use once."""
+
+    @staticmethod
+    def _llm():
+        from assistant.llm.GeminiLLM import GeminiLLM
+        llm = GeminiLLM(model="gemini-3.8-flash")
+        llm.client = Mock()
+        llm.client.caches.create.return_value = Mock(name="cachedContents/abc", usage_metadata=Mock(total_token_count=1868))
+        llm.client.caches.create.return_value.name = "cachedContents/abc"
+        llm.client.models.generate_content.return_value = Mock(text="{}", usage_metadata=None)
+        return llm
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_background_images_share_one_cache_and_send_no_system_instruction(self, mock_types, mock_config):
+        llm = self._llm()
+        for _ in range(3):
+            llm.think(system_message="BANK", user_message="describe", images=[b"img"], background=True)
+        llm.client.caches.create.assert_called_once()
+        assert llm.client.caches.create.call_args.kwargs["model"] == "gemini-3.8-flash"
+        assert mock_types.CreateCachedContentConfig.call_args.kwargs["system_instruction"] == "BANK"
+        configs = [c.kwargs for c in mock_types.GenerateContentConfig.call_args_list]
+        assert len(configs) == 3 and all(c == {"cached_content": "cachedContents/abc"} for c in configs)
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_a_foreground_image_question_never_makes_a_cache(self, mock_types, mock_config):
+        llm = self._llm()
+        llm.think(system_message="Answer briefly", user_message="what is this", images=[b"img"])
+        llm.client.caches.create.assert_not_called()
+        assert mock_types.GenerateContentConfig.call_args.kwargs == {"system_instruction": "Answer briefly"}
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_a_system_instruction_gemini_refuses_to_cache_is_sent_inline_and_not_retried(self, mock_types, mock_config):
+        llm = self._llm()
+        llm.client.caches.create.side_effect = RuntimeError("400 INVALID_ARGUMENT: below the minimum token count")
+        for _ in range(2):
+            llm.think(system_message="short", user_message="describe", images=[b"img"], background=True)
+        llm.client.caches.create.assert_called_once()
+        assert all(c.kwargs == {"system_instruction": "short"} for c in mock_types.GenerateContentConfig.call_args_list)
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_a_different_system_instruction_gets_its_own_cache(self, mock_types, mock_config):
+        llm = self._llm()
+        llm.think(system_message="BANK v1", user_message="d", images=[b"img"], background=True)
+        llm.think(system_message="BANK v2", user_message="d", images=[b"img"], background=True)
+        assert llm.client.caches.create.call_count == 2
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_a_cache_gemini_has_dropped_is_forgotten_and_the_image_resent_inline(self, mock_types, mock_config):
+        llm = self._llm()
+        llm.client.models.generate_content.side_effect = [
+            RuntimeError("403 PERMISSION_DENIED: CachedContent not found"), Mock(text="ok", usage_metadata=None)]
+        assert llm.think(system_message="BANK", user_message="d", images=[b"img"], background=True) == "ok"
+        configs = [c.kwargs for c in mock_types.GenerateContentConfig.call_args_list]
+        assert configs == [{"cached_content": "cachedContents/abc"}, {"system_instruction": "BANK"}]
+        assert llm._system_caches == {}, "the next photo makes a fresh cache instead of hitting the dead one"
+
+    @patch('assistant.llm.GeminiLLM.time')
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_a_cache_past_half_its_life_is_extended_so_a_steady_stream_keeps_one_cache(self, mock_types, mock_config, mock_time):
+        from assistant.llm import GeminiLLM as module
+        llm = self._llm()
+        clock = [1000.0]
+        mock_time.monotonic.side_effect = lambda: clock[0]
+        llm.think(system_message="BANK", user_message="d", images=[b"img"], background=True)
+        clock[0] += module.SYSTEM_CACHE_TTL_SECONDS * 0.4
+        llm.think(system_message="BANK", user_message="d", images=[b"img"], background=True)
+        llm.client.caches.update.assert_not_called()
+        clock[0] += module.SYSTEM_CACHE_TTL_SECONDS * 0.2
+        llm.think(system_message="BANK", user_message="d", images=[b"img"], background=True)
+        llm.client.caches.update.assert_called_once()
+        assert llm.client.caches.update.call_args.kwargs["name"] == "cachedContents/abc"
+        llm.client.caches.create.assert_called_once()
+
+
+@pytest.mark.unit
+class TestGeminiBatchedImages:
+    """The backfill's stills as inline batch jobs: half price, one reply per request in order,
+    None for what the job did not answer, and a job that outlives the wait is cancelled."""
+
+    @staticmethod
+    def _job(name, state, replies=None):
+        job = Mock()
+        job.name = name
+        job.state = Mock()
+        job.state.name = state
+        job.error = None
+        if replies is not None:
+            job.dest.inlined_responses = [
+                Mock(response=None, error="boom") if r is None else Mock(response=Mock(text=r, usage_metadata=None), error=None)
+                for r in replies]
+        return job
+
+    @staticmethod
+    def _llm():
+        from assistant.llm.GeminiLLM import GeminiLLM
+        llm = GeminiLLM(model="gemini-3.8-flash")
+        llm.client = Mock()
+        llm.client.caches.create.side_effect = RuntimeError("400 below minimum")    # no cache: plain system instruction
+        return llm
+
+    @patch('assistant.llm.GeminiLLM.time.sleep')
+    @patch('assistant.llm.GeminiLLM.config')
+    def test_replies_come_back_in_request_order_with_none_for_a_failed_request(self, mock_config, mock_sleep):
+        llm = self._llm()
+        llm.client.batches.create.return_value = self._job("batches/1", "JOB_STATE_PENDING")
+        llm.client.batches.get.side_effect = [self._job("batches/1", "JOB_STATE_RUNNING"),
+                                              self._job("batches/1", "JOB_STATE_SUCCEEDED", ["one", None, "three"])]
+        replies = llm.think_batched_with_images("SYS", [("u1", b"a"), ("u2", b"b"), ("u3", b"c")], max_wait_seconds=600)
+        assert replies == ["one", None, "three"]
+        src = llm.client.batches.create.call_args.kwargs["src"]
+        assert [r["contents"][0]["parts"][1]["text"] for r in src] == ["u1", "u2", "u3"]
+        assert [r["contents"][0]["parts"][0]["inline_data"]["data"] for r in src] == [b"a", b"b", b"c"]
+        assert all(r["config"] == {"system_instruction": "SYS"} for r in src)
+
+    @patch('assistant.llm.GeminiLLM.time.sleep')
+    @patch('assistant.llm.GeminiLLM.config')
+    def test_a_cached_system_instruction_rides_in_every_batched_request(self, mock_config, mock_sleep):
+        llm = self._llm()
+        cache = Mock(usage_metadata=Mock(total_token_count=1868))
+        cache.name = "cachedContents/abc"
+        llm.client.caches.create.side_effect = None
+        llm.client.caches.create.return_value = cache
+        llm.client.batches.create.return_value = self._job("batches/1", "JOB_STATE_SUCCEEDED", ["one"])
+        llm.client.batches.get.return_value = self._job("batches/1", "JOB_STATE_SUCCEEDED", ["one"])
+        with patch('assistant.llm.GeminiLLM.types') as mock_types:
+            mock_types.CreateCachedContentConfig = Mock()
+            assert llm.think_batched_with_images("SYS", [("u1", b"a")]) == ["one"]
+        src = llm.client.batches.create.call_args.kwargs["src"]
+        assert src[0]["config"] == {"cached_content": "cachedContents/abc"}
+
+    @patch('assistant.llm.GeminiLLM.time.sleep')
+    @patch('assistant.llm.GeminiLLM.config')
+    def test_images_are_split_into_jobs_under_the_inline_limit(self, mock_config, mock_sleep):
+        from assistant.llm import GeminiLLM as module
+        llm = self._llm()
+        big = b"x" * (module.INLINE_BATCH_LIMIT // 2 + 1)
+        jobs = [self._job("batches/1", "JOB_STATE_SUCCEEDED", ["a"]), self._job("batches/2", "JOB_STATE_SUCCEEDED", ["b", "c"])]
+        llm.client.batches.create.side_effect = jobs
+        llm.client.batches.get.side_effect = lambda name: next(j for j in jobs if j.name == name)
+        replies = llm.think_batched_with_images("SYS", [("u1", big), ("u2", big), ("u3", b"small")])
+        assert replies == ["a", "b", "c"]
+        assert [len(c.kwargs["src"]) for c in llm.client.batches.create.call_args_list] == [1, 2]
+
+    @patch('assistant.llm.GeminiLLM.time.sleep')
+    @patch('assistant.llm.GeminiLLM.config')
+    def test_a_job_that_outlives_the_wait_is_cancelled_and_its_requests_unanswered(self, mock_config, mock_sleep):
+        llm = self._llm()
+        llm.client.batches.create.return_value = self._job("batches/1", "JOB_STATE_PENDING")
+        llm.client.batches.get.return_value = self._job("batches/1", "JOB_STATE_RUNNING")
+        with patch('assistant.llm.GeminiLLM.time.time', side_effect=[0, 0, 10, 20, 2000, 2000, 2000]):
+            replies = llm.think_batched_with_images("SYS", [("u1", b"a"), ("u2", b"b")], max_wait_seconds=1800)
+        assert replies == [None, None]
+        llm.client.batches.cancel.assert_called_once_with(name="batches/1")
+
+    @patch('assistant.llm.GeminiLLM.config')
+    def test_a_refused_submission_means_no_batch_at_all(self, mock_config):
+        llm = self._llm()
+        llm.client.batches.create.side_effect = RuntimeError("429 RESOURCE_EXHAUSTED: enqueued tokens")
+        assert llm.think_batched_with_images("SYS", [("u1", b"a")]) is None
+
+    @patch('assistant.llm.GeminiLLM.config')
+    def test_no_requests_is_an_empty_answer_without_a_job(self, mock_config):
+        llm = self._llm()
+        assert llm.think_batched_with_images("SYS", []) == []
+        llm.client.batches.create.assert_not_called()
+
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
     def test_think_with_video_retries_transient_failure(self, mock_types, mock_config):

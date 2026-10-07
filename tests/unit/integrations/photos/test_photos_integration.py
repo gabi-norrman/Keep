@@ -1464,7 +1464,7 @@ class TestPhotosFeed:
         integration, processor = self._opened()
         order = []
         processor._retry_icloud_pending.side_effect = lambda: order.append("retry")
-        processor.process_rows.side_effect = lambda rows: order.append("process")
+        processor.process_rows.side_effect = lambda rows, batched: order.append("process")
         rows = [self._row("done", 100.0, "G-DONE"), self._row("new", 200.0, "G-NEW"),
                 self._row("uploading", time.time() - 978307200 - 60, None)]
 
@@ -1477,6 +1477,7 @@ class TestPhotosFeed:
         assert order == ["retry", "process"]
         handed = processor.process_rows.call_args.args[0]
         assert [r["uuid"] for r in handed] == ["new"]
+        assert processor.process_rows.call_args.kwargs["batched"] is True, "the catch-up is the batch API's work"
         assert batch.exhausted is True
         assert batch.entries == []
 
@@ -1489,7 +1490,7 @@ class TestPhotosFeed:
         integration, processor = self._opened()
         entries = [FeedEntry(1_700_000_000.0, "New photo taken: a barn"),
                    FeedEntry(1_700_000_100.0, "New photo taken: a boat")]
-        processor.process_rows.side_effect = lambda rows: [integration._queue_entry(e) for e in entries]
+        processor.process_rows.side_effect = lambda rows, batched: [integration._queue_entry(e) for e in entries]
         rows = [self._row("a", 100.0, "G-A"), self._row("b", 200.0, "G-B")]
 
         with patch.object(PhotosIntegration, '_assets_after', return_value=rows), \
@@ -1498,6 +1499,8 @@ class TestPhotosFeed:
             batch = integration.fetch("0", backfill=False)
             second = integration.fetch("200.0", backfill=False)
 
+        assert all(c.kwargs["batched"] is False for c in processor.process_rows.call_args_list), \
+            "a live fetch never waits on a batch job: new photos are described within seconds"
         assert batch.entries == entries
         assert batch.cursor == "200.0"
         assert second.entries == entries  # the fake queues again on every call
@@ -2446,3 +2449,116 @@ class TestLocalBackendIndexing:
         video_a, video_b = (c.kwargs for c in llm.think_with_video.call_args_list)
         assert video_a["system_message"] == video_b["system_message"]
         assert "Beach" in video_b["user_message"] and "slow-motion" in video_b["user_message"]
+
+
+REPLY = '{"short_description":"a barn","detailed_description":"red barn","pretty_score":40,"family_importance_score":10}'
+
+
+@pytest.mark.unit
+class TestBatchedBackfill:
+    """The catch-up's stills go through the batch API (half price); whatever it does not answer,
+    and every video, runs on the live path as before."""
+
+    @staticmethod
+    def _rows(n, kind="photo"):
+        return [{"uuid": f"U{i}", "filename": f"p{i}.heic", "kind": kind, "cloud_asset_guid": f"G{i}",
+                 "creation_ts": 1_700_000_000.0 + i, "latitude": None, "longitude": None, "kind_subtype": 0,
+                 "directory": "0", "duration": None} for i in range(n)]
+
+    @staticmethod
+    def _prepared(module, row, jpeg=b"jpeg"):
+        return module._PreparedPhoto(row=row, jpeg=jpeg, photo_type="photo", albums="", persons="Charlotte",
+                                     location_text="Home", user_message=f"photo {row['uuid']}", started=0.0)
+
+    def _processor(self, module, llm):
+        processor = module.PhotoProcessor()
+        processor._llm = llm
+        return processor
+
+    def test_stills_go_out_as_one_batch_and_only_the_unanswered_run_live(self):
+        from integrations.photos import PhotoProcessor as module
+        rows = self._rows(3)
+        llm = Mock(is_local=Mock(return_value=False))
+        llm.think_batched_with_images.return_value = [REPLY, None, REPLY]
+        processor = self._processor(module, llm)
+        live = []
+        with patch.object(processor, '_prepare_photo', side_effect=lambda row, db: (self._prepared(module, row), False)), \
+             patch.object(processor, '_photo_system_prompt', return_value="SYSTEM"), \
+             patch.object(processor, '_store_analysis', return_value=1) as store, \
+             patch.object(processor, '_process_one', side_effect=lambda row: live.append(row["uuid"]) and False), \
+             patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
+            mock_db.return_value.photo_exists.return_value = True
+            mock_db.return_value.get_photo_description.return_value = "desc"
+            succeeded, failed = processor.process_rows(rows, batched=True)
+
+        call = llm.think_batched_with_images.call_args
+        assert call.args[0] == "SYSTEM"
+        assert call.args[1] == [("photo U0", b"jpeg"), ("photo U1", b"jpeg"), ("photo U2", b"jpeg")]
+        assert [c.args[1]["uuid"] for c in store.call_args_list] == ["U0", "U2"]
+        assert live == ["U1"], "the one the batch left unanswered is indexed live, nothing is indexed twice"
+        assert len(succeeded) == 3 and failed == []
+        assert not module.PhotoProcessor._processing_uuids, "every uuid is released afterwards"
+
+    def test_no_batch_api_means_every_still_runs_live(self):
+        from integrations.photos import PhotoProcessor as module
+        rows = self._rows(2)
+        llm = Mock(is_local=Mock(return_value=False))
+        llm.think_batched_with_images.return_value = None
+        processor = self._processor(module, llm)
+        live = []
+        with patch.object(processor, '_prepare_photo', side_effect=lambda row, db: (self._prepared(module, row), False)), \
+             patch.object(processor, '_photo_system_prompt', return_value="SYSTEM"), \
+             patch.object(processor, '_process_one', side_effect=lambda row: live.append(row["uuid"]) and False), \
+             patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
+            mock_db.return_value.photo_exists.return_value = True
+            mock_db.return_value.get_photo_description.return_value = "desc"
+            processor.process_rows(rows, batched=True)
+        assert sorted(live) == ["U0", "U1"]
+
+    def test_a_still_waiting_on_icloud_is_settled_by_the_prepare_step_not_batched(self):
+        from integrations.photos import PhotoProcessor as module
+        rows = self._rows(2)
+        llm = Mock(is_local=Mock(return_value=False))
+        llm.think_batched_with_images.return_value = [REPLY]
+        processor = self._processor(module, llm)
+
+        def prepare(row, db):
+            return (None, True) if row["uuid"] == "U0" else (self._prepared(module, row), False)
+
+        with patch.object(processor, '_prepare_photo', side_effect=prepare), \
+             patch.object(processor, '_photo_system_prompt', return_value="SYSTEM"), \
+             patch.object(processor, '_store_analysis', return_value=1), \
+             patch.object(processor, '_process_one') as process_one, \
+             patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
+            mock_db.return_value.photo_exists.return_value = True
+            mock_db.return_value.get_photo_description.return_value = "desc"
+            processor.process_rows(rows, batched=True)
+
+        assert [u for u, _ in llm.think_batched_with_images.call_args.args[1]] == ["photo U1"]
+        process_one.assert_not_called()
+        assert "U0" in processor._pending_icloud, "the iCloud retry set is fed exactly as on the live path"
+
+    def test_videos_and_a_live_fetch_never_touch_the_batch_api(self):
+        from integrations.photos import PhotoProcessor as module
+        llm = Mock(is_local=Mock(return_value=False))
+        processor = self._processor(module, llm)
+        with patch.object(processor, '_process_one', return_value=False), \
+             patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
+            mock_db.return_value.photo_exists.return_value = True
+            mock_db.return_value.get_photo_description.return_value = "desc"
+            processor.process_rows(self._rows(2, kind="video"), batched=True)
+            processor.process_rows(self._rows(2), batched=False)
+        llm.think_batched_with_images.assert_not_called()
+
+    @pytest.mark.parametrize("local, enabled", [(True, True), (False, False)])
+    def test_a_local_backend_or_the_config_switch_keeps_the_backfill_live(self, local, enabled):
+        from integrations.photos import PhotoProcessor as module
+        llm = Mock(is_local=Mock(return_value=local))
+        processor = self._processor(module, llm)
+        with patch.object(processor, '_process_one', return_value=False), \
+             patch.object(module.PhotoProcessor, '_batch_enabled', return_value=enabled), \
+             patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
+            mock_db.return_value.photo_exists.return_value = True
+            mock_db.return_value.get_photo_description.return_value = "desc"
+            processor.process_rows(self._rows(2), batched=True)
+        llm.think_batched_with_images.assert_not_called()

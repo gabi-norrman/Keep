@@ -106,6 +106,19 @@ class TestBatched:
         inner.create_batched_completion.return_value = None
         assert wrapped.create_batched_completion(messages) is None
 
+    def test_batched_image_completions_are_redacted_out_and_restored_back(self, wrapped, inner, messages):
+        inner.create_batched_image_completions.return_value = [f"call {PH_MOBILE}", None]
+        replies = wrapped.think_batched_with_images("mail " + EMAIL, [("photo of " + MOBILE, b"a"), ("x", b"b")],
+                                                    max_wait_seconds=60)
+        assert replies == [f"call {MOBILE}", None]
+        sent = inner.create_batched_image_completions.call_args
+        assert EMAIL not in str(sent) and MOBILE not in str(sent) and PH_EMAIL in str(sent) and PH_MOBILE in str(sent)
+        assert sent.args[1][0][1] == b"a" and sent.kwargs['max_wait_seconds'] == 60
+
+    def test_no_batched_image_answer_stays_none(self, wrapped, inner, messages):
+        inner.create_batched_image_completions.return_value = None
+        assert wrapped.create_batched_image_completions("s", [("u", b"i")]) is None
+
 
 class TestInbound:
     def test_create_completion_restores_placeholders(self, wrapped, inner, messages):
