@@ -677,9 +677,9 @@ class Commands:
                      "unknown": "not checked yet"}
     @staticmethod
     def _setup_activity():
-        """A setup command ran: setup is in progress for FTUE_SETUP_GRACE_HOURS more
-        (FirstRun.in_ftue) — the setup toolkit stays preloaded and the INTEGRATIONS section
-        stays in the prompt."""
+        """A setup command ran: on a young install setup is in progress for
+        FTUE_SETUP_GRACE_HOURS more (FirstRun.in_ftue) — the setup toolkit stays preloaded and
+        the INTEGRATIONS section stays in the prompt."""
         FirstRun.note_setup_activity()
 
     # Integrations that are not Integration classes but follow the same switch, with their keys.

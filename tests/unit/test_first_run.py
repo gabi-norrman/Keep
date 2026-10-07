@@ -36,9 +36,11 @@ NOW = 1_800_000_000.0
 
 @pytest.mark.unit
 class TestInFtue:
-    """Setup is in progress while the install is younger than FTUE_INSTALL_DAYS or a setup
-    command ran in the last FTUE_SETUP_GRACE_HOURS — the count of enabled integrations says
-    nothing about it."""
+    """Setup is in progress while fewer than FTUE_INTEGRATION_THRESHOLD integrations are
+    enabled, or while the install is younger than FTUE_INSTALL_DAYS and a setup command ran in
+    the last FTUE_SETUP_GRACE_HOURS."""
+
+    ENOUGH = ['a', 'b', 'c']
 
     def _paths(self, tmp_path, installed_days_ago=None, setup_hours_ago=None):
         state, activity = tmp_path / "first_run.json", tmp_path / "setup_activity.json"
@@ -48,26 +50,34 @@ class TestInFtue:
             FirstRun.note_setup_activity(now=NOW - setup_hours_ago * 3600, path=activity)
         return dict(now=NOW, state_path=state, activity_path=activity)
 
-    def test_a_fresh_install_is_in_setup_whatever_is_enabled(self, tmp_path):
+    def test_too_few_integrations_is_setup_whatever_the_age_and_activity(self, tmp_path):
+        with _config({'enabled_integrations': ['a', 'b']}):
+            assert FirstRun.in_ftue(**self._paths(tmp_path, installed_days_ago=400)) is True
+            assert FirstRun.in_ftue(**self._paths(tmp_path)) is True
+
+    def test_a_young_install_with_recent_setup_activity_is_in_setup_whatever_is_enabled(self, tmp_path):
         with _config({'enabled_integrations': ['a', 'b', 'c', 'd', 'e', 'f']}):
-            assert FirstRun.in_ftue(**self._paths(tmp_path, installed_days_ago=0.1)) is True
+            assert FirstRun.in_ftue(**self._paths(tmp_path, installed_days_ago=0.1, setup_hours_ago=1)) is True
 
-    def test_an_install_a_few_days_old_still_is(self, tmp_path):
-        assert FirstRun.in_ftue(**self._paths(tmp_path, installed_days_ago=FirstRun.FTUE_INSTALL_DAYS - 1)) is True
+    def test_an_install_a_few_days_old_still_is_while_the_user_keeps_at_it(self, tmp_path):
+        with _config({'enabled_integrations': self.ENOUGH}):
+            days, hours = FirstRun.FTUE_INSTALL_DAYS - 1, FirstRun.FTUE_SETUP_GRACE_HOURS - 1
+            assert FirstRun.in_ftue(**self._paths(tmp_path, installed_days_ago=days, setup_hours_ago=hours)) is True
 
-    def test_an_old_install_with_no_setup_activity_is_not(self, tmp_path):
-        with _config({'enabled_integrations': []}):
-            assert FirstRun.in_ftue(**self._paths(tmp_path, installed_days_ago=FirstRun.FTUE_INSTALL_DAYS + 1)) is False
+    def test_a_young_install_that_has_gone_quiet_is_not(self, tmp_path):
+        with _config({'enabled_integrations': self.ENOUGH}):
+            hours = FirstRun.FTUE_SETUP_GRACE_HOURS + 1
+            assert FirstRun.in_ftue(**self._paths(tmp_path, installed_days_ago=3, setup_hours_ago=hours)) is False
+            assert FirstRun.in_ftue(**self._paths(tmp_path, installed_days_ago=3)) is False
+
+    def test_an_old_install_is_not_whatever_the_setup_activity(self, tmp_path):
+        with _config({'enabled_integrations': self.ENOUGH}):
+            days = FirstRun.FTUE_INSTALL_DAYS + 1
+            assert FirstRun.in_ftue(**self._paths(tmp_path, installed_days_ago=days, setup_hours_ago=1)) is False
 
     def test_an_established_install_without_a_state_file_counts_as_old(self, tmp_path):
-        assert FirstRun.in_ftue(**self._paths(tmp_path)) is False
-
-    def test_a_recent_setup_command_puts_an_old_install_back_in_setup(self, tmp_path):
-        assert FirstRun.in_ftue(**self._paths(tmp_path, installed_days_ago=400, setup_hours_ago=2)) is True
-
-    def test_a_setup_command_older_than_the_grace_does_not(self, tmp_path):
-        hours = FirstRun.FTUE_SETUP_GRACE_HOURS + 1
-        assert FirstRun.in_ftue(**self._paths(tmp_path, installed_days_ago=400, setup_hours_ago=hours)) is False
+        with _config({'enabled_integrations': self.ENOUGH}):
+            assert FirstRun.in_ftue(**self._paths(tmp_path, setup_hours_ago=1)) is False
 
     def test_the_activity_stamp_is_the_time_the_command_ran(self, tmp_path):
         path = tmp_path / "setup_activity.json"

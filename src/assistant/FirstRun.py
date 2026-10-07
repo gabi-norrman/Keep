@@ -3,24 +3,25 @@ speaks first, has the setup toolkit at hand and sees the integrations' state in 
 once the first feeds are in, a pipeline builds the first memory bank and then indexes the
 photo library in full.
 
-Setup is in progress (`in_ftue`) while the install is younger than `FTUE_INSTALL_DAYS` — the
-pipeline's state file dates it — or a setup command (`config_help`, `config_set`,
-`config_request`, `enable_integration`, `restart_integration`…, see `note_setup_activity`)
-ran in the last `FTUE_SETUP_GRACE_HOURS`. The count of enabled integrations is no measure:
-the first beta install had six by the second hour and was still mid-setup, and an install
-that settles on two is not being set up forever. While setup is in progress every request
-has the `setup` toolkit preloaded (`preload_toolkits`, through
+Setup is in progress (`in_ftue`) while fewer than `FTUE_INTEGRATION_THRESHOLD` integrations
+are enabled, or while the install is younger than `FTUE_INSTALL_DAYS` — the pipeline's state
+file dates it — and a setup command (`config_help`, `config_set`, `config_request`,
+`enable_integration`, `restart_integration`…, see `note_setup_activity`) ran in the last
+`FTUE_SETUP_GRACE_HOURS`. The count alone is no measure: the first beta install had six by
+the second hour and was still mid-setup, so the first week keeps setup open as long as the
+user keeps at it; and a week-old install that has gone quiet, or a veteran adding one more
+integration, is not being set up — neither pays for the setup toolkit. While setup is in
+progress every request has the `setup` toolkit preloaded (`preload_toolkits`, through
 `RequestProcessor._preload_toolkits`) so no round is spent on `load_toolkit` for it, and the
 prompt carries the INTEGRATIONS section (`prompt/sections/IntegrationsSectionGenerator`):
 what is on, what is on but unconfigured or broken — state that would otherwise live only in
 a `list_integrations` result the history window trims away.
 
-The brief is a different matter: it opens the conversation while fewer than
-`FTUE_INTEGRATION_THRESHOLD` integrations are enabled (`brief_due`) — a new checkout and the
-`//wipe` reset both leave none, and the brief walks the user through the first three. The
-launcher then opens the owner's chat with it as a system turn (`ChatHub.open_conversation`)
-so the assistant's reply, the introduction and the next setup step, is on screen before the
-user types anything.
+The brief opens the conversation on the count alone (`brief_due`): a new checkout and the
+`//wipe` reset both leave no integration enabled, and the brief walks the user through the
+first three. The launcher then opens the owner's chat with it as a system turn
+(`ChatHub.open_conversation`) so the assistant's reply, the introduction and the next setup
+step, is on screen before the user types anything.
 
 The pipeline (`plans/FTUE_PIPELINE_PLAN.md`) is armed only on a fresh install — `begin_if_fresh`
 writes `first_run.json` when the memory stub was just seeded or the bank still carries the
@@ -47,14 +48,14 @@ from common.Paths import AISERVER_DIR, CACHE_DIR
 from common.logging import trace, info, note, error
 from assistant import MemoryFile
 
-# Enabling this many integrations retires the brief: the brief's three, or any three the user
-# picked instead.
+# Below this many enabled integrations setup is in progress and the brief opens the
+# conversation: the brief's three, or any three the user picked instead.
 FTUE_INTEGRATION_THRESHOLD = 3
 
-# Setup is in progress for this long after the install, whatever happens...
+# With the count reached, setup is still in progress while the install is younger than this...
 FTUE_INSTALL_DAYS = 7
-# ...and for this long after the last setup command, whatever the install's age.
-FTUE_SETUP_GRACE_HOURS = 24
+# ...and a setup command ran within this long.
+FTUE_SETUP_GRACE_HOURS = 48
 # When the last setup command ran — `note_setup_activity` writes it, `in_ftue` reads it.
 SETUP_ACTIVITY_FILE = CACHE_DIR / "setup_activity.json"
 
@@ -134,29 +135,34 @@ def brief_due() -> bool:
 
 
 def in_ftue(now: float = None, state_path: Path = None, activity_path: Path = None) -> bool:
-    """Whether setup is in progress: the install is younger than `FTUE_INSTALL_DAYS` (an
-    established install that pre-dates the pipeline has no state file and counts as old), or a
-    setup command ran in the last `FTUE_SETUP_GRACE_HOURS`."""
+    """Whether setup is in progress: fewer than `FTUE_INTEGRATION_THRESHOLD` integrations
+    enabled, or the install younger than `FTUE_INSTALL_DAYS` (an established install that
+    pre-dates the pipeline has no state file and counts as old) with a setup command in the
+    last `FTUE_SETUP_GRACE_HOURS`."""
+    if brief_due():
+        trace("FTUE check: too few integrations enabled — setup in progress")
+        return True
     now = now if now is not None else time.time()
     state = State.load(state_path)
     age_days = (now - state.started_at) / 86400 if state else None
-    if age_days is not None and age_days < FTUE_INSTALL_DAYS:
-        trace(f"FTUE check: the install is {age_days:.1f} day(s) old (< {FTUE_INSTALL_DAYS}) — setup in progress")
-        return True
+    age = f"{age_days:.1f} day(s) old" if age_days is not None else "established"
+    if age_days is None or age_days >= FTUE_INSTALL_DAYS:
+        trace(f"FTUE check: the install is {age} (>= {FTUE_INSTALL_DAYS} days) — setup is not in progress")
+        return False
     last = last_setup_activity(activity_path)
-    if last is not None and now - last < FTUE_SETUP_GRACE_HOURS * 3600:
-        trace(f"FTUE check: a setup command ran {(now - last) / 3600:.1f} h ago (< {FTUE_SETUP_GRACE_HOURS} h) "
-              f"— setup in progress")
+    hours_ago = (now - last) / 3600 if last is not None else None
+    if hours_ago is not None and hours_ago < FTUE_SETUP_GRACE_HOURS:
+        trace(f"FTUE check: the install is {age} and a setup command ran {hours_ago:.1f} h ago "
+              f"(< {FTUE_SETUP_GRACE_HOURS} h) — setup in progress")
         return True
-    trace("FTUE check: the install is " + (f"{age_days:.0f} days old" if age_days is not None else "established")
-          + " and no setup command ran in the last "
-          + (f"{(now - last) / 3600:.0f} h" if last is not None else "ever recorded") + " — setup is not in progress")
+    trace(f"FTUE check: the install is {age} but no setup command ran in the last "
+          + (f"{hours_ago:.0f} h" if hours_ago is not None else "ever recorded") + " — setup is not in progress")
     return False
 
 
 def note_setup_activity(now: float = None, path: Path = None):
-    """Record that a setup command ran, so `in_ftue` holds for `FTUE_SETUP_GRACE_HOURS` more.
-    A failed write is logged and costs only this stamp."""
+    """Record that a setup command ran, so `in_ftue` holds for `FTUE_SETUP_GRACE_HOURS` more
+    while the install is young. A failed write is logged and costs only this stamp."""
     path = path or SETUP_ACTIVITY_FILE
     now = now if now is not None else time.time()
     try:
