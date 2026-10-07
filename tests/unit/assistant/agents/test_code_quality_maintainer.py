@@ -1200,15 +1200,6 @@ def developer_release(value: bool):
 
 
 @pytest.mark.unit
-def test_the_requirements_sync_follows_the_auto_install_config_key():
-    with patch.object(ConfigManager, 'get',
-                      side_effect=lambda key, default=None: False if key == "auto_install_requirements" else default), \
-            patch('assistant.agents.CodeQualityMaintainer.RequirementsChecker.sync', return_value=("", "")) as sync:
-        assert CodeQualityMaintainer._sync_requirements() == ("", "")
-    sync.assert_called_once_with(auto_install=False)
-
-
-@pytest.mark.unit
 class TestPullAndRestart:
     @pytest.fixture(autouse=True)
     def venv_in_sync(self):

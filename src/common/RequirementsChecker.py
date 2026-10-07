@@ -14,9 +14,6 @@ VOICE_REQUIREMENTS_FILE = AISERVER_DIR / "requirements-voice.txt"
 PIP_LOG = LOG_DIR / "pip-update.log"
 
 REQUIRED_PYTHON = (3, 12)
-# The config key: with it on (the default) a pull whose pins no longer match the venv runs pip
-# before the restart, and a start that finds the venv behind runs pip before giving up.
-AUTO_INSTALL_KEY = "auto_install_requirements"
 # torch alone is hundreds of MB; a pin bump of the voice stack can take a while on a slow line.
 PIP_TIMEOUT = 15 * 60
 
@@ -72,14 +69,14 @@ class RequirementsChecker:
         return [("base", REQUIREMENTS_FILE), ("voice", VOICE_REQUIREMENTS_FILE)]
 
     @staticmethod
-    def verify_or_exit(auto_install: bool = False):
-        """Stops the start when the venv is behind the pins. With *auto_install* it first tries
-        pip: a start that would otherwise fail is slow instead of dead."""
+    def verify_or_exit():
+        """Stops the start when the venv is behind the pins — after one try with pip, so a start
+        that would otherwise fail (a hand pull that bumped a pin) is slow instead of dead."""
         RequirementsChecker._check_python_version()
         missing, mismatched, checked = RequirementsChecker.drift()
-        if (missing or mismatched) and auto_install:
+        if missing or mismatched:
             info(f"Requirements check: {RequirementsChecker._describe(missing, mismatched)} — "
-                 f"installing before the start ({AUTO_INSTALL_KEY} is on)")
+                 f"installing before the start")
             if not RequirementsChecker.install():
                 missing, mismatched, checked = RequirementsChecker.drift()
         if missing or mismatched:
@@ -106,21 +103,16 @@ class RequirementsChecker:
         return missing, mismatched, checked
 
     @staticmethod
-    def sync(auto_install: bool = True) -> tuple[str, str]:
+    def sync() -> tuple[str, str]:
         """Brings the venv to the pins when they drifted. Returns (failure, done): *failure* says
         why the venv is still behind and is "" when it matches; *done* names what was installed,
-        "" when there was nothing to do. With *auto_install* off a drift is a failure as well —
-        the caller must not restart into a server that dies on verify_or_exit."""
+        "" when there was nothing to do. A failure means the caller must not restart — the new
+        process would die on verify_or_exit."""
         missing, mismatched, checked = RequirementsChecker.drift()
         if not (missing or mismatched):
             info(f"Requirements sync: all {checked} pins match the venv, nothing to install.")
             return "", ""
         change = RequirementsChecker._describe(missing, mismatched)
-        if not auto_install:
-            info(f"Requirements sync: {change}, but {AUTO_INSTALL_KEY} is off — not installing.")
-            return (f"The pulled code needs other packages ({change}) and {AUTO_INSTALL_KEY} is off. "
-                    f"Run `.venv/bin/pip install -r {VOICE_REQUIREMENTS_FILE.name}` in the repository, "
-                    f"then restart_server."), ""
         info(f"Requirements sync: {change} — running pip")
         failure = RequirementsChecker.install()
         if failure:
@@ -272,7 +264,7 @@ class RequirementsChecker:
                 error(f"    - {name}: expected {expected}, installed {actual}")
         error(bar)
         error(f"  Fix with: pip install -r {files[-1]}")
-        error(f"  (the server does this itself on a restart_server and at start while {AUTO_INSTALL_KEY} is on)")
+        error("  (the server tried that itself just now — see log/pip-update.log)")
         error(bar)
         error("")
         sys.exit(1)

@@ -27,7 +27,7 @@ from common.DevelopmentConfig import PREPEND_USER_QUERY_OVERRIDE
 from common.logging import error, info, trace, note
 from common import Migrations, Version
 from common.ConfigManager import config, REQUIRED_KEYS
-from common.RequirementsChecker import RequirementsChecker, AUTO_INSTALL_KEY
+from common.RequirementsChecker import RequirementsChecker
 from common.StderrLogger import StderrLogger
 
 init(autoreset=True, strip=False)
@@ -397,7 +397,7 @@ if __name__ == "__main__":
     _enable_crash_traces()
     info(_TLS_TRUST)
     _port, _testsuite = _parse_args()
-    RequirementsChecker.verify_or_exit(auto_install=bool(config.get(AUTO_INSTALL_KEY, True)))
+    RequirementsChecker.verify_or_exit()
     Migrations.run()
     _verify_config_or_exit()
     info("Loading libraries...")

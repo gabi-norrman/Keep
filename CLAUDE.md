@@ -27,9 +27,8 @@ Development happens on `master`; installs track the `release` branch. `./release
 `developer_release` config key names (false → `release`, true → `master`; the assistant may flip it with
 `config_set`) and pulls it, so an install picks a release up on its next restart and a machine switches
 line by flipping the key and restarting. The development machine's `config.yaml` has it true. Between the
-pull and the restart `RequirementsChecker.sync` runs pip when the pulled pins no longer match the venv
-(`auto_install_requirements`, on by default), so a release may bump a pin freely; a failed install leaves
-the old process running and says why. The
+pull and the restart `RequirementsChecker.sync` runs pip when the pulled pins no longer match the venv,
+so a release may bump a pin freely; a failed install leaves the old process running and says why. The
 nightly update (`CodeQualityMaintainer._nightly_update`, `nightly_update` config key, on by default) does
 the same checkout and pull at 03:00 — after the nightly code-quality run when that is on — and restarts
 only when HEAD is no longer the commit the process booted on. Never

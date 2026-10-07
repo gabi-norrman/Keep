@@ -45,6 +45,22 @@ def test_regex_rejects_non_pinned_lines(line):
     assert _REQ_LINE_RE.match(line) is None
 
 
+_REAL_INSTALL = RequirementsChecker.install
+
+
+@pytest.fixture(autouse=True)
+def no_pip(monkeypatch):
+    """verify_or_exit tries pip before giving up: in a test pip is a stub that fixes nothing
+    unless the test installs its own (see _Venv.pip) or asks for the real one (real_pip)."""
+    monkeypatch.setattr(RequirementsChecker, "install", staticmethod(lambda: "no pip in tests"))
+
+
+@pytest.fixture
+def real_pip(monkeypatch):
+    """The real install(), with subprocess.run patched by the test."""
+    monkeypatch.setattr(RequirementsChecker, "install", staticmethod(_REAL_INSTALL))
+
+
 # ---- Direct-reference version extraction ----
 
 SPACY_URL = (
@@ -483,15 +499,6 @@ def test_sync_installs_a_bumped_pin_and_reports_it(tmp_path, monkeypatch):
     assert "pkg-a" in installed and "2.0.0" in installed and "pkg-b" in installed
 
 
-def test_sync_with_auto_install_off_fails_instead_of_running_pip(tmp_path, monkeypatch):
-    venv = _Venv(monkeypatch, tmp_path, "pkg-a==2.0.0\n", {"pkg-a": "1.0.0"})
-    venv.pip(monkeypatch)
-    failure, installed = RequirementsChecker.sync(auto_install=False)
-    assert failure and installed == ""
-    assert rc_module.AUTO_INSTALL_KEY in failure and "pkg-a" in failure
-    assert venv.pip_calls == []
-
-
 def test_sync_reports_a_failed_pip_and_does_not_recheck(tmp_path, monkeypatch):
     venv = _Venv(monkeypatch, tmp_path, "pkg-a==2.0.0\n", {"pkg-a": "1.0.0"})
     venv.pip(monkeypatch, failure="pip exited 1 (no matching distribution)")
@@ -506,29 +513,28 @@ def test_sync_fails_when_pip_succeeds_but_the_venv_is_still_behind(tmp_path, mon
     assert "still behind" in failure and "pkg-a" in failure and installed == ""
 
 
-def test_verify_or_exit_with_auto_install_runs_pip_and_starts_once_the_venv_matches(tmp_path, monkeypatch):
+def test_verify_or_exit_runs_pip_and_starts_once_the_venv_matches(tmp_path, monkeypatch):
     venv = _Venv(monkeypatch, tmp_path, "pkg-a==2.0.0\n", {"pkg-a": "1.0.0"})
     venv.pip(monkeypatch, after={"pkg-a": "2.0.0"})
-    RequirementsChecker.verify_or_exit(auto_install=True)
+    RequirementsChecker.verify_or_exit()
     assert len(venv.pip_calls) == 1
 
 
-def test_verify_or_exit_with_auto_install_still_exits_when_pip_does_not_fix_it(tmp_path, monkeypatch):
+def test_verify_or_exit_still_exits_when_pip_does_not_fix_it(tmp_path, monkeypatch):
     venv = _Venv(monkeypatch, tmp_path, "pkg-a==2.0.0\n", {"pkg-a": "1.0.0"})
     venv.pip(monkeypatch, failure="pip exited 1")
     with pytest.raises(SystemExit):
-        RequirementsChecker.verify_or_exit(auto_install=True)
-
-
-def test_verify_or_exit_without_auto_install_never_runs_pip(tmp_path, monkeypatch):
-    venv = _Venv(monkeypatch, tmp_path, "pkg-a==2.0.0\n", {"pkg-a": "1.0.0"})
-    venv.pip(monkeypatch, after={"pkg-a": "2.0.0"})
-    with pytest.raises(SystemExit):
         RequirementsChecker.verify_or_exit()
+
+
+def test_verify_or_exit_runs_no_pip_when_the_venv_matches(tmp_path, monkeypatch):
+    venv = _Venv(monkeypatch, tmp_path, "pkg-a==1.0.0\n", {"pkg-a": "1.0.0"})
+    venv.pip(monkeypatch)
+    RequirementsChecker.verify_or_exit()
     assert venv.pip_calls == []
 
 
-def test_install_runs_pip_of_this_venv_over_the_voice_file_and_logs_its_output(tmp_path, monkeypatch):
+def test_install_runs_pip_of_this_venv_over_the_voice_file_and_logs_its_output(tmp_path, monkeypatch, real_pip):
     """The voice file includes the base file and every integration folder's pins — the one
     command install.sh runs, so an update installs exactly what a fresh install does."""
     import subprocess
@@ -553,7 +559,7 @@ def test_install_runs_pip_of_this_venv_over_the_voice_file_and_logs_its_output(t
     assert "Successfully installed pkg-a-2.0.0" in log.read_text()
 
 
-def test_install_reports_the_tail_of_a_failed_pip(tmp_path, monkeypatch):
+def test_install_reports_the_tail_of_a_failed_pip(tmp_path, monkeypatch, real_pip):
     import subprocess
     monkeypatch.setattr(rc_module, "PIP_LOG", tmp_path / "pip-update.log")
 
@@ -566,7 +572,7 @@ def test_install_reports_the_tail_of_a_failed_pip(tmp_path, monkeypatch):
     assert "No matching distribution" in failure and "pip-update.log" in failure
 
 
-def test_install_reports_a_timeout(tmp_path, monkeypatch):
+def test_install_reports_a_timeout(tmp_path, monkeypatch, real_pip):
     import subprocess
     monkeypatch.setattr(rc_module, "PIP_LOG", tmp_path / "pip-update.log")
 

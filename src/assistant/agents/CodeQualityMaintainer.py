@@ -17,7 +17,7 @@ from common.logging import info, error, trace, note
 from ..llm import parse_llm_config
 from common.ConfigManager import ConfigManager
 from common.Paths import REPO_DIR, AISERVER_DIR as _AISERVER_PATH
-from common.RequirementsChecker import RequirementsChecker, AUTO_INSTALL_KEY
+from common.RequirementsChecker import RequirementsChecker
 
 WORKING_DIR = str(REPO_DIR)
 AISERVER_DIR = str(_AISERVER_PATH)
@@ -861,8 +861,7 @@ class CodeQualityMaintainer:
         """Between the pull and the restart: pip brings the venv to the pulled pins while the old
         server still serves, so the new one never dies on its requirements check. Returns
         (failure, installed) as RequirementsChecker.sync does; a failure means do not restart."""
-        auto = bool(ConfigManager().get(AUTO_INSTALL_KEY, True))
-        return RequirementsChecker.sync(auto_install=auto)
+        return RequirementsChecker.sync()
 
     @staticmethod
     def pull_and_restart() -> str:
