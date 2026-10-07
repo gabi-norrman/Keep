@@ -206,8 +206,8 @@ Every integration is off until you turn it on, and Keep walks you through the se
 
 <table>
 <tr><td width="190">🍎&nbsp;<b>Apple</b></td><td><img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">iCloud (Find My for the family's phones), Photos library, iMessage, Reminders, and the iCloud mail and calendars through the two below</td></tr>
-<tr><td>✉️&nbsp;<b>Email</b></td><td>Any IMAP mailbox — iCloud and Gmail with an app password — and Microsoft 365 (Outlook.com, work accounts) signed in once with a code; as many accounts as the household has, listed side by side; Keep also uses your inbox to handle 2FA codes on its own</td></tr>
-<tr><td>📅&nbsp;<b>Calendars</b></td><td>CalDAV calendars — iCloud, Fastmail, Nextcloud — and Microsoft 365 calendars, from several accounts in one week view; Keep adds events to the calendar you name</td></tr>
+<tr><td>✉️&nbsp;<b>Email</b></td><td>Any IMAP mailbox — iCloud and Gmail with an app password — plus Gmail and Microsoft 365 (Outlook.com, work accounts) signed in once with Google or Microsoft; as many accounts as the household has, listed side by side; Keep also uses your inbox to handle 2FA codes on its own</td></tr>
+<tr><td>📅&nbsp;<b>Calendars</b></td><td>CalDAV calendars — iCloud, Fastmail, Nextcloud — plus Google and Microsoft 365 calendars, from several accounts in one week view; Keep adds events to the calendar you name</td></tr>
 <tr><td>🏠&nbsp;<b>Home</b></td><td>Home Assistant and Indigo for lights, switches, locks, sensors and scenes</td></tr>
 <tr><td>📹&nbsp;<b>Cameras</b></td><td>Arlo and Ring</td></tr>
 <tr><td>🚗&nbsp;<b>Car</b></td><td>Tesla, through tessie.com</td></tr>

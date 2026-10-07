@@ -3,7 +3,12 @@
 `PRESETS` holds what a known service needs: iCloud's SMTP server files nothing, so a Sent copy is
 appended over IMAP; Gmail files its own Sent copy and rejects non-ASCII SEARCH strings, so its
 preset folds the query (`gmail_search_criteria`). An account built from a preset may still override
-a host or port (Gmail's `email.smtp_host`)."""
+a host or port (Gmail's `email.smtp_host`).
+
+An account signs in with a password, or — when it is given an `oauth_token` supplier — with
+XOAUTH2 (Gmail through the Google integration): the SASL string both servers take is
+`xoauth2_string`, which imap_tools builds itself for IMAP and `_send` hands to smtplib's
+`AUTH XOAUTH2`."""
 import smtplib
 import time
 import unicodedata
@@ -35,6 +40,12 @@ _FOLD_MAP = str.maketrans({
 def _ascii_fold(text: str) -> str:
     decomposed = unicodedata.normalize('NFKD', text.translate(_FOLD_MAP))
     return ''.join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
+def xoauth2_string(address: str, access_token: str) -> str:
+    """The SASL XOAUTH2 initial response as Gmail's IMAP and SMTP servers expect it (before
+    the base64 the protocol wraps it in)."""
+    return f"user={address}\x01auth=Bearer {access_token}\x01\x01"
 
 
 def plain_search_criteria(search_string: str):
@@ -89,15 +100,18 @@ class ImapMailAccount(MailAccount):
     """A mailbox reached over IMAP for reading and SMTP (STARTTLS, password login) for sending.
 
     `credentials` is read on every call, so a password set through config_set works without a
-    rebuild; a KeyError from it means "not configured". The hosts come from the preset unless
-    given, and the search hook decides how a free-text query becomes IMAP criteria."""
+    rebuild; a KeyError from it means "not configured". With an `oauth_token` supplier the
+    password is unused and every login is XOAUTH2 with the token it returns — a supplier that
+    raises (not signed in) fails the call with its message. The hosts come from the preset
+    unless given, and the search hook decides how a free-text query becomes IMAP criteria."""
 
     IMAP_TIMEOUT = IMAP_TIMEOUT
 
     def __init__(self, name: str, id_prefix: str, credentials: Callable[[], tuple[str, str]],
                  preset: str = "", *, imap_host: str = "", smtp_host: str = "", smtp_port: int = 0,
                  folder: str = "", sent_folder: Optional[str] = None, auth_help: str = "",
-                 search_criteria: Optional[Callable[[str], Any]] = None):
+                 search_criteria: Optional[Callable[[str], Any]] = None,
+                 oauth_token: Optional[Callable[[], str]] = None):
         super().__init__()
         base = PRESETS[preset] if preset else ImapPreset(imap_host, smtp_host)
         self._name = name
@@ -111,6 +125,7 @@ class ImapMailAccount(MailAccount):
         self.sent_folder = sent_folder if sent_folder is not None else base.sent_folder
         self.AUTH_HELP = auth_help or base.auth_help
         self._search_criteria = search_criteria or base.search_criteria
+        self._oauth_token = oauth_token
         if not self.imap_host or not self.smtp_host:
             raise ValueError(f"Mail account '{name}': an IMAP and an SMTP host are needed (or a preset)")
 
@@ -132,9 +147,11 @@ class ImapMailAccount(MailAccount):
 
     def _mailbox(self, folder: Optional[str] = None):
         address, password = self._credentials()
-        if folder is None:
-            return MailBox(self.imap_host, timeout=self.IMAP_TIMEOUT).login(address, password)
-        return MailBox(self.imap_host, timeout=self.IMAP_TIMEOUT).login(address, password, initial_folder=folder)
+        mailbox = MailBox(self.imap_host, timeout=self.IMAP_TIMEOUT)
+        folder_kwargs = {} if folder is None else {"initial_folder": folder}
+        if self._oauth_token is not None:
+            return mailbox.xoauth2(address, self._oauth_token(), **folder_kwargs)
+        return mailbox.login(address, password, **folder_kwargs)
 
     def _timed_fetch(self, mailbox, description, **kwargs):
         trace(f"  {self.name}: IMAP query ({description})...")
@@ -193,13 +210,22 @@ class ImapMailAccount(MailAccount):
         except KeyError as e:
             error(f"Email send: {self.name} credentials not configured: {e}")
             return f"{self.name} credentials not configured"
-        if not address or not password:
+        if not address or (not password and self._oauth_token is None):
             error(f"Email send: {self.name} credentials not configured")
             return f"{self.name} credentials not configured"
         try:
+            token = self._oauth_token() if self._oauth_token is not None else ""
+        except Exception as e:
+            error(f"Email send: {self.name} has no OAuth token: {e}")
+            return f"{self.name}: {e}"
+        try:
             with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=SMTP_TIMEOUT) as server:
                 server.starttls()
-                server.login(address, password)
+                if self._oauth_token is not None:
+                    server.ehlo_or_helo_if_needed()
+                    server.auth("XOAUTH2", lambda challenge=None: xoauth2_string(address, token))
+                else:
+                    server.login(address, password)
                 server.sendmail(address, list(recipients), msg.as_string())
         except smtplib.SMTPAuthenticationError as e:
             error(f"Email send auth failed: {e}")
@@ -213,16 +239,16 @@ class ImapMailAccount(MailAccount):
         except (TimeoutError, OSError) as e:
             error(f"Email send network error: {e}")
             return f"network error sending email: {e}"
-        self._save_to_sent(msg, address, password)
+        self._save_to_sent(msg)
         return ""
 
-    def _save_to_sent(self, msg: Message, address: str, password: str) -> bool:
+    def _save_to_sent(self, msg: Message) -> bool:
         """A failed Sent copy is logged but is not a failure: the mail is already out."""
         if not self.sent_folder:
             trace(f"{self.name}: the server files sent mail itself — no Sent copy to save")
             return True
         try:
-            with MailBox(self.imap_host, timeout=self.IMAP_TIMEOUT).login(address, password) as mailbox:
+            with self._mailbox() as mailbox:
                 mailbox.append(msg.as_bytes(), self.sent_folder, flag_set=[MailMessageFlags.SEEN])
             info(f"{self.name}: copy of {msg.get('Subject', '')!r} filed in '{self.sent_folder}'")
             return True

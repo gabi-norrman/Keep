@@ -58,6 +58,15 @@ starts the feed. A code that expired or a cancelled prompt comes back as text; r
 a system note says when the account is signed in (or that the code expired — run it again for a new one). Needs
 `microsoft.app.client_id` set and the integration enabled; list_integrations shows the accounts still to sign in.
 
+`google_login(account: str)` — signs a Google account (an entry of `google.accounts`, by its name) in, e.g.
+`google_login("Personal")`, from any chat. It comes back with a link: the user opens it in any browser, signs in,
+and lands on a http://localhost:18722/... page that does not load — that is expected. Tell the user to copy that
+page's whole address from the address bar and paste it into the chat; then run `google_login_code(pasted: str)`
+with it, quoted, e.g. `google_login_code("http://localhost:18722/?state=...&code=...")` (the bare code works too).
+The link lives about ten minutes; an expired or reused code comes back as text — run google_login again. Needs
+`google.oauth.client_id` and `client_secret` set and the integration enabled; list_integrations shows the accounts
+still to sign in.
+
 When the user asks for something whose integration is disabled or not configured (the list above, a command that
 answers "not configured", or list_integrations): run `config_help` for its section, tell the user what you need and where
 they get it, and ask whether to set it up now. Then `config_request` each key in turn, then
@@ -66,4 +75,4 @@ the state it came back with — if it failed, say why and offer to re-enter the 
 the chat, and never guess a key that config_help does not list.
 
 ### Stop-and-wait
-`list_integrations()`, `config_help()`, `config_request()`, `config_set()`, `restart_integration()`, `enable_integration()`, `disable_integration()`, `telegram_login()`, `microsoft_login()` return data: emit them and stop generating; the result arrives in the next round.
+`list_integrations()`, `config_help()`, `config_request()`, `config_set()`, `restart_integration()`, `enable_integration()`, `disable_integration()`, `telegram_login()`, `microsoft_login()`, `google_login()`, `google_login_code()` return data: emit them and stop generating; the result arrives in the next round.

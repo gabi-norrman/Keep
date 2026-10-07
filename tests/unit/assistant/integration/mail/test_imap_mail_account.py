@@ -319,3 +319,55 @@ class TestCheck:
         mock_mailbox[0].return_value.login.side_effect = Exception("AUTHENTICATIONFAILED")
         with pytest.raises(Exception, match="AUTHENTICATIONFAILED"):
             icloud.check()
+
+
+@pytest.mark.unit
+class TestXoauth2:
+    """An account given an `oauth_token` supplier signs in with XOAUTH2 instead of a password:
+    IMAP through imap_tools' own mechanism, SMTP through `AUTH XOAUTH2` with the SASL string
+    Gmail documents — `user=<address>^Aauth=Bearer <token>^A^A`, base64 on the wire."""
+
+    def _account(self, token=lambda: "ya29.token"):
+        return ImapMailAccount("Personal", "PE", lambda: ("marcus@example.com", ""), preset="gmail",
+                               auth_help='sign in again with google_login("Personal")', oauth_token=token)
+
+    def test_imap_signs_in_with_the_address_and_the_token_a_contract_with_gmail_imap_xoauth2(self, mock_mailbox):
+        MockMB, _ = mock_mailbox
+        account = self._account()
+
+        assert account.check() is True
+
+        MockMB.return_value.xoauth2.assert_called_once_with("marcus@example.com", "ya29.token", initial_folder="[Gmail]/All Mail")
+        MockMB.return_value.login.assert_not_called()
+
+    def test_smtp_sends_the_sasl_string_gmail_expects_a_contract_with_gmail_smtp_xoauth2(self, mock_smtp, mock_mailbox):
+        import base64
+        _, server = mock_smtp
+
+        assert self._account().send("alice@example.com", "Hi", "Hello") == ""
+
+        server.starttls.assert_called_once()
+        server.login.assert_not_called()
+        mechanism, authobject = server.auth.call_args.args
+        assert mechanism == "XOAUTH2"
+        assert authobject() == "user=marcus@example.com\x01auth=Bearer ya29.token\x01\x01"
+        assert base64.b64encode(authobject().encode()) == b"dXNlcj1tYXJjdXNAZXhhbXBsZS5jb20BYXV0aD1CZWFyZXIgeWEyOS50b2tlbgEB"
+        assert server.ehlo_or_helo_if_needed.called and server.sendmail.call_args.args[0] == "marcus@example.com"
+
+    def test_a_supplier_without_a_token_fails_the_send_before_smtp_and_a_refused_token_names_the_help(self, mock_smtp):
+        def no_token():
+            raise RuntimeError('not signed in — google_login("Personal")')
+
+        outcome = self._account(no_token).send("alice@example.com", "Hi", "Hello")
+
+        assert 'google_login("Personal")' in outcome and not mock_smtp[0].called
+        mock_smtp[1].auth.side_effect = smtplib.SMTPAuthenticationError(535, b"Username and Password not accepted")
+        refused = self._account().send("alice@example.com", "Hi", "Hello")
+        assert "auth failed" in refused.lower() and 'google_login("Personal")' in refused
+
+    def test_a_supplier_without_a_token_makes_a_listing_an_error_text(self, mock_mailbox):
+        def no_token():
+            raise RuntimeError('not signed in — google_login("Personal")')
+
+        assert 'google_login("Personal")' in self._account(no_token).fetch_latest()
+        mock_mailbox[0].return_value.xoauth2.assert_not_called()

@@ -24,6 +24,7 @@ GROUPS = {
     'src/integrations/home_assistant': ('home_assistant', 'Home Assistant as the home automation backend: one websocket for state, commands and the event feed.'),
     'src/integrations/icloud': ('icloud', 'The iCloud account: Find My locations and device pings, with its 2FA recovery.'),
     'src/integrations/imap': ('imap', 'Mail over IMAP/SMTP: one mail account per imap.accounts entry, iCloud and Gmail by preset, any other server by its hosts.'),
+    'src/integrations/google': ('google', 'Gmail and Google Calendar: the mail (IMAP with the sign-in’s token) and calendars of one account per google.accounts entry, signed in once in a browser.'),
     'src/integrations/microsoft': ('microsoft', 'Microsoft 365 over the Graph API: the mail and calendars of one account per microsoft.accounts entry, signed in once with a device code.'),
     'src/integrations/imessage': ('imessage', 'iMessage and SMS on the server’s Mac: a feed of incoming messages and the way to send one.'),
     'src/integrations/indigo': ('indigo', 'Indigo as the home automation backend: REST for commands, a state file for the snapshot and an event feed.'),
