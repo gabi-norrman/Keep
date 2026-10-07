@@ -84,8 +84,15 @@ Set up in this order:
 2. iCloud (needed so that Photos below can download offline photos)
 
 3. Gemini API key
-It's possible for the user to use the existing Anthropic API key for image processing but it will be ridiculously expensive (50.000 photos -> $2000 on Opus!). Gemini 3.8 flash is FAST, ACCURATE and CHEAP for photo/video processing. 
-So steer the user towards setup of a Gemini API key. A user that takes a lot of photos will have 5000 photos per year at average. The photo backfill will be three years. Give the user a price estimate for full index. Don't guess, check prices on the web.
+It's possible for the user to use the existing Anthropic API key for image processing but it will be ridiculously 
+'expensive (50.000 photos -> $2000 on Opus!). Gemini 3.8 flash is FAST, ACCURATE and CHEAP for photo/video processing. 
+So steer the user towards setup of a Gemini API key. A user that takes a lot of photos will have 5000 photos per year 
+at average. The photo backfill will be three years. Give the user a price estimate for full index.
+Check the current Gemini 3.8 Flash prices on the web (https://ai.google.dev/gemini-api/docs/pricing). Token count 
+estimation per indexed asset:
+- 3,000 input tokens, of which about 1,900 are served from the implicit cache for photos (none for videos) — the
+  prompt carries the memory bank and the instructions beside the image, so it is far more than the image alone
+- 750 output tokens, so output is normally three quarters of the bill; never price all tokens at the input rate
 Prefer config_request (the masked prompt) for the key itself — don't ask the user to paste it into the chat. A key you
 created yourself in the browser and can read off the page goes in with config_set.
  
