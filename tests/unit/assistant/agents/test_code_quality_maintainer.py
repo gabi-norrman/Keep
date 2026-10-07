@@ -164,9 +164,10 @@ class TestNightlyUpdate:
                 patch.object(CodeQualityMaintainer, '_pull_target', return_value=("", "")) as pull, \
                 patch.object(CodeQualityMaintainer, '_head_commit', return_value=NEWER) as head, \
                 patch.object(CodeQualityMaintainer, '_commits_between', return_value=2), \
+                patch.object(CodeQualityMaintainer, '_sync_requirements', return_value=("", "")) as sync, \
                 patch.object(CodeQualityMaintainer, 'restart') as restart, \
                 patch('assistant.SystemNote.system_note') as note_:
-            self.pull, self.head, self.restart, self.note = pull, head, restart, note_
+            self.pull, self.head, self.sync, self.restart, self.note = pull, head, sync, restart, note_
             yield
 
     def test_new_commits_restart_the_server_with_a_history_only_note(self, maintainer):
@@ -183,6 +184,21 @@ class TestNightlyUpdate:
         self.pull.assert_called_once_with()
         self.restart.assert_not_called()
         self.note.assert_not_called()
+        self.sync.assert_not_called()   # pip only runs ahead of a restart
+
+    def test_a_pin_bump_is_installed_before_the_restart_and_named_in_the_note(self, maintainer):
+        self.sync.return_value = ("", "installed 1 package: pkg-a 1.0.0 → 2.0.0")
+        maintainer._nightly_update()
+        self.sync.assert_called_once_with()
+        self.restart.assert_called_once()
+        assert "pkg-a" in self.note.call_args[0][1]
+
+    def test_a_failed_install_keeps_the_old_code_running_and_says_why(self, maintainer):
+        self.sync.return_value = ("pip exited 1 (no matching distribution)", "")
+        maintainer._nightly_update()
+        self.restart.assert_not_called()
+        text = self.note.call_args[0][1]
+        assert "no matching distribution" in text and "old code" in text
 
     def test_a_failed_pull_keeps_the_old_code_running_and_says_why(self, maintainer):
         self.pull.return_value = ("Git pull failed: merge conflict in config", "")
@@ -1184,7 +1200,52 @@ def developer_release(value: bool):
 
 
 @pytest.mark.unit
+def test_the_requirements_sync_follows_the_auto_install_config_key():
+    with patch.object(ConfigManager, 'get',
+                      side_effect=lambda key, default=None: False if key == "auto_install_requirements" else default), \
+            patch('assistant.agents.CodeQualityMaintainer.RequirementsChecker.sync', return_value=("", "")) as sync:
+        assert CodeQualityMaintainer._sync_requirements() == ("", "")
+    sync.assert_called_once_with(auto_install=False)
+
+
+@pytest.mark.unit
 class TestPullAndRestart:
+    @pytest.fixture(autouse=True)
+    def venv_in_sync(self):
+        """The venv matches the pins unless a test says otherwise — nothing here runs pip."""
+        with patch.object(CodeQualityMaintainer, '_sync_requirements', return_value=("", "")) as sync:
+            self.sync = sync
+            yield
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_a_pin_bump_is_installed_after_the_pull_and_before_the_restart(self, mock_sub, mock_popen):
+        mock_sub.return_value = Mock(stdout="Updating abc123..def456\n1 file changed", stderr="", returncode=0)
+        order = []
+        self.sync.side_effect = lambda: (order.append("pip"), ("", "installed 1 package: pkg-a (missing)"))[1]
+        mock_popen.side_effect = lambda *a, **k: order.append("restart")
+        result = CodeQualityMaintainer.pull_and_restart()
+        assert order == ["pip", "restart"]
+        assert "pkg-a" in result
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_a_failed_install_does_not_restart_and_says_why(self, mock_sub, mock_popen):
+        mock_sub.return_value = Mock(stdout="Updating abc123..def456\n1 file changed", stderr="", returncode=0)
+        self.sync.return_value = ("pip exited 1 (no matching distribution)", "")
+        result = CodeQualityMaintainer.pull_and_restart()
+        assert "not restarted" in result and "no matching distribution" in result
+        mock_popen.assert_not_called()
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_a_failed_pull_never_reaches_pip(self, mock_sub, mock_popen):
+        mock_sub.return_value = Mock(stdout="", stderr="fatal: not a git repository", returncode=128)
+        with developer_release(True):
+            CodeQualityMaintainer.pull_and_restart()
+        self.sync.assert_not_called()
+        mock_popen.assert_not_called()
+
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_success_with_changes(self, mock_sub, mock_popen):

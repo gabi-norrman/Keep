@@ -1,15 +1,24 @@
+import importlib
 import importlib.metadata
 import re
+import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from common.logging import error, info, trace
-from common.Paths import AISERVER_DIR
+from common.Paths import AISERVER_DIR, LOG_DIR
 
 REQUIREMENTS_FILE = AISERVER_DIR / "requirements.txt"
 VOICE_REQUIREMENTS_FILE = AISERVER_DIR / "requirements-voice.txt"
+PIP_LOG = LOG_DIR / "pip-update.log"
 
 REQUIRED_PYTHON = (3, 12)
+# The config key: with it on (the default) a pull whose pins no longer match the venv runs pip
+# before the restart, and a start that finds the venv behind runs pip before giving up.
+AUTO_INSTALL_KEY = "auto_install_requirements"
+# torch alone is hundreds of MB; a pin bump of the voice stack can take a while on a slow line.
+PIP_TIMEOUT = 15 * 60
 
 _REQ_LINE_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)(?:\[[^\]]+\])?\s*==\s*(\S+)\s*$")
 _DIRECT_REF_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)\s*@\s*(\S+)\s*$")
@@ -51,18 +60,42 @@ class RequirementsChecker:
     in — which is how the pins an integration keeps in its own folder
     (src/integrations/<name>/requirements.txt) are checked. Each file is read once per start:
     the voice file's `-r requirements.txt` finds the base group already checked.
+
+    The same walk serves the updater: `sync` is what restart_server and the nightly update run
+    between the pull and the restart, so a release that bumps a pin installs it while the old
+    server still serves and the new one never dies on this check. pip runs over the voice file,
+    which includes the rest — exactly what install.sh runs.
     """
 
     @staticmethod
-    def verify_or_exit():
-        RequirementsChecker._check_python_version()
-        groups = [("base", REQUIREMENTS_FILE), ("voice", VOICE_REQUIREMENTS_FILE)]
+    def _groups() -> list[tuple[str, Path]]:
+        return [("base", REQUIREMENTS_FILE), ("voice", VOICE_REQUIREMENTS_FILE)]
 
+    @staticmethod
+    def verify_or_exit(auto_install: bool = False):
+        """Stops the start when the venv is behind the pins. With *auto_install* it first tries
+        pip: a start that would otherwise fail is slow instead of dead."""
+        RequirementsChecker._check_python_version()
+        missing, mismatched, checked = RequirementsChecker.drift()
+        if (missing or mismatched) and auto_install:
+            info(f"Requirements check: {RequirementsChecker._describe(missing, mismatched)} — "
+                 f"installing before the start ({AUTO_INSTALL_KEY} is on)")
+            if not RequirementsChecker.install():
+                missing, mismatched, checked = RequirementsChecker.drift()
+        if missing or mismatched:
+            RequirementsChecker._fail(missing, mismatched, [p.name for _, p in RequirementsChecker._groups()])
+            return
+        trace(f"All {checked} pinned packages match installed versions "
+              f"({', '.join(g for g, _ in RequirementsChecker._groups())}).")
+
+    @staticmethod
+    def drift() -> tuple[list[str], list[tuple[str, str, str]], int]:
+        """(missing, mismatched, checked) across both groups, read fresh from the venv."""
         missing: list[str] = []
         mismatched: list[tuple[str, str, str]] = []
         checked = 0
         seen: set[Path] = set()
-        for group, path in groups:
+        for group, path in RequirementsChecker._groups():
             if not path.exists():
                 error(f"{path} not found; skipping {group} requirements check.")
                 continue
@@ -70,13 +103,81 @@ class RequirementsChecker:
             missing += g_missing
             mismatched += g_mismatched
             checked += g_checked
+        return missing, mismatched, checked
 
+    @staticmethod
+    def sync(auto_install: bool = True) -> tuple[str, str]:
+        """Brings the venv to the pins when they drifted. Returns (failure, done): *failure* says
+        why the venv is still behind and is "" when it matches; *done* names what was installed,
+        "" when there was nothing to do. With *auto_install* off a drift is a failure as well —
+        the caller must not restart into a server that dies on verify_or_exit."""
+        missing, mismatched, checked = RequirementsChecker.drift()
+        if not (missing or mismatched):
+            info(f"Requirements sync: all {checked} pins match the venv, nothing to install.")
+            return "", ""
+        change = RequirementsChecker._describe(missing, mismatched)
+        if not auto_install:
+            info(f"Requirements sync: {change}, but {AUTO_INSTALL_KEY} is off — not installing.")
+            return (f"The pulled code needs other packages ({change}) and {AUTO_INSTALL_KEY} is off. "
+                    f"Run `.venv/bin/pip install -r {VOICE_REQUIREMENTS_FILE.name}` in the repository, "
+                    f"then restart_server."), ""
+        info(f"Requirements sync: {change} — running pip")
+        failure = RequirementsChecker.install()
+        if failure:
+            return failure, ""
+        missing, mismatched, _ = RequirementsChecker.drift()
         if missing or mismatched:
-            RequirementsChecker._fail(missing, mismatched, [p.name for _, p in groups])
-            return
+            left = RequirementsChecker._describe(missing, mismatched)
+            error(f"Requirements sync: pip finished but the venv is still behind — {left}")
+            return f"pip ran but the venv is still behind the pins ({left}); see {PIP_LOG}.", ""
+        info(f"Requirements sync: done — {change}")
+        return "", f"installed {change}"
 
-        trace(f"All {checked} pinned packages match installed versions "
-              f"({', '.join(g for g, _ in groups)}).")
+    @staticmethod
+    def install() -> str:
+        """Runs pip in this venv over the voice file (it includes everything), appending pip's
+        output to PIP_LOG. Returns "" when pip exited 0, else what went wrong."""
+        cmd = [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
+               "-r", str(VOICE_REQUIREMENTS_FILE)]
+        PIP_LOG.parent.mkdir(parents=True, exist_ok=True)
+        info(f"pip install: {' '.join(cmd)} (output in {PIP_LOG})")
+        started = datetime.now()
+        try:
+            with open(PIP_LOG, "a") as log:
+                log.write(f"\n===== {started:%Y-%m-%d %H:%M:%S} {' '.join(cmd)}\n")
+                log.flush()
+                result = subprocess.run(cmd, cwd=AISERVER_DIR, stdout=log, stderr=subprocess.STDOUT,
+                                        stdin=subprocess.DEVNULL, timeout=PIP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            error(f"pip install: no result within {PIP_TIMEOUT}s")
+            return f"pip did not finish within {PIP_TIMEOUT // 60} minutes; see {PIP_LOG}."
+        except Exception as e:
+            error(f"pip install could not run: {e}")
+            return f"pip could not run: {e}"
+        # The new dist-info directories must be visible to the drift check that follows.
+        importlib.invalidate_caches()
+        took = (datetime.now() - started).total_seconds()
+        if result.returncode != 0:
+            tail = RequirementsChecker._log_tail()
+            error(f"pip install exited {result.returncode} after {took:.0f}s: {tail}")
+            return f"pip exited {result.returncode} ({tail}); the full output is in {PIP_LOG}."
+        info(f"pip install finished in {took:.0f}s")
+        return ""
+
+    @staticmethod
+    def _log_tail(lines: int = 3) -> str:
+        try:
+            tail = [l.strip() for l in PIP_LOG.read_text().splitlines() if l.strip()][-lines:]
+        except OSError:
+            return "no output"
+        return " | ".join(tail) or "no output"
+
+    @staticmethod
+    def _describe(missing: list[str], mismatched: list[tuple[str, str, str]]) -> str:
+        parts = [f"{name} (missing)" for name in missing]
+        parts += [f"{name} {actual} → {expected}" for name, expected, actual in mismatched]
+        n = len(parts)
+        return f"{n} package{'s' if n != 1 else ''}: {', '.join(parts)}"
 
     @staticmethod
     def _check_file(path: Path, seen: set[Path] | None = None) -> tuple[list[str], list[tuple[str, str, str]], int]:
@@ -171,6 +272,7 @@ class RequirementsChecker:
                 error(f"    - {name}: expected {expected}, installed {actual}")
         error(bar)
         error(f"  Fix with: pip install -r {files[-1]}")
+        error(f"  (the server does this itself on a restart_server and at start while {AUTO_INSTALL_KEY} is on)")
         error(bar)
         error("")
         sys.exit(1)

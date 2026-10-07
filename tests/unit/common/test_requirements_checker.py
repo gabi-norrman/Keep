@@ -436,3 +436,142 @@ def test_every_integration_folders_requirements_are_installed_with_the_base_set(
             for path in _included_files(rc_module.AISERVER_DIR / "requirements-voice.txt")
             for line in path.read_text().splitlines() if "==" in line and not line.lstrip().startswith("#")]
     assert sorted(set(pins)) == sorted(pins), "a package is pinned in two files"
+
+
+# ---- sync: what restart_server runs between the pull and the restart ----
+
+class _Venv:
+    """A fake venv: *installed* maps package → version and a pip run can rewrite it."""
+
+    def __init__(self, monkeypatch, tmp_path, pins: str, installed: dict):
+        self.installed = installed
+        self.pip_calls = []
+        monkeypatch.setattr(rc_module, "REQUIREMENTS_FILE", _write_reqs(tmp_path, pins))
+        monkeypatch.setattr(rc_module, "VOICE_REQUIREMENTS_FILE", tmp_path / "no-voice.txt")
+        monkeypatch.setattr(rc_module, "PIP_LOG", tmp_path / "pip-update.log")
+
+        def version(name):
+            if name not in self.installed:
+                raise importlib.metadata.PackageNotFoundError(name)
+            return self.installed[name]
+        monkeypatch.setattr(importlib.metadata, "version", version)
+
+    def pip(self, monkeypatch, after: dict | None = None, failure: str = ""):
+        """pip that leaves the venv as *after* (unchanged when None) and reports *failure*."""
+        def install():
+            self.pip_calls.append(1)
+            if after is not None:
+                self.installed.clear()
+                self.installed.update(after)
+            return failure
+        monkeypatch.setattr(RequirementsChecker, "install", staticmethod(install))
+
+
+def test_sync_runs_no_pip_when_the_venv_matches_the_pins(tmp_path, monkeypatch):
+    venv = _Venv(monkeypatch, tmp_path, "pkg-a==1.0.0\n", {"pkg-a": "1.0.0"})
+    venv.pip(monkeypatch)
+    assert RequirementsChecker.sync() == ("", "")
+    assert venv.pip_calls == []
+
+
+def test_sync_installs_a_bumped_pin_and_reports_it(tmp_path, monkeypatch):
+    venv = _Venv(monkeypatch, tmp_path, "pkg-a==2.0.0\npkg-b==1.0.0\n", {"pkg-a": "1.0.0"})
+    venv.pip(monkeypatch, after={"pkg-a": "2.0.0", "pkg-b": "1.0.0"})
+    failure, installed = RequirementsChecker.sync()
+    assert failure == ""
+    assert len(venv.pip_calls) == 1
+    assert "pkg-a" in installed and "2.0.0" in installed and "pkg-b" in installed
+
+
+def test_sync_with_auto_install_off_fails_instead_of_running_pip(tmp_path, monkeypatch):
+    venv = _Venv(monkeypatch, tmp_path, "pkg-a==2.0.0\n", {"pkg-a": "1.0.0"})
+    venv.pip(monkeypatch)
+    failure, installed = RequirementsChecker.sync(auto_install=False)
+    assert failure and installed == ""
+    assert rc_module.AUTO_INSTALL_KEY in failure and "pkg-a" in failure
+    assert venv.pip_calls == []
+
+
+def test_sync_reports_a_failed_pip_and_does_not_recheck(tmp_path, monkeypatch):
+    venv = _Venv(monkeypatch, tmp_path, "pkg-a==2.0.0\n", {"pkg-a": "1.0.0"})
+    venv.pip(monkeypatch, failure="pip exited 1 (no matching distribution)")
+    failure, installed = RequirementsChecker.sync()
+    assert "no matching distribution" in failure and installed == ""
+
+
+def test_sync_fails_when_pip_succeeds_but_the_venv_is_still_behind(tmp_path, monkeypatch):
+    venv = _Venv(monkeypatch, tmp_path, "pkg-a==2.0.0\n", {"pkg-a": "1.0.0"})
+    venv.pip(monkeypatch)   # exits 0 without changing anything
+    failure, installed = RequirementsChecker.sync()
+    assert "still behind" in failure and "pkg-a" in failure and installed == ""
+
+
+def test_verify_or_exit_with_auto_install_runs_pip_and_starts_once_the_venv_matches(tmp_path, monkeypatch):
+    venv = _Venv(monkeypatch, tmp_path, "pkg-a==2.0.0\n", {"pkg-a": "1.0.0"})
+    venv.pip(monkeypatch, after={"pkg-a": "2.0.0"})
+    RequirementsChecker.verify_or_exit(auto_install=True)
+    assert len(venv.pip_calls) == 1
+
+
+def test_verify_or_exit_with_auto_install_still_exits_when_pip_does_not_fix_it(tmp_path, monkeypatch):
+    venv = _Venv(monkeypatch, tmp_path, "pkg-a==2.0.0\n", {"pkg-a": "1.0.0"})
+    venv.pip(monkeypatch, failure="pip exited 1")
+    with pytest.raises(SystemExit):
+        RequirementsChecker.verify_or_exit(auto_install=True)
+
+
+def test_verify_or_exit_without_auto_install_never_runs_pip(tmp_path, monkeypatch):
+    venv = _Venv(monkeypatch, tmp_path, "pkg-a==2.0.0\n", {"pkg-a": "1.0.0"})
+    venv.pip(monkeypatch, after={"pkg-a": "2.0.0"})
+    with pytest.raises(SystemExit):
+        RequirementsChecker.verify_or_exit()
+    assert venv.pip_calls == []
+
+
+def test_install_runs_pip_of_this_venv_over_the_voice_file_and_logs_its_output(tmp_path, monkeypatch):
+    """The voice file includes the base file and every integration folder's pins — the one
+    command install.sh runs, so an update installs exactly what a fresh install does."""
+    import subprocess
+    import sys
+    voice = tmp_path / "requirements-voice.txt"
+    voice.write_text("-r requirements.txt\n")
+    log = tmp_path / "pip-update.log"
+    monkeypatch.setattr(rc_module, "VOICE_REQUIREMENTS_FILE", voice)
+    monkeypatch.setattr(rc_module, "PIP_LOG", log)
+    runs = []
+
+    def run(cmd, **kwargs):
+        runs.append((cmd, kwargs))
+        kwargs["stdout"].write("Successfully installed pkg-a-2.0.0\n")
+        return subprocess.CompletedProcess(cmd, 0)
+    monkeypatch.setattr(rc_module.subprocess, "run", run)
+
+    assert RequirementsChecker.install() == ""
+    (cmd, kwargs), = runs
+    assert cmd[:3] == [sys.executable, "-m", "pip"] and cmd[-2:] == ["-r", str(voice)]
+    assert kwargs["stdin"] is subprocess.DEVNULL and kwargs["timeout"] >= 60
+    assert "Successfully installed pkg-a-2.0.0" in log.read_text()
+
+
+def test_install_reports_the_tail_of_a_failed_pip(tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.setattr(rc_module, "PIP_LOG", tmp_path / "pip-update.log")
+
+    def run(cmd, **kwargs):
+        kwargs["stdout"].write("Collecting pkg-a\nERROR: No matching distribution found for pkg-a==9.9.9\n")
+        return subprocess.CompletedProcess(cmd, 1)
+    monkeypatch.setattr(rc_module.subprocess, "run", run)
+
+    failure = RequirementsChecker.install()
+    assert "No matching distribution" in failure and "pip-update.log" in failure
+
+
+def test_install_reports_a_timeout(tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.setattr(rc_module, "PIP_LOG", tmp_path / "pip-update.log")
+
+    def run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+    monkeypatch.setattr(rc_module.subprocess, "run", run)
+
+    assert "did not finish" in RequirementsChecker.install()

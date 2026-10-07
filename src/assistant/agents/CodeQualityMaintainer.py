@@ -17,6 +17,7 @@ from common.logging import info, error, trace, note
 from ..llm import parse_llm_config
 from common.ConfigManager import ConfigManager
 from common.Paths import REPO_DIR, AISERVER_DIR as _AISERVER_PATH
+from common.RequirementsChecker import RequirementsChecker, AUTO_INSTALL_KEY
 
 WORKING_DIR = str(REPO_DIR)
 AISERVER_DIR = str(_AISERVER_PATH)
@@ -439,6 +440,14 @@ class CodeQualityMaintainer:
                 return
             count = self._commits_between(self._boot_commit, head)
             change = f"{count} new commit{'s' if count != 1 else ''}" if count else f"now at {head[:8]}"
+            failure, installed = self._sync_requirements()
+            if failure:
+                error(f"CodeQualityMaintainer: nightly update pulled {change} but not restarting — {failure}")
+                system_note("server", f"Nightly update pulled {change} on {target} but the server keeps running "
+                                      f"the old code: {failure}", push=False)
+                return
+            if installed:
+                change += f", {installed}"
             note(f"CodeQualityMaintainer: nightly update — {change} on {target} "
                  f"({self._boot_commit[:8]} → {head[:8]}), restarting.")
             # History only: the startup announcement of the new process is what the chats get.
@@ -848,6 +857,14 @@ class CodeQualityMaintainer:
         return "", (result.stdout or "").strip()
 
     @staticmethod
+    def _sync_requirements() -> tuple[str, str]:
+        """Between the pull and the restart: pip brings the venv to the pulled pins while the old
+        server still serves, so the new one never dies on its requirements check. Returns
+        (failure, installed) as RequirementsChecker.sync does; a failure means do not restart."""
+        auto = bool(ConfigManager().get(AUTO_INSTALL_KEY, True))
+        return RequirementsChecker.sync(auto_install=auto)
+
+    @staticmethod
     def pull_and_restart() -> str:
         failure, output = CodeQualityMaintainer._pull_target()
         if failure:
@@ -859,9 +876,16 @@ class CodeQualityMaintainer:
         else:
             info(f"CodeQualityMaintainer: pulled changes: {output}")
 
+        failure, installed = CodeQualityMaintainer._sync_requirements()
+        if failure:
+            error(f"CodeQualityMaintainer: not restarting — {failure}")
+            return f"The server was not restarted: {failure}"
+
         CodeQualityMaintainer.restart()
 
         changes_msg = "no new changes" if already_up_to_date else f"pulled updates: {output}"
+        if installed:
+            changes_msg += f"; {installed}"
         return f"Update initiated ({changes_msg}). Server is restarting..."
 
     @staticmethod
