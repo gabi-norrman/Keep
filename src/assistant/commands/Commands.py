@@ -14,7 +14,7 @@ from assistant.integration import HomeAutomation as home
 from assistant.tools.WebAccess import WebAccess
 from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import CommandSet, Toolkits, ToolkitPreloader
-from assistant import MemoryFile, Procedures, WatchList
+from assistant import FirstRun, MemoryFile, Procedures, WatchList
 from common.logging import trace, info, note, error, fine
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from common.ConfigManager import ConfigManager
@@ -675,6 +675,13 @@ class Commands:
     _STATE_LABELS = {"ok": "ok", "warning": "warning", "error": "error", "not_configured": "not configured",
                      "disabled": "disabled", "needs_2fa": "needs 2FA", "rate_limited": "rate limited",
                      "unknown": "not checked yet"}
+    @staticmethod
+    def _setup_activity():
+        """A setup command ran: setup is in progress for FTUE_SETUP_GRACE_HOURS more
+        (FirstRun.in_ftue) — the setup toolkit stays preloaded and the INTEGRATIONS section
+        stays in the prompt."""
+        FirstRun.note_setup_activity()
+
     # Integrations that are not Integration classes but follow the same switch, with their keys.
     @staticmethod
     def _integration_monitor():
@@ -748,6 +755,7 @@ class Commands:
         self.background_command(self._run_config_help, parameter_string.strip().strip('"\''))
 
     def _run_config_help(self, section: str = "") -> str:
+        self._setup_activity()
         if not section:
             lines = []
             for name in ConfigSchema.sections():
@@ -784,6 +792,7 @@ class Commands:
         self.background_command(self._run_config_request, (key, source, conversation), lane=self.CONFIG_LANE)
 
     def _run_config_request(self, key: str, source=None, conversation=None) -> str:
+        self._setup_activity()
         outcome: dict = {}
         replaces = ConfigStore.is_set(key)
 
@@ -864,6 +873,7 @@ class Commands:
         self.background_command(self._run_config_set, [key, value], lane=self.CONFIG_LANE)
 
     def _run_config_set(self, key: str, value: str) -> str:
+        self._setup_activity()
         interface = ConfigStore.interface_flag(key)
         before = ConfigStore.interface_enabled(interface) if interface else None
         try:
@@ -888,6 +898,7 @@ class Commands:
         self.background_command(self._run_restart_integration, name, lane=self.CONFIG_LANE)
 
     def _run_restart_integration(self, name: str) -> str:
+        self._setup_activity()
         monitor = self._integration_monitor()
         result = monitor.restart(name)
         if result is None:
@@ -918,6 +929,7 @@ class Commands:
 
     def _switch_integration(self, name: str, enable: bool) -> str:
         """Edit enabled_integrations, then restart the integration so the list takes effect now."""
+        self._setup_activity()
         verb = "enable" if enable else "disable"
         canonical = self._canonical_integration_name(name)
         if canonical is None:

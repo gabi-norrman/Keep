@@ -1,14 +1,26 @@
-"""The first-time user experience (FTUE): until the install has a few integrations, the
-assistant speaks first and has the setup toolkit at hand; once the first feeds are in, a
-pipeline builds the first memory bank and then indexes the photo library in full.
+"""The first-time user experience (FTUE): while the install is being set up, the assistant
+speaks first, has the setup toolkit at hand and sees the integrations' state in its prompt;
+once the first feeds are in, a pipeline builds the first memory bank and then indexes the
+photo library in full.
 
-An install is in the FTUE while fewer than `FTUE_INTEGRATION_THRESHOLD` integrations are
-enabled — a new checkout and the `//wipe` reset both leave none, and the brief below walks
-the user through the first three. While it lasts, the launcher opens the owner's chat with
-the brief as a system turn (`ChatHub.open_conversation`) so the assistant's reply, the
-introduction and the next setup step, is on screen before the user types anything, and
-every request has the `setup` toolkit preloaded (`preload_toolkits`, through
-`RequestProcessor._preload_toolkits`) so no round is spent on `load_toolkit` for it.
+Setup is in progress (`in_ftue`) while the install is younger than `FTUE_INSTALL_DAYS` — the
+pipeline's state file dates it — or a setup command (`config_help`, `config_set`,
+`config_request`, `enable_integration`, `restart_integration`…, see `note_setup_activity`)
+ran in the last `FTUE_SETUP_GRACE_HOURS`. The count of enabled integrations is no measure:
+the first beta install had six by the second hour and was still mid-setup, and an install
+that settles on two is not being set up forever. While setup is in progress every request
+has the `setup` toolkit preloaded (`preload_toolkits`, through
+`RequestProcessor._preload_toolkits`) so no round is spent on `load_toolkit` for it, and the
+prompt carries the INTEGRATIONS section (`prompt/sections/IntegrationsSectionGenerator`):
+what is on, what is on but unconfigured or broken — state that would otherwise live only in
+a `list_integrations` result the history window trims away.
+
+The brief is a different matter: it opens the conversation while fewer than
+`FTUE_INTEGRATION_THRESHOLD` integrations are enabled (`brief_due`) — a new checkout and the
+`//wipe` reset both leave none, and the brief walks the user through the first three. The
+launcher then opens the owner's chat with it as a system turn (`ChatHub.open_conversation`)
+so the assistant's reply, the introduction and the next setup step, is on screen before the
+user types anything.
 
 The pipeline (`plans/FTUE_PIPELINE_PLAN.md`) is armed only on a fresh install — `begin_if_fresh`
 writes `first_run.json` when the memory stub was just seeded or the bank still carries the
@@ -31,13 +43,20 @@ from pathlib import Path
 
 from common.ConfigManager import config
 from common.FloxyDatabase import FloxyDatabase, PHOTO_HISTORY_SOURCE
-from common.Paths import AISERVER_DIR
+from common.Paths import AISERVER_DIR, CACHE_DIR
 from common.logging import trace, info, note, error
 from assistant import MemoryFile
 
-# Enabling this many integrations ends the FTUE: the brief's three, or any three the user
+# Enabling this many integrations retires the brief: the brief's three, or any three the user
 # picked instead.
 FTUE_INTEGRATION_THRESHOLD = 3
+
+# Setup is in progress for this long after the install, whatever happens...
+FTUE_INSTALL_DAYS = 7
+# ...and for this long after the last setup command, whatever the install's age.
+FTUE_SETUP_GRACE_HOURS = 24
+# When the last setup command ran — `note_setup_activity` writes it, `in_ftue` reads it.
+SETUP_ACTIVITY_FILE = CACHE_DIR / "setup_activity.json"
 
 # Put in the LLM's window before every request while the FTUE lasts.
 FTUE_TOOLKITS = ("setup",)
@@ -104,17 +123,65 @@ _OWNER_UNKNOWN = ('owner_name is not set: ask who you are talking to and save th
                   'config_set("owner_name", ...) before anything else.')
 
 
-def in_ftue() -> bool:
+def brief_due() -> bool:
+    """Whether the first-run brief opens the conversation: fewer than
+    `FTUE_INTEGRATION_THRESHOLD` integrations enabled."""
     enabled = config.enabled_integrations()
-    ftue = len(enabled) < FTUE_INTEGRATION_THRESHOLD
-    trace(f"FTUE check: {len(enabled)} of {FTUE_INTEGRATION_THRESHOLD} integration(s) enabled — "
-          f"{'in' if ftue else 'past'} the FTUE")
-    return ftue
+    due = len(enabled) < FTUE_INTEGRATION_THRESHOLD
+    trace(f"Brief check: {len(enabled)} of {FTUE_INTEGRATION_THRESHOLD} integration(s) enabled — "
+          f"the brief {'opens' if due else 'is retired'}")
+    return due
+
+
+def in_ftue(now: float = None, state_path: Path = None, activity_path: Path = None) -> bool:
+    """Whether setup is in progress: the install is younger than `FTUE_INSTALL_DAYS` (an
+    established install that pre-dates the pipeline has no state file and counts as old), or a
+    setup command ran in the last `FTUE_SETUP_GRACE_HOURS`."""
+    now = now if now is not None else time.time()
+    state = State.load(state_path)
+    age_days = (now - state.started_at) / 86400 if state else None
+    if age_days is not None and age_days < FTUE_INSTALL_DAYS:
+        trace(f"FTUE check: the install is {age_days:.1f} day(s) old (< {FTUE_INSTALL_DAYS}) — setup in progress")
+        return True
+    last = last_setup_activity(activity_path)
+    if last is not None and now - last < FTUE_SETUP_GRACE_HOURS * 3600:
+        trace(f"FTUE check: a setup command ran {(now - last) / 3600:.1f} h ago (< {FTUE_SETUP_GRACE_HOURS} h) "
+              f"— setup in progress")
+        return True
+    trace("FTUE check: the install is " + (f"{age_days:.0f} days old" if age_days is not None else "established")
+          + " and no setup command ran in the last "
+          + (f"{(now - last) / 3600:.0f} h" if last is not None else "ever recorded") + " — setup is not in progress")
+    return False
+
+
+def note_setup_activity(now: float = None, path: Path = None):
+    """Record that a setup command ran, so `in_ftue` holds for `FTUE_SETUP_GRACE_HOURS` more.
+    A failed write is logged and costs only this stamp."""
+    path = path or SETUP_ACTIVITY_FILE
+    now = now if now is not None else time.time()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"last_setup_command_at": now}))
+        trace(f"Setup activity noted in {path.name}")
+    except OSError as e:
+        error(f"Setup activity could not be noted in {path}: {e}")
+
+
+def last_setup_activity(path: Path = None) -> float | None:
+    """When the last setup command ran, None when none was recorded."""
+    path = path or SETUP_ACTIVITY_FILE
+    try:
+        return float(json.loads(path.read_text())["last_setup_command_at"])
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError, KeyError) as e:
+        error(f"{path.name} is unreadable ({e}) — treating it as no setup activity")
+        return None
 
 
 def preload_toolkits() -> tuple[str, ...]:
     """The toolkits every request preloads on top of its channel's own: the setup toolkit
-    while the FTUE lasts, nothing after."""
+    while setup is in progress, nothing after."""
     return FTUE_TOOLKITS if in_ftue() else ()
 
 

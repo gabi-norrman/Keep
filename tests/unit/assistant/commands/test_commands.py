@@ -1653,6 +1653,12 @@ class TestCmdConfigHelp:
             commands_instance.run("config_help", ['"email"'])
         bg.assert_called_once_with(commands_instance._run_config_help, "email")
 
+    def test_a_setup_command_notes_setup_activity(self, commands_instance):
+        with patch("assistant.commands.Commands.FirstRun.note_setup_activity") as noted, \
+                patch.object(ConfigStore, "summary", return_value=""):
+            commands_instance._run_config_help("email")
+        noted.assert_called_once()
+
     def test_section_text_with_comments_and_the_set_flags(self, commands_instance):
         with patch.object(ConfigStore, "summary", return_value="email.address: not set, email.password: not set"):
             text = commands_instance._run_config_help("email")

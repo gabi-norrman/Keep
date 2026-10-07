@@ -128,8 +128,8 @@ def _open_first_conversation(server: "Server | None" = None):
     runs, the brief waits until its startup intro has played for the first TUI client, so
     the assistant starts thinking as the chat appears, not while the intro is on."""
     from assistant import FirstRun
-    if not FirstRun.in_ftue():
-        info("Past the FTUE: the assistant waits to be spoken to.")
+    if not FirstRun.brief_due():
+        info("The first-run brief is retired: the assistant waits to be spoken to.")
         return
     from interfaces.chat.ChatHub import ChatHub
 

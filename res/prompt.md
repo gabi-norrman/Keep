@@ -218,6 +218,8 @@ The procedures you have saved (`load_procedure(name)` loads one):
 What you are keeping an eye on (`load_watch(name)` loads an item in full):
 {WATCHLIST}
 
+{INTEGRATIONS}
+
 # GENERAL RULES
 Assume freely what lamps the user is referring to (even if you are not sure) - don't ask.
 Never change or adjust the name of a lamp or action, keep them exactly as-is.

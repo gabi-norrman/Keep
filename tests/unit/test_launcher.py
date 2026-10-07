@@ -297,7 +297,7 @@ class TestFirstConversation:
                 self.interfaces = [type("Http", (), {"name": "http"})(), console]
 
         console = FakeConsole()
-        with patch("assistant.FirstRun.in_ftue", return_value=True), \
+        with patch("assistant.FirstRun.brief_due", return_value=True), \
                 patch("assistant.FirstRun.brief", return_value="the brief"), \
                 patch("interfaces.chat.ChatHub.ChatHub.get_instance") as hub:
             floxy_ai_server._open_first_conversation(FakeServer(console))
@@ -312,7 +312,7 @@ class TestFirstConversation:
         class FakeServer:
             interfaces = [type("Telegram", (), {"name": "telegram"})()]
 
-        with patch("assistant.FirstRun.in_ftue", return_value=True), \
+        with patch("assistant.FirstRun.brief_due", return_value=True), \
                 patch("assistant.FirstRun.brief", return_value="the brief"), \
                 patch("interfaces.chat.ChatHub.ChatHub.get_instance") as hub:
             floxy_ai_server._open_first_conversation(FakeServer())
@@ -338,7 +338,7 @@ class TestFirstConversation:
 
     def test_an_installed_system_waits_to_be_spoken_to(self):
         import floxy_ai_server
-        with patch("assistant.FirstRun.in_ftue", return_value=False), \
+        with patch("assistant.FirstRun.brief_due", return_value=False), \
                 patch("interfaces.chat.ChatHub.ChatHub.get_instance") as hub:
             floxy_ai_server._open_first_conversation()
         hub.assert_not_called()

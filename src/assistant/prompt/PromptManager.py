@@ -12,6 +12,7 @@ from .TimeOfDay import TimeOfDay
 from .sections.MemorySectionGenerator import MemorySectionGenerator
 from .sections.ProceduresSectionGenerator import ProceduresSectionGenerator
 from .sections.WatchListSectionGenerator import WatchListSectionGenerator
+from .sections.IntegrationsSectionGenerator import IntegrationsSectionGenerator
 from .sections.VaultSectionGenerator import VaultSectionGenerator
 from .sections.HomeSectionGenerator import HomeSectionGenerator
 from .sections.WebSectionGenerator import WebSectionGenerator
@@ -113,8 +114,8 @@ class PromptManager:
 
     # Where each section stands in `self.sections`: the order they are started and stopped in.
     # A section a new folder brings comes after these, by key.
-    SECTION_ORDER = ("memory", "memory_recent", "procedures", "watchlist", "vault", "weather", "precipitation",
-                     "home", "web", "calendar", "sonos", "music_zones", "car_info", "phones")
+    SECTION_ORDER = ("memory", "memory_recent", "procedures", "watchlist", "integrations", "vault", "weather",
+                     "precipitation", "home", "web", "calendar", "sonos", "music_zones", "car_info", "phones")
 
     def _build_sections(self, generator_classes) -> dict:
         """The core's generators plus one of each integration folder's, under the key the class
@@ -126,6 +127,7 @@ class PromptManager:
             'memory_recent': memory.recent,
             'procedures': ProceduresSectionGenerator(self),
             'watchlist': WatchListSectionGenerator(self),
+            'integrations': IntegrationsSectionGenerator(self),
             'vault': VaultSectionGenerator(self),
             'home': HomeSectionGenerator(self),
             'web': WebSectionGenerator(self),

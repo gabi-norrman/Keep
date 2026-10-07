@@ -85,6 +85,17 @@ def integrations_enabled_unless_said_otherwise():
 
 
 @pytest.fixture(autouse=True)
+def first_run_files_stay_out_of_the_tree(tmp_path):
+    """The repo root's first_run.json and cache/setup_activity.json are the developer's install;
+    a test that does not name its own paths reads and writes a scratch pair instead (a setup
+    command notes its activity on every run)."""
+    from assistant import FirstRun
+    with patch.object(FirstRun, "STATE_FILE", tmp_path / "first_run.json"), \
+            patch.object(FirstRun, "SETUP_ACTIVITY_FILE", tmp_path / "setup_activity.json"):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def owner_is_the_cast_owner():
     """The developer's config.yaml decides `owner_name`; tests asserting on rendered messages
     ("Marcus to Alice: …") must not depend on it. Pinned under `get` on the shared instance only:
