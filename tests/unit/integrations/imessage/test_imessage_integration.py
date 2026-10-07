@@ -1,3 +1,4 @@
+import sqlite3
 from unittest.mock import patch, Mock, MagicMock
 
 import pytest
@@ -1258,6 +1259,25 @@ class TestFeed:
             mock_sqlite.connect.side_effect = Exception("unable to open database file")
             assert integration.open_feed() is False
         assert "Full Disk Access" in integration.open_error
+
+    def test_refused_chat_db_names_terminal_and_restart_server_up_front(self, integration):
+        """sqlite's refusal of an existing chat.db is the TCC refusal: the error the LLM relays
+        must say the grant goes to Terminal and that a restart_server follows, within the ~80
+        characters the prompt shows of it — a reopen in the refused process would fail again."""
+        with patch('integrations.imessage.IMessageIntegration.sqlite3.connect',
+                   side_effect=sqlite3.OperationalError("unable to open database file")), \
+             patch('integrations.imessage.IMessageIntegration.os.path.exists', return_value=True):
+            assert integration.open_feed() is False
+        head = integration.open_error[:80]
+        assert "Terminal" in head and "restart_server" in head
+
+    def test_missing_chat_db_is_not_blamed_on_full_disk_access(self, integration):
+        with patch('integrations.imessage.IMessageIntegration.sqlite3.connect',
+                   side_effect=sqlite3.OperationalError("unable to open database file")), \
+             patch('integrations.imessage.IMessageIntegration.os.path.exists', return_value=False):
+            assert integration.open_feed() is False
+        assert "Full Disk Access" not in integration.open_error
+        assert "Messages" in integration.open_error
 
     def test_open_feed_refreshes_contacts_and_seeds_scheduled(self, integration):
         with patch.object(integration, "check_health", return_value=True), \

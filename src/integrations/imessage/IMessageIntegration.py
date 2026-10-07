@@ -17,6 +17,13 @@ from common.RateLimiter import RateLimiter
 
 
 CHAT_DB_PATH = os.path.expanduser("~/Library/Messages/chat.db")
+# What the LLM relays when macOS keeps the server out of chat.db or the AddressBook. The grant
+# goes to Terminal, the app macOS holds responsible for the server (start.sh launches it from
+# there), and a process that was refused once stays refused — so a fresh process, not a reopen
+# in this one. The prompt shows only the first ~80 characters of an error, so the action leads.
+FULL_DISK_ACCESS_HINT = ("needs Full Disk Access for Terminal, then restart_server: System Settings > Privacy & "
+                         "Security > Full Disk Access > turn on Terminal (the server is launched from it); the "
+                         "running process keeps the refusal, so run restart_server afterwards — no need to quit Terminal")
 APPLE_EPOCH_OFFSET = 978_307_200
 POLL_INTERVAL = 5
 FETCH_BATCH_SIZE = 500   # chat.db rows read per fetch; a shorter batch means the catch-up is over
@@ -94,8 +101,15 @@ class IMessageIntegration(Integration, Feed):
         return []
 
     def check_health(self) -> bool:
-        with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
-            conn.execute("SELECT 1 FROM message LIMIT 1")
+        try:
+            with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
+                conn.execute("SELECT 1 FROM message LIMIT 1")
+        except sqlite3.OperationalError as e:
+            if not os.path.exists(CHAT_DB_PATH):
+                raise RuntimeError(f"{CHAT_DB_PATH} does not exist — Messages.app is not set up on this Mac") from e
+            # sqlite says "unable to open database file" whether the file is missing or macOS
+            # refused it; the file is there, so it is the TCC refusal
+            raise PermissionError(f"{FULL_DISK_ACCESS_HINT} (cannot read {CHAT_DB_PATH}: {e})") from e
         return True
 
     # --- Feed ---------------------------------------------------------------------------------
@@ -116,8 +130,8 @@ class IMessageIntegration(Integration, Feed):
         try:
             self.check_health()
         except Exception as e:
-            self._open_error = (f"cannot read {CHAT_DB_PATH} ({e}). Grant Full Disk Access to this process "
-                                f"in System Settings > Privacy & Security > Full Disk Access.")
+            self._open_error = str(e) if isinstance(e, (PermissionError, RuntimeError)) else \
+                f"{FULL_DISK_ACCESS_HINT} (cannot read {CHAT_DB_PATH}: {e})"
             error(f"iMessage: {self._open_error}")
             return False
         self._open_error = None
@@ -721,7 +735,7 @@ class IMessageIntegration(Integration, Feed):
             self._notify_contact_cache_empty()
             return None, (
                 f"contact cache is empty — could not look up '{candidate}'. "
-                "Keep likely needs Full Disk Access to read the AddressBook."
+                f"Reading the AddressBook likely {FULL_DISK_ACCESS_HINT}."
             )
         return None, f"unknown contact: {candidate} (cache has {len(self._name_to_handle)} names)"
 
@@ -831,8 +845,8 @@ class IMessageIntegration(Integration, Feed):
         self._notified_cache_empty = True
         system_note(self.name,
             "iMessage: contact cache is empty — name-based recipients can't be resolved. "
-            "Likely cause: Keep is missing Full Disk Access (System Settings → "
-            "Privacy & Security → Full Disk Access). Sends to raw phone numbers / emails still work."
+            f"Likely cause: reading the AddressBook {FULL_DISK_ACCESS_HINT}. "
+            "Sends to raw phone numbers / emails still work."
         )
 
     @classmethod

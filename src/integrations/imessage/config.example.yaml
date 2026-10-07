@@ -4,7 +4,11 @@
 # - Messages.app on this Mac must be signed in to iMessage with the user's own, personal Apple ID.
 #   The database only holds what that account receives; a Mac without Messages set up gives an
 #   empty feed.
-# - The first read of chat.db can make macOS show a security permission dialog on the Mac's own
-#   screen. It has to be approved there, so the user must
-#   be sitting at the Mac when the integration starts — not over SSH or on a phone.
+# - Reading chat.db needs Full Disk Access. macOS grants it to the app it holds responsible for the
+#   server, which is Terminal (start.sh launches the server from it): System Settings > Privacy &
+#   Security > Full Disk Access > turn on Terminal. A process macOS has refused once stays refused,
+#   so run restart_server after the grant — Terminal itself need not be quit. The first read can
+#   also make macOS show a permission dialog on the Mac's own screen, which has to be approved
+#   there, so the user must be sitting at the Mac when the integration starts — not over SSH or
+#   on a phone.
 #imessage:
