@@ -1587,6 +1587,14 @@ class TestGeminiBatchedImages:
         assert replies == ["a", "b", "c"]
         assert [len(c.kwargs["src"]) for c in llm.client.batches.create.call_args_list] == [1, 2]
 
+    def test_the_split_budgets_the_base64_the_images_become_on_the_wire(self):
+        """Two images whose raw bytes fit the limit together but whose base64 does not go in
+        separate jobs — a job over the inline limit is rejected whole and falls back to live calls."""
+        from assistant.llm import GeminiLLM as module
+        raw = int(module.INLINE_BATCH_LIMIT * 0.4)    # 2 × 0.4 raw fits; 2 × 0.4 × 4/3 = 1.07 does not
+        assert module.GeminiLLM._batch_chunks([("u1", b"x" * raw), ("u2", b"x" * raw)]) == [[0], [1]]
+        assert module.GeminiLLM._batch_chunks([("u1", b"x" * raw), ("u2", b"x" * (raw // 2))]) == [[0, 1]]
+
     @patch('assistant.llm.GeminiLLM.time.sleep')
     @patch('assistant.llm.GeminiLLM.config')
     def test_a_job_that_outlives_the_wait_is_cancelled_and_its_requests_unanswered(self, mock_config, mock_sleep):

@@ -30,8 +30,10 @@ FILE_POLL_INTERVAL = 1.0
 SYSTEM_CACHE_TTL_SECONDS = 600
 BATCH_CACHE_TTL_SECONDS = 3600
 # Inline batch jobs must stay under 20 MB in total; the photo indexer's 1024 px JPEGs are
-# ~150 kB each, so a 100-photo fetch fits in one job and a heavier one is split.
+# ~150 kB each, so a 100-photo fetch fits in one job and a heavier one is split. The limit is
+# measured on the wire, where an inline image is base64 — a third larger than its bytes.
 INLINE_BATCH_LIMIT = 18 * 1024 * 1024
+BASE64_EXPANSION = 4 / 3
 BATCH_POLL_SECONDS = 15
 _BATCH_ENDED = ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED",
                 "JOB_STATE_PARTIALLY_SUCCEEDED")
@@ -478,11 +480,12 @@ class GeminiLLM(AbstractLLM):
         chunks: list[list[int]] = [[]]
         size = 0
         for i, (_, image) in enumerate(requests):
-            if chunks[-1] and size + len(image) > INLINE_BATCH_LIMIT:
+            encoded = int(len(image) * BASE64_EXPANSION)
+            if chunks[-1] and size + encoded > INLINE_BATCH_LIMIT:
                 chunks.append([])
                 size = 0
             chunks[-1].append(i)
-            size += len(image)
+            size += encoded
         return chunks
 
     @staticmethod
