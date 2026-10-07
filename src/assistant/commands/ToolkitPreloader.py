@@ -55,7 +55,8 @@ def render_load(toolkit: Toolkits.Toolkit, prompt_manager, record: bool = True) 
     substitute = prompt_manager.render_template if prompt_manager else (lambda text: text)
     text = Toolkits.render(toolkit, substitute)
     if toolkit.sections and prompt_manager is not None:
-        text += "\n\n" + prompt_manager.carried_data(toolkit, record=record)
+        if data := prompt_manager.carried_data(toolkit, record=record):
+            text += "\n\n" + data
     return text
 
 

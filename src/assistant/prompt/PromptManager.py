@@ -14,6 +14,7 @@ from .sections.ProceduresSectionGenerator import ProceduresSectionGenerator
 from .sections.WatchListSectionGenerator import WatchListSectionGenerator
 from .sections.VaultSectionGenerator import VaultSectionGenerator
 from .sections.HomeSectionGenerator import HomeSectionGenerator
+from .sections.WebSectionGenerator import WebSectionGenerator
 from .MessageHistory import MessageHistory, THINKING_TAG_INSTRUCTION
 from common.FloxyDatabase import FloxyDatabase
 from common.ConfigManager import config
@@ -113,7 +114,7 @@ class PromptManager:
     # Where each section stands in `self.sections`: the order they are started and stopped in.
     # A section a new folder brings comes after these, by key.
     SECTION_ORDER = ("memory", "memory_recent", "procedures", "watchlist", "vault", "weather", "precipitation",
-                     "home", "calendar", "sonos", "music_zones", "car_info", "phones")
+                     "home", "web", "calendar", "sonos", "music_zones", "car_info", "phones")
 
     def _build_sections(self, generator_classes) -> dict:
         """The core's generators plus one of each integration folder's, under the key the class
@@ -127,6 +128,7 @@ class PromptManager:
             'watchlist': WatchListSectionGenerator(self),
             'vault': VaultSectionGenerator(self),
             'home': HomeSectionGenerator(self),
+            'web': WebSectionGenerator(self),
         }
         for cls in generator_classes:
             if not cls.key:

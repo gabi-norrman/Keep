@@ -54,7 +54,8 @@ def test_carried_sections_are_real_sections_with_a_heading():
     for key, name in Toolkits.CARRIED_SECTIONS.items():
         assert key in keys and Toolkits.by_name(name) is not None
         assert key in Toolkits.SECTION_HEADINGS
-    assert Toolkits.render_sections(Toolkits.by_name("web"), {"home": "x"}) == ""
+    assert Toolkits.render_sections(Toolkits.by_name("email"), {"home": "x"}) == ""
+    assert Toolkits.render_sections(Toolkits.by_name("home"), {"home": "  \n"}) == ""
     rendered = Toolkits.render_sections(Toolkits.by_name("home"), {"home": "## LIGHTS\nlamp: off\n\n"})
     assert rendered == "## HOME AUTOMATION DATA\n## LIGHTS\nlamp: off\n"
 

@@ -14,7 +14,7 @@ GROUPS = {
     'src/assistant/integration': ('integration', 'The framework for outside services: health monitoring, singletons, feeds that stream outside data into the history, and the contracts (home automation, email) the integration folders implement.'),
     'src/assistant/llm': ('llm', 'Every LLM backend behind one interface, plus the vault and cache wrappers that sit around them.'),
     'src/assistant/prompt': ('prompt', 'Builds the system prompt and message list: the template, live data sections and the conversation history.'),
-    'src/assistant/prompt/sections': ('sections', 'The core’s live prompt sections, each refreshed on its own thread: memory, procedures, the watch list, the vault and the home. An integration’s section lives in its folder.'),
+    'src/assistant/prompt/sections': ('sections', 'The core’s live prompt sections, each refreshed on its own thread: memory, procedures, the watch list, the vault, the home and the web browser’s presence. An integration’s section lives in its folder.'),
     'src/assistant/tools': ('tools', 'Helpers commands lean on: web browsing, image and video analysis, PDFs, geocoding and message formatting.'),
     'src/integrations': ('integrations', 'One folder per outside service, holding everything that belongs to it: calendars, cameras, email, the home, photos, music, cars, messages and more.'),
     'src/integrations/arlo': ('arlo', 'Arlo camera snapshots through PyArlo, with the login’s 2FA.'),

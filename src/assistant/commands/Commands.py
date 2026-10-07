@@ -1312,7 +1312,8 @@ class Commands:
         without a PromptManager to take them from."""
         if not toolkit.sections or prompt_manager is None:
             return ""
-        return "\n\n" + prompt_manager.carried_data(toolkit, record=record)
+        data = prompt_manager.carried_data(toolkit, record=record)
+        return "\n\n" + data if data else ""
 
     @staticmethod
     def _short_url(u: str, max_len: int = 50) -> str:

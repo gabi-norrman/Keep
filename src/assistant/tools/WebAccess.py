@@ -771,7 +771,7 @@ class WebAccess(Integration):
             error(
                 "Web Access disabled: no Chrome/Chromium binary found. "
                 "nodriver needs a Chrome/Chromium install to scrape web pages — "
-                f"{install_hint}, then restart the server. "
+                f"{install_hint}; the next web command picks it up. "
                 f"Searched: {', '.join(self._chrome_search_paths())}"
             )
             self._browser = None

@@ -136,7 +136,7 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
             ("turn_on", "turn_off", "dim", "execute", "fetch_camera_images", "home_automation_logs"),
             sections=("home",)),
     Toolkit("web", "read a web page or google something; anything that needs current information",
-            ("open_url", "google")),
+            ("open_url", "google"), sections=("web",)),
     Toolkit("browser", "drive a real browser when a page needs clicking, typing or a date picker before it "
                        "shows the answer; send a screenshot of it",
             ("browse_open", "browse_act", "browse_key", "browse_eval", "browse_inspect", "browse_snapshot",
@@ -180,7 +180,7 @@ _BY_NAME = {t.name: t for t in TOOLKITS}
 # Section key → the toolkit that carries it.
 CARRIED_SECTIONS: dict[str, str] = {key: t.name for t in TOOLKITS for key in t.sections}
 # The heading a carried section is sent under; the prompt's own heading for it, once.
-SECTION_HEADINGS = {"home": "HOME AUTOMATION DATA"}
+SECTION_HEADINGS = {"home": "HOME AUTOMATION DATA", "web": "WEB BROWSER"}
 
 
 def names() -> list[str]:
@@ -218,9 +218,10 @@ def render(toolkit: Toolkit, substitute: Callable[[str], str] = lambda text: tex
 def render_sections(toolkit: Toolkit, contents: dict[str, str]) -> str:
     """The toolkit's carried sections as `load_toolkit` sends them after the reference: each
     under its heading, from `contents` (section key → current text); empty for a toolkit
-    that carries none."""
-    return "\n\n".join(f"## {SECTION_HEADINGS.get(key, key.upper())}\n{contents.get(key, '').rstrip()}\n"
-                       for key in toolkit.sections)
+    that carries none. A section with nothing to say (the web one while Chrome is installed)
+    is left out, heading and all."""
+    return "\n\n".join(f"## {SECTION_HEADINGS.get(key, key.upper())}\n{contents[key].rstrip()}\n"
+                       for key in toolkit.sections if contents.get(key, "").strip())
 
 
 def loaded_name(text: str) -> str | None:
