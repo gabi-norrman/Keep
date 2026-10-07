@@ -156,6 +156,14 @@ class TestTheFile:
         assert "# email:" in config_file.read_text() and "# calendar:" in config_file.read_text()
         assert len(changes) == 3 and ConfigMigrations.run(str(config_file)) == []
 
+    def test_the_old_examples_lower_case_placeholders_make_no_account_either(self, config_file):
+        """The example once shipped `your_gmail_address@gmail.com`: a hand-copied install must
+        not turn it into an IMAP account with no password."""
+        config_file.write_text("enabled_integrations: [Gmail]\n"
+                               "email:\n  address: your_gmail_address@gmail.com\n  password: your_app_password\n")
+        ConfigMigrations.run(str(config_file))
+        assert _load(config_file)["imap"]["accounts"] == []
+
     def test_a_file_without_the_old_sections_is_not_even_rewritten(self, config_file):
         config_file.write_text("enabled_integrations: [Tesla, IMAP Mail]\nimap:\n  accounts: []\n")
         os.utime(config_file, (1_000_000, 1_000_000))

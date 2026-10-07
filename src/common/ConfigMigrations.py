@@ -81,7 +81,7 @@ def _accounts_list(data: CommentedMap, section: str, position: int) -> Commented
 # Lives here, not in ConfigStore: the migration runs while ConfigManager's module-level instance
 # loads, which can be in the middle of ConfigStore's own import (the launcher imports Migrations →
 # ConfigStore → ConfigManager), so nothing above ConfigManager may be imported from here.
-_PLACEHOLDER_RE = re.compile(r"YOUR_|CHANGE_ME|_HERE\b|DEVICE_UUID")
+_PLACEHOLDER_RE = re.compile(r"YOUR_|CHANGE_ME|_HERE\b|DEVICE_UUID", re.IGNORECASE)
 
 
 def looks_like_placeholder(value: Any) -> bool:
