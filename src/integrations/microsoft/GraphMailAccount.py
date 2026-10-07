@@ -161,7 +161,9 @@ class GraphMailAccount(MailAccount):
     def _list(self, folder: str, unread_only: bool) -> list:
         params = {"$top": self.MAX_RESULTS, "$orderby": "receivedDateTime desc", "$select": LIST_SELECT}
         if unread_only:
-            params["$filter"] = "isRead eq false"
+            # Graph rejects $orderby=receivedDateTime beside a filter that does not name the
+            # property first (InefficientFilter): an always-true date predicate leads.
+            params["$filter"] = "receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false"
         items = self._client.get(f"/me/mailFolders/{self._folder_id(folder)}/messages", params).get("value", [])
         return [GraphMessage(item) for item in items]
 

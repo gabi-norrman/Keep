@@ -53,7 +53,7 @@ class TestListing:
 
         account().fetch_latest(unread_only=True)
 
-        assert graph.sent("GET", "/me/mailFolders/inbox/messages")[0].params["$filter"] == "isRead eq false"
+        assert graph.sent("GET", "/me/mailFolders/inbox/messages")[0].params["$filter"] == "receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false"
 
     def test_a_named_folder_is_resolved_through_the_folder_list_children_as_parent_slash_child(self, graph):
         graph.route("GET", "/me/mailFolders", FOLDERS)
