@@ -565,6 +565,74 @@ class TestCmdServerLogs:
         assert "\x1b[" not in result
         assert "red text" in result
 
+    @staticmethod
+    def _stamped_log(tmp_path, count=600):
+        # One line per minute from 08:00; line i (0-based) is stamped 08:00 + i min.
+        log_file = tmp_path / "floxy.out"
+        log_file.write_text("".join(
+            f"\x1b[2mI│2026-03-01 {8 + i // 60:02d}:{i % 60:02d}:30.000 +0.000 │ main │ line{i}\n" for i in range(count)))
+        return patch("assistant.commands.Commands.SERVER_LOG_PATH", str(log_file))
+
+    def test_from_time_returns_the_first_400_lines_at_or_after_it(self, tmp_path):
+        with self._stamped_log(tmp_path):
+            result = Commands._fetch_server_logs("2026-03-01 09:40")
+        assert "line99\n" not in result
+        assert "line100\n" in result
+        assert "line499\n" in result
+        assert "line500\n" not in result
+
+    def test_from_time_with_seconds_and_t_separator(self, tmp_path):
+        # 09:40:30 is line 100's own stamp; 09:40:31 is past it
+        with self._stamped_log(tmp_path):
+            at = Commands._fetch_server_logs("2026-03-01T09:40:30")
+            after = Commands._fetch_server_logs("2026-03-01 09:40:31")
+        assert "line100\n" in at
+        assert "line100\n" not in after and "line101\n" in after
+
+    def test_from_date_alone_means_midnight(self, tmp_path):
+        with self._stamped_log(tmp_path):
+            result = Commands._fetch_server_logs("2026-03-01")
+        assert "line0\n" in result
+
+    def test_from_clock_time_means_today(self, tmp_path):
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        log_file = tmp_path / "floxy.out"
+        log_file.write_text(f"I│{today} 00:00:01.000 │ early\nI│{today} 23:59:58.000 │ late\n")
+        with patch("assistant.commands.Commands.SERVER_LOG_PATH", str(log_file)):
+            result = Commands._fetch_server_logs("23:59")
+        assert "late" in result and "early" not in result
+
+    def test_continuation_lines_without_a_stamp_are_skipped_when_seeking_but_kept_in_the_window(self, tmp_path):
+        log_file = tmp_path / "floxy.out"
+        log_file.write_text("I│2026-03-01 08:00:00.000 │ before\nTraceback (most recent call last):\n"
+                            "I│2026-03-01 09:00:00.000 │ after\n  File x, line 1\n")
+        with patch("assistant.commands.Commands.SERVER_LOG_PATH", str(log_file)):
+            result = Commands._fetch_server_logs("2026-03-01 08:30")
+        assert "before" not in result and "Traceback" not in result
+        assert "after\n  File x, line 1\n" in result
+
+    def test_from_time_past_the_end_says_nothing_logged(self, tmp_path):
+        with self._stamped_log(tmp_path, count=5):
+            result = Commands._fetch_server_logs("2026-03-02 00:00")
+        assert result.startswith("# Keep AI Server Logs")
+        assert "line0" not in result
+        assert "2026-03-02 00:00:00" in result
+
+    def test_unreadable_time_fails_without_touching_the_log(self, tmp_path):
+        with patch("assistant.commands.Commands.SERVER_LOG_PATH", str(tmp_path / "nope.out")):
+            result = Commands._fetch_server_logs("yesterday-ish")
+        assert result.startswith("server_logs failed")
+        assert "yesterday-ish" in result
+
+    def test_command_hands_the_first_argument_or_none_to_the_fetch(self, commands_instance):
+        with patch.object(commands_instance, 'background_command') as mock_bg:
+            commands_instance.cmd_server_logs("")
+            mock_bg.assert_called_once_with(commands_instance._fetch_server_logs, None)
+            mock_bg.reset_mock()
+            commands_instance.cmd_server_logs('"2026-03-01 09:40"')
+            mock_bg.assert_called_once_with(commands_instance._fetch_server_logs, "2026-03-01 09:40")
+
 
 # ---------------------------------------------------------------------------
 # TestCmdEmailCommands

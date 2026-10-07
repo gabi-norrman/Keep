@@ -36,9 +36,12 @@ matters. The user is asked to approve the restart first (a prompt in the chat wi
 command result says so and nothing restarts.
 
 ### Server logs
-To read the tail of this AI server's logs (your own logs) use:
+To read this AI server's logs (your own logs) use:
 
-`server_logs()`
+`server_logs()` — the last 400 lines
+`server_logs(2026-10-07 09:26)` — the first 400 lines from that time (also `YYYY-MM-DD` for midnight, or `HH:MM` for today)
+
+The log keeps weeks of history, so step through an older incident by calling again from where the last window ended.
 
 ### Stop-and-wait
 `server_logs()` returns data: emit it and stop generating; the result arrives in the next round.

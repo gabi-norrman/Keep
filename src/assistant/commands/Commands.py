@@ -42,9 +42,15 @@ def normalize_llm_escapes(text: str) -> str:
 # Returned to the LLM when a photo/report had nowhere to go (NullNotifier installed).
 NO_NOTIFICATION_CHANNEL = "failed: no notification channel configured (no chat interface running), nothing was delivered to the user."
 
-# What server_logs() hands the LLM: the tail of the main log (cwd-relative, the server runs from AIServer/).
+# What server_logs() hands the LLM: a window of the main log (cwd-relative, the server runs from the root) —
+# the last SERVER_LOG_TAIL_LINES lines, or the first that many from a given time.
 SERVER_LOG_PATH = "log/floxy.out"
 SERVER_LOG_TAIL_LINES = 400
+# A log line's timestamp; the ANSI colour codes around it never match this shape, so the raw line is searched.
+_LOG_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+# What server_logs(from) accepts: a full timestamp (space or T), a date (midnight) or a clock time (today).
+_LOG_TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
+                     "%Y-%m-%d", "%H:%M:%S", "%H:%M")
 
 
 class Commands:
@@ -193,10 +199,15 @@ class Commands:
         return f"# Home Automation Error Logs\n{logs}"
 
     def cmd_server_logs(self, parameter_string: str):
-        self.background_command(self._fetch_server_logs, None)
+        self.background_command(self._fetch_server_logs, self._first_argument(parameter_string) or None)
 
     @staticmethod
-    def _fetch_server_logs(_params) -> str:
+    def _fetch_server_logs(from_time: Optional[str]) -> str:
+        start = Commands._parse_log_time(from_time) if from_time else None
+        if from_time and start is None:
+            info(f"server_logs: cannot read the time '{from_time}'")
+            return (f"server_logs failed: cannot read the time '{from_time}'; "
+                    "use YYYY-MM-DD HH:MM[:SS], YYYY-MM-DD or HH:MM[:SS] (today).")
         try:
             # The log is redirected process output; a stray non-UTF-8 byte must not take the
             # assistant's own diagnostics down with it.
@@ -205,10 +216,42 @@ class Commands:
         except FileNotFoundError:
             error(f"Server log {SERVER_LOG_PATH} not found")
             return "# Keep AI Server Logs\nLog file not found."
-        tail = "".join(lines[-SERVER_LOG_TAIL_LINES:])
-        tail = re.sub(r'\x1b\[[0-9;]*m', '', tail)
-        info(f"Server logs fetched: last {min(len(lines), SERVER_LOG_TAIL_LINES)} of {len(lines)} lines, {len(tail)} chars")
-        return f"# Keep AI Server Logs\n{tail}"
+        if start is None:
+            chunk = lines[-SERVER_LOG_TAIL_LINES:]
+            window = f"last {len(chunk)} lines"
+        else:
+            first = Commands._first_log_line_at(lines, start)
+            if first is None:
+                info(f"Server logs: nothing logged at or after {start} ({len(lines)} lines)")
+                return f"# Keep AI Server Logs\nNothing logged at or after {start}; the log has {len(lines)} lines."
+            chunk = lines[first:first + SERVER_LOG_TAIL_LINES]
+            window = f"{len(chunk)} lines from {start} (line {first + 1})"
+        text = re.sub(r'\x1b\[[0-9;]*m', '', "".join(chunk))
+        info(f"Server logs fetched: {window} of {len(lines)}, {len(text)} chars")
+        return f"# Keep AI Server Logs ({window})\n{text}"
+
+    @staticmethod
+    def _parse_log_time(text: str):
+        from datetime import datetime
+        for fmt in _LOG_TIME_FORMATS:
+            try:
+                parsed = datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+            if "%Y" not in fmt:
+                parsed = datetime.combine(datetime.now().date(), parsed.time())
+            return parsed
+        return None
+
+    @staticmethod
+    def _first_log_line_at(lines: list, start) -> Optional[int]:
+        """Index of the first line stamped at or after `start`; continuation lines (tracebacks) carry no stamp and are skipped."""
+        key = start.strftime("%Y-%m-%d %H:%M:%S")
+        for index, line in enumerate(lines):
+            match = _LOG_TIMESTAMP.search(line)
+            if match and match.group() >= key:
+                return index
+        return None
 
     def cmd_open_url(self, parameter_string: str):
         self.background_command(self.web_access.fetch_webpage, parameter_string, lane=self.BROWSER_LANE)
