@@ -19,7 +19,7 @@ class RingTab(AuthTab):
     def _on_status(self, api):
         if self.status == "authenticated":
             try:
-                self._doorbell_names = api.get_doorbell_names()
+                self._doorbell_names = api.camera_names()
             except Exception:
                 self._doorbell_names = []
 

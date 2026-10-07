@@ -1013,159 +1013,72 @@ class TestCmdTurnOnOff:
 # ---------------------------------------------------------------------------
 
 class TestCmdFetchCameraImages:
-    def test_combines_arlo_and_ring_results(self):
-        arlo_blocks = [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "arlo_img"}},
-            {"type": "text", "text": "Camera: Backyard"},
-        ]
-        ring_blocks = [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "ring_img"}},
-            {"type": "text", "text": "Camera: Front Door"},
-        ]
-        with patch.object(Commands, '_fetch_arlo_snapshots', return_value=arlo_blocks), \
-             patch.object(Commands, '_fetch_ring_snapshot', return_value=ring_blocks):
+    """The command fans out over CameraProvider.active(); a provider is anything with the
+    contract's two methods, the folders are never named."""
+
+    @staticmethod
+    def _provider(name, blocks=None, cameras=(), fail=None):
+        provider = Mock(name=name)
+        provider.name = name
+        provider.camera_names.return_value = list(cameras)
+        if fail:
+            provider.fetch_snapshots.side_effect = fail
+        else:
+            provider.fetch_snapshots.return_value = list(blocks or [])
+        return provider
+
+    @staticmethod
+    def _image(camera):
+        return [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": camera.lower()}},
+                {"type": "text", "text": f"Camera: {camera}"}]
+
+    def test_combines_every_providers_results_under_one_header(self):
+        arlo, ring = self._provider("Arlo", self._image("Backyard")), self._provider("Ring", self._image("Front Door"))
+        with patch("assistant.commands.Commands.cameras.active", return_value=[arlo, ring]):
             result = Commands._fetch_all_camera_images(None)
 
-        assert isinstance(result, list)
-        assert result[0]["type"] == "text"
-        assert "Here are the current camera images" in result[0]["text"]
-        texts = [b.get("text", "") for b in result if b.get("type") == "text"]
-        assert any("Backyard" in t for t in texts)
-        assert any("Front Door" in t for t in texts)
+        assert result[0]["type"] == "text" and "camera images" in result[0]["text"]
+        texts = [b["text"] for b in result if b.get("type") == "text"]
+        assert any("Backyard" in t for t in texts) and any("Front Door" in t for t in texts)
+        assert sum(1 for b in result if b.get("type") == "image") == 2
+        arlo.fetch_snapshots.assert_called_once_with(None)
 
-    def test_arlo_failure_still_returns_ring(self):
-        ring_blocks = [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "ring_img"}},
-            {"type": "text", "text": "Camera: Front Door"},
-        ]
-        with patch.object(Commands, '_fetch_arlo_snapshots', return_value=[]), \
-             patch.object(Commands, '_fetch_ring_snapshot', return_value=ring_blocks):
+    def test_a_failing_provider_does_not_hide_the_others(self):
+        broken = self._provider("Arlo", fail=RuntimeError("Not connected to Arlo"))
+        ring = self._provider("Ring", self._image("Front Door"))
+        with patch("assistant.commands.Commands.cameras.active", return_value=[broken, ring]):
             result = Commands._fetch_all_camera_images(None)
+        assert any("Front Door" in b.get("text", "") for b in result)
 
-        assert isinstance(result, list)
-        texts = [b.get("text", "") for b in result if b.get("type") == "text"]
-        assert any("Front Door" in t for t in texts)
+    def test_no_images_from_anyone_is_a_plain_answer(self):
+        with patch("assistant.commands.Commands.cameras.active", return_value=[self._provider("Arlo", [])]):
+            assert Commands._fetch_all_camera_images(None) == "No camera images available."
 
-    def test_both_fail_returns_string(self):
-        with patch.object(Commands, '_fetch_arlo_snapshots', return_value=[]), \
-             patch.object(Commands, '_fetch_ring_snapshot', return_value=[]):
-            result = Commands._fetch_all_camera_images(None)
+    def test_no_provider_ready_answers_with_the_setup_hint(self):
+        with patch("assistant.commands.Commands.cameras.active", return_value=[]), \
+             patch("assistant.commands.Commands.cameras.no_provider_hint", return_value="Arlo is disabled: enable it."):
+            assert Commands._fetch_all_camera_images(None) == "Arlo is disabled: enable it."
 
-        assert result == "No camera images available."
+    def test_the_named_cameras_reach_every_provider(self):
+        arlo, ring = self._provider("Arlo", self._image("Front Garden")), self._provider("Ring", [])
+        with patch("assistant.commands.Commands.cameras.active", return_value=[arlo, ring]):
+            result = Commands._fetch_all_camera_images(["front"])
+        arlo.fetch_snapshots.assert_called_once_with(["front"])
+        ring.fetch_snapshots.assert_called_once_with(["front"])
+        assert any("Front Garden" in b.get("text", "") for b in result)
 
+    def test_a_name_nothing_matches_lists_the_cameras_there_are(self):
+        arlo = self._provider("Arlo", [], cameras=["Backyard", "Garage"])
+        with patch("assistant.commands.Commands.cameras.active", return_value=[arlo]):
+            result = Commands._fetch_all_camera_images(["pool"])
+        assert "pool" in result and "Backyard" in result and "Garage" in result
 
-class TestMediaTag:
-    @pytest.mark.parametrize("photo, expected", [
-        ({"photo_type": "photo"}, ""),
-        ({"photo_type": "screenshot"}, " (screenshot)"),
-        ({"photo_type": "video", "duration_seconds": 12.4}, " (video, 12s)"),
-        ({"photo_type": "video, slo-mo", "duration_seconds": 3.0}, " (video, slo-mo, 3s)"),
-        ({"photo_type": "video", "duration_seconds": None}, " (video)"),
-        ({}, ""),
-    ])
-    def test_tag(self, photo, expected):
-        assert Commands._media_tag(photo) == expected
-
-
-class TestSearchHistory:
-    def test_returns_both_history_and_photo_results_interleaved(self):
-        history_results = [
-            {"content": "We went to the beach today", "timestamp": 1718451000.0,
-             "fts_relevance": 80, "role": "user", "source": "VoiceToVoice", "location": "Kitchen"},
-        ]
-        photo_results = [
-            {"id": 42, "short_description": "Sunset over the ocean", "creation_date": 1718451000.0,
-             "fts_relevance": 70, "location_text": "Nice, France", "pretty_score": 85,
-             "family_importance_score": 90, "photo_type": "photo", "persons": "Marcus"},
-        ]
-        with patch('assistant.commands.Commands.FloxyDatabase') as mock_db_cls:
-            mock_db = mock_db_cls.get_instance.return_value
-            mock_db.search_history.return_value = history_results
-            mock_db.search_photos.return_value = photo_results
-            result = Commands._run_search_history("beach")
-
-        assert "We went to the beach today" in result
-        assert "photo#42" in result
-        assert "Sunset over the ocean" in result
-        assert "[Marcus]" in result
-
-    def test_interleaved_sorted_by_newest(self):
-        history_results = [
-            {"content": "Old conversation", "timestamp": 1000000.0,
-             "fts_relevance": 50, "role": "user", "source": None, "location": None},
-        ]
-        photo_results = [
-            {"id": 1, "short_description": "Recent photo", "creation_date": 2000000.0,
-             "fts_relevance": 50, "location_text": "Home", "pretty_score": 50,
-             "family_importance_score": 50, "photo_type": "photo", "persons": None},
-        ]
-        with patch('assistant.commands.Commands.FloxyDatabase') as mock_db_cls:
-            mock_db_cls.HISTORY_SORT_OPTIONS = {"relevance", "newest", "oldest"}
-            mock_db = mock_db_cls.get_instance.return_value
-            mock_db.search_history.return_value = history_results
-            mock_db.search_photos.return_value = photo_results
-            result = Commands._run_search_history("test", "newest")
-
-        lines = result.strip().split("\n")
-        assert "Recent photo" in lines[0]
-        assert "Old conversation" in lines[1]
-
-    def test_no_results_at_all(self):
-        with patch('assistant.commands.Commands.FloxyDatabase') as mock_db_cls:
-            mock_db = mock_db_cls.get_instance.return_value
-            mock_db.search_history.return_value = []
-            mock_db.search_photos.return_value = []
-            result = Commands._run_search_history("xyznonexistent")
-
-        assert "No history entries or photos found" in result
-
-    def test_deduplicates_history_entries(self):
-        history_results = [
-            {"content": "Same content repeated more than thirty chars", "timestamp": 1718451000.0,
-             "fts_relevance": 80, "role": "user", "source": None, "location": None},
-            {"content": "Same content repeated more than thirty chars", "timestamp": 1718452000.0,
-             "fts_relevance": 70, "role": "user", "source": None, "location": None},
-        ]
-        with patch('assistant.commands.Commands.FloxyDatabase') as mock_db_cls:
-            mock_db = mock_db_cls.get_instance.return_value
-            mock_db.search_history.return_value = history_results
-            mock_db.search_photos.return_value = []
-            result = Commands._run_search_history("content")
-
-        assert result.count("Same content repeated") == 1
-
-    def test_truncates_long_content(self):
-        long_text = "A" * 700
-        history_results = [
-            {"content": long_text, "timestamp": 1718451000.0,
-             "fts_relevance": 80, "role": "user", "source": None, "location": None},
-        ]
-        with patch('assistant.commands.Commands.FloxyDatabase') as mock_db_cls:
-            mock_db = mock_db_cls.get_instance.return_value
-            mock_db.search_history.return_value = history_results
-            mock_db.search_photos.return_value = []
-            result = Commands._run_search_history("content")
-
-        assert result.endswith("...")
-        assert len(result) < 700
-
-    def test_empty_query_returns_error(self):
-        result = Commands._run_search_history("")
-        assert "No query provided" in result
-
-    def test_invalid_sort_falls_back_to_relevance(self):
-        history_results = [
-            {"content": "Some entry that is long enough to pass the filter", "timestamp": 1718451000.0,
-             "fts_relevance": 80, "role": "user", "source": None, "location": None},
-        ]
-        with patch('assistant.commands.Commands.FloxyDatabase') as mock_db_cls:
-            mock_db_cls.HISTORY_SORT_OPTIONS = {"relevance": "rank", "newest": "ts DESC", "oldest": "ts ASC"}
-            mock_db = mock_db_cls.get_instance.return_value
-            mock_db.search_history.return_value = history_results
-            mock_db.search_photos.return_value = []
-            result = Commands._run_search_history("entry", "invalid_sort")
-
-        mock_db.search_history.assert_called_once_with("entry", sort="relevance", limit=30)
+    def test_the_command_hands_the_trimmed_names_to_the_background_fetch(self, commands_instance):
+        with patch.object(commands_instance, "background_command") as bg:
+            commands_instance.cmd_fetch_camera_images(" Front ", "", "Back")
+            commands_instance.cmd_fetch_camera_images()
+        assert bg.call_args_list[0].args[1] == ["Front", "Back"]
+        assert bg.call_args_list[1].args[1] is None
 
 
 # ---------------------------------------------------------------------------

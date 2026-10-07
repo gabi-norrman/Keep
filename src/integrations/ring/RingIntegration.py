@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from assistant.SystemNote import system_note
 
 from common.ConfigManager import ConfigManager
+from assistant.integration.CameraProvider import CameraProvider, select
 from assistant.integration.Integration import Integration, IntegrationState
 from common.logging import info, error, trace
 from assistant.integration.TfaCodeHandler import TfaCodeHandler
@@ -46,7 +47,7 @@ USER_AGENT = "Keep/1.0"
 HARDWARE_ID_AGENT = "Floxy/1.0"
 
 
-class RingIntegration(Integration):
+class RingIntegration(Integration, CameraProvider):
     """Ring doorbell snapshots.
 
     Fetches a snapshot from the Ring doorbell camera so Keep can say who is at the door. Signing
@@ -80,7 +81,7 @@ class RingIntegration(Integration):
 
     def check_health(self) -> bool:
         self._ensure_connected()
-        return len(self.get_doorbell_names()) > 0
+        return len(self.camera_names()) > 0
 
     def needs_2fa(self) -> bool:
         return not self._token_path.exists()
@@ -252,12 +253,15 @@ class RingIntegration(Integration):
             return {"status": "not_initialized", "message": "Not connected to Ring"}
         return {"status": "authenticated", "message": "Connected to Ring"}
 
-    def get_doorbell_names(self) -> List[str]:
+    def _select(self, doorbells, only: Optional[List[str]] = None) -> list:
+        chosen = select([d.name for d in doorbells], self._config.get("ignore_cameras", []), only)
+        return [d for d in doorbells if d.name in chosen]
+
+    def camera_names(self) -> List[str]:
         try:
             self._ensure_connected()
             if self._ring:
-                devices = self._ring.devices()
-                return [d.name for d in devices.doorbells]
+                return [d.name for d in self._select(self._ring.devices().doorbells)]
         except Exception as e:
             error(f"Failed to get Ring doorbell names: {e}")
         return []
@@ -281,15 +285,15 @@ class RingIntegration(Integration):
             {"type": "text", "text": f"Camera: {cam_name}"},
         ]
 
-    def fetch_snapshot(self, _params=None) -> list:
-        """Fetch snapshots from all Ring doorbells. Returns Anthropic-format content blocks."""
+    def fetch_snapshots(self, only: Optional[List[str]] = None) -> list:
+        """Snapshots from every Ring doorbell (or the ones *only* names), as content blocks."""
         self._ensure_connected()
         if not self._ring:
             raise RingCameraError("Not connected to Ring")
 
-        devices = self._ring.devices()
-        doorbells = devices.doorbells
+        doorbells = self._select(self._ring.devices().doorbells, only)
         if not doorbells:
+            trace(f"Ring: No doorbells selected (asked for {only})")
             return []
 
         content_blocks = []

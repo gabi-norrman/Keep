@@ -849,7 +849,7 @@ class TestFetchSingleSnapshot:
 
 
 class TestCheckHealth:
-    """The check connects itself rather than through get_camera_names, which swallows the
+    """The check connects itself rather than through camera_names, which swallows the
     error into a plain False: the monitor records the exception's text, so a rejected
     password shows up as such in list_integrations."""
 
@@ -865,7 +865,7 @@ class TestCheckHealth:
     def test_between_real_checks_a_healthy_integration_is_not_reconnected(self, arlo):
         arlo.state = IntegrationState.OK
         with patch.object(arlo, "_ensure_connected") as connect, \
-             patch.object(arlo, "get_camera_names", return_value=["Front"]):
+             patch.object(arlo, "camera_names", return_value=["Front"]):
             results = [arlo.check_health() for _ in range(5)]
         assert results == [True] * 5
         assert connect.call_count == 2, "the first check and every REAL_CHECK_EVERY-th one connect"
@@ -873,6 +873,6 @@ class TestCheckHealth:
     def test_an_unhealthy_integration_is_checked_for_real_every_time(self, arlo):
         arlo.state = IntegrationState.ERROR
         with patch.object(arlo, "_ensure_connected") as connect, \
-             patch.object(arlo, "get_camera_names", return_value=[]):
+             patch.object(arlo, "camera_names", return_value=[]):
             assert [arlo.check_health() for _ in range(3)] == [False] * 3
         assert connect.call_count == 3
