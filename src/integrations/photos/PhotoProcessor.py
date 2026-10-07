@@ -162,11 +162,18 @@ VIDEO_THREADS = 5
 # requests it cannot cancel. Two workers: one image in the model while the other one's
 # iCloud read, HEIC conversion and encoding happen, so the model never waits for a photo.
 LOCAL_PHOTO_THREADS = 2
-# The backfill (a feed fetch while the Photos feed is catching up) sends its stills through the
-# provider's batch API at half price: one job per fetch of up to FETCH_BATCH_SIZE photos, answered
-# in minutes on a quiet day. A job that has not ended by then is cancelled and its photos are
-# indexed live, so the backfill never stalls on the provider. `feeds.photos.backfill_batch: false`
-# keeps every photo on the live path.
+# The backfill (a feed fetch while the Photos feed is catching up) can send its stills through the
+# provider's batch API at half price: one job per fetch of up to FETCH_BATCH_SIZE photos, a job
+# that has not ended after BATCH_MAX_WAIT_SECONDS cancelled and its photos indexed live.
+# Off by default (2026-10-07): the batch API promises an answer within 24 h and nothing sooner.
+# A first-run test on a quiet afternoon left a 79-photo job in JOB_STATE_RUNNING for the whole
+# 30 min while the console showed 0 indexed — work the live path does in well under a minute,
+# 30 threads at ~9 s a photo. The discount is half of a few cents per fetch and tens of
+# dollars once over a whole library, not worth a counter that stands still for half an hour while
+# someone watches. Flip BACKFILL_BATCH (or `feeds.photos.backfill_batch: true`, which overrides
+# it) to use the batch API again; before relying on it, make it submit-and-return with the job
+# names persisted, so no feed thread sleeps on a queue with a 24 h contract.
+BACKFILL_BATCH = False
 BATCH_MAX_WAIT_SECONDS = 1800
 
 
@@ -630,7 +637,7 @@ class PhotoProcessor:
     @staticmethod
     def _batch_enabled() -> bool:
         from common.ConfigManager import ConfigManager
-        return bool(ConfigManager.get_instance().get('feeds.photos.backfill_batch', True))
+        return bool(ConfigManager.get_instance().get('feeds.photos.backfill_batch', BACKFILL_BATCH))
 
     def _process_stills_batched(self, rows: list) -> dict[str, bool]:
         """The backfill's stills through the batch API. Every row is prepared (downloaded, its

@@ -2662,6 +2662,7 @@ class TestBatchedBackfill:
         processor = self._processor(module, llm)
         live = []
         with patch.object(processor, '_prepare_photo', side_effect=lambda row, db: (self._prepared(module, row), False)), \
+             patch.object(module.PhotoProcessor, '_batch_enabled', return_value=True), \
              patch.object(processor, '_photo_system_prompt', return_value="SYSTEM"), \
              patch.object(processor, '_store_analysis', return_value=1) as store, \
              patch.object(processor, '_process_one', side_effect=lambda row: live.append(row["uuid"]) and False), \
@@ -2686,6 +2687,7 @@ class TestBatchedBackfill:
         processor = self._processor(module, llm)
         live = []
         with patch.object(processor, '_prepare_photo', side_effect=lambda row, db: (self._prepared(module, row), False)), \
+             patch.object(module.PhotoProcessor, '_batch_enabled', return_value=True), \
              patch.object(processor, '_photo_system_prompt', return_value="SYSTEM"), \
              patch.object(processor, '_process_one', side_effect=lambda row: live.append(row["uuid"]) and False), \
              patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
@@ -2705,6 +2707,7 @@ class TestBatchedBackfill:
             return (None, True) if row["uuid"] == "U0" else (self._prepared(module, row), False)
 
         with patch.object(processor, '_prepare_photo', side_effect=prepare), \
+             patch.object(module.PhotoProcessor, '_batch_enabled', return_value=True), \
              patch.object(processor, '_photo_system_prompt', return_value="SYSTEM"), \
              patch.object(processor, '_store_analysis', return_value=1), \
              patch.object(processor, '_process_one') as process_one, \
