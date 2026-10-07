@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Generator
 from google.genai.types import ThinkingLevel
 
-from .AbstractLLM import AbstractLLM
+from .AbstractLLM import AbstractLLM, LLMUnavailable
 from google import genai
 from google.genai import types
 from common.logging import trace, info, error
@@ -45,6 +45,68 @@ class _SystemCache:
     expires_at: float    # time.monotonic()
 
 
+# A 429 is Google's spend ceiling ($10 per rolling ten minutes on a fresh account) or a per-minute
+# quota: it clears by itself, so background work waits this long, doubling while it keeps coming.
+RATE_BACKOFF_SECONDS = 60
+RATE_BACKOFF_MAX_SECONDS = 600
+
+
+class _Outage:
+    """What Gemini is refusing right now, shared by every GeminiLLM — there is one API key.
+    `credits`: a 402, the prepaid balance is gone and every request fails until the user tops up,
+    so every call fails fast and only a probe (the health check) may try again. `rate`: a 429,
+    background work backs off until `until` while a user's own request still goes through (it
+    would be refused too, but it must find that out itself rather than be told no for a minute)."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.kind: str | None = None
+        self.until: float | None = None    # time.monotonic(); None = until a probe succeeds
+        self.reason: str = ""
+        self.backoff = RATE_BACKOFF_SECONDS
+
+    def active(self, background: bool) -> str | None:
+        with self.lock:
+            if self.kind is None:
+                return None
+            if self.until is not None and time.monotonic() >= self.until:
+                return None
+            if self.kind == "rate" and not background:
+                return None
+            return self.reason
+
+    def note(self, e: Exception, model: str) -> LLMUnavailable | None:
+        text = str(e)
+        with self.lock:
+            if "402" in text or "prepayment credits" in text.lower() or "credits are depleted" in text.lower():
+                first = self.kind != "credits"
+                self.kind, self.until = "credits", None
+                self.reason = f"{model}: the Gemini prepaid credits are depleted (402) — every request fails until the account is topped up"
+                if first:
+                    error(f"Gemini: {self.reason}")
+            elif "429" in text and "RESOURCE_EXHAUSTED" in text:
+                if self.kind == "rate" and self.until is not None and time.monotonic() < self.until:
+                    return LLMUnavailable(self.reason)
+                wait = self.backoff
+                self.backoff = min(self.backoff * 2, RATE_BACKOFF_MAX_SECONDS)
+                self.kind, self.until = "rate", time.monotonic() + wait
+                self.reason = f"{model}: rate limited by Gemini (429) — background requests wait {wait:.0f}s"
+                info(f"Gemini: {self.reason} ({text[:120]})")
+            else:
+                return None
+            return LLMUnavailable(self.reason)
+
+    def clear(self):
+        with self.lock:
+            if self.kind is not None:
+                info(f"Gemini: takes requests again (was: {self.reason})")
+            self.kind, self.until, self.reason = None, None, ""
+            self.backoff = RATE_BACKOFF_SECONDS
+
+
+_outage = _Outage()
+
+
 class GeminiLLM(AbstractLLM):
     """Talks to Google Gemini through the google-genai client, with native thinking levels."""
 
@@ -56,6 +118,48 @@ class GeminiLLM(AbstractLLM):
         # system-instruction digest -> cache; None marks text Gemini refused to cache (too short)
         self._system_caches: dict[str, _SystemCache | None] = {}
         self._cache_lock = threading.Lock()
+
+    # --- outage (402 / 429) ---------------------------------------------------------------------
+
+    def _request(self, fn, background: bool = False, probing: bool = False):
+        """Run one API call: refused outright while Gemini is known to refuse (LLMUnavailable
+        without a call — except for the probe, whose job is to find out), a 402 or 429 it
+        returns is recorded for every other caller and raised as LLMUnavailable, and a success
+        clears whatever was recorded."""
+        reason = None if probing else _outage.active(background)
+        if reason:
+            raise LLMUnavailable(reason)
+        try:
+            result = fn()
+        except Exception as e:
+            unavailable = _outage.note(e, self.model)
+            if unavailable is not None:
+                raise unavailable from e
+            raise
+        _outage.clear()
+        return result
+
+    def unavailable(self) -> str | None:
+        return _outage.active(background=True)
+
+    def out_of_credits(self) -> bool:
+        with _outage.lock:
+            return _outage.kind == "credits"
+
+    def probe(self) -> bool:
+        """One token's worth of generation. True (and the outage cleared) when Gemini answers."""
+        self._ensure_initialized()
+        try:
+            self._request(lambda: self.client.models.generate_content(
+                model=self.model, contents="Reply with the word ok.",
+                config=types.GenerateContentConfig(max_output_tokens=5)), probing=True)
+            return True
+        except LLMUnavailable as e:
+            trace(f"Gemini probe: still refused — {e}")
+            return False
+        except Exception as e:
+            trace(f"Gemini probe: failed on something else — {e}")
+            return False
 
     @property
     def api_key(self) -> str | None:
@@ -146,11 +250,11 @@ class GeminiLLM(AbstractLLM):
 
         generation_config = types.GenerateContentConfig(**config_params) if config_params else None
 
-        response = self.client.models.generate_content_stream(
+        response = self._request(lambda: self.client.models.generate_content_stream(
             model=self.model,
             contents=gemini_messages,
             config=generation_config
-        )
+        ))
 
         for chunk in response:
             if chunk.text:
@@ -171,11 +275,11 @@ class GeminiLLM(AbstractLLM):
 
         generation_config = types.GenerateContentConfig(**config_params) if config_params else None
 
-        response = self.client.models.generate_content(
+        response = self._request(lambda: self.client.models.generate_content(
             model=self.model,
             contents=gemini_messages,
             config=generation_config
-        )
+        ))
 
         return response.text
 
@@ -197,29 +301,35 @@ class GeminiLLM(AbstractLLM):
 
         # Bulk work (the photo indexer) repeats one long system instruction per image: serve it
         # from an explicit cache. A user's own image question is one-off and goes as is.
+        reason = _outage.active(background)
+        if reason:
+            raise LLMUnavailable(reason)    # before the cache call: no cache for a key that is refused
         cache = self._cached_system(system_instruction, SYSTEM_CACHE_TTL_SECONDS) if background else None
-        response = self._generate_with_cache(gemini_messages, system_instruction, cache)
+        response = self._generate_with_cache(gemini_messages, system_instruction, cache, background)
         self._log_usage(response, "image")
         return self._text_or_empty(response, "image")
 
-    def _generate_with_cache(self, contents, system_instruction: str | None, cache: _SystemCache | None):
+    def _generate_with_cache(self, contents, system_instruction: str | None, cache: _SystemCache | None,
+                             background: bool = False):
         """generate_content through `cache` when there is one; a cache Gemini no longer knows
         (expired between the check and the call, deleted elsewhere) is dropped and the request
         repeated with the system instruction inline, so no image is lost to the cache."""
         if cache is not None:
             try:
-                return self.client.models.generate_content(
+                return self._request(lambda: self.client.models.generate_content(
                     model=self.model, contents=contents,
-                    config=types.GenerateContentConfig(cached_content=cache.name))
+                    config=types.GenerateContentConfig(cached_content=cache.name)), background)
+            except LLMUnavailable:
+                raise
             except Exception as e:
                 if not self._is_missing_cache_error(e):
                     raise
                 info(f"Gemini: cache {cache.name} is gone ({str(e)[:80]}) — resending with the system instruction inline")
                 self._forget_cache(cache)
         config_params = {'system_instruction': system_instruction} if system_instruction else {}
-        return self.client.models.generate_content(
+        return self._request(lambda: self.client.models.generate_content(
             model=self.model, contents=contents,
-            config=types.GenerateContentConfig(**config_params) if config_params else None)
+            config=types.GenerateContentConfig(**config_params) if config_params else None), background)
 
     @staticmethod
     def _is_missing_cache_error(e: Exception) -> bool:
@@ -286,6 +396,10 @@ class GeminiLLM(AbstractLLM):
         self._ensure_initialized()
         if not requests:
             return []
+        reason = _outage.active(background=True)
+        if reason:
+            info(f"Gemini batch: not submitted — {reason}")
+            return None
         system_instruction = self.strip_cache_markers(system_message)
         cache = self._cached_system(system_instruction, BATCH_CACHE_TTL_SECONDS)
         request_config = {'cached_content': cache.name} if cache else {'system_instruction': system_instruction}
@@ -304,7 +418,9 @@ class GeminiLLM(AbstractLLM):
                                                  config={'display_name': 'floxy-photo-index'})
             except Exception as e:
                 # Tier 1 allows 3M enqueued tokens at a time: a refused job means the caller indexes
-                # these photos live, at full price, and the log says why.
+                # these photos live, at full price, and the log says why. A 402 or 429 is recorded
+                # so the live path does not then try a hundred times.
+                _outage.note(e, self.model)
                 error(f"Gemini batch: could not submit {len(indexes)} image request(s) ({size_mb:.1f} MB): {str(e)[:160]}")
                 self._cancel_jobs(jobs)
                 return None
@@ -472,11 +588,11 @@ class GeminiLLM(AbstractLLM):
         info(f"Gemini: sending video ({size_mb:.1f} MB, {mime_type}"
              f"{f', {fps} fps' if fps else ''}, {'Files API' if uploaded else 'inline'}) to {self.model}")
         try:
-            response = self.client.models.generate_content(
+            response = self._request(lambda: self.client.models.generate_content(
                 model=self.model,
                 contents=contents,
                 config=generation_config
-            )
+            ), background=True)
         finally:
             if uploaded is not None:
                 self._delete_file(uploaded)

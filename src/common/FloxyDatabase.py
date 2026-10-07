@@ -11,7 +11,7 @@ from common.logging import info, error, trace, note
 # Bumped when a one-off data migration in migrate_from_old_db_versions() must run against
 # existing databases. SQLite keeps it in the file header (PRAGMA user_version); a fresh
 # database is stamped with the current value before the migrations run, so it never replays them.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 # `source` of the history entries PhotoProcessor writes for indexed assets; the purge of hidden
 # assets removes those rows by it.
 PHOTO_HISTORY_SOURCE = "iCloud Photos"
@@ -376,6 +376,17 @@ class FloxyDatabase:
                 note(f"Database migration: dropped {cursor.rowcount} history rows duplicated only by role case.")
             cursor.execute("UPDATE history SET role = lower(role) WHERE role != lower(role)")
             note(f"Database migration: lowercased the role of {cursor.rowcount} history rows.")
+        if photo_columns and version < 3:
+            # Until 2026-10 a still whose LLM call failed — including a 429 or 402 from the
+            # provider, i.e. a rate limit or an empty prepaid account — was stored as skipped and
+            # never looked at again; a beta install lost 2,368 photos that way in twenty minutes.
+            # A provider refusal now leaves the row unindexed, so the rows it already wrote go
+            # back in the queue. Videos keep theirs: the sub-2-second ones were re-queued above.
+            cursor.execute("DELETE FROM photos WHERE photo_type = 'skipped' "
+                           "AND short_description = 'Skipped (LLM analysis failed)' AND duration_seconds IS NULL")
+            if cursor.rowcount:
+                note(f"Database migration: re-queued {cursor.rowcount} photos skipped when the LLM call failed "
+                     f"(a rate limit or empty credits is no longer a verdict on the photo).")
         if version < SCHEMA_VERSION:
             cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             trace(f"Database schema version {version} -> {SCHEMA_VERSION}")

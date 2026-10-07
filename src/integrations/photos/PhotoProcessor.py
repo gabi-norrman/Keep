@@ -18,7 +18,7 @@ from assistant.llm import create_llm, parse_llm_config
 from assistant.integration.Feed import FeedEntry
 from common.logging import info, error, trace, fine
 from common.FloxyDatabase import FloxyDatabase, PHOTO_HISTORY_SOURCE
-from assistant.llm.AbstractLLM import AbstractLLM, LLMPreempted
+from assistant.llm.AbstractLLM import AbstractLLM, LLMPreempted, LLMUnavailable
 from assistant.tools.ImageAnalyzer import parse_description_json
 from assistant.tools.VideoAnalyzer import short_clip_fps
 from .ICloudPhotoDownloader import (CorruptImageError, NoVideoRenditionError, PhotoNotInCloudError,
@@ -403,6 +403,15 @@ class PhotoProcessor:
                     self._llm = llm
         return self._llm
 
+    def provider_unavailable(self) -> Optional[str]:
+        """Why the indexing backend refuses every request right now (out of credits, rate
+        limited), or None. Asked before a batch is downloaded and after one ran, so the feed
+        can hold its cursor instead of moving past photos nobody described."""
+        return self._llm.unavailable() if self._llm is not None else None
+
+    def provider_out_of_credits(self) -> bool:
+        return self._llm is not None and self._llm.out_of_credits()
+
     def _indexing_backend_is_local(self) -> bool:
         """Whether the indexing backend serves one request at a time. Decided before the first
         asset is touched, so it must not initialize a cloud client (that needs the API key) just
@@ -529,6 +538,10 @@ class PhotoProcessor:
         through the batch API first and only the ones it did not answer run live; videos always
         run live. Returns (descriptions stored, filenames failed)."""
         t0 = time.time()
+        reason = self.provider_unavailable()
+        if reason:
+            info(f"Photos: {len(rows)} asset(s) left in the queue — {reason}")
+            return [], [row["filename"] for row in rows]
         num_videos = sum(1 for row in rows if row.get("kind") == "video")
         local = self._indexing_backend_is_local()
         photo_threads = LOCAL_PHOTO_THREADS if local else PHOTO_THREADS
@@ -794,6 +807,11 @@ class PhotoProcessor:
             PhotoProcessor._processing_uuids.add(uuid)
         try:
             return self._process_one_inner(row)
+        except LLMUnavailable as e:
+            # Not a verdict on the asset: nothing is stored, the feed holds its cursor and the
+            # same row comes round again once the provider takes requests.
+            trace(f"Photos: {uuid} left in the queue — {e}")
+            return False
         finally:
             with PhotoProcessor._processing_lock:
                 PhotoProcessor._processing_uuids.discard(uuid)
@@ -1049,6 +1067,8 @@ class PhotoProcessor:
                     continue
                 error(f"Photos: video LLM analysis failed after retry: {e}")
                 return None
+            except LLMUnavailable:
+                raise    # the provider, not the clip: the caller leaves it in the queue
             except Exception as e:
                 error(f"Photos: video LLM call failed: {e}")
                 return None
@@ -1321,6 +1341,8 @@ class PhotoProcessor:
                     continue
                 error(f"Photos: LLM analysis failed after retry: {e}")
                 return None
+            except LLMUnavailable:
+                raise    # the provider, not the photo: the caller leaves it in the queue
             except Exception as e:
                 error(f"Photos: LLM call failed: {e}")
                 return None

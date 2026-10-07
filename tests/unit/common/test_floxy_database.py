@@ -330,7 +330,43 @@ def test_migrate_requeues_short_videos_that_failed_llm_analysis(tmp_path):
     conn = sqlite3.connect(db_path)
     remaining = {row[0] for row in conn.execute("SELECT asset_guid FROM photos")}
     conn.close()
-    assert remaining == {"v-long-failed", "v-no-duration", "v-too-long", "v-ok"}
+    # "v-no-duration" is a still as far as the schema can tell, and stills skipped on a failed LLM
+    # call are re-queued by the 2026-10 migration (see test_migrate_requeues_stills_whose_llm_call_failed).
+    assert remaining == {"v-long-failed", "v-too-long", "v-ok"}
+
+
+@pytest.mark.unit
+def test_migrate_requeues_stills_whose_llm_call_failed(tmp_path):
+    """A 429 or 402 from the provider used to be stored as "Skipped (LLM analysis failed)" and
+    the photo was never looked at again — 2,368 of a beta tester's photos in twenty minutes. Those
+    rows go back in the queue; a video skipped the same way keeps its row (the short ones were
+    re-queued by the earlier migration, the long ones failed for their own reasons)."""
+    db_path = str(tmp_path / "still_skips.db")
+    first = FloxyDatabase.__new__(FloxyDatabase)
+    first.db_path = db_path
+    first.lock = threading.Lock()
+    first._init_database()
+    for guid, kind, desc, duration in [("p-failed", "skipped", "Skipped (LLM analysis failed)", None),
+                                       ("p-corrupt", "skipped", "Skipped (corrupt image)", None),
+                                       ("p-large", "skipped", "Skipped (too large)", None),
+                                       ("v-failed", "skipped", "Skipped (LLM analysis failed)", 12.0),
+                                       ("p-ok", "photo", "A barn", None)]:
+        first.store_photo(asset_guid=guid, creation_date=1.0, latitude=None, longitude=None,
+                          location_text="", albums="", persons="", photo_type=kind,
+                          short_description=desc, detailed_description=desc,
+                          pretty_score=0, family_importance_score=0, indexed_at=1.0,
+                          duration_seconds=duration)
+
+    _mark_pre_video_schema(db_path)
+    second = FloxyDatabase.__new__(FloxyDatabase)
+    second.db_path = db_path
+    second.lock = threading.Lock()
+    second._init_database()
+
+    conn = sqlite3.connect(db_path)
+    remaining = {row[0] for row in conn.execute("SELECT asset_guid FROM photos")}
+    conn.close()
+    assert remaining == {"p-corrupt", "p-large", "v-failed", "p-ok"}
 
 
 @pytest.mark.unit

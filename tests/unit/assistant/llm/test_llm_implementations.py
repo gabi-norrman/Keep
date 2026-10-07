@@ -1406,11 +1406,32 @@ class TestGeminiLLMVideo:
         assert "8900" in usage_lines[0] and "6500 cached" in usage_lines[0] and "480 output" in usage_lines[0]
 
 
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_think_with_video_retries_transient_failure(self, mock_types, mock_config):
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.GeminiLLM import GeminiLLM
+        llm = GeminiLLM()
+        llm.client = Mock()
+        llm.client.models.generate_content.side_effect = [RuntimeError("503"), Mock(text="ok", usage_metadata=None)]
+
+        with patch('assistant.llm.AbstractLLM.time.sleep'):
+            assert llm.think_with_video("sys", "user", b"vid", "video/mp4") == "ok"
+        assert llm.client.models.generate_content.call_count == 2
+
+
 @pytest.mark.unit
 class TestGeminiSystemCache:
     """Bulk image work (background=True) serves its long, identical system instruction from an
     explicit context cache — a tenth of the input price for those tokens — and a user's one-off
     image question does not pay for a cache it would use once."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_outage(self):
+        from assistant.llm import GeminiLLM as module
+        module._outage.clear()
+        yield
+        module._outage.clear()
 
     @staticmethod
     def _llm():
@@ -1494,6 +1515,13 @@ class TestGeminiSystemCache:
 class TestGeminiBatchedImages:
     """The backfill's stills as inline batch jobs: half price, one reply per request in order,
     None for what the job did not answer, and a job that outlives the wait is cancelled."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_outage(self):
+        from assistant.llm import GeminiLLM as module
+        module._outage.clear()
+        yield
+        module._outage.clear()
 
     @staticmethod
     def _job(name, state, replies=None):
@@ -1583,17 +1611,109 @@ class TestGeminiBatchedImages:
         llm.client.batches.create.assert_not_called()
 
     @patch('assistant.llm.GeminiLLM.config')
-    @patch('assistant.llm.GeminiLLM.types')
-    def test_think_with_video_retries_transient_failure(self, mock_types, mock_config):
-        mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
-        llm = GeminiLLM()
-        llm.client = Mock()
-        llm.client.models.generate_content.side_effect = [RuntimeError("503"), Mock(text="ok", usage_metadata=None)]
+    def test_a_refused_submission_for_credits_is_recorded_for_every_other_caller(self, mock_config):
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        llm = self._llm()
+        llm.client.batches.create.side_effect = RuntimeError("402 RESOURCE_EXHAUSTED: Your prepayment credits are depleted")
+        assert llm.think_batched_with_images("SYS", [("u1", b"a")]) is None
+        with pytest.raises(LLMUnavailable):
+            llm.think("s", "u", images=[b"a"], background=True)
+        llm.client.models.generate_content.assert_not_called()
 
-        with patch('assistant.llm.AbstractLLM.time.sleep'):
-            assert llm.think_with_video("sys", "user", b"vid", "video/mp4") == "ok"
-        assert llm.client.models.generate_content.call_count == 2
+
+@pytest.mark.unit
+class TestGeminiOutage:
+    """One 402 or 429 is enough: every GeminiLLM shares the verdict, background work fails fast
+    without a call, and a probe that gets through clears it."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_outage(self):
+        from assistant.llm import GeminiLLM as module
+        module._outage.clear()
+        yield
+        module._outage.clear()
+
+    @staticmethod
+    def _llm():
+        from assistant.llm.GeminiLLM import GeminiLLM
+        llm = GeminiLLM(model="gemini-3.8-flash")
+        llm.client = Mock()
+        llm.client.caches.create.side_effect = RuntimeError("400 below minimum")
+        return llm
+
+    CREDITS = RuntimeError("402 RESOURCE_EXHAUSTED. {'error': {'code': 402, 'message': 'Your prepayment credits are depleted.'}}")
+    RATE = RuntimeError("429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your spend-based rate limit.'}}")
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_a_402_is_raised_once_as_unavailable_and_then_refused_without_a_call(self, mock_types, mock_config):
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        from assistant.llm.GeminiLLM import GeminiLLM
+        llm = self._llm()
+        llm.client.models.generate_content.side_effect = self.CREDITS
+        with pytest.raises(LLMUnavailable):
+            llm.think("s", "u", images=[b"a"], background=True)
+        assert llm.client.models.generate_content.call_count == 1, "not retried: a 402 does not pass on the second try"
+        other = GeminiLLM(model="gemini-3.5-flash")
+        other.client = Mock()
+        with pytest.raises(LLMUnavailable):
+            other.think("s", "u")    # a user's request, another instance: the key is empty for everyone
+        other.client.models.generate_content.assert_not_called()
+        assert llm.out_of_credits() and other.unavailable() and "402" in other.unavailable()
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_a_429_backs_off_background_work_but_lets_a_user_request_through(self, mock_types, mock_config):
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        llm = self._llm()
+        llm.client.models.generate_content.side_effect = [self.RATE, Mock(text="hi", usage_metadata=None)]
+        with pytest.raises(LLMUnavailable):
+            llm.think("s", "u", images=[b"a"], background=True)
+        with pytest.raises(LLMUnavailable):
+            llm.think("s", "u", images=[b"b"], background=True)
+        assert llm.client.models.generate_content.call_count == 1
+        assert llm.unavailable() and not llm.out_of_credits()
+        assert llm.think("s", "u") == "hi", "the user's own request is not told no on the background's behalf"
+        assert llm.unavailable() is None, "a request that got through clears the backoff"
+
+    @patch('assistant.llm.GeminiLLM.time')
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_the_backoff_expires_on_its_own_and_doubles_while_the_429s_keep_coming(self, mock_types, mock_config, mock_time):
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        from assistant.llm import GeminiLLM as module
+        clock = [1000.0]
+        mock_time.monotonic.side_effect = lambda: clock[0]
+        llm = self._llm()
+        llm.client.models.generate_content.side_effect = self.RATE
+        with pytest.raises(LLMUnavailable):
+            llm.think("s", "u", images=[b"a"], background=True)
+        clock[0] += module.RATE_BACKOFF_SECONDS + 1
+        with pytest.raises(LLMUnavailable):
+            llm.think("s", "u", images=[b"a"], background=True)
+        assert llm.client.models.generate_content.call_count == 2, "after the wait one call probes again"
+        assert f"{module.RATE_BACKOFF_SECONDS * 2:.0f}s" in llm.unavailable()
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_probe_clears_an_outage_only_when_gemini_answers(self, mock_types, mock_config):
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        llm = self._llm()
+        llm.client.models.generate_content.side_effect = [self.CREDITS, self.CREDITS, Mock(text="ok", usage_metadata=None)]
+        with pytest.raises(LLMUnavailable):
+            llm.think("s", "u", images=[b"a"], background=True)
+        assert llm.probe() is False and llm.out_of_credits()
+        assert llm.probe() is True and llm.unavailable() is None
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_any_other_error_is_still_the_callers_to_handle(self, mock_types, mock_config):
+        llm = self._llm()
+        llm.client.models.generate_content.side_effect = RuntimeError("503 UNAVAILABLE")
+        with patch('assistant.llm.AbstractLLM.time.sleep'), pytest.raises(RuntimeError):
+            llm.think("s", "u", images=[b"a"], background=True)
+        assert llm.client.models.generate_content.call_count == 3, "retried as before"
+        assert llm.unavailable() is None
 
 
 # ===========================================================================

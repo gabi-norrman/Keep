@@ -24,6 +24,16 @@ class LLMPreempted(Exception):
     pass
 
 
+class LLMUnavailable(Exception):
+    """The provider is refusing every request for now — the prepaid credits are gone (402) or a
+    spend or rate ceiling is hit (429) — so the work is not failed, only not possible yet. Once
+    the backend knows, it raises this without making the call, so thirty workers do not each
+    discover it three times; `_retry` does not retry it, and a caller indexing a backlog leaves
+    the item in its queue instead of writing it off. `unavailable()` says why, `probe()` whether
+    requests go through again."""
+    pass
+
+
 def api_error_message(e: Exception) -> str | None:
     """The server's own explanation of a failed API call, for showing to the user —
     "Your credit balance is too low…", "Overloaded" — or None when the failure never
@@ -76,7 +86,7 @@ class AbstractLLM(ABC):
         for attempt in range(max_retries):
             try:
                 return fn()
-            except (LLMRefusalError, LLMPreempted):
+            except (LLMRefusalError, LLMPreempted, LLMUnavailable):
                 raise  # deterministic / the caller resends when the backend is idle — no retry here
             except Exception as e:
                 if attempt == max_retries - 1:
@@ -253,6 +263,21 @@ class AbstractLLM(ABC):
         """True for a backend that serves one request at a time on our own hardware (Ollama):
         bulk callers then run one or two workers instead of a wide fan-out."""
         return False
+
+    def unavailable(self) -> str | None:
+        """Why the backend is refusing every request right now (see LLMUnavailable), or None
+        when it takes requests. Default: a backend that never tracks this."""
+        return None
+
+    def out_of_credits(self) -> bool:
+        """True when `unavailable()` is the account's prepaid credits being gone — the one case
+        that needs the user, not time, to resolve."""
+        return False
+
+    def probe(self) -> bool:
+        """Make a request small enough to cost nothing, to learn whether a backend that was
+        refusing requests takes them again; True clears `unavailable()`. Default: always True."""
+        return True
 
     def background_wait_seconds(self) -> float:
         """How long the calling thread's last `background=True` request queued before the

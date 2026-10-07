@@ -119,6 +119,14 @@ class TestBatched:
         inner.create_batched_image_completions.return_value = None
         assert wrapped.create_batched_image_completions("s", [("u", b"i")]) is None
 
+    def test_outage_state_is_the_inner_backends_not_the_wrappers(self, wrapped, inner, messages):
+        """Explicit forwards: the AbstractLLM defaults (None / False / True) would otherwise win
+        over __getattr__ and a Photos feed on a vault-wrapped Gemini would never see a 402."""
+        inner.unavailable.return_value = "402"
+        inner.out_of_credits.return_value = True
+        inner.probe.return_value = False
+        assert wrapped.unavailable() == "402" and wrapped.out_of_credits() is True and wrapped.probe() is False
+
 
 class TestInbound:
     def test_create_completion_restores_placeholders(self, wrapped, inner, messages):

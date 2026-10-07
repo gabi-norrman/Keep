@@ -1428,7 +1428,9 @@ class TestPhotosFeed:
         `integration._queue_entry`."""
         from integrations.photos.PhotosIntegration import PhotosIntegration
         integration = PhotosIntegration()
-        processor = processor or Mock()
+        if processor is None:
+            processor = Mock()
+            processor.provider_unavailable.return_value = None    # the backend takes requests
         with patch(f'{PI}.os.path.exists', return_value=True), \
              patch(f'{PI}.PhotoProcessor', return_value=processor):
             assert integration.open_feed() is True
@@ -2423,10 +2425,143 @@ class TestLocalBackendIndexing:
     def test_worker_count_follows_the_backend(self, local, expected):
         from integrations.photos import PhotoProcessor as module
         processor = module.PhotoProcessor()
-        processor._llm = Mock(is_local=Mock(return_value=local))
+        processor._llm = Mock(is_local=Mock(return_value=local), unavailable=Mock(return_value=None))
         with patch.object(module.threading, 'Semaphore', wraps=threading.Semaphore) as semaphore:
             processor.process_rows([])
         assert semaphore.call_args_list[0].args == (expected,)
+
+
+@pytest.mark.unit
+class TestProviderRefusal:
+    """A 429 or 402 is the provider's state, not the photo's: nothing is stored as skipped, the
+    row stays in the queue, and the feed holds its cursor so the row comes round again."""
+
+    @staticmethod
+    def _row():
+        return {"uuid": "U1", "filename": "p.heic", "kind": "photo", "cloud_asset_guid": "G1", "creation_ts": 1.0,
+                "latitude": None, "longitude": None, "kind_subtype": 0, "directory": "0", "duration": None}
+
+    def test_a_still_the_provider_refused_is_not_stored_as_skipped(self):
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        from integrations.photos import PhotoProcessor as module
+        processor = module.PhotoProcessor()
+        llm = Mock()
+        llm.think.side_effect = LLMUnavailable("out of credits")
+        llm.background_wait_seconds.return_value = 0.0
+        processor._llm = llm
+        prepared = module._PreparedPhoto(row=self._row(), jpeg=b"j", photo_type="photo", albums="", persons="",
+                                         location_text="", user_message="u", started=0.0)
+        with patch.object(processor, '_prepare_photo', return_value=(prepared, False)), \
+             patch.object(module.PhotoProcessor, '_read_memory', return_value=""), \
+             patch.object(processor, '_store_skipped') as skipped, \
+             patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
+            mock_db.return_value.photo_exists.return_value = False
+            assert processor._process_one(self._row()) is False
+        skipped.assert_not_called()
+        mock_db.return_value.store_photo.assert_not_called()
+        assert llm.think.call_count == 1, "no retry of a refusal the backend already knows about"
+        assert not module.PhotoProcessor._processing_uuids
+
+    def test_a_clip_the_provider_refused_is_not_stored_as_skipped(self):
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        from integrations.photos import PhotoProcessor as module
+        processor = module.PhotoProcessor()
+        llm = Mock()
+        llm.think_with_video.side_effect = LLMUnavailable("rate limited")
+        processor._llm = llm
+        with patch.object(module.PhotoProcessor, '_read_memory', return_value=""), \
+             pytest.raises(LLMUnavailable):
+            processor._analyze_video_with_llm(b"mp4", "video/mp4", "2026-01-01", "", "", "", "video", 5.0)
+
+    def test_a_refused_backend_means_no_downloads_and_the_rows_stay(self):
+        from integrations.photos import PhotoProcessor as module
+        processor = module.PhotoProcessor()
+        processor._llm = Mock(unavailable=Mock(return_value="out of credits"))
+        with patch.object(processor, '_process_one') as process_one:
+            succeeded, failed = processor.process_rows([self._row()], batched=True)
+        process_one.assert_not_called()
+        assert succeeded == [] and failed == ["p.heic"]
+
+
+@pytest.mark.unit
+class TestPhotosFeedProviderRefusal:
+    """The feed's side of a refusal: the cursor is held, an empty prepaid account pauses the feed
+    and tells the household once, and the health check brings it back with one more note."""
+
+    @pytest.fixture(autouse=True)
+    def reset_singleton(self):
+        from integrations.photos.PhotosIntegration import PhotosIntegration
+        PhotosIntegration.reset_instance()
+        yield
+        PhotosIntegration.reset_instance()
+
+    @staticmethod
+    def _opened(reason, out_of_credits):
+        from integrations.photos.PhotosIntegration import PhotosIntegration
+        integration = PhotosIntegration()
+        processor = Mock()
+        processor.provider_unavailable.return_value = reason
+        processor.provider_out_of_credits.return_value = out_of_credits
+        with patch(f'{PI}.os.path.exists', return_value=True), \
+             patch(f'{PI}.PhotoProcessor', return_value=processor):
+            assert integration.open_feed() is True
+        return integration, processor
+
+    def _fetch(self, integration, cursor="500.0"):
+        from integrations.photos.PhotosIntegration import PhotosIntegration
+        rows = [TestPhotosFeed._row("a", 600.0, "G-A"), TestPhotosFeed._row("b", 700.0, "G-B")]
+        with patch.object(PhotosIntegration, '_assets_after', return_value=rows), \
+             patch.object(integration, 'remaining', return_value=120), \
+             patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db, \
+             patch('assistant.integration.FeedRunner.Feeds.get_instance') as feeds, \
+             patch('assistant.SystemNote.system_note') as note:
+            mock_db.return_value.get_indexed_photo_guids.return_value = set()
+            batch = integration.fetch(cursor, backfill=True)
+        return batch, feeds.return_value.runner.return_value, note
+
+    def test_a_rate_limit_holds_the_cursor_and_bothers_nobody(self):
+        from assistant.integration.Integration import IntegrationState
+        integration, _ = self._opened("rate limited (429) — background requests wait 60s", out_of_credits=False)
+        batch, runner, note = self._fetch(integration)
+        assert batch.cursor == "500.0" and batch.exhausted is True
+        runner.pause.assert_not_called()
+        note.assert_not_called()
+        assert integration.state != IntegrationState.RATE_LIMITED
+
+    def test_empty_credits_pause_the_feed_and_tell_the_household_once(self):
+        from assistant.integration.Integration import IntegrationState
+        integration, _ = self._opened("prepaid credits are depleted (402)", out_of_credits=True)
+        first, runner, note = self._fetch(integration)
+        second, runner2, note2 = self._fetch(integration)
+        assert first.cursor == second.cursor == "500.0"
+        assert integration.state == IntegrationState.RATE_LIMITED
+        assert "402" in integration.last_error
+        runner.pause.assert_called_once()
+        runner2.pause.assert_not_called()
+        note.assert_called_once()
+        note2.assert_not_called()
+        text = note.call_args.args[1]
+        assert "120" in text and "402" in text, "the note carries how much is waiting and what happened"
+
+    def test_health_check_probes_the_key_and_resumes_with_one_note(self):
+        from assistant.integration.Integration import IntegrationState
+        integration, processor = self._opened("prepaid credits are depleted (402)", out_of_credits=True)
+        self._fetch(integration)
+        llm = processor._get_llm.return_value
+        llm.probe.side_effect = [False, True]
+        with patch('assistant.integration.FeedRunner.Feeds.get_instance') as feeds, \
+             patch('assistant.SystemNote.system_note') as note, \
+             patch(f'{PI}.os.path.exists', return_value=True), \
+             patch(f'{PI}.sqlite3.connect'), \
+             patch.object(integration, '_check_icloud_download'):
+            with pytest.raises(RuntimeError):
+                integration.check_health()
+            feeds.return_value.runner.return_value.resume.assert_not_called()
+            assert integration.check_health() is True
+        feeds.return_value.runner.return_value.resume.assert_called_once()
+        note.assert_called_once()
+        assert integration.last_error is None
+        assert integration.state == IntegrationState.RATE_LIMITED, "the monitor, not the check, flips the state to OK"
 
     def test_system_prompt_is_identical_across_photos_so_a_prefix_cache_covers_it(self):
         from integrations.photos.PhotoProcessor import PhotoProcessor
@@ -2471,6 +2606,7 @@ class TestBatchedBackfill:
                                      location_text="Home", user_message=f"photo {row['uuid']}", started=0.0)
 
     def _processor(self, module, llm):
+        llm.unavailable.return_value = None
         processor = module.PhotoProcessor()
         processor._llm = llm
         return processor

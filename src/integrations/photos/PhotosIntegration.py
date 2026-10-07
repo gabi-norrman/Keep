@@ -11,7 +11,7 @@ import time
 from typing import List, Optional
 
 from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
-from assistant.integration.Integration import Integration
+from assistant.integration.Integration import Integration, IntegrationState
 from assistant.llm import tier_api_key_name
 from common.ConfigManager import config
 from common.DevelopmentConfig import LOCAL_DEVELOPMENT_MODE
@@ -85,7 +85,49 @@ class PhotosIntegration(Integration, Feed):
         key = tier_api_key_name('photo_indexing')
         return [key] if key else []
 
+    def _provider_refused(self, reason: str, out_of_credits: bool, cursor: Optional[str]):
+        """A rate limit clears by itself: the feed keeps polling (every POLL_INTERVAL) and each
+        poll is refused without a call until the backoff passes, so nothing to tell anyone. An
+        empty prepaid account needs the user: the feed pauses, the integration shows RATE_LIMITED
+        with the reason (the Catalog tab, the prompt's INTEGRATIONS section), and the household
+        hears it once — the health check probes the key and resumes, with one more note."""
+        if not out_of_credits:
+            trace(f"Photos: cursor held at {cursor} — {reason}")
+            return
+        if self.state == IntegrationState.RATE_LIMITED:
+            trace("Photos: still out of credits, feed stays paused")
+            return
+        from assistant.integration.FeedRunner import Feeds
+        from assistant.SystemNote import system_note
+        self.state = IntegrationState.RATE_LIMITED
+        self._last_error = reason
+        runner = Feeds.get_instance().runner(self.feed_name)
+        if runner is not None:
+            runner.pause()
+        waiting = self.remaining(cursor)
+        note(f"Photos: indexing paused — {reason}")
+        system_note("Photos", (
+            "Photo indexing is paused: the Gemini API key's prepaid credits are used up (HTTP 402)."
+            + (f" {waiting} photos and videos are waiting." if waiting else "")
+            + " Nothing is lost — once the Google AI Studio project is topped up, indexing resumes "
+              "by itself within 15 minutes."))
+
+    def _provider_back(self):
+        from assistant.integration.FeedRunner import Feeds
+        from assistant.SystemNote import system_note
+        self._last_error = None
+        runner = Feeds.get_instance().runner(self.feed_name)
+        if runner is not None:
+            runner.resume()
+        note("Photos: the Gemini key takes requests again — indexing resumed")
+        system_note("Photos", "Photo indexing has resumed: the Gemini API key accepts requests again.")
+
     def check_health(self) -> bool:
+        if self.state == IntegrationState.RATE_LIMITED:
+            processor = self._processor or PhotoProcessor()
+            if not processor._get_llm().probe():
+                raise RuntimeError(self._last_error or "the indexing LLM still refuses requests")
+            self._provider_back()
         if not os.path.exists(PHOTOS_SQLITE_PATH):
             raise FileNotFoundError(f"Photos database not found at {PHOTOS_SQLITE_PATH}")
         with sqlite3.connect(f"file:{PHOTOS_SQLITE_PATH}?mode=ro", uri=True) as conn:
@@ -222,6 +264,12 @@ class PhotosIntegration(Integration, Feed):
                 processor.process_rows(todo, batched=backfill)
             else:
                 trace(f"Photos: {len(rows)} asset(s) after the cursor, all indexed or awaiting iCloud")
+        reason = processor.provider_unavailable()
+        if reason:
+            # The provider refused (out of credits, rate limited): the cursor stays, so the rows
+            # nobody described come round again, and the batch hands over what did get stored.
+            self._provider_refused(reason, processor.provider_out_of_credits(), cursor)
+            return FeedBatch(self._drain_entries(), cursor=cursor, exhausted=True)
         new_cursor, held = self.advance_cursor(after, rows, time.time())
         if held != self._held:
             if held:

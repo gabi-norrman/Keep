@@ -62,6 +62,16 @@ class VaultLLM(AbstractLLM):
     def is_local(self) -> bool:
         return self.llm.is_local()
 
+    # Explicit like refusal_fallback: the AbstractLLM defaults would win over __getattr__.
+    def unavailable(self) -> str | None:
+        return self.llm.unavailable()
+
+    def out_of_credits(self) -> bool:
+        return self.llm.out_of_credits()
+
+    def probe(self) -> bool:
+        return self.llm.probe()
+
     def think_with_video(self, system_message: str, user_message: str, video_bytes: bytes,
                          mime_type: str, fps: float | None = None) -> str:
         system_message, _ = self.redactor.redact(system_message)
