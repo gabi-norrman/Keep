@@ -8,11 +8,12 @@ second run finds nothing to do. ruamel keeps every other comment. What moved is 
 line and summarised in `pending_note`, which the launcher posts as a system note once the dialog
 history is up (this module is `common`, below the assistant)."""
 import io
+import re
 import os
 import shutil
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
@@ -77,10 +78,27 @@ def _accounts_list(data: CommentedMap, section: str, position: int) -> Commented
     return accounts
 
 
+# Lives here, not in ConfigStore: the migration runs while ConfigManager's module-level instance
+# loads, which can be in the middle of ConfigStore's own import (the launcher imports Migrations →
+# ConfigStore → ConfigManager), so nothing above ConfigManager may be imported from here.
+_PLACEHOLDER_RE = re.compile(r"YOUR_|CHANGE_ME|_HERE\b|DEVICE_UUID")
+
+
+def looks_like_placeholder(value: Any) -> bool:
+    """A value still holding the example's placeholder (YOUR_APP_PASSWORD, CHANGE_ME, DEVICE_UUID…),
+    looked for inside lists and mappings too."""
+    if isinstance(value, str):
+        return bool(_PLACEHOLDER_RE.search(value))
+    if isinstance(value, dict):
+        return any(looks_like_placeholder(v) for v in value.values())
+    if isinstance(value, list):
+        return any(looks_like_placeholder(v) for v in value)
+    return False
+
+
 def _account(fields: list[tuple[str, object]]) -> CommentedMap:
     """The entry out of an old section's fields: an empty value or a copied example placeholder
     (YOUR_APP_PASSWORD) is left out, so a never-filled section carries nothing over."""
-    from common.ConfigStore import looks_like_placeholder   # at call time: ConfigStore imports ConfigManager
     account = CommentedMap()
     for key, value in fields:
         if value not in (None, "", []) and not looks_like_placeholder(value):

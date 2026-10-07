@@ -168,3 +168,19 @@ class TestOnLoad:
         monkeypatch.setenv("FLOXY_CONFIG", str(path))
         assert ConfigManager().get("vault.key") == "real"
         assert os.stat(path).st_mtime == 1_000_000
+
+
+def test_the_launchers_import_chain_survives_a_config_that_needs_migrating(tmp_path):
+    """The launcher imports Migrations → ConfigStore → ConfigManager, whose module-level instance
+    loads the config and migrates it while ConfigStore is still half-imported (2026-10-07: the
+    production start died there on a circular import). A fresh interpreter is the only way to
+    see that order."""
+    import subprocess, sys
+    from common.Paths import AISERVER_DIR, SRC_DIR
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("enabled_integrations: [Gmail]\nemail:\n  address: m@mlab.test\n  password: pw\n")
+    code = "from common import ConfigMigrations, Migrations, Version; from common.ConfigManager import config; print(sorted(config.get('imap')['accounts'][0]))"
+    result = subprocess.run([sys.executable, "-c", code], cwd=AISERVER_DIR, capture_output=True, text=True, timeout=60,
+                            env={**__import__('os').environ, "FLOXY_CONFIG": str(cfg), "PYTHONPATH": str(SRC_DIR)})
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "['address', 'name', 'password', 'preset']" in result.stdout

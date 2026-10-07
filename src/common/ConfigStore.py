@@ -18,6 +18,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from common import ConfigSchema
 from common.ConfigManager import ENABLED_INTEGRATIONS_KEY, ConfigManager, integration_key
+from common.ConfigMigrations import looks_like_placeholder  # noqa: F401 — the store's callers import it from here
 from common.Paths import CACHE_DIR
 from common.logging import info, trace
 
@@ -29,7 +30,6 @@ DENIED_PREFIXES = ("vault.key", "interfaces.http")
 BACKUP_DIR = CACHE_DIR / "config-backups"
 BACKUPS_KEPT = 10
 
-_PLACEHOLDER_RE = re.compile(r"YOUR_|CHANGE_ME|_HERE\b|DEVICE_UUID")
 # One writer at a time: every write is read-modify-replace through the same .tmp file,
 # so two at once lose one change and race on the rename (2026-09-08 log).
 _WRITE_LOCK = threading.Lock()
@@ -372,14 +372,6 @@ def _current_value(key: str) -> Any:
     return node
 
 
-def looks_like_placeholder(value: Any) -> bool:
-    if isinstance(value, str):
-        return bool(_PLACEHOLDER_RE.search(value))
-    if isinstance(value, dict):
-        return any(looks_like_placeholder(v) for v in value.values())
-    if isinstance(value, list):
-        return any(looks_like_placeholder(v) for v in value)
-    return False
 
 
 def is_set(key: str) -> bool:
