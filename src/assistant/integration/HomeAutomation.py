@@ -1,8 +1,10 @@
-"""The home automation contract (plans/HOME_AUTOMATION_PLAN.md): what the assistant asks of
-whatever runs the house — Indigo today, Home Assistant later. The contract speaks names, the
-ones the LLM reads out of the snapshot and hands back to the commands; how a name maps to a
-REST path or an entity id is the backend's business. A backend is always an Integration too
-(name, config keys, health), and a Feed when it has an event stream to offer.
+"""The home automation contract: what the assistant asks of whatever runs the house — Indigo,
+Home Assistant, or several of them at once. The contract speaks names, the ones the LLM reads
+out of the snapshot and hands back to the commands; how a name maps to a REST path or an entity
+id is the backend's business. A backend is always an Integration too (name, config keys,
+health), and a Feed when it has an event stream to offer. `active()` is what the commands and
+the prompt section run against: the one ready backend, a CompositeHome over several, or the
+NotConfiguredHome stand-in.
 
 The bracket convention is the assistant's, not the backend's: parens end a command's argument
 list in CommandParser, so the prompt shows every "(Room)" as "[Room]" (`to_display`) and the
@@ -12,6 +14,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional
 
+from common.ConfigManager import config
 from common.logging import info, trace
 
 # The four snapshot lists, in the order the prompt section renders them.
@@ -90,6 +93,13 @@ class HomeAutomation(ABC):
     def error_logs(self) -> str:
         return f"{self.name} has no error log."
 
+    def prune(self, snapshot: HomeSnapshot) -> HomeSnapshot:
+        """The snapshot minus what the prompt should not see: the lines matching the
+        configured `<config_section>.prompt_filters` on every section, the backend's own
+        `section_filters` per section. The commands still reach a pruned entity by name."""
+        filters = config.get(f"{self.config_section}.prompt_filters", []) or []
+        return prune(snapshot, filters, self.section_filters)
+
     @staticmethod
     def to_display(text: str) -> str:
         return text.replace("(", "[").replace(")", "]")
@@ -140,6 +150,7 @@ class NotConfiguredHome(HomeAutomation):
 STARTING_HINT = "Home automation is still starting up — try again in a few seconds."
 STARTUP_POLL_INTERVAL = 2       # how often the prompt section looks again while no backend is registered yet
 _last_state: Optional[str] = None
+_composite = None               # the CompositeHome over the current set of ready backends, kept for its name index
 
 
 def _log_state(line: str, log=None) -> None:
@@ -157,8 +168,10 @@ def active() -> HomeAutomation:
     enable line for a disabled backend, the keys for an unconfigured one, the constructor's
     error for an unavailable one). No backend registered in any form → the launcher has not
     reached the feeds yet (the prompt sections start before them), so the hint says "still
-    starting" and `starting` asks the section to look again soon. Two → the first registered,
-    with a warning. Resolved per call, so a restarted integration is picked up."""
+    starting" and `starting` asks the section to look again soon. Several → one CompositeHome
+    over them, the same instance as long as the set of ready backends is the same (it keeps
+    the index that routes a name to its backend). Resolved per call, so a restarted
+    integration is picked up."""
     from assistant.integration.IntegrationMonitor import IntegrationMonitor, DisabledIntegration, UnavailableIntegration
     monitor = IntegrationMonitor.get_instance()
     ready, hints = [], []
@@ -169,10 +182,10 @@ def active() -> HomeAutomation:
         else:
             ready.append(integration)
     if len(ready) > 1:
-        _log_state(f"Home automation: {len(ready)} backends enabled ({', '.join(i.name for i in ready)}) — using {ready[0].name}", info)
+        _log_state(f"Home automation: {len(ready)} backends enabled ({', '.join(i.name for i in ready)}) — one house", info)
+        return _composite_over(ready)
     if ready:
-        if len(ready) == 1:
-            _log_state(f"Home automation: using {ready[0].name}")
+        _log_state(f"Home automation: using {ready[0].name}")
         return ready[0]
     for placeholder in monitor.of_type(DisabledIntegration):
         if issubclass(placeholder.cls, HomeAutomation):
@@ -188,24 +201,39 @@ def active() -> HomeAutomation:
     return NotConfiguredHome(hint)
 
 
-def render(snapshot: HomeSnapshot, prompt_filters: list[str], section_filters: dict[str, tuple[str, ...]]) -> str:
+def _composite_over(ready: list) -> HomeAutomation:
+    global _composite
+    from assistant.integration.CompositeHome import CompositeHome
+    if _composite is None or _composite.backends != ready:
+        _composite = CompositeHome(ready)
+    return _composite
+
+
+def line_of(entity: Entity) -> str:
+    """An entity as its prompt line: `"name [Area]": value` in display form (parens as
+    brackets, floats with 4+ decimals rounded to 2). The filters match against this text."""
+    name = f"{entity.name} [{entity.area}]" if entity.area else entity.name
+    line = HomeAutomation.to_display(f'"{name}": {entity.value}').rstrip()
+    return _LONG_FLOAT.sub(lambda m: f"{float(m.group()):.2f}", line)
+
+
+def prune(snapshot: HomeSnapshot, prompt_filters: list[str], section_filters: dict[str, tuple[str, ...]]) -> HomeSnapshot:
+    """The snapshot minus the entities whose line matches a filter, case-insensitively — the
+    `prompt_filters` on every section, the `section_filters` each on its own."""
+    pruned = HomeSnapshot(taken_at=snapshot.taken_at)
+    for section in SECTIONS:
+        drop = [f.lower() for f in list(prompt_filters) + list(section_filters.get(section, ()))]
+        kept = [e for e in getattr(snapshot, section) if not any(f in line_of(e).lower() for f in drop)]
+        setattr(pruned, section, kept)
+    return pruned
+
+
+def render(snapshot: HomeSnapshot) -> str:
     """The snapshot as the prompt's HOME AUTOMATION DATA body: one `## SECTION` block per
-    non-empty list, `"name [Area]": value` lines in display form (parens as brackets, floats
-    with 4+ decimals rounded to 2), minus the lines matching a filter — the configured
-    `prompt_filters` on every section, the backend's own per section."""
+    non-empty list, one `line_of` per entity. Prune first — this shows everything it is given."""
     parts = []
     for section in SECTIONS:
         entities = getattr(snapshot, section)
-        if not entities:
-            continue
-        drop = [f.lower() for f in list(prompt_filters) + list(section_filters.get(section, ()))]
-        lines = []
-        for entity in entities:
-            name = f"{entity.name} [{entity.area}]" if entity.area else entity.name
-            line = HomeAutomation.to_display(f'"{name}": {entity.value}').rstrip()
-            line = _LONG_FLOAT.sub(lambda m: f"{float(m.group()):.2f}", line)
-            if any(f in line.lower() for f in drop):
-                continue
-            lines.append(line)
-        parts.append(f"## {section.upper()}\n" + "".join(l + "\n" for l in lines) + "\n")
+        if entities:
+            parts.append(f"## {section.upper()}\n" + "".join(line_of(e) + "\n" for e in entities) + "\n")
     return "".join(parts)

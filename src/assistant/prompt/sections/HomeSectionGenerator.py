@@ -1,9 +1,10 @@
 """The HOME AUTOMATION DATA section the `home` toolkit carries: whatever backend
-HomeAutomation.active() resolves to, polled for a snapshot every `state_poll_interval`
-seconds and rendered as the `## LIGHTS` / `## SENSORS` / `## VARIABLES` / `## ACTIONS`
-blocks (plans/HOME_AUTOMATION_PLAN.md). Without a backend the section is the setup hint; while
-no backend is registered yet (the sections start before the launcher reaches the feeds) it is
-the "still starting" hint and the poll runs at the backend's short startup interval."""
+HomeAutomation.active() resolves to (one, or the composite over several), polled for a
+snapshot every `state_poll_interval` seconds, pruned by the backend's filters and rendered as
+the `## LIGHTS` / `## SENSORS` / `## VARIABLES` / `## ACTIONS` blocks. Without a backend the
+section is the setup hint; while no backend is registered yet (the sections start before the
+launcher reaches the feeds) it is the "still starting" hint and the poll runs at the backend's
+short startup interval."""
 from typing import Optional
 
 from common.ConfigManager import config
@@ -44,8 +45,7 @@ class HomeSectionGenerator(PromptSectionGenerator):
         self._latest = snapshot
         if snapshot.is_empty():
             info(f"{backend.name}: the snapshot is empty — nothing to show the prompt")
-        filters = config.get(f"{backend.config_section}.prompt_filters", []) or []
-        return render(snapshot, filters, backend.section_filters)
+        return render(backend.prune(snapshot))
 
     def is_night(self) -> bool:
         """Whether the house's `home.night_variable` is set, from the live snapshot — not the assembled

@@ -37,7 +37,7 @@ def state(entity_id, value, **attributes):
 class TestBuild:
     def test_golden_rendering(self, house):
         snapshot, _ = build(*house, exposed_only=True)
-        assert render(snapshot, [], {}) == (DATA / "rendered.md").read_text()
+        assert render(snapshot) == (DATA / "rendered.md").read_text()
 
     def test_domains_land_in_their_lists(self, house):
         snapshot, _ = build(*house, exposed_only=False)

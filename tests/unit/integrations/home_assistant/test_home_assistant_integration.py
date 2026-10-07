@@ -184,7 +184,7 @@ class TestClientWiring:
 class TestSnapshot:
     def test_snapshot_renders_the_golden_text(self, integration, fake):
         snapshot = integration.snapshot()
-        assert render(snapshot, [], {}) == (DATA / "rendered.md").read_text()
+        assert render(snapshot) == (DATA / "rendered.md").read_text()
         assert snapshot.taken_at > 0
         assert snapshot.flag("Night") is True
 

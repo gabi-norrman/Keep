@@ -191,7 +191,7 @@ telemetry:
   content: true
   id:                   # written by the server
 
-# Home automation extras, for either backend. Optional.
+# Home automation extras, whichever backends are enabled — several at once make one house. Optional.
 # home:
 #   night_variable: Night     # the variable / input_boolean that is true while the house sleeps (default "Night")
 #   # Devices that are always switched together, swapped for the scene that does the same —

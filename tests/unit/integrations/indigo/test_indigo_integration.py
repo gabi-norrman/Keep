@@ -12,7 +12,7 @@ import requests
 from requests.auth import HTTPDigestAuth
 
 from assistant.integration.Feed import FeedEntry
-from assistant.integration.HomeAutomation import HomeAutomation, render
+from assistant.integration.HomeAutomation import HomeAutomation, prune, render
 from integrations.indigo.IndigoIntegration import IndigoIntegration, EVENT_TIME_NUDGE, LOG_REFINER, PROMPT_FILE, ERROR_LOG_SECTION
 
 MODULE = "integrations.indigo.IndigoIntegration"
@@ -182,7 +182,7 @@ class TestSnapshot:
         file (blank-line runs between blocks aside: the old code copied the file's)."""
         with self._ssh(self.SAMPLE):
             snap = integration.snapshot()
-        rendered = render(snap, [], integration.section_filters)
+        rendered = render(prune(snap, [], integration.section_filters))
         golden = (DATA / "indigo_rendered.md").read_text()
         squash = lambda t: re.sub(r"\n{3,}", "\n\n", t).rstrip()
         assert squash(rendered) == squash(golden)

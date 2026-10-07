@@ -1,5 +1,5 @@
-"""The HomeAutomation contract (plans/HOME_AUTOMATION_PLAN.md): the data model, the display
-round trip, the renderer, `active()` resolving the backend, and the not-configured stand-in."""
+"""The HomeAutomation contract: the data model, the display round trip, the pruning and the
+renderer, `active()` resolving the backend, and the not-configured stand-in."""
 from unittest.mock import patch
 
 import pytest
@@ -7,8 +7,9 @@ import pytest
 from assistant.integration.Integration import Integration
 from assistant.integration.IntegrationMonitor import IntegrationMonitor, DisabledIntegration, UnavailableIntegration
 from assistant.integration import HomeAutomation as module
+from assistant.integration.CompositeHome import CompositeHome
 from assistant.integration.HomeAutomation import (
-    Entity, HomeAutomation, HomeSnapshot, NotConfiguredHome, STARTING_HINT, STARTUP_POLL_INTERVAL, active, render)
+    Entity, HomeAutomation, HomeSnapshot, NotConfiguredHome, STARTING_HINT, STARTUP_POLL_INTERVAL, active, prune, render)
 
 
 class FakeHome(Integration, HomeAutomation):
@@ -43,6 +44,7 @@ class OtherHome(FakeHome):
 def monitor():
     IntegrationMonitor.reset_instance()
     module._last_state = None
+    module._composite = None
     with patch.object(IntegrationMonitor, "_config_manager", create=True):
         m = IntegrationMonitor.get_instance()
         yield m
@@ -85,26 +87,38 @@ class TestRender:
                             sensors=[Entity("Temp", "22.123456 °C")],
                             variables=[Entity("Night", "false")],
                             actions=[Entity("Go home", "")])
-        assert render(snap, [], {}) == (
+        assert render(snap) == (
             '## LIGHTS\n"Tak [Kök]": on\n"Lamp [Office]": 40\n\n'
             '## SENSORS\n"Temp": 22.12 °C\n\n'
             '## VARIABLES\n"Night": false\n\n'
             '## ACTIONS\n"Go home":\n\n')
 
     def test_an_empty_list_has_no_block(self):
-        assert render(HomeSnapshot(actions=[Entity("Go", "")]), [], {}) == '## ACTIONS\n"Go":\n\n'
-        assert render(HomeSnapshot(), [], {}) == ""
+        assert render(HomeSnapshot(actions=[Entity("Go", "")])) == '## ACTIONS\n"Go":\n\n'
+        assert render(HomeSnapshot()) == ""
 
     def test_filters_drop_matching_lines_case_insensitively(self):
         snap = HomeSnapshot(sensors=[Entity("Humidity (Bad)", "50"), Entity("Temp", "20")],
                             variables=[Entity("Noisy", "1"), Entity("Night", "true")])
-        out = render(snap, ["noisy"], {"sensors": ("humidity",)})
+        out = render(prune(snap, ["noisy"], {"sensors": ("humidity",)}))
         assert out == '## SENSORS\n"Temp": 20\n\n## VARIABLES\n"Night": true\n\n'
 
     def test_a_backend_filter_applies_to_its_section_only(self):
         snap = HomeSnapshot(lights=[Entity("Humidity light", "on")], sensors=[Entity("Humidity", "50")])
-        out = render(snap, [], {"sensors": ("Humidity",)})
+        out = render(prune(snap, [], {"sensors": ("Humidity",)}))
         assert '"Humidity light": on' in out and '"Humidity": 50' not in out
+
+    def test_a_filter_matches_the_rendered_line_so_an_area_or_a_value_can_be_the_criterion(self):
+        snap = HomeSnapshot(lights=[Entity("Lamp", "on", area="Garage"), Entity("Lamp", "unavailable", area="Hall")])
+        assert prune(snap, ["[garage]", "unavailable"], {}).lights == []
+        assert prune(snap, [], {}).lights == snap.lights
+
+    def test_the_backend_prunes_with_its_own_config_section(self):
+        snap = HomeSnapshot(lights=[Entity("Noisy", "on"), Entity("Lamp", "on")])
+        with patch.object(module.config, "get", side_effect=lambda key, default=None: ["noisy"] if key == "fake.prompt_filters" else default):
+            assert [e.name for e in FakeHome().prune(snap).lights] == ["Lamp"]
+        with patch.object(module.config, "get", side_effect=lambda key, default=None: None):
+            assert len(FakeHome().prune(snap).lights) == 2, "an unset key means no filters"
 
 
 @pytest.mark.unit
@@ -178,13 +192,33 @@ class TestActive:
         assert 'Fake Home is disabled: enable_integration("Fake Home").' in home.hint
         assert "OtherHome could not be started: KeyError: 'other' (restart_integration once fixed)." in home.hint
 
-    def test_two_configured_backends_take_the_first_and_warn(self, monitor):
+    def test_two_configured_backends_make_one_composite_house(self, monitor):
         first, second = FakeHome(), OtherHome()
         _register(monitor, first)
         _register(monitor, second)
         with patch.object(module, "info") as info:
-            assert active() is first
+            home = active()
+        assert isinstance(home, CompositeHome)
+        assert home.backends == [first, second]
         assert "2 backends enabled" in info.call_args.args[0]
+
+    def test_the_composite_is_kept_while_the_set_of_backends_holds(self, monitor):
+        """It carries the name index, so a new one per call would route nothing."""
+        first, second = FakeHome(), OtherHome()
+        _register(monitor, first)
+        _register(monitor, second)
+        home = active()
+        assert active() is home
+        third = type("ThirdHome", (FakeHome,), {"name": property(lambda s: "Third Home")})()
+        _register(monitor, third)
+        assert active() is not home
+        assert active().backends == [first, second, third]
+
+    def test_a_ready_backend_beside_an_unconfigured_one_is_used_alone(self, monitor):
+        fake = FakeHome()
+        _register(monitor, fake)
+        _register(monitor, OtherHome(missing=["fake.token"]))
+        assert active() is fake
 
     def test_an_unchanged_resolution_is_logged_once(self, monitor):
         with patch.object(module, "trace") as trace:

@@ -4,17 +4,18 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from assistant.integration.HomeAutomation import Entity, HomeSnapshot, NotConfiguredHome, STARTUP_POLL_INTERVAL
+from assistant.integration.HomeAutomation import Entity, HomeSnapshot, NotConfiguredHome, STARTUP_POLL_INTERVAL, prune
 from assistant.prompt.sections.HomeSectionGenerator import HomeSectionGenerator, DEFAULT_NIGHT_VARIABLE
 
 MODULE = "assistant.prompt.sections.HomeSectionGenerator"
 
 
-def _backend(snapshot, section_filters=None, config_section="fake", name="Fake"):
-    backend = Mock(name=name, state_poll_interval=30, section_filters=section_filters or {},
-                   config_section=config_section)
+def _backend(snapshot, prompt_filters=(), section_filters=None, name="Fake"):
+    """A backend whose `prune` drops by the given filters, as HomeAutomation.prune does from config."""
+    backend = Mock(name=name, state_poll_interval=30)
     backend.name = name
     backend.snapshot.return_value = snapshot
+    backend.prune.side_effect = lambda snap: prune(snap, list(prompt_filters), section_filters or {})
     return backend
 
 
@@ -25,16 +26,14 @@ def section():
 
 @pytest.mark.unit
 class TestFetchContent:
-    def test_renders_the_snapshot_with_the_configured_and_backend_filters(self, section):
+    def test_renders_the_snapshot_as_the_backend_prunes_it_and_keeps_the_whole_one_live(self, section):
         snap = HomeSnapshot(lights=[Entity("Lamp (Kök)", "on"), Entity("Noisy lamp", "off")],
                             sensors=[Entity("Humidity", "50"), Entity("Temp", "21.55555")])
-        backend = _backend(snap, {"sensors": ("Humidity",)})
-        with patch(f"{MODULE}.active", return_value=backend), \
-             patch(f"{MODULE}.config") as cfg:
-            cfg.get.side_effect = lambda key, default=None: ["noisy"] if key == "fake.prompt_filters" else default
+        backend = _backend(snap, ["noisy"], {"sensors": ("Humidity",)})
+        with patch(f"{MODULE}.active", return_value=backend):
             text = section._fetch_content()
         assert text == '## LIGHTS\n"Lamp [Kök]": on\n\n## SENSORS\n"Temp": 21.56\n\n'
-        assert section._latest is snap
+        assert section._latest is snap, "the Night flag reads the unpruned snapshot"
 
     def test_without_a_backend_the_section_is_the_hint(self, section):
         with patch(f"{MODULE}.active", return_value=NotConfiguredHome("Enable Indigo first.")):
@@ -49,12 +48,6 @@ class TestFetchContent:
         with patch(f"{MODULE}.active", return_value=_backend(HomeSnapshot())):
             section._fetch_content()
         assert section._poll_interval == 30
-
-    def test_a_missing_prompt_filters_key_means_no_filters(self, section):
-        backend = _backend(HomeSnapshot(lights=[Entity("Lamp", "on")]))
-        with patch(f"{MODULE}.active", return_value=backend), patch(f"{MODULE}.config") as cfg:
-            cfg.get.side_effect = lambda key, default=None: None
-            assert section._fetch_content() == '## LIGHTS\n"Lamp": on\n\n'
 
     def test_a_raising_backend_propagates_so_the_last_good_content_is_kept(self, section):
         backend = _backend(None)

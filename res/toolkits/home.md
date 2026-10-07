@@ -3,6 +3,9 @@ The HOME AUTOMATION DATA (sent with this reference, or in your system prompt) li
 of the house with its state at the time it was sent. Values in square brackets are room names. Load this toolkit again
 when you need the current state.
 
+When the house runs on several home automation systems, a name that exists in more than one carries the system's name
+as a last bracket, for example `Lamp [Kök] [Home Assistant]` — keep it, it says which system to send the command to.
+
 "Spots" means spotlights and "Takspots" are ceiling spotlights. "Takspots" are ceiling lights.
 
 ### Light control commands
