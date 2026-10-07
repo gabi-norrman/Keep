@@ -8,7 +8,7 @@
 
 # Every integration is off until it is listed here (Web Access and ElevenLabs TTS are on regardless).
 # Use the names list_integrations shows: Arlo, Aseko Pool, CalDAV, Google, iCloud, IMAP Mail, iMessage, Indigo,
-# Microsoft 365, Photos, Reminders, Ring, Self Improvement, Sonos & Spotify, Telegram Feed, Tesla, X, YR Weather.
+# Microsoft 365, Philips Hue, Photos, Reminders, Ring, Self Improvement, Sonos & Spotify, Telegram Feed, Tesla, X, YR Weather.
 # The TTS engines voice speaks through are integrations too — ElevenLabs TTS (on by default), Gemini TTS,
 # Chirp 3 HD, Cartesia Sonic TTS, Fish Audio TTS, Grok TTS, Supertonic TTS: a request speaks through the
 # first enabled and configured one, Swedish preferring Gemini TTS, so a Swedish install enables Gemini TTS
@@ -91,6 +91,9 @@ location:
 # >> indigo: src/integrations/indigo/config.example.yaml
 
 # >> home_assistant: src/integrations/home_assistant/config.example.yaml
+
+
+# >> hue: src/integrations/hue/config.example.yaml
 
 # >> self_improvement: src/integrations/self_improvement/config.example.yaml
 

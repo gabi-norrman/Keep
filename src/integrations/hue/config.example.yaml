@@ -1,0 +1,7 @@
+# Philips Hue: the bridge on the local network, talked to directly; enable with `enabled_integrations: [Philips Hue]`.
+# Pairing fills in both keys: press the round link button on the bridge, then run hue_pair() within 30 seconds.
+hue:
+  bridge: 192.168.1.10          # the bridge's address; the Hue app shows it under Settings → My Hue system → the bridge. hue_pair() finds it when unset
+  app_key: YOUR_HUE_APPLICATION_KEY   # the key the bridge hands out while its link button is pressed — written by hue_pair()
+  # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
+  prompt_filters: []

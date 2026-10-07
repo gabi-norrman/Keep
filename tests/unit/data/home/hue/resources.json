@@ -1,0 +1,72 @@
+{
+  "room": [
+    {"id": "r-kok", "type": "room", "metadata": {"name": "Kök", "archetype": "kitchen"},
+     "children": [{"rid": "d-tak", "rtype": "device"}, {"rid": "d-fonster", "rtype": "device"}],
+     "services": [{"rid": "g-kok", "rtype": "grouped_light"}]},
+    {"id": "r-hall", "type": "room", "metadata": {"name": "Hall", "archetype": "hallway"},
+     "children": [{"rid": "d-golv", "rtype": "device"}, {"rid": "d-sensor", "rtype": "device"}],
+     "services": [{"rid": "g-hall", "rtype": "grouped_light"}]},
+    {"id": "r-sov", "type": "room", "metadata": {"name": "Sovrum", "archetype": "bedroom"},
+     "children": [{"rid": "d-sang", "rtype": "device"}, {"rid": "d-sang2", "rtype": "device"}],
+     "services": [{"rid": "g-sov", "rtype": "grouped_light"}]}
+  ],
+  "zone": [
+    {"id": "z-ned", "type": "zone", "metadata": {"name": "Nedervåning", "archetype": "downstairs"},
+     "children": [{"rid": "l-tak", "rtype": "light"}, {"rid": "l-fonster", "rtype": "light"}, {"rid": "l-golv", "rtype": "light"}],
+     "services": [{"rid": "g-ned", "rtype": "grouped_light"}]}
+  ],
+  "light": [
+    {"id": "l-tak", "id_v1": "/lights/1", "type": "light", "owner": {"rid": "d-tak", "rtype": "device"},
+     "metadata": {"name": "Taklampa", "archetype": "ceiling_round"}, "on": {"on": true}, "dimming": {"brightness": 40.16}},
+    {"id": "l-fonster", "id_v1": "/lights/2", "type": "light", "owner": {"rid": "d-fonster", "rtype": "device"},
+     "metadata": {"name": "Fönsterlampa", "archetype": "table_shade"}, "on": {"on": false}, "dimming": {"brightness": 100.0}},
+    {"id": "l-golv", "id_v1": "/lights/3", "type": "light", "owner": {"rid": "d-golv", "rtype": "device"},
+     "metadata": {"name": "Golvlampa", "archetype": "plug"}, "on": {"on": true}},
+    {"id": "l-sang", "id_v1": "/lights/4", "type": "light", "owner": {"rid": "d-sang", "rtype": "device"},
+     "metadata": {"name": "Sänglampa", "archetype": "table_shade"}, "on": {"on": true}, "dimming": {"brightness": 100.0}},
+    {"id": "l-sang2", "id_v1": "/lights/5", "type": "light", "owner": {"rid": "d-sang2", "rtype": "device"},
+     "metadata": {"name": "Sänglampa", "archetype": "table_shade"}, "on": {"on": false}, "dimming": {"brightness": 100.0}},
+    {"id": "l-garden", "id_v1": "/lights/6", "type": "light", "owner": {"rid": "d-garden", "rtype": "device"},
+     "metadata": {"name": "Trädgårdslampa (vänster)", "archetype": "wall_lantern"}, "on": {"on": false}, "dimming": {"brightness": 60.0}}
+  ],
+  "grouped_light": [
+    {"id": "g-kok", "type": "grouped_light", "owner": {"rid": "r-kok", "rtype": "room"}, "on": {"on": true}, "dimming": {"brightness": 70.0}},
+    {"id": "g-hall", "type": "grouped_light", "owner": {"rid": "r-hall", "rtype": "room"}, "on": {"on": true}},
+    {"id": "g-sov", "type": "grouped_light", "owner": {"rid": "r-sov", "rtype": "room"}, "on": {"on": false}, "dimming": {"brightness": 0.0}},
+    {"id": "g-ned", "type": "grouped_light", "owner": {"rid": "z-ned", "rtype": "zone"}, "on": {"on": true}, "dimming": {"brightness": 55.0}},
+    {"id": "g-home", "type": "grouped_light", "owner": {"rid": "b-home", "rtype": "bridge_home"}, "on": {"on": true}, "dimming": {"brightness": 61.0}}
+  ],
+  "scene": [
+    {"id": "s-relax", "type": "scene", "metadata": {"name": "Relax"}, "group": {"rid": "r-sov", "rtype": "room"}, "status": {"active": "inactive"}},
+    {"id": "s-mys", "type": "scene", "metadata": {"name": "Mysigt"}, "group": {"rid": "z-ned", "rtype": "zone"}, "status": {"active": "static"}},
+    {"id": "s-mat", "type": "scene", "metadata": {"name": "Matlagning"}, "group": {"rid": "r-kok", "rtype": "room"}, "status": {"active": "inactive"}}
+  ],
+  "device": [
+    {"id": "d-tak", "type": "device", "metadata": {"name": "Taklampa", "archetype": "ceiling_round"}},
+    {"id": "d-fonster", "type": "device", "metadata": {"name": "Fönsterlampa", "archetype": "table_shade"}},
+    {"id": "d-golv", "type": "device", "metadata": {"name": "Golvlampa", "archetype": "plug"}},
+    {"id": "d-sang", "type": "device", "metadata": {"name": "Sänglampa", "archetype": "table_shade"}},
+    {"id": "d-sang2", "type": "device", "metadata": {"name": "Sänglampa", "archetype": "table_shade"}},
+    {"id": "d-garden", "type": "device", "metadata": {"name": "Trädgårdslampa (vänster)", "archetype": "wall_lantern"}},
+    {"id": "d-sensor", "type": "device", "metadata": {"name": "Hallsensor", "archetype": "unknown_archetype"}},
+    {"id": "d-garage", "type": "device", "metadata": {"name": "Garagesensor", "archetype": "unknown_archetype"}}
+  ],
+  "temperature": [
+    {"id": "t-hall", "type": "temperature", "owner": {"rid": "d-sensor", "rtype": "device"}, "enabled": true,
+     "temperature": {"temperature": 21.46, "temperature_valid": true}},
+    {"id": "t-garage", "type": "temperature", "owner": {"rid": "d-garage", "rtype": "device"}, "enabled": true,
+     "temperature": {"temperature": 4.0, "temperature_valid": false}}
+  ],
+  "motion": [
+    {"id": "m-hall", "type": "motion", "owner": {"rid": "d-sensor", "rtype": "device"}, "enabled": true,
+     "motion": {"motion": false, "motion_valid": true, "motion_report": {"changed": "2026-03-15T13:58:00Z", "motion": false}}},
+    {"id": "m-garage", "type": "motion", "owner": {"rid": "d-garage", "rtype": "device"}, "enabled": false,
+     "motion": {"motion": true, "motion_valid": true}}
+  ],
+  "light_level": [
+    {"id": "ll-hall", "type": "light_level", "owner": {"rid": "d-sensor", "rtype": "device"}, "enabled": true,
+     "light": {"light_level": 20001, "light_level_valid": true}},
+    {"id": "ll-garage", "type": "light_level", "owner": {"rid": "d-garage", "rtype": "device"}, "enabled": true,
+     "light": {"light_level_report": {"changed": "2026-03-15T13:58:00Z", "light_level": 30001}}}
+  ]
+}

@@ -67,6 +67,12 @@ The link lives about ten minutes; an expired or reused code comes back as text �
 `google.oauth.client_id` and `client_secret` set and the integration enabled; list_integrations shows the accounts
 still to sign in.
 
+`hue_pair(bridge: str = "")` — pairs Keep with the Philips Hue bridge, from any chat. The bridge hands out its key only
+while its round link button has just been pressed, so ask the user to press it, then run `hue_pair()` within 30
+seconds. It finds the bridge on the local network (or takes its address, `hue_pair("192.168.1.10")`), writes `hue.bridge`
+and `hue.app_key` and restarts the integration — nothing for the user to type. Needs the integration enabled; when the
+button was not pressed it says so, run it again after the press.
+
 When the user asks for something whose integration is disabled or not configured (the list above, a command that
 answers "not configured", or list_integrations): run `config_help` for its section, tell the user what you need and where
 they get it, and ask whether to set it up now. Then `config_request` each key in turn, then
