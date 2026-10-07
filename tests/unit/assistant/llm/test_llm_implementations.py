@@ -1744,6 +1744,49 @@ class TestGeminiOutage:
         assert llm.probe() is False and llm.out_of_credits()
         assert llm.probe() is True and llm.unavailable() is None
 
+    def test_the_status_code_decides_not_a_402_somewhere_in_the_text(self):
+        from assistant.llm import GeminiLLM as module
+        from google.genai import errors
+        assert module._outage.note(RuntimeError("500 INTERNAL: request 402-77 failed"), "m") is None
+        assert module._outage.active(background=True) is None
+        verdict = module._outage.note(errors.APIError(402, {"error": {"message": "Payment required."}}), "m")
+        assert verdict is not None and module._outage.active(background=True)
+        assert module._outage.kind == "credits"
+
+    def test_a_429_by_code_backs_off_background_work(self):
+        from assistant.llm import GeminiLLM as module
+        from google.genai import errors
+        module._outage.note(errors.APIError(429, {"error": {"message": "Quota exceeded."}}), "m")
+        assert module._outage.active(background=True) and module._outage.active(background=False) is None
+
+    @patch('assistant.llm.GeminiLLM.time')
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_a_user_request_tries_again_once_per_recheck_window_and_a_success_clears_the_credits_outage(
+            self, mock_types, mock_config, mock_time):
+        """A 402 the chat hit first must not lock Gemini out until a restart: one user request
+        per window is a live attempt, background work stays refused until one succeeds."""
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        from assistant.llm import GeminiLLM as module
+        clock = [1000.0]
+        mock_time.monotonic.side_effect = lambda: clock[0]
+        llm = self._llm()
+        llm.client.models.generate_content.side_effect = [self.CREDITS, self.CREDITS, Mock(text="hi", usage_metadata=None)]
+        with pytest.raises(LLMUnavailable):
+            llm.think("s", "u")
+        with pytest.raises(LLMUnavailable):
+            llm.think("s", "u")
+        assert llm.client.models.generate_content.call_count == 1, "inside the window the chat is told no without a call"
+        clock[0] += module.CREDITS_RECHECK_SECONDS + 1
+        with pytest.raises(LLMUnavailable):
+            llm.think("s", "u")
+        assert llm.client.models.generate_content.call_count == 2 and llm.out_of_credits(), "the window's one attempt, still refused"
+        with pytest.raises(LLMUnavailable):
+            llm.think("s", "u", images=[b"a"], background=True)
+        clock[0] += module.CREDITS_RECHECK_SECONDS + 1
+        assert llm.think("s", "u") == "hi"
+        assert llm.unavailable() is None, "the attempt that got through clears it for everyone"
+
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
     def test_any_other_error_is_still_the_callers_to_handle(self, mock_types, mock_config):

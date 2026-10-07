@@ -1064,6 +1064,33 @@ class TestPhotoProcessorRetryExhaustion:
         assert "RETRY-UUID" in processor._pending_icloud
         assert processor._pending_icloud["RETRY-UUID"][1] == MAX_ICLOUD_RETRIES
 
+    @pytest.mark.unit
+    def test_a_refusal_by_the_backend_keeps_the_asset_at_the_same_count(self):
+        """A 402/429 on the retry is not a verdict on the asset: it stays, and does not burn
+        one of its iCloud retries — the cursor has passed it, so this set is its only way in."""
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        processor = PhotoProcessor()
+        row = {"uuid": "REFUSED-UUID", "filename": "IMG.heic", "directory": "sub",
+               "creation_ts": 1700000000.0, "latitude": None, "longitude": None, "kind_subtype": 0}
+        processor._pending_icloud["REFUSED-UUID"] = (row, 2)
+        with patch.object(processor, 'provider_unavailable', return_value=None), \
+             patch.object(processor, '_process_one', side_effect=LLMUnavailable("out of credits")):
+            processor._retry_icloud_pending()
+        assert processor._pending_icloud["REFUSED-UUID"] == (row, 2)
+
+    @pytest.mark.unit
+    def test_nothing_is_downloaded_while_the_backend_refuses(self):
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        processor = PhotoProcessor()
+        row = {"uuid": "WAIT-UUID", "filename": "IMG.heic"}
+        processor._pending_icloud["WAIT-UUID"] = (row, 1)
+        with patch.object(processor, 'provider_unavailable', return_value="rate limited"), \
+             patch.object(processor, '_process_one') as process_one:
+            processor._retry_icloud_pending()
+        process_one.assert_not_called()
+        assert processor._pending_icloud["WAIT-UUID"] == (row, 1)
+
 
 class TestPhotoProcessorLlmFailure:
 
@@ -1431,6 +1458,7 @@ class TestPhotosFeed:
         if processor is None:
             processor = Mock()
             processor.provider_unavailable.return_value = None    # the backend takes requests
+            processor.refused_last_run.return_value = []
         with patch(f'{PI}.os.path.exists', return_value=True), \
              patch(f'{PI}.PhotoProcessor', return_value=processor):
             assert integration.open_feed() is True
@@ -2456,7 +2484,8 @@ class TestProviderRefusal:
              patch.object(processor, '_store_skipped') as skipped, \
              patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
             mock_db.return_value.photo_exists.return_value = False
-            assert processor._process_one(self._row()) is False
+            with pytest.raises(LLMUnavailable):
+                processor._process_one(self._row())
         skipped.assert_not_called()
         mock_db.return_value.store_photo.assert_not_called()
         assert llm.think.call_count == 1, "no retry of a refusal the backend already knows about"
@@ -2502,6 +2531,7 @@ class TestPhotosFeedProviderRefusal:
         processor = Mock()
         processor.provider_unavailable.return_value = reason
         processor.provider_out_of_credits.return_value = out_of_credits
+        processor.refused_last_run.return_value = []
         with patch(f'{PI}.os.path.exists', return_value=True), \
              patch(f'{PI}.PhotoProcessor', return_value=processor):
             assert integration.open_feed() is True
@@ -2542,6 +2572,19 @@ class TestPhotosFeedProviderRefusal:
         note2.assert_not_called()
         text = note.call_args.args[1]
         assert "120" in text and "402" in text, "the note carries how much is waiting and what happened"
+
+    def test_rows_refused_mid_batch_hold_the_cursor_after_the_outage_cleared(self):
+        """A parallel worker's success (or a lapsed backoff) clears the shared outage before
+        the batch is over: the rows refused meanwhile still have no description, so the cursor
+        must not move past them."""
+        from assistant.integration.Integration import IntegrationState
+        integration, processor = self._opened(None, out_of_credits=False)
+        processor.refused_last_run.return_value = ["a"]
+        batch, runner, note = self._fetch(integration)
+        assert batch.cursor == "500.0" and batch.exhausted is True
+        runner.pause.assert_not_called()
+        note.assert_not_called()
+        assert integration.state != IntegrationState.RATE_LIMITED
 
     def test_health_check_probes_the_key_and_resumes_with_one_note(self):
         from assistant.integration.Integration import IntegrationState

@@ -338,6 +338,7 @@ class PhotoProcessor:
         self._llm_lock = threading.Lock()
         self._pending_icloud: dict[str, tuple[dict, int]] = {}  # uuid -> (row, retry_count)
         self._icloud_lock = threading.Lock()
+        self._refused_last_run: list[str] = []    # uuids the backend refused in the last process_rows
 
     def remove_hidden_assets(self) -> int:
         """Drop indexed rows for assets the user has since hidden in Photos; returns how many."""
@@ -536,11 +537,16 @@ class PhotoProcessor:
         wait for all of them. Assets whose original is still downloading from iCloud go to the
         pending set for `_retry_icloud_pending`. With `batched` (the backfill) the stills go
         through the batch API first and only the ones it did not answer run live; videos always
-        run live. Returns (descriptions stored, filenames failed)."""
+        run live. Returns (descriptions stored, filenames failed); the rows the backend refused
+        (402 / 429) are in neither verdict but in `refused_last_run()`, so the feed holds its
+        cursor for them even when a parallel worker's success or a lapsed backoff has cleared
+        the shared outage by the time the batch is over."""
         t0 = time.time()
+        self._refused_last_run = []
         reason = self.provider_unavailable()
         if reason:
             info(f"Photos: {len(rows)} asset(s) left in the queue — {reason}")
+            self._refused_last_run = [row["uuid"] for row in rows]
             return [], [row["filename"] for row in rows]
         num_videos = sum(1 for row in rows if row.get("kind") == "video")
         local = self._indexing_backend_is_local()
@@ -550,6 +556,7 @@ class PhotoProcessor:
              + (" — stills through the batch API first" if batched and not local else ""))
         succeeded: list[str] = []
         failed: list[str] = []
+        refused: list[str] = []
         lock = threading.Lock()
         settled: dict[str, bool] = {}
         if batched and not local and self._batch_enabled():
@@ -560,7 +567,15 @@ class PhotoProcessor:
                 if row["uuid"] in settled:
                     needs_icloud = settled[row["uuid"]]
                 else:
-                    needs_icloud = self._process_one(row)
+                    try:
+                        needs_icloud = self._process_one(row)
+                    except LLMUnavailable as e:
+                        # Not a verdict on the asset: nothing is stored, the feed holds its
+                        # cursor and the same row comes round again.
+                        trace(f"Photos: {row['uuid']} left in the queue — {e}")
+                        with lock:
+                            refused.append(row["uuid"])
+                        return
                 if needs_icloud:
                     with self._icloud_lock:
                         if row["uuid"] not in self._pending_icloud:
@@ -600,10 +615,17 @@ class PhotoProcessor:
         avg = elapsed / total if total > 0 else 0
         with self._icloud_lock:
             pending_count = len(self._pending_icloud)
+        self._refused_last_run = refused
         info(f"Photos: processing done — {len(succeeded)}/{total} succeeded, "
              f"{elapsed:.1f}s total, {avg:.1f}s avg/asset"
-             + (f", {pending_count} awaiting iCloud download" if pending_count else ""))
+             + (f", {pending_count} awaiting iCloud download" if pending_count else "")
+             + (f", {len(refused)} refused by the backend and left in the queue" if refused else ""))
         return succeeded, failed
+
+    def refused_last_run(self) -> list[str]:
+        """The uuids the indexing backend refused (402 / 429) in the last `process_rows`: nothing
+        was stored for them, and the feed must not move its cursor past them."""
+        return list(self._refused_last_run)
 
     @staticmethod
     def _batch_enabled() -> bool:
@@ -707,6 +729,10 @@ class PhotoProcessor:
             pending = dict(self._pending_icloud)
         if not pending:
             return
+        reason = self.provider_unavailable()
+        if reason:
+            trace(f"Photos: {len(pending)} asset(s) awaiting iCloud stay in the retry set — {reason}")
+            return
 
         retained = {}
         for uuid, (row, retries) in pending.items():
@@ -721,6 +747,11 @@ class PhotoProcessor:
                 still_needs = self._process_one(row)
                 if still_needs:
                     retained[uuid] = (row, retries + 1)
+            except LLMUnavailable as e:
+                # The download may have worked, the description was refused: not a verdict on
+                # the asset, so it keeps its place and its retry count.
+                trace(f"Photos: iCloud asset {uuid} kept for the next round — {e}")
+                retained[uuid] = (row, retries)
             except CorruptImageError:
                 pass  # already stored as skipped inside _process_one
             except Exception as e:
@@ -806,12 +837,9 @@ class PhotoProcessor:
                 return False
             PhotoProcessor._processing_uuids.add(uuid)
         try:
+            # An LLMUnavailable passes through: it is not a verdict on the asset, and each caller
+            # keeps the row where it was (the batch's refused list, the iCloud retry set).
             return self._process_one_inner(row)
-        except LLMUnavailable as e:
-            # Not a verdict on the asset: nothing is stored, the feed holds its cursor and the
-            # same row comes round again once the provider takes requests.
-            trace(f"Photos: {uuid} left in the queue — {e}")
-            return False
         finally:
             with PhotoProcessor._processing_lock:
                 PhotoProcessor._processing_uuids.discard(uuid)

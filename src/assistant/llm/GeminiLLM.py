@@ -49,12 +49,16 @@ class _SystemCache:
 # quota: it clears by itself, so background work waits this long, doubling while it keeps coming.
 RATE_BACKOFF_SECONDS = 60
 RATE_BACKOFF_MAX_SECONDS = 600
+# How often a user's own request may try Gemini while the credits are known to be gone.
+CREDITS_RECHECK_SECONDS = 60
 
 
 class _Outage:
     """What Gemini is refusing right now, shared by every GeminiLLM — there is one API key.
     `credits`: a 402, the prepaid balance is gone and every request fails until the user tops up,
-    so every call fails fast and only a probe (the health check) may try again. `rate`: a 429,
+    so every call fails fast; a probe (the Photos health check) or, once per
+    CREDITS_RECHECK_SECONDS, a user's own request is the live attempt that finds out whether the
+    account was topped up — the chat is never locked out until a restart. `rate`: a 429,
     background work backs off until `until` while a user's own request still goes through (it
     would be refused too, but it must find that out itself rather than be told no for a minute)."""
 
@@ -64,6 +68,7 @@ class _Outage:
         self.until: float | None = None    # time.monotonic(); None = until a probe succeeds
         self.reason: str = ""
         self.backoff = RATE_BACKOFF_SECONDS
+        self.recheck_at: float = 0.0    # credits: when the next user request may try again
 
     def active(self, background: bool) -> str | None:
         with self.lock:
@@ -73,18 +78,25 @@ class _Outage:
                 return None
             if self.kind == "rate" and not background:
                 return None
+            if self.kind == "credits" and not background and time.monotonic() >= self.recheck_at:
+                self.recheck_at = time.monotonic() + CREDITS_RECHECK_SECONDS
+                trace("Gemini: credits outage — letting this user request through to see whether the account was topped up")
+                return None
             return self.reason
 
     def note(self, e: Exception, model: str) -> LLMUnavailable | None:
         text = str(e)
+        code = getattr(e, "code", None)    # google.genai.errors.APIError carries the HTTP status
+        lowered = text.lower()
         with self.lock:
-            if "402" in text or "prepayment credits" in text.lower() or "credits are depleted" in text.lower():
+            if code == 402 or "prepayment credits" in lowered or "credits are depleted" in lowered:
                 first = self.kind != "credits"
                 self.kind, self.until = "credits", None
+                self.recheck_at = time.monotonic() + CREDITS_RECHECK_SECONDS
                 self.reason = f"{model}: the Gemini prepaid credits are depleted (402) — every request fails until the account is topped up"
                 if first:
                     error(f"Gemini: {self.reason}")
-            elif "429" in text and "RESOURCE_EXHAUSTED" in text:
+            elif code == 429 or ("429" in text and "RESOURCE_EXHAUSTED" in text):
                 if self.kind == "rate" and self.until is not None and time.monotonic() < self.until:
                     return LLMUnavailable(self.reason)
                 wait = self.backoff
@@ -102,6 +114,7 @@ class _Outage:
                 info(f"Gemini: takes requests again (was: {self.reason})")
             self.kind, self.until, self.reason = None, None, ""
             self.backoff = RATE_BACKOFF_SECONDS
+            self.recheck_at = 0.0
 
 
 _outage = _Outage()

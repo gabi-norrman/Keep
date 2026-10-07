@@ -262,9 +262,17 @@ class PhotosIntegration(Integration, Feed):
                      + (" (catching up)" if backfill else ""))
                 # The catch-up is the work nobody waits for: its stills go through the batch API.
                 processor.process_rows(todo, batched=backfill)
+                refused = processor.refused_last_run()
             else:
                 trace(f"Photos: {len(rows)} asset(s) after the cursor, all indexed or awaiting iCloud")
+                refused = []
+        else:
+            refused = []
         reason = processor.provider_unavailable()
+        if refused and not reason:
+            # A parallel worker's success or a lapsed backoff cleared the shared outage before
+            # the batch was over; the rows refused meanwhile still have no description.
+            reason = f"the indexing backend refused {len(refused)} asset(s) during the batch"
         if reason:
             # The provider refused (out of credits, rate limited): the cursor stays, so the rows
             # nobody described come round again, and the batch hands over what did get stored.
