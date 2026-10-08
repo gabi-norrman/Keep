@@ -65,6 +65,16 @@ class TestListing:
         assert "Invoice 2026-09" in acc.fetch_latest("receipts/2026")
         assert acc.fetch_latest("Nowhere") == "No emails found."
 
+    def test_a_folder_nested_below_a_child_is_found_too(self, graph):
+        graph.route("GET", "/me/mailFolders", FOLDERS)
+        graph.route("GET", "/me/mailFolders/f-rec/childFolders", {"value": [{"id": "f-2026", "displayName": "2026", "childFolderCount": 1}]})
+        graph.route("GET", "/me/mailFolders/f-2026/childFolders", {"value": [{"id": "f-inv", "displayName": "Invoices", "childFolderCount": 0}]})
+        graph.route("GET", "/me/mailFolders/f-inv/messages", {"value": INBOX[:1]})
+        acc = account()
+
+        assert acc.list_folders().split("\n") == ["Inbox", "Receipts", "Receipts/2026", "Receipts/2026/Invoices"]
+        assert "Invoice 2026-09" in acc.fetch_latest("Receipts/2026/Invoices")
+
     def test_a_search_uses_search_without_an_orderby(self, graph):
         graph.route("GET", "/me/messages", {"value": INBOX[:1]})
 

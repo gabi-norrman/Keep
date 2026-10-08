@@ -131,17 +131,19 @@ class GraphMailAccount(MailAccount):
     # --- folders -----------------------------------------------------------------------------
 
     def _folders(self) -> List[str]:
-        """Every folder by display name, a child as "Parent/Child"; the ids are kept for the
-        lookups that follow."""
+        """Every folder by display name, a child as "Parent/Child" however deep the nesting goes;
+        the ids are kept for the lookups that follow."""
         found: dict[str, str] = {}
-        for folder in self._client.get_all("/me/mailFolders", {"$top": 200, "$select": "id,displayName,childFolderCount"}):
-            name = str(folder.get("displayName") or "")
-            found[name] = folder["id"]
-            if int(folder.get("childFolderCount") or 0) > 0:
-                children = self._client.get_all(f"/me/mailFolders/{folder['id']}/childFolders",
-                                                {"$top": 200, "$select": "id,displayName"})
-                for child in children:
-                    found[f"{name}/{child.get('displayName') or ''}"] = child["id"]
+        params = {"$top": 200, "$select": "id,displayName,childFolderCount"}
+
+        def walk(url: str, prefix: str):
+            for folder in self._client.get_all(url, params):
+                name = prefix + str(folder.get("displayName") or "")
+                found[name] = folder["id"]
+                if int(folder.get("childFolderCount") or 0) > 0:
+                    walk(f"/me/mailFolders/{folder['id']}/childFolders", f"{name}/")
+
+        walk("/me/mailFolders", "")
         self._folder_ids = {name.lower(): folder_id for name, folder_id in found.items()}
         trace(f"{self.name}: {len(found)} mail folders")
         return list(found)
