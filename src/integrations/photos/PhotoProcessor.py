@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from typing import Callable, Optional
 
 from assistant import MemoryFile
+from .PhotoContext import PhotoContext, NO_MEMORY
 from assistant.llm import create_llm, parse_llm_config
 from assistant.integration.Feed import FeedEntry
 from common.logging import info, error, trace, fine
@@ -343,7 +344,7 @@ class PhotoProcessor:
         self._entry_sink = entry_sink
         self._llm = None
         self._llm_lock = threading.Lock()
-        self._pending_icloud: dict[str, tuple[dict, int]] = {}  # uuid -> (row, retry_count)
+        self._pending_icloud: dict[str, tuple[dict, int, bool]] = {}  # uuid -> (row, retry_count, backfill)
         self._icloud_lock = threading.Lock()
         self._refused_last_run: list[str] = []    # uuids the backend refused in the last process_rows
 
@@ -400,7 +401,7 @@ class PhotoProcessor:
         """The indexing LLM, one for stills and videos alike: the `photo_indexing` tier, by
         default Gemini 3.8 Flash — cheap enough for a backlog, and the only backend with native
         video input. Built through create_llm() like every other backend: the analysis prompt
-        carries all of the memory bank, and only the VaultLLM wrapper keeps its secrets at home."""
+        carries the memory bank (or its briefing), and only the VaultLLM wrapper keeps its secrets at home."""
         if self._llm is None:
             with self._llm_lock:
                 if self._llm is None:
@@ -539,12 +540,13 @@ class PhotoProcessor:
             error(f"Photos: process_bulk_unprocessed failed: {e}")
             return ("error", f"Error: {e}")
 
-    def process_rows(self, rows: list, on_progress=None, batched: bool = False) -> tuple[list[str], list[str]]:
+    def process_rows(self, rows: list, on_progress=None, backfill: bool = False) -> tuple[list[str], list[str]]:
         """Index `rows` concurrently (PHOTO_THREADS stills, VIDEO_THREADS clips at a time) and
         wait for all of them. Assets whose original is still downloading from iCloud go to the
-        pending set for `_retry_icloud_pending`. With `batched` (the backfill) the stills go
-        through the batch API first and only the ones it did not answer run live; videos always
-        run live. Returns (descriptions stored, filenames failed); the rows the backend refused
+        pending set for `_retry_icloud_pending`. On the `backfill` (the feed catching up) the
+        prompt carries the family briefing instead of the memory bank (`_family_context`), and
+        with the batch switch on the stills go through the batch API first and only the ones it
+        did not answer run live; videos always run live. Returns (descriptions stored, filenames failed); the rows the backend refused
         (402 / 429) are in neither verdict but in `refused_last_run()`, so the feed holds its
         cursor for them even when a parallel worker's success or a lapsed backoff has cleared
         the shared outage by the time the batch is over."""
@@ -560,13 +562,13 @@ class PhotoProcessor:
         photo_threads = LOCAL_PHOTO_THREADS if local else PHOTO_THREADS
         info(f"Photos: processing {len(rows) - num_videos} photo(s) with {photo_threads} threads"
              + (f" and {num_videos} video(s) with {VIDEO_THREADS} threads" if num_videos else "")
-             + (" — stills through the batch API first" if batched and not local else ""))
+             + (" — stills through the batch API first" if backfill and not local else ""))
         succeeded: list[str] = []
         failed: list[str] = []
         refused: list[str] = []
         lock = threading.Lock()
         settled: dict[str, bool] = {}
-        if batched and not local and self._batch_enabled():
+        if backfill and not local and self._batch_enabled():
             settled = self._process_stills_batched([row for row in rows if row.get("kind") != "video"])
 
         def worker(row):
@@ -575,7 +577,7 @@ class PhotoProcessor:
                     needs_icloud = settled[row["uuid"]]
                 else:
                     try:
-                        needs_icloud = self._process_one(row)
+                        needs_icloud = self._process_one(row, backfill)
                     except LLMUnavailable as e:
                         # Not a verdict on the asset: nothing is stored, the feed holds its
                         # cursor and the same row comes round again.
@@ -586,7 +588,7 @@ class PhotoProcessor:
                 if needs_icloud:
                     with self._icloud_lock:
                         if row["uuid"] not in self._pending_icloud:
-                            self._pending_icloud[row["uuid"]] = (row, 0)
+                            self._pending_icloud[row["uuid"]] = (row, 0, backfill)
                     return
                 db = FloxyDatabase.get_instance()
                 asset_guid = row["cloud_asset_guid"]
@@ -692,7 +694,7 @@ class PhotoProcessor:
         info(f"Photos: {len(prepared)} photo(s) ({size_mb:.1f} MB) go to the batch API, "
              f"{len(settled)} settled while preparing")
         t0 = time.time()
-        system = self._photo_system_prompt()
+        system = self._photo_system_prompt(backfill=True)
         try:
             replies = self._get_llm().think_batched_with_images(
                 system, [(p.user_message, p.jpeg) for p in prepared], max_wait_seconds=BATCH_MAX_WAIT_SECONDS)
@@ -742,7 +744,7 @@ class PhotoProcessor:
             return
 
         retained = {}
-        for uuid, (row, retries) in pending.items():
+        for uuid, (row, retries, backfill) in pending.items():    # a backfilled asset keeps its briefing
             if retries >= MAX_ICLOUD_RETRIES:
                 info(f"Photos: giving up on iCloud download for {uuid} after {retries} retries, marking as skipped")
                 db = FloxyDatabase.get_instance()
@@ -751,19 +753,19 @@ class PhotoProcessor:
                     self._store_skipped(db, asset_guid, row["creation_ts"], row, reason="iCloud download failed")
                 continue
             try:
-                still_needs = self._process_one(row)
+                still_needs = self._process_one(row, backfill)
                 if still_needs:
-                    retained[uuid] = (row, retries + 1)
+                    retained[uuid] = (row, retries + 1, backfill)
             except LLMUnavailable as e:
                 # The download may have worked, the description was refused: not a verdict on
                 # the asset, so it keeps its place and its retry count.
                 trace(f"Photos: iCloud asset {uuid} kept for the next round — {e}")
-                retained[uuid] = (row, retries)
+                retained[uuid] = (row, retries, backfill)
             except CorruptImageError:
                 pass  # already stored as skipped inside _process_one
             except Exception as e:
                 error(f"Photos: failed to process iCloud asset {uuid}: {e}")
-                retained[uuid] = (row, retries + 1)
+                retained[uuid] = (row, retries + 1, backfill)
 
         with self._icloud_lock:
             self._pending_icloud = retained
@@ -834,8 +836,9 @@ class PhotoProcessor:
         else:
             db.add_history_entry(entry.role, entry.content, entry.timestamp, source=PHOTO_HISTORY_SOURCE)
 
-    def _process_one(self, row: dict) -> bool:
-        """Process a single photo. Returns True if photo needs iCloud download retry."""
+    def _process_one(self, row: dict, backfill: bool = False) -> bool:
+        """Process a single asset. Returns True if it needs an iCloud download retry. `backfill`
+        picks the family briefing over the bank for its prompt (see `_family_context`)."""
         uuid = row["uuid"]
 
         with PhotoProcessor._processing_lock:
@@ -846,12 +849,12 @@ class PhotoProcessor:
         try:
             # An LLMUnavailable passes through: it is not a verdict on the asset, and each caller
             # keeps the row where it was (the batch's refused list, the iCloud retry set).
-            return self._process_one_inner(row)
+            return self._process_one_inner(row, backfill)
         finally:
             with PhotoProcessor._processing_lock:
                 PhotoProcessor._processing_uuids.discard(uuid)
 
-    def _process_one_inner(self, row: dict) -> bool:
+    def _process_one_inner(self, row: dict, backfill: bool = False) -> bool:
         uuid = row["uuid"]
         asset_guid = row["cloud_asset_guid"]
         db = FloxyDatabase.get_instance()
@@ -864,14 +867,14 @@ class PhotoProcessor:
             return False
 
         if row.get("kind") == "video":
-            return self._process_video(row, db)
+            return self._process_video(row, db, backfill)
 
         photo, retry = self._prepare_photo(row, db)
         if photo is None:
             return retry
         PhotoProcessor._worker.queued_s = 0.0
         result = self._analyze_with_llm(photo.jpeg, self._home_time(row["creation_ts"]), photo.location_text,
-                                        photo.albums, photo.persons, photo.photo_type)
+                                        photo.albums, photo.persons, photo.photo_type, backfill)
         if result is None:
             error(f"Photos: {uuid} permanently failed LLM analysis, skipping")
             self._store_skipped(db, asset_guid, row["creation_ts"], row, reason="LLM analysis failed")
@@ -941,7 +944,7 @@ class PhotoProcessor:
             self._store_skipped(db, asset_guid, creation_ts, row)
             return None, False
 
-        _, user_message = self._photo_prompt(self._home_time(creation_ts), location_text, albums, persons, photo_type)
+        user_message = self._photo_user_prompt(self._home_time(creation_ts), location_text, albums, persons, photo_type)
         return _PreparedPhoto(row=row, jpeg=jpeg_bytes, photo_type=photo_type, albums=albums, persons=persons,
                               location_text=location_text, user_message=user_message, started=t0), False
 
@@ -975,7 +978,7 @@ class PhotoProcessor:
         else:
             trace(line)
 
-    def _process_video(self, row: dict, db) -> bool:
+    def _process_video(self, row: dict, db, backfill: bool = False) -> bool:
         """The video half of _process_one_inner. Returns True when the download should be
         retried later (transient iCloud failure), False when the clip is stored or dropped."""
         uuid = row["uuid"]
@@ -1025,7 +1028,7 @@ class PhotoProcessor:
         date_str = self._home_time(creation_ts)
 
         result = self._analyze_video_with_llm(video_bytes, mime_type, date_str, location_text,
-                                              albums, persons, video_type, duration)
+                                              albums, persons, video_type, duration, backfill)
         if result is None:
             error(f"Photos: video {uuid} permanently failed LLM analysis, skipping")
             self._store_skipped(db, asset_guid, creation_ts, row, reason="LLM analysis failed")
@@ -1070,9 +1073,9 @@ class PhotoProcessor:
         return f"video, {label}" if label else "video"
 
     def _analyze_video_with_llm(self, video_bytes: bytes, mime_type: str, date_str: str, location: str,
-                                albums: str, persons: str, video_type: str, duration: float) -> Optional[dict]:
-        system = VIDEO_ANALYSIS_PROMPT_SYSTEM.format(
-            current_memory=self._escape_braces(self._read_memory() or "(no memory available)"))
+                                albums: str, persons: str, video_type: str, duration: float,
+                                backfill: bool = False) -> Optional[dict]:
+        system = VIDEO_ANALYSIS_PROMPT_SYSTEM.format(current_memory=self._escape_braces(self._family_context(backfill)))
         user = VIDEO_ANALYSIS_PROMPT_USER.format(
             date=date_str,
             location=self._escape_braces(location or "unknown"),
@@ -1342,28 +1345,42 @@ class PhotoProcessor:
     def _escape_braces(text: str) -> str:
         return text.replace("{", "{{").replace("}", "}}")
 
-    def _photo_system_prompt(self) -> str:
-        """The part of a still's prompt that is the same for every photo: the instructions and the
-        memory bank. Identical text from photo to photo is what a provider's prefix or explicit
-        cache keys on, so nothing per-photo may go in here."""
-        return ANALYSIS_PROMPT_SYSTEM.format(
-            current_memory=self._escape_braces(self._read_memory() or "(no memory available)"))
+    def _family_context(self, backfill: bool) -> str:
+        """What the prompt says about the family. The live feed sends the memory bank itself: a
+        few assets a day, and a `remember` of the morning is in the afternoon's photo. The
+        backfill sends thousands, so it carries the briefing PhotoContext extracts from the bank
+        instead — about a thousand tokens of people, places and pets, just over the provider's
+        cache minimum, rather than the bank's thousands of preferences and rules; one extraction
+        call per bank version."""
+        bank = self._read_memory()
+        if backfill:
+            return PhotoContext.briefing(bank, self._get_llm())
+        return bank or NO_MEMORY
 
-    def _photo_prompt(self, date_str: str, location: str, albums: str, persons: str,
-                      photo_type: str) -> tuple[str, str]:
-        """(system, user) for one still; the per-photo fields are all in the user half."""
-        user = ANALYSIS_PROMPT_USER.format(
+    def _photo_system_prompt(self, backfill: bool = False) -> str:
+        """The part of a still's prompt that is the same for every photo: the instructions and the
+        family context. Identical text from photo to photo is what a provider's prefix or explicit
+        cache keys on, so nothing per-photo may go in here."""
+        return ANALYSIS_PROMPT_SYSTEM.format(current_memory=self._escape_braces(self._family_context(backfill)))
+
+    def _photo_user_prompt(self, date_str: str, location: str, albums: str, persons: str, photo_type: str) -> str:
+        """The user half of a still's prompt: every per-photo field is here."""
+        return ANALYSIS_PROMPT_USER.format(
             date=date_str,
             location=self._escape_braces(location or "unknown"),
             albums=self._escape_braces(albums or "none"),
             persons=self._escape_braces(persons or "none"),
             photo_type=photo_type,
         )
-        return self._photo_system_prompt(), user
+
+    def _photo_prompt(self, date_str: str, location: str, albums: str, persons: str,
+                      photo_type: str, backfill: bool = False) -> tuple[str, str]:
+        """(system, user) for one still."""
+        return self._photo_system_prompt(backfill), self._photo_user_prompt(date_str, location, albums, persons, photo_type)
 
     def _analyze_with_llm(self, jpeg_bytes: bytes, date_str: str, location: str,
-                          albums: str, persons: str, photo_type: str) -> Optional[dict]:
-        system, user = self._photo_prompt(date_str, location, albums, persons, photo_type)
+                          albums: str, persons: str, photo_type: str, backfill: bool = False) -> Optional[dict]:
+        system, user = self._photo_prompt(date_str, location, albums, persons, photo_type, backfill)
         llm = self._get_llm()
 
         for attempt in range(2):

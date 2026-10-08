@@ -259,8 +259,9 @@ class PhotosIntegration(Integration, Feed):
                 num_videos = sum(1 for r in todo if r["kind"] == "video")
                 info(f"Photos: {len(todo) - num_videos} photo(s) and {num_videos} video(s) to index"
                      + (" (catching up)" if backfill else ""))
-                # The catch-up is the work nobody waits for: its stills go through the batch API.
-                processor.process_rows(todo, batched=backfill)
+                # The catch-up is the work nobody waits for: its prompt carries the family briefing
+                # instead of the bank, and its stills may go through the batch API.
+                processor.process_rows(todo, backfill=backfill)
                 refused = processor.refused_last_run()
             else:
                 trace(f"Photos: {len(rows)} asset(s) after the cursor, all indexed or awaiting iCloud")
