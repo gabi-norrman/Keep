@@ -857,7 +857,8 @@ class TestGetICloudDevices:
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
     def test_happy_path_returns_device_list(self, mock_pyicloud):
         mock_device = Mock()
-        mock_device.data = {"baUUID": "uuid1", "name": "iPhone", "deviceDisplayName": "iPhone 15", "deviceClass": "iPhone"}
+        mock_device.data = {"id": "fmip-1", "baUUID": "uuid1", "name": "iPhone",
+                            "deviceDisplayName": "iPhone 15", "deviceClass": "iPhone"}
         mock_service = Mock()
         mock_service.requires_2fa = False
         mock_service.devices = [mock_device]
@@ -867,7 +868,7 @@ class TestGetICloudDevices:
         devices = api.get_icloud_devices()
 
         assert len(devices) == 1
-        assert devices[0]["id"] == "uuid1"
+        assert devices[0]["id"] == "fmip-1", "the listing shows Find My's id, the one config entries should hold"
         assert devices[0]["name"] == "iPhone"
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
@@ -952,16 +953,50 @@ class TestPlaySound:
         assert api._api is None
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
-    def test_device_not_found_raises_with_available_names(self, mock_pyicloud):
+    def test_device_not_found_raises_with_available_names_and_models(self, mock_pyicloud):
+        """2026-10-08: a phone whose baUUID went blank was listed by name only, so the error
+        hid that the row was there — the model tells the rows apart."""
         other_device = self._make_device("other-uuid", "MacBook")
+        other_device.data["deviceDisplayName"] = "MacBook Pro"
         mock_service = Mock()
         mock_service.requires_2fa = False
         mock_service.devices = [other_device]
         mock_pyicloud.return_value = mock_service
 
         api = iCloudAPI(config=VALID_CONFIG)
-        with pytest.raises(iCloudAPIError, match="not found in iCloud"):
+        with pytest.raises(iCloudAPIError, match="not found in iCloud.*MacBook \\(MacBook Pro"):
             api.play_sound("iPhone")
+
+    @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
+    def test_device_is_found_by_find_my_id_when_its_bauuid_is_blank(self, mock_pyicloud):
+        """2026-10-08: a phone re-enrolled in Find My kept its record but lost its baUUID."""
+        device = Mock()
+        device.data = {"id": "device-1-uuid", "baUUID": "", "name": "iPhone"}
+        device.play_sound = Mock()
+        mock_service = Mock()
+        mock_service.requires_2fa = False
+        mock_service.devices = [device]
+        mock_pyicloud.return_value = mock_service
+
+        api = iCloudAPI(config=VALID_CONFIG)
+        api.play_sound("iPhone")
+        device.play_sound.assert_called_once()
+
+    @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
+    def test_an_entry_holding_the_old_bauuid_still_matches(self, mock_pyicloud):
+        device = Mock()
+        device.data = {"id": "fmip-long-id", "baUUID": "device-1-uuid", "name": "iPhone"}
+        device.play_sound = Mock()
+        blank = Mock()
+        blank.data = {"id": "fmip-other", "baUUID": "", "name": "AirPods"}
+        mock_service = Mock()
+        mock_service.requires_2fa = False
+        mock_service.devices = [blank, device]
+        mock_pyicloud.return_value = mock_service
+
+        api = iCloudAPI(config=VALID_CONFIG)
+        api.play_sound("iPhone")
+        device.play_sound.assert_called_once()
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
     def test_device_list_reauth_retries_successfully(self, mock_pyicloud):
@@ -1919,9 +1954,9 @@ class TestBrief:
         assert len(out) < 100
 
 
-def _seen(name, uuid, model="iPhone 15"):
+def _seen(name, uuid, model="iPhone 15", ba_uuid=""):
     device = Mock()
-    device.data = {"baUUID": uuid, "name": name, "deviceDisplayName": model, "deviceClass": "iPhone"}
+    device.data = {"id": uuid, "baUUID": ba_uuid, "name": name, "deviceDisplayName": model, "deviceClass": "iPhone"}
     return device
 
 
@@ -1940,6 +1975,11 @@ class TestDeviceListing:
         devices = api.get_icloud_devices()
         assert [(d["name"], d["configured_as"], d["slot"]) for d in devices] == \
             [("Dad's iPhone", "dad", 0), ("Anna's iPhone", None, None)]
+
+    def test_listing_marks_an_entry_configured_by_the_old_bauuid(self, api):
+        api._api.devices = [_seen("Dad's iPhone", "fmip-dad", ba_uuid="uuid-dad")]
+        devices = api.get_icloud_devices()
+        assert [(d["id"], d["configured_as"]) for d in devices] == [("fmip-dad", "dad")]
 
     def test_listing_survives_a_broken_devices_entry(self):
         """A half-written entry (id set, display_name not yet) must not hide the listing the

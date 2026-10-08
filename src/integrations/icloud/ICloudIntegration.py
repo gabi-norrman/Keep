@@ -138,12 +138,18 @@ class iCloudAuthenticationError(iCloudAPIError):
 
 @dataclass
 class iCloudDeviceSpec:
-    id: str  # baUUID from iCloud
+    id: str  # Find My's `id` (what pyicloud keys devices on); older entries hold the baUUID
     display_name: str  # Human-friendly name for voice commands
 
     def label(self) -> str:
         """Return the best label to use for human facing messages."""
         return self.display_name
+
+    def matches(self, data: Dict[str, Any]) -> bool:
+        """Whether a Find My record is this device. The record's `id` is the identity; the
+        baUUID is accepted for entries written before 2026-10, when a phone re-enrolled in
+        Find My showed the field can go blank while the record itself stays."""
+        return self.id in (data.get("id"), data.get("baUUID"))
 
 
 class ICloudIntegration(Integration):
@@ -825,21 +831,21 @@ class ICloudIntegration(Integration):
         try:
             self._ensure_authenticated()
             if self._api and not self.requires_2fa():
-                configured = {spec.id: (i, spec.display_name) for i, spec in enumerate(self._device_specs)}
+                specs = self._device_specs
                 devices = []
                 for device in self._api.devices:
                     data = device.data
-                    device_id = data.get("baUUID", "")
-                    slot, display_name = configured.get(device_id, (None, None))
+                    slot, display_name = next(((i, spec.display_name) for i, spec in enumerate(specs)
+                                               if spec.matches(data)), (None, None))
                     devices.append({
-                        "id": device_id,
+                        "id": data.get("id", ""),
                         "name": data.get("name", "Unknown"),
                         "model": data.get("deviceDisplayName", ""),
                         "class": data.get("deviceClass", ""),
                         "configured_as": display_name,
                         "slot": slot,
                     })
-                fine(f"iCloud: account sees {len(devices)} device(s), {len(configured)} configured")
+                fine(f"iCloud: account sees {len(devices)} device(s), {len(specs)} configured")
                 return devices
         except Exception as e:
             error(f"Failed to get iCloud devices: {_brief(e)}")
@@ -889,14 +895,12 @@ class ICloudIntegration(Integration):
             raise iCloudAuthenticationError(self.SESSION_EXPIRED_2FA_MESSAGE)
 
     def _find_target_device(self, spec: iCloudDeviceSpec):
-        target_device = None
-        for device in self._api.devices:
-            if device.data.get("baUUID") == spec.id:
-                target_device = device
-                break
-
+        target_device = next((d for d in self._api.devices if spec.matches(d.data)), None)
         if not target_device:
-            available = [f"{d.data.get('name')} ({d.data.get('baUUID', '')[:8]}...)" for d in self._api.devices]
+            available = [f"{d.data.get('name')} ({d.data.get('deviceDisplayName') or d.data.get('deviceClass') or '?'}, "
+                         f"id {(d.data.get('id') or '')[:8]}…)" for d in self._api.devices]
+            info(f"iCloud: configured device '{spec.label()}' (id {spec.id[:8]}…) is not among the "
+                 f"{len(available)} the account sees — its id may have changed; icloud_devices() shows the current ones")
             raise iCloudAPIError(
                 f"Device '{spec.label()}' (id={spec.id}) not found in iCloud. Available: {', '.join(available)}"
             )

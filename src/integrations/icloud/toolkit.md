@@ -26,7 +26,9 @@ configured, or a name is missing: `icloud_devices()` lists every device the iClo
 whether it is configured, and the index the next entry gets — then ask the user which device belongs to whom and what
 to call it, and write each entry with `config_set("icloud.devices[N].id", "<id>")` and
 `config_set("icloud.devices[N].display_name", "<name>")`, then `restart_integration("iCloud")`. A 2FA prompt or an
-empty listing means the iCloud login is not complete — that is finished in the console's iCloud tab.
+empty listing means the iCloud login is not complete — that is finished in the console's iCloud tab. When
+`find_phone` / `locate_user` report a configured device as not found, its id has changed (a phone re-enrolled in
+Find My): run `icloud_devices()` and point the entry at the new id.
 
 `config_set` and `restart_integration` are in the `setup` toolkit.
 
