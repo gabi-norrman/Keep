@@ -612,18 +612,18 @@ class GeminiLLM(AbstractLLM):
             )
         contents = [{'role': 'user', 'parts': [video_part, {'text': user_message}]}]
 
-        # A clip is bulk work like an indexed still: its system instruction (the indexer's family
-        # context and instructions, the same for every clip) rides in the explicit cache.
         system_instruction = self.strip_cache_markers(system_message)
+        generation_config = types.GenerateContentConfig(system_instruction=system_instruction) \
+            if system_instruction else None
 
         info(f"Gemini: sending video ({size_mb:.1f} MB, {mime_type}"
              f"{f', {fps} fps' if fps else ''}, {'Files API' if uploaded else 'inline'}) to {self.model}")
         try:
-            reason = _outage.active(background=True)
-            if reason:
-                raise LLMUnavailable(reason)    # before the cache call: no cache for a key that is refused
-            cache = self._cached_system(system_instruction, SYSTEM_CACHE_TTL_SECONDS)
-            response = self._generate_with_cache(contents, system_instruction, cache, background=True)
+            response = self._request(lambda: self.client.models.generate_content(
+                model=self.model,
+                contents=contents,
+                config=generation_config
+            ), background=True)
         finally:
             if uploaded is not None:
                 self._delete_file(uploaded)

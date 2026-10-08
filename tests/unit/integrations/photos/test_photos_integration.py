@@ -4,7 +4,6 @@ import sys
 import threading
 import time
 import types
-from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 
 import pytest
@@ -519,7 +518,7 @@ class TestPhotoProcessorUuidDedup:
 
         original_inner = PhotoProcessor._process_one_inner
 
-        def slow_inner(self_ref, r, backfill=False):
+        def slow_inner(self_ref, r):
             llm_started.set()
             llm_proceed.wait(timeout=5)
             return original_inner(self_ref, r)
@@ -617,7 +616,7 @@ class TestPhotoProcessorUuidDedup:
 
         original_inner = PhotoProcessor._process_one_inner
 
-        def barrier_inner(self_ref, r, backfill=False):
+        def barrier_inner(self_ref, r):
             both_running.wait()
             return False
 
@@ -982,7 +981,7 @@ class TestPhotoProcessorCorruptImage:
                "kind_subtype": 0, "cloud_master_guid": "CloudGuid999",
                "cloud_asset_guid": None, "library_scope": 0}
 
-        processor._pending_icloud["CORRUPT-RETRY"] = (row, 5, False)
+        processor._pending_icloud["CORRUPT-RETRY"] = (row, 5)
 
         with patch.object(processor, '_process_one', side_effect=CorruptImageError("truncated")):
             processor._retry_icloud_pending()
@@ -1001,7 +1000,7 @@ class TestPhotoProcessorRetryExhaustion:
                "kind_subtype": 0, "cloud_master_guid": "CloudGuid123",
                "cloud_asset_guid": "EXHAUST-GUID"}
 
-        processor._pending_icloud["EXHAUST-UUID"] = (row, MAX_ICLOUD_RETRIES, False)
+        processor._pending_icloud["EXHAUST-UUID"] = (row, MAX_ICLOUD_RETRIES)
 
         with patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
             mock_db.return_value.photo_exists.return_value = False
@@ -1023,7 +1022,7 @@ class TestPhotoProcessorRetryExhaustion:
                "creation_ts": 1700000000.0, "latitude": None, "longitude": None,
                "kind": "video", "duration": 12.5, "kind_subtype": 0,
                "cloud_master_guid": "CloudGuid789", "cloud_asset_guid": "EXHAUST-VID-GUID"}
-        processor._pending_icloud["EXHAUST-VID"] = (row, MAX_ICLOUD_RETRIES, False)
+        processor._pending_icloud["EXHAUST-VID"] = (row, MAX_ICLOUD_RETRIES)
 
         with patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
             mock_db.return_value.photo_exists.return_value = False
@@ -1040,7 +1039,7 @@ class TestPhotoProcessorRetryExhaustion:
                "kind_subtype": 0, "cloud_master_guid": "CloudGuid456",
                "cloud_asset_guid": None}
 
-        processor._pending_icloud["EXISTS-UUID"] = (row, MAX_ICLOUD_RETRIES, False)
+        processor._pending_icloud["EXISTS-UUID"] = (row, MAX_ICLOUD_RETRIES)
 
         with patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
             mock_db.return_value.photo_exists.return_value = True
@@ -1057,7 +1056,7 @@ class TestPhotoProcessorRetryExhaustion:
                "creation_ts": 1700000000.0, "latitude": None, "longitude": None,
                "kind_subtype": 0}
 
-        processor._pending_icloud["RETRY-UUID"] = (row, MAX_ICLOUD_RETRIES - 1, False)
+        processor._pending_icloud["RETRY-UUID"] = (row, MAX_ICLOUD_RETRIES - 1)
 
         with patch.object(processor, '_process_one', return_value=True):
             processor._retry_icloud_pending()
@@ -1074,38 +1073,23 @@ class TestPhotoProcessorRetryExhaustion:
         processor = PhotoProcessor()
         row = {"uuid": "REFUSED-UUID", "filename": "IMG.heic", "directory": "sub",
                "creation_ts": 1700000000.0, "latitude": None, "longitude": None, "kind_subtype": 0}
-        processor._pending_icloud["REFUSED-UUID"] = (row, 2, False)
+        processor._pending_icloud["REFUSED-UUID"] = (row, 2)
         with patch.object(processor, 'provider_unavailable', return_value=None), \
              patch.object(processor, '_process_one', side_effect=LLMUnavailable("out of credits")):
             processor._retry_icloud_pending()
-        assert processor._pending_icloud["REFUSED-UUID"] == (row, 2, False)
+        assert processor._pending_icloud["REFUSED-UUID"] == (row, 2)
 
     @pytest.mark.unit
     def test_nothing_is_downloaded_while_the_backend_refuses(self):
         from integrations.photos.PhotoProcessor import PhotoProcessor
         processor = PhotoProcessor()
         row = {"uuid": "WAIT-UUID", "filename": "IMG.heic"}
-        processor._pending_icloud["WAIT-UUID"] = (row, 1, False)
+        processor._pending_icloud["WAIT-UUID"] = (row, 1)
         with patch.object(processor, 'provider_unavailable', return_value="rate limited"), \
              patch.object(processor, '_process_one') as process_one:
             processor._retry_icloud_pending()
         process_one.assert_not_called()
-        assert processor._pending_icloud["WAIT-UUID"] == (row, 1, False)
-
-    @pytest.mark.unit
-    def test_a_backfilled_asset_keeps_its_briefing_through_the_icloud_retry(self):
-        """The retry set remembers which fetch an asset came from: a backfilled photo whose
-        original was still downloading is indexed with the briefing when it comes round, not
-        with the live feed's whole bank, and keeps that through a failed round."""
-        from integrations.photos.PhotoProcessor import PhotoProcessor
-        processor = PhotoProcessor()
-        row = {"uuid": "LATE-UUID", "filename": "IMG.heic"}
-        processor._pending_icloud["LATE-UUID"] = (row, 0, True)
-        with patch.object(processor, 'provider_unavailable', return_value=None), \
-             patch.object(processor, '_process_one', return_value=True) as process_one:
-            processor._retry_icloud_pending()
-        process_one.assert_called_once_with(row, True)
-        assert processor._pending_icloud["LATE-UUID"] == (row, 1, True)
+        assert processor._pending_icloud["WAIT-UUID"] == (row, 1)
 
 
 class TestPhotoProcessorLlmFailure:
@@ -1510,7 +1494,7 @@ class TestPhotosFeed:
         integration, processor = self._opened()
         order = []
         processor._retry_icloud_pending.side_effect = lambda: order.append("retry")
-        processor.process_rows.side_effect = lambda rows, backfill: order.append("process")
+        processor.process_rows.side_effect = lambda rows, batched: order.append("process")
         rows = [self._row("done", 100.0, "G-DONE"), self._row("new", 200.0, "G-NEW"),
                 self._row("uploading", time.time() - 978307200 - 60, None)]
 
@@ -1523,7 +1507,7 @@ class TestPhotosFeed:
         assert order == ["retry", "process"]
         handed = processor.process_rows.call_args.args[0]
         assert [r["uuid"] for r in handed] == ["new"]
-        assert processor.process_rows.call_args.kwargs["backfill"] is True, "the catch-up is the batch API's work"
+        assert processor.process_rows.call_args.kwargs["batched"] is True, "the catch-up is the batch API's work"
         assert batch.exhausted is True
         assert batch.entries == []
 
@@ -1536,7 +1520,7 @@ class TestPhotosFeed:
         integration, processor = self._opened()
         entries = [FeedEntry(1_700_000_000.0, "New photo taken: a barn"),
                    FeedEntry(1_700_000_100.0, "New photo taken: a boat")]
-        processor.process_rows.side_effect = lambda rows, backfill: [integration._queue_entry(e) for e in entries]
+        processor.process_rows.side_effect = lambda rows, batched: [integration._queue_entry(e) for e in entries]
         rows = [self._row("a", 100.0, "G-A"), self._row("b", 200.0, "G-B")]
 
         with patch.object(PhotosIntegration, '_assets_after', return_value=rows), \
@@ -1545,7 +1529,7 @@ class TestPhotosFeed:
             batch = integration.fetch("0", backfill=False)
             second = integration.fetch("200.0", backfill=False)
 
-        assert all(c.kwargs["backfill"] is False for c in processor.process_rows.call_args_list), \
+        assert all(c.kwargs["batched"] is False for c in processor.process_rows.call_args_list), \
             "a live fetch never waits on a batch job: new photos are described within seconds"
         assert batch.entries == entries
         assert batch.cursor == "200.0"
@@ -2355,7 +2339,7 @@ class TestPhotoProcessorBulkVideoThrottle:
         lock = threading.Lock()
         both_slots_taken = threading.Barrier(2)
 
-        def fake_process(row, backfill=False):
+        def fake_process(row):
             with lock:
                 in_flight.append(row["uuid"])
                 peak[0] = max(peak[0], len(in_flight))
@@ -2523,7 +2507,7 @@ class TestProviderRefusal:
         processor = module.PhotoProcessor()
         processor._llm = Mock(unavailable=Mock(return_value="out of credits"))
         with patch.object(processor, '_process_one') as process_one:
-            succeeded, failed = processor.process_rows([self._row()], backfill=True)
+            succeeded, failed = processor.process_rows([self._row()], batched=True)
         process_one.assert_not_called()
         assert succeeded == [] and failed == ["p.heic"]
         assert processor.refused_last_run() == ["U1"]
@@ -2538,7 +2522,7 @@ class TestProviderRefusal:
         processor._llm = Mock(is_local=Mock(return_value=False), unavailable=Mock(return_value=None))
         refused_row = dict(self._row(), uuid="U2", filename="q.heic", cloud_asset_guid="G2")
 
-        def process_one(row, backfill=False):
+        def process_one(row):
             if row["uuid"] == "U2":
                 raise LLMUnavailable("rate limited")
             return False
@@ -2687,39 +2671,6 @@ class TestPhotosFeedProviderRefusal:
         assert video_a["system_message"] == video_b["system_message"]
         assert "Beach" in video_b["user_message"] and "slow-motion" in video_b["user_message"]
 
-    def test_the_backfill_carries_the_briefing_and_the_live_feed_the_bank(self):
-        """The bank is thousands of tokens of preferences and rules; the backfill, which sends
-        thousands of assets, carries the extract PhotoContext makes once per bank version, while
-        the live feed's few assets a day get the bank itself."""
-        from integrations.photos.PhotoProcessor import PhotoProcessor
-        from integrations.photos.PhotoContext import PhotoContext, EXTRACT_PROMPT
-        reply = '{"short_description":"a","detailed_description":"b","pretty_score":1,"family_importance_score":2}'
-        bank = "Marcus likes his coffee black. The dog is called Rufus. Never book meetings before nine."
-        llm = Mock()
-        llm.think.side_effect = lambda system_message, user_message, **kw: \
-            "- the dog Rufus" if system_message == EXTRACT_PROMPT else reply
-        llm.think_with_video.return_value = reply
-        processor = PhotoProcessor()
-        processor._llm = llm
-        PhotoContext._memo = None
-        with patch.object(PhotoProcessor, '_read_memory', return_value=bank), \
-             patch.object(PhotoContext, '_read_cached', return_value=None), \
-             patch.object(PhotoContext, 'CACHE_PATH', Path("/nonexistent/photo_context.json")):
-            processor._analyze_with_llm(b"jpeg", "2026-01-01 10:00", "Home", "", "", "photo", backfill=True)
-            processor._analyze_with_llm(b"jpeg", "2026-01-02 10:00", "Home", "", "", "photo", backfill=True)
-            processor._analyze_with_llm(b"jpeg", "2026-01-03 10:00", "Home", "", "", "photo")
-            processor._analyze_video_with_llm(b"mp4", "video/mp4", "2026-01-01 10:00", "Home", "", "", "video", 12.0,
-                                              backfill=True)
-            processor._analyze_video_with_llm(b"mp4", "video/mp4", "2026-01-02 10:00", "Home", "", "", "video", 12.0)
-        PhotoContext._memo = None
-        extractions = [c for c in llm.think.call_args_list if c.kwargs["system_message"] == EXTRACT_PROMPT]
-        assert len(extractions) == 1 and extractions[0].kwargs["user_message"] == bank
-        photos = [c.kwargs["system_message"] for c in llm.think.call_args_list if c not in extractions]
-        videos = [c.kwargs["system_message"] for c in llm.think_with_video.call_args_list]
-        backfilled, live = [photos[0], photos[1], videos[0]], [photos[2], videos[1]]
-        assert all("Rufus" in s and "coffee" not in s for s in backfilled)
-        assert all("coffee" in s for s in live), "the live feed still sends the bank itself"
-
 
 REPLY = '{"short_description":"a barn","detailed_description":"red barn","pretty_score":40,"family_importance_score":10}'
 
@@ -2757,11 +2708,11 @@ class TestBatchedBackfill:
              patch.object(module.PhotoProcessor, '_batch_enabled', return_value=True), \
              patch.object(processor, '_photo_system_prompt', return_value="SYSTEM"), \
              patch.object(processor, '_store_analysis', return_value=1) as store, \
-             patch.object(processor, '_process_one', side_effect=lambda row, backfill=False: live.append(row["uuid"]) and False), \
+             patch.object(processor, '_process_one', side_effect=lambda row: live.append(row["uuid"]) and False), \
              patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
             mock_db.return_value.photo_exists.return_value = True
             mock_db.return_value.get_photo_description.return_value = "desc"
-            succeeded, failed = processor.process_rows(rows, backfill=True)
+            succeeded, failed = processor.process_rows(rows, batched=True)
 
         call = llm.think_batched_with_images.call_args
         assert call.args[0] == "SYSTEM"
@@ -2781,11 +2732,11 @@ class TestBatchedBackfill:
         with patch.object(processor, '_prepare_photo', side_effect=lambda row, db: (self._prepared(module, row), False)), \
              patch.object(module.PhotoProcessor, '_batch_enabled', return_value=True), \
              patch.object(processor, '_photo_system_prompt', return_value="SYSTEM"), \
-             patch.object(processor, '_process_one', side_effect=lambda row, backfill=False: live.append(row["uuid"]) and False), \
+             patch.object(processor, '_process_one', side_effect=lambda row: live.append(row["uuid"]) and False), \
              patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
             mock_db.return_value.photo_exists.return_value = True
             mock_db.return_value.get_photo_description.return_value = "desc"
-            processor.process_rows(rows, backfill=True)
+            processor.process_rows(rows, batched=True)
         assert sorted(live) == ["U0", "U1"]
 
     def test_a_still_waiting_on_icloud_is_settled_by_the_prepare_step_not_batched(self):
@@ -2806,7 +2757,7 @@ class TestBatchedBackfill:
              patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
             mock_db.return_value.photo_exists.return_value = True
             mock_db.return_value.get_photo_description.return_value = "desc"
-            processor.process_rows(rows, backfill=True)
+            processor.process_rows(rows, batched=True)
 
         assert [u for u, _ in llm.think_batched_with_images.call_args.args[1]] == ["photo U1"]
         process_one.assert_not_called()
@@ -2820,8 +2771,8 @@ class TestBatchedBackfill:
              patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
             mock_db.return_value.photo_exists.return_value = True
             mock_db.return_value.get_photo_description.return_value = "desc"
-            processor.process_rows(self._rows(2, kind="video"), backfill=True)
-            processor.process_rows(self._rows(2), backfill=False)
+            processor.process_rows(self._rows(2, kind="video"), batched=True)
+            processor.process_rows(self._rows(2), batched=False)
         llm.think_batched_with_images.assert_not_called()
 
     @pytest.mark.parametrize("local, enabled", [(True, True), (False, False)])
@@ -2834,5 +2785,5 @@ class TestBatchedBackfill:
              patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
             mock_db.return_value.photo_exists.return_value = True
             mock_db.return_value.get_photo_description.return_value = "desc"
-            processor.process_rows(self._rows(2), backfill=True)
+            processor.process_rows(self._rows(2), batched=True)
         llm.think_batched_with_images.assert_not_called()

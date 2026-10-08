@@ -1222,9 +1222,7 @@ class TestGeminiLLMVideo:
         mock_types.Blob.assert_called_once_with(data=b"vid", mime_type="video/quicktime")
         mock_types.Part.assert_called_once_with(inline_data=mock_types.Blob.return_value, video_metadata=None)
         mock_types.VideoMetadata.assert_not_called()
-        mock_types.CreateCachedContentConfig.assert_called_once()
-        assert mock_types.CreateCachedContentConfig.call_args.kwargs["system_instruction"] == "system"
-        mock_types.GenerateContentConfig.assert_called_once_with(cached_content=llm.client.caches.create.return_value.name)
+        mock_types.GenerateContentConfig.assert_called_once_with(system_instruction="system")
         call = llm.client.models.generate_content.call_args[1]
         assert call["model"] == "gemini-video"
         assert call["contents"] == [{'role': 'user', 'parts': ["video_part", {'text': "describe"}]}]
@@ -1456,30 +1454,6 @@ class TestGeminiSystemCache:
         assert mock_types.CreateCachedContentConfig.call_args.kwargs["system_instruction"] == "BANK"
         configs = [c.kwargs for c in mock_types.GenerateContentConfig.call_args_list]
         assert len(configs) == 3 and all(c == {"cached_content": "cachedContents/abc"} for c in configs)
-
-    @patch('assistant.llm.GeminiLLM.config')
-    @patch('assistant.llm.GeminiLLM.types')
-    def test_a_clip_rides_the_same_cache_as_the_stills(self, mock_types, mock_config):
-        """Every clip is bulk work: its system instruction goes to the explicit cache, and a
-        still with the same instruction shares the entry instead of making a second one."""
-        llm = self._llm()
-        llm.think_with_video("BANK", "describe", b"vid", "video/mp4")
-        llm.think(system_message="BANK", user_message="describe", images=[b"img"], background=True)
-        llm.client.caches.create.assert_called_once()
-        configs = [c.kwargs for c in mock_types.GenerateContentConfig.call_args_list]
-        assert len(configs) == 2 and all(c == {"cached_content": "cachedContents/abc"} for c in configs)
-
-    @patch('assistant.llm.GeminiLLM.config')
-    @patch('assistant.llm.GeminiLLM.types')
-    def test_a_clip_is_refused_during_an_outage_before_any_cache_is_made(self, mock_types, mock_config):
-        from assistant.llm import GeminiLLM as module
-        from assistant.llm.AbstractLLM import LLMUnavailable
-        llm = self._llm()
-        module._outage.note(RuntimeError("429 RESOURCE_EXHAUSTED"), "gemini-3.8-flash")
-        with pytest.raises(LLMUnavailable):
-            llm.think_with_video("BANK", "describe", b"vid", "video/mp4")
-        llm.client.caches.create.assert_not_called()
-        llm.client.models.generate_content.assert_not_called()
 
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
