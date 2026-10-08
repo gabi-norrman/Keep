@@ -17,8 +17,8 @@ class MusicZonesSectionGenerator(PromptSectionGenerator):
     """
     key = "music_zones"
     heading = "## Sonos zones"
-    intro = ("The zones music can play in. If no zone/room is specified assume the user means the Kitchen, unless "
-             "previous context suggests otherwise:")
+    intro = ("The zones music can play in. A request that names no zone/room means the room it came from (the "
+             "location in its header), unless previous context suggests otherwise:")
 
     UPDATE_INTERVAL = 3
 

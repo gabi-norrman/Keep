@@ -6,8 +6,6 @@ when you need the current state.
 When the house runs on several home automation systems, a name that exists in more than one carries the system's name
 as a last bracket, for example `Lamp [Kök] [Home Assistant]` — keep it, it says which system to send the command to.
 
-"Spots" means spotlights and "Takspots" are ceiling spotlights. "Takspots" are ceiling lights.
-
 ### Light control commands
 To manipulate lights use the following commands (use this syntax exactly): 
 
@@ -35,8 +33,6 @@ commands keep the names exactly as original, including the square brackets with 
 any part of the light or action parameter names.
 
 NEVER user `turn_off` or `turn_on` to run actions, you must always use `execute` for actions. 
-
-The pool cover is normally closed, and you have no way of checking that.
 
 ### Home automation logs
 To fetch the home automation system's latest error logs use:
