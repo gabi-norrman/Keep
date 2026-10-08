@@ -22,7 +22,7 @@ FILE_PROCESSING_TIMEOUT = 120
 FILE_POLL_INTERVAL = 1.0
 
 # Explicit context cache of a bulk request's system instruction (the photo indexer's memory bank
-# and instructions, 2–7k tokens that are identical from photo to photo). Cached tokens are billed
+# and instructions, 2–7k tokens that are identical from photo to photo and clip to clip). Cached tokens are billed
 # at a tenth of the input price; storage is $0.50 per million tokens per hour, so a cache is kept
 # only as long as requests keep arriving: every use that finds it in the last half of its life
 # extends it by one more TTL, and a trickle lets it lapse. A batch job can take long to start,
@@ -612,18 +612,20 @@ class GeminiLLM(AbstractLLM):
             )
         contents = [{'role': 'user', 'parts': [video_part, {'text': user_message}]}]
 
+        # The photo indexer is the one caller, and its system instruction (the video analyst's
+        # instructions and the memory bank) is the same from clip to clip: serve it from the same
+        # explicit cache the stills use, so a clip pays full price for its frames only.
         system_instruction = self.strip_cache_markers(system_message)
-        generation_config = types.GenerateContentConfig(system_instruction=system_instruction) \
-            if system_instruction else None
+        reason = _outage.active(background=True)
+        if reason:
+            raise LLMUnavailable(reason)    # before the cache call: no cache for a key that is refused
+        cache = self._cached_system(system_instruction, SYSTEM_CACHE_TTL_SECONDS)
 
         info(f"Gemini: sending video ({size_mb:.1f} MB, {mime_type}"
-             f"{f', {fps} fps' if fps else ''}, {'Files API' if uploaded else 'inline'}) to {self.model}")
+             f"{f', {fps} fps' if fps else ''}, {'Files API' if uploaded else 'inline'}"
+             f"{f', system instruction from {cache.name}' if cache else ''}) to {self.model}")
         try:
-            response = self._request(lambda: self.client.models.generate_content(
-                model=self.model,
-                contents=contents,
-                config=generation_config
-            ), background=True)
+            response = self._generate_with_cache(contents, system_instruction, cache, background=True)
         finally:
             if uploaded is not None:
                 self._delete_file(uploaded)

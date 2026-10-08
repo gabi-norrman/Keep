@@ -1206,6 +1206,13 @@ class TestGeminiLLMImageConversion:
 # ===========================================================================
 
 class TestGeminiLLMVideo:
+    @pytest.fixture(autouse=True)
+    def _fresh_outage(self):
+        from assistant.llm import GeminiLLM as module
+        module._outage.clear()
+        yield
+        module._outage.clear()
+
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
     def test_think_with_video_sends_inline_clip_before_text(self, mock_types, mock_config):
@@ -1222,10 +1229,49 @@ class TestGeminiLLMVideo:
         mock_types.Blob.assert_called_once_with(data=b"vid", mime_type="video/quicktime")
         mock_types.Part.assert_called_once_with(inline_data=mock_types.Blob.return_value, video_metadata=None)
         mock_types.VideoMetadata.assert_not_called()
-        mock_types.GenerateContentConfig.assert_called_once_with(system_instruction="system")
+        assert mock_types.CreateCachedContentConfig.call_args.kwargs["system_instruction"] == "system"
         call = llm.client.models.generate_content.call_args[1]
         assert call["model"] == "gemini-video"
         assert call["contents"] == [{'role': 'user', 'parts': ["video_part", {'text': "describe"}]}]
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_clips_and_stills_with_the_same_instruction_share_one_cache(self, mock_types, mock_config):
+        """The indexer's system instruction is the same from clip to clip, and a clip must not pay
+        full price for it when the stills already have it cached."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.GeminiLLM import GeminiLLM
+        llm = GeminiLLM(model="gemini-video")
+        llm.client = Mock()
+        llm.client.caches.create.return_value = Mock(usage_metadata=Mock(total_token_count=1868))
+        llm.client.caches.create.return_value.name = "cachedContents/abc"
+        llm.client.models.generate_content.return_value = Mock(text="{}", usage_metadata=None)
+
+        llm.think(system_message="BANK", user_message="d", images=[b"img"], background=True)
+        llm.think_with_video("BANK", "describe", b"vid", "video/mp4")
+        llm.think_with_video("BANK", "describe", b"vid2", "video/mp4")
+
+        llm.client.caches.create.assert_called_once()
+        configs = [c.kwargs for c in mock_types.GenerateContentConfig.call_args_list]
+        assert configs == [{"cached_content": "cachedContents/abc"}] * 3
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_a_dropped_cache_resends_the_clip_inline_and_still_deletes_the_upload(self, mock_types, mock_config):
+        from assistant.llm.GeminiLLM import INLINE_VIDEO_LIMIT
+        llm = self._uploading_llm(mock_config)
+        llm.client.caches.create.return_value = Mock(usage_metadata=Mock(total_token_count=1868))
+        llm.client.caches.create.return_value.name = "cachedContents/abc"
+        llm.client.models.generate_content.side_effect = [
+            RuntimeError("403 PERMISSION_DENIED: CachedContent not found"), Mock(text="ok", usage_metadata=None)]
+
+        assert llm.think_with_video("BANK", "describe", b"v" * (INLINE_VIDEO_LIMIT + 1), "video/mp4") == "ok"
+
+        configs = [c.kwargs for c in mock_types.GenerateContentConfig.call_args_list]
+        assert configs == [{"cached_content": "cachedContents/abc"}, {"system_instruction": "BANK"}]
+        llm.client.files.upload.assert_called_once(), "the clip is not uploaded twice for the resend"
+        llm.client.files.delete.assert_called_once_with(name="files/abc")
+        assert llm._system_caches == {}
 
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
