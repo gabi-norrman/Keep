@@ -154,6 +154,21 @@ class GeminiLLM(AbstractLLM):
         _outage.clear()
         return result
 
+    def _open_stream(self, fn):
+        """Start a stream inside the outage bookkeeping. generate_content_stream is lazy — nothing
+        reaches Gemini until the first chunk is pulled — so the first `next()` is the call that
+        meets a 402 or 429, or proves Gemini answers; `_request` on the bare generator would clear
+        an outage before any HTTP call and let the stream's own refusal escape unrecorded."""
+        def opened():
+            chunks = iter(fn())
+            return next(chunks, None), chunks
+        first, rest = self._request(opened)
+        if first is None:
+            trace(f"Gemini: {self.model} answered the stream with no chunk at all")
+            return
+        yield first
+        yield from rest
+
     def unavailable(self) -> str | None:
         return _outage.active(background=True)
 
@@ -265,13 +280,13 @@ class GeminiLLM(AbstractLLM):
 
         generation_config = types.GenerateContentConfig(**config_params) if config_params else None
 
-        response = self._request(lambda: self.client.models.generate_content_stream(
+        chunks = self._open_stream(lambda: self.client.models.generate_content_stream(
             model=self.model,
             contents=gemini_messages,
             config=generation_config
         ))
 
-        for chunk in response:
+        for chunk in chunks:
             if chunk.text:
                 yield chunk.text
 

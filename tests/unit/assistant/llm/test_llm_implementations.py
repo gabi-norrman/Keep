@@ -1671,6 +1671,40 @@ class TestGeminiOutage:
 
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
+    def test_a_stream_refused_on_its_first_chunk_records_the_outage_and_raises_unavailable(self, mock_types, mock_config):
+        """generate_content_stream is lazy: the 429 arrives on the first next(), not on the call."""
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        llm = self._llm()
+
+        def refused():
+            raise self.RATE
+            yield    # noqa — a generator that fails on its first chunk
+        llm.client.models.generate_content_stream.return_value = refused()
+        with pytest.raises(LLMUnavailable):
+            list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
+        assert llm.unavailable() and not llm.out_of_credits(), "the stream's 429 backs background work off"
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_a_stream_clears_a_backoff_only_once_a_chunk_arrived(self, mock_types, mock_config):
+        from assistant.llm import GeminiLLM as module
+        llm = self._llm()
+        module._outage.note(self.RATE, "gemini-3.8-flash")
+
+        def broken():
+            raise RuntimeError("connection reset")
+            yield
+        llm.client.models.generate_content_stream.return_value = broken()
+        with pytest.raises(RuntimeError):
+            list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
+        assert llm.unavailable(), "a stream that never produced a chunk proves nothing about Gemini"
+
+        llm.client.models.generate_content_stream.return_value = iter([Mock(text="h"), Mock(text=""), Mock(text="i")])
+        assert "".join(llm.create_streaming_completion([{"role": "user", "content": "hi"}])) == "hi"
+        assert llm.unavailable() is None
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
     def test_a_429_backs_off_background_work_but_lets_a_user_request_through(self, mock_types, mock_config):
         from assistant.llm.AbstractLLM import LLMUnavailable
         llm = self._llm()
