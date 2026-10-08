@@ -358,6 +358,39 @@ class TestApprovals:
         assert hub.resolve_approval(token, "deny", who="bob") is False
         assert hub.pending_approvals() == 0
 
+    def test_asked_only_in_the_chat_the_request_came_from(self, hub, transport):
+        # A family member's Telegram chat must not get the keyboard for a command the owner
+        # ran from the console — the person who asked is the one who answers.
+        console = FakeTransport(owners=["tui"], name="Console", source="Console")
+        hub.register(console)
+        other_telegram_chat = FakeTransport(owners=[222], name="Other", source="TextChat")
+        hub.register(other_telegram_chat)
+        result = {}
+        t = threading.Thread(target=lambda: result.update(
+            d=hub.request_approval("x", timeout=2.0, source="Console", conversation="tui")), daemon=True)
+        t.start()
+        assert wait_until(lambda: any(c[0] == "approval" for c in console.calls))
+        assert transport.calls == [] and other_telegram_chat.calls == []
+        token = next(c[2] for c in console.calls if c[0] == "approval")
+        assert hub.resolve_approval(token, "approve") is True
+        t.join(timeout=2)
+        assert result["d"] == "approve"
+        assert transport.calls == [] and other_telegram_chat.calls == []
+
+    def test_a_request_from_outside_the_chat_layer_asks_every_owner_chat(self, hub, transport):
+        console = FakeTransport(owners=["tui"], name="Console", source="Console")
+        hub.register(console)
+        result = {}
+        t = threading.Thread(target=lambda: result.update(
+            d=hub.request_approval("x", timeout=2.0, source="Voice", conversation=None)), daemon=True)
+        t.start()
+        assert wait_until(lambda: any(c[0] == "approval" for c in console.calls)
+                          and any(c[0] == "approval" for c in transport.calls))
+        token = next(c[2] for c in transport.calls if c[0] == "approval")
+        assert hub.resolve_approval(token, "approve") is True
+        t.join(timeout=2)
+        assert result["d"] == "approve"
+
     def test_deny(self, hub, transport):
         result = {}
         t = threading.Thread(target=lambda: result.update(d=hub.request_approval("x", timeout=2.0)), daemon=True)

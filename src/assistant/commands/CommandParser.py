@@ -11,6 +11,13 @@ class CommandParser:
     # and mangle name: prefixes that are valid syntax in the payload.
     RAW_PARAM_COMMANDS = {"browse_eval"}
 
+    # Commands whose one argument is free prose for another agent. The whole payload is
+    # the argument, verbatim: splitting it on commas handed self_improvement only the
+    # words before the request's first comma (prod, 2026-10-08: "Maciek asked at 10:46 on
+    # Oct 8" was all Claude Code got). Unlike RAW_PARAM_COMMANDS the text is not JS, so
+    # an apostrophe in it must not open a string for the paren matching.
+    FREE_TEXT_COMMANDS = {"self_improvement", "self_analysis"}
+
     # Commands whose arguments carry square brackets as syntax — a setting key's
     # list index (icloud.devices[0].id) or a regex character class ([Cc]omplete,
     # /orders/[0-9]+) — and must not be normalized to parens like the home
@@ -266,7 +273,8 @@ class CommandParser:
         Extract command name and parameters from content.
         Returns ((command_name, params_list), remainder) or (None, None) if not a complete command.
         params_list is a list of cleaned argument strings (one entry per comma-separated parameter).
-        For RAW_PARAM_COMMANDS the list always contains a single element with the verbatim payload.
+        For RAW_PARAM_COMMANDS and FREE_TEXT_COMMANDS the list always contains a single element
+        with the verbatim payload.
         """
         # Strip <code> tags so commands wrapped in them are parsed correctly
         content = self._strip_code_tags(content)
@@ -280,7 +288,7 @@ class CommandParser:
 
         command_name = command_with_params.split('(', 1)[0].lower().strip()
         raw_params = self.extract_parameters(command_with_params)
-        is_raw = command_name in self.RAW_PARAM_COMMANDS
+        is_raw = command_name in self.RAW_PARAM_COMMANDS or command_name in self.FREE_TEXT_COMMANDS
         keep_brackets = command_name in self.KEEP_BRACKETS_COMMANDS
         params = self.split_parameters(raw_params, raw_param_command=is_raw, keep_brackets=keep_brackets)
 

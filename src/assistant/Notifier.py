@@ -58,8 +58,13 @@ class Notifier(Protocol):
         """*thumbnail* is an optional small JPEG poster frame shown before the clip is loaded."""
         ...
 
-    def request_approval(self, title: str, details: str = "", timeout: Optional[float] = None) -> str:
-        """Block until the user answers. Returns "approve", "deny", "timeout" or "unavailable"."""
+    def request_approval(self, title: str, details: str = "", timeout: Optional[float] = None,
+                         source: Optional[str] = None, conversation: Any = None) -> str:
+        """Block until the user answers. Returns "approve", "deny", "timeout" or "unavailable".
+        *source* and *conversation* (the RequestContext's) name the chat the request came
+        from so the question is asked only there — the person who asked for the command is
+        the one who answers for it; without them it is asked everywhere the owner is
+        reachable (a voice request has no chat of its own)."""
         ...
 
     def request_secret(self, title: str, details: str, accept: Callable[[str], str],
@@ -113,7 +118,8 @@ class NullNotifier:
         info(f"no notifier configured — video dropped ({len(video_bytes)} bytes, caption {caption[:80]!r})")
         return False
 
-    def request_approval(self, title: str, details: str = "", timeout: Optional[float] = None) -> str:
+    def request_approval(self, title: str, details: str = "", timeout: Optional[float] = None,
+                         source: Optional[str] = None, conversation: Any = None) -> str:
         info(f"no notifier configured — approval request for {title!r} dropped, answering 'unavailable'")
         return "unavailable"
 

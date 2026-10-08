@@ -3,9 +3,11 @@ process-wide `Notifier` the assistant core pushes messages, photos, the command 
 and approval requests through.
 
 One hub per process (`ChatHub.get_instance()`); each chat interface registers its transport
-on it, so a notification fans out to every chat the owner is reachable in and the first
-answer to an approval prompt wins across all of them. The exceptions are the command echo
-and the secret prompt, which go back to the chat whose request ran the command.
+on it, so a notification fans out to every chat the owner is reachable in. The command
+echo, the approval prompt and the secret prompt are the exceptions: they go back to the
+chat whose request ran the command, so only the person who asked sees and answers the
+question; a request from outside the chat layer (voice) is asked in every owner chat and
+the first answer wins across all of them.
 
 Secret requests work like approvals, but the answer is a value the user types and the
 prompt opens only in the chat that asked (every owner chat when the request came from
@@ -325,11 +327,13 @@ class ChatHub(SingletonMixin):
 
     # --- approvals ------------------------------------------------------------------------
 
-    def request_approval(self, title: str, details: str = "", timeout: Optional[float] = None) -> str:
-        """Ask every owner conversation, block until the first answer, the timeout, or —
-        when no chat can show the question — return "unavailable" at once.
+    def request_approval(self, title: str, details: str = "", timeout: Optional[float] = None,
+                         source: Optional[str] = None, conversation: Any = None) -> str:
+        """Ask the chat the request came from (every owner conversation for a request from
+        outside the chat layer), block until the first answer, the timeout, or — when no chat
+        can show the question — return "unavailable" at once.
         Returns "approve", "deny", "timeout" or "unavailable". Safe to call from any thread."""
-        targets = self._targets()
+        targets = self._origin(source, conversation) or self._targets()
         if not targets:
             info(f"Approval request skipped (no chat conversation to ask): {title}")
             return DECISION_UNAVAILABLE
@@ -339,7 +343,8 @@ class ChatHub(SingletonMixin):
         entry = {"future": concurrent.futures.Future(), "prompts": []}
         with self._approvals_lock:
             self._pending_approvals[token] = entry
-        info(f"Approval requested [{token[:8]}]: {title} (timeout={wait_seconds:.0f}s)")
+        where = f"{source} chat {conversation}" if self._origin(source, conversation) else f"{len(targets)} owner chat(s)"
+        info(f"Approval requested [{token[:8]}] in {where}: {title} (timeout={wait_seconds:.0f}s)")
 
         for transport, conv in targets:
             try:

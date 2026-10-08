@@ -1568,7 +1568,7 @@ class TestCommandProcessorSensitiveGate:
         dm.is_killed = False
         dm.web_request_handler = Mock()
         dm.web_request_handler.wait_so_that_response_timing_is_natural = Mock(return_value=True)
-        dm.web_request_handler.ctx = Mock(source="TextChat")
+        dm.web_request_handler.ctx = Mock(source="TextChat", conversation=4242)
         return dm
 
     def _run_with_decision(self, decision: str, monkeypatch, params=None, command="send_imessage"):
@@ -1584,8 +1584,8 @@ class TestCommandProcessorSensitiveGate:
 
         fake_bot = MagicMock()
 
-        def fake_request_approval(title, details="", timeout=None):
-            approval_calls.append({"title": title, "details": details})
+        def fake_request_approval(title, details="", timeout=None, source=None, conversation=None):
+            approval_calls.append({"title": title, "details": details, "source": source, "conversation": conversation})
             return decision
 
         fake_bot.request_approval = fake_request_approval
@@ -1598,6 +1598,13 @@ class TestCommandProcessorSensitiveGate:
 
         processor.kill()
         return processor, run_calls, approval_calls, fake_bot
+
+    def test_approval_is_asked_in_the_requesting_chat(self, monkeypatch):
+        # The gate hands the request's chat to the notifier, so the hub asks that chat
+        # alone rather than every owner conversation.
+        _, _, approval_calls, _ = self._run_with_decision("approve", monkeypatch)
+        assert approval_calls[0]["source"] == "TextChat"
+        assert approval_calls[0]["conversation"] == 4242
 
     def test_approve_runs_command(self, monkeypatch):
         processor, run_calls, approval_calls, _ = self._run_with_decision("approve", monkeypatch)
@@ -1722,7 +1729,7 @@ class TestThinkingStreamToObservers:
         dm.is_killed = False
         dm.web_request_handler = Mock()
         dm.web_request_handler.wait_so_that_response_timing_is_natural = Mock(return_value=True)
-        dm.web_request_handler.ctx = Mock(source="TextChat")
+        dm.web_request_handler.ctx = Mock(source="TextChat", conversation=4242)
         return dm
 
     @pytest.fixture

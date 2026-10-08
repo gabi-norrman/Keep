@@ -120,7 +120,7 @@ class CommandProcessor:
                 approval_blocked = False
                 if (not self.test_mode_dont_actually_execute_commands
                         and self.commands.is_sensitive(command_name)):
-                    approval_blocked = self._gate_sensitive_command(command_name, params)
+                    approval_blocked = self._gate_sensitive_command(command_name, params, dialog_manager)
 
                 if approval_blocked:
                     pass  # error already appended; skip execution and the echo
@@ -200,11 +200,12 @@ class CommandProcessor:
             error(f"Failed to send command notification: {e}")
             return None
 
-    # Runs on: command worker thread. Blocks until the user approves/denies via Telegram
-    # buttons (or the request times out / approval channel is unavailable). On non-approve
+    # Runs on: command worker thread. Blocks until the user approves/denies via the chat
+    # buttons — asked in the chat the request came from, so another person's chat never
+    # sees it (or the request times out / approval channel is unavailable). On non-approve
     # outcomes, appends an explanatory error to command_reply so the LLM sees it, and
     # returns True so the worker skips both execution and the post-run notification.
-    def _gate_sensitive_command(self, command_name: str, params: list[str]) -> bool:
+    def _gate_sensitive_command(self, command_name: str, params: list[str], dialog_manager=None) -> bool:
         from .Commands import normalize_llm_escapes
 
         params_display = ", ".join(params) if isinstance(params, list) else str(params)
@@ -215,7 +216,10 @@ class CommandProcessor:
         title = self.commands.describe(command_name, params) or f"{command_name}({params_display})"
         details = params_display or self.commands.approval_note(command_name)
         info(f"Sensitive command '{command_name}' awaiting user approval: {title}")
-        decision = notifier().request_approval(title=title, details=details)
+        ctx = self._context_for(dialog_manager)
+        decision = notifier().request_approval(
+            title=title, details=details,
+            source=getattr(ctx, 'source', None), conversation=getattr(ctx, 'conversation', None))
 
         if decision == "approve":
             info(f"Sensitive command '{command_name}' approved.")
