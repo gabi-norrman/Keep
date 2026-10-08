@@ -48,7 +48,7 @@ HARDWARE_ID_AGENT = "Floxy/1.0"
 
 
 class RingIntegration(Integration, CameraProvider):
-    """Ring doorbell snapshots.
+    """A snapshot from the Ring doorbell, so Keep can say who is at the door.
 
     Fetches a snapshot from the Ring doorbell camera so Keep can say who is at the door. Signing
     in takes the Ring account and its 2FA code.

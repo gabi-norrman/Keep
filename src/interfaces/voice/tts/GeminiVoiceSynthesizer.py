@@ -13,7 +13,7 @@ from common.ConfigManager import config
 
 
 class GeminiVoiceSynthesizer(VoiceSynthesizer, Integration):
-    """A voice from Google Gemini.
+    """A voice from Google Gemini TTS, with a tone a prompt can steer.
 
     Speaks Keep's replies with the Gemini models of Google Cloud TTS, whose tone can be steered
     by a prompt.

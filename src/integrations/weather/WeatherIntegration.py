@@ -11,7 +11,7 @@ from common.ConfigManager import config
 
 # noinspection PyMethodMayBeStatic
 class WeatherIntegration(Integration):
-    """The weather forecast from YR.
+    """The YR forecast for the home location, today and the days ahead.
 
     Fetches the forecast for the home location, so Keep can say what the weather will be.
 

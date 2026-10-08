@@ -48,7 +48,7 @@ class TeslaVehicleSpec:
 
 
 class TeslaIntegration(Integration):
-    """The Teslas, through Tessie.
+    """The Teslas via Tessie: state, climate, trunk and navigation.
 
     Reads the state of the cars and sends them commands: defrost, climate on and off, opening
     the trunk, a destination for the navigation.

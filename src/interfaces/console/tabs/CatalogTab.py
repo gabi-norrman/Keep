@@ -193,7 +193,7 @@ class CatalogTab(TabView):
         """The columns a table `inner_w` wide has room for; the last one takes what is left."""
         if inner_w - 2 - (NAME_W + 2) - (STATUS_W + 2) < DESCRIPTION_MIN_W:
             return [("Integration", NAME_W), ("Status", None)]
-        return [("Integration", NAME_W), ("Status", STATUS_W), ("What it is", None)]
+        return [("Integration", NAME_W), ("Status", STATUS_W), ("Description", None)]
 
     def _cells(self, entry: Entry, chosen: bool) -> Dict[str, Board.Cell]:
         if chosen:
@@ -202,7 +202,7 @@ class CatalogTab(TabView):
             name_color = Theme.COLOR_TEXT if entry.enabled else Theme.COLOR_LABEL
         return {"Integration": (entry.name, name_color, chosen),
                 "Status": (entry.status.label, entry.status.color),
-                "What it is": (self._text(entry.cls)[0].removesuffix("."),
+                "Description": (self._text(entry.cls)[0].removesuffix("."),
                                Theme.COLOR_LABEL if entry.enabled else Theme.COLOR_DIM)}
 
     def _draw_table(self, screen: TUIScreen, x: int, y: int, width: int, height: int, entries: List[Entry], selected: int):

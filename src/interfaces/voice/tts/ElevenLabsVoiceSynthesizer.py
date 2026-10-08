@@ -14,7 +14,7 @@ from common.ConfigManager import config
 
 
 class ElevenLabsVoiceSynthesizer(WebSocketVoiceSynthesizer, Integration):
-    """A voice from ElevenLabs.
+    """The default voice, from ElevenLabs, streamed as the answer is written.
 
     Speaks Keep's replies with ElevenLabs' TTS, streamed while the answer is still being
     written. It is the voice Keep uses unless another engine is enabled.

@@ -40,7 +40,7 @@ STATE_LINE = re.compile(r'^"(.+?)": ?(.*)$')
 
 
 class IndigoIntegration(Integration, Feed, HomeAutomation):
-    """The house through Indigo.
+    """The house through Indigo: its state, the lights, actions and event log.
 
     Makes Indigo the home automation backend: Keep sees the state of the house, switches the
     lights and runs actions, and follows the event log as a feed.

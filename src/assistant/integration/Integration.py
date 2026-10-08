@@ -32,7 +32,7 @@ class Integration(SingletonMixin, ABC):
     Singleton access (get_instance/reset_instance) comes from SingletonMixin.
 
     A subclass's docstring is read by the console's Catalog tab, so it has three paragraphs:
-    what the integration is in a few words (`description()`, the "What it is" column), what
+    what the integration is in a few words (`description()`, the "Description" column), what
     it does for the user in one to three sentences (`details()`, shown with the selected
     integration), then the notes for whoever reads the code, which no UI shows.
     """

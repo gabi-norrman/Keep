@@ -27,7 +27,7 @@ MAX_DIMENSION = 1568
 
 
 class UnifiProtectIntegration(Integration, CameraProvider):
-    """UniFi Protect camera snapshots.
+    """Stills from every camera on a UniFi Protect console on the network.
 
     Fetches a fresh still from every camera on a UniFi Protect console on the local network, so
     Keep can say what the cameras see. Setup is the console's address and an API key created in

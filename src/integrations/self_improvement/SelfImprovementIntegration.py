@@ -6,7 +6,7 @@ from common.logging import trace
 
 
 class SelfImprovementIntegration(Integration):
-    """Keep working on its own code.
+    """Keep improving its own code with Claude Code, nightly and on request.
 
     Lets Keep analyse and improve its own code through the Claude Code CLI: the nightly
     code-quality runs and the self_analysis / self_improvement commands. It needs only the CLI

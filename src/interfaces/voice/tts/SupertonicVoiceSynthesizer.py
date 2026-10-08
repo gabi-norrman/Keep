@@ -13,7 +13,7 @@ from common.ConfigManager import config
 
 
 class SupertonicVoiceSynthesizer(VoiceSynthesizer, Integration):
-    """A local voice, no cloud.
+    """A local voice from the Supertonic model on this CPU: no cloud, no key.
 
     Speaks Keep's replies with the Supertonic model on this machine's CPU: no network and no API
     key.

@@ -13,7 +13,7 @@ from common.ConfigManager import config
 
 
 class FishAudioVoiceSynthesizer(WebSocketVoiceSynthesizer, Integration):
-    """A voice from Fish Audio.
+    """A voice from Fish Audio's TTS, streamed as the answer is written.
 
     Speaks Keep's replies with Fish Audio's TTS, streamed while the answer is still being
     written.

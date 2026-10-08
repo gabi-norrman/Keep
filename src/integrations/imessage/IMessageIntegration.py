@@ -60,7 +60,7 @@ CHAT_ACTIVITY_CHUNK = 500      # handle rowids per chat.db query, well under SQL
 
 
 class IMessageIntegration(Integration, Feed):
-    """iMessage and SMS on the server's Mac.
+    """The iMessages and SMS of the server's Mac, read as a feed and sent.
 
     Brings the messages that arrive on the server's Mac into Keep's history, as a feed, and
     sends an iMessage or SMS to a contact when asked. It also catches the 2FA codes Apple and

@@ -147,7 +147,7 @@ class iCloudDeviceSpec:
 
 
 class ICloudIntegration(Integration):
-    """Find My: where the devices are.
+    """Find My: where the family's devices are, and a ring for a lost phone.
 
     Locates the family's devices through iCloud Find My and makes a lost phone ring. Signing in
     takes the Apple ID and the 2FA code Apple texts.

@@ -46,7 +46,7 @@ EXECUTE = {"scene": ("scene", "turn_on"), "script": ("script", "turn_on"), "auto
 
 
 class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
-    """The house through Home Assistant.
+    """The house through Home Assistant: lights, sensors, scenes and events.
 
     Makes Home Assistant the home automation backend: Keep sees the lights, switches, sensors
     and scenes, controls them, and follows what happens in the house as a feed of events.

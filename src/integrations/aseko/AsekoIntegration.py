@@ -32,7 +32,7 @@ class AsekoError(Exception):
 
 
 class AsekoIntegration(Integration):
-    """The pool, through Aseko Cloud.
+    """The pool's water readings and warnings, read from Aseko Cloud.
 
     Reads what the pool unit measures — water temperature, pH, redox, chlorine, salinity,
     filtration, heating, water level — and the unit's own warnings, so Keep can say how the pool

@@ -169,7 +169,7 @@ class TelegramDraft:
 
 
 class TelegramTransport(Integration, ChatTransport):
-    """Keep as a Telegram bot.
+    """Keep as a Telegram bot: chat, voice notes, approvals and notifications.
 
     A chat with Keep in Telegram: write or send a voice message from the phone and get its
     replies, approval prompts and notifications there.

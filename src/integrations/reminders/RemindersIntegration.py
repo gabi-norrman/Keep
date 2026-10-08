@@ -7,7 +7,7 @@ from common.logging import error
 
 
 class RemindersIntegration(Integration):
-    """Apple Reminders lists.
+    """Apple Reminders lists, such as the shopping list, added to when asked.
 
     Adds items to Apple Reminders lists, such as the shopping list, when asked.
 

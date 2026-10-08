@@ -56,7 +56,7 @@ _serialise_zone_state_parsing()
 
 
 class MusicIntegration(Integration):
-    """Music on the Sonos speakers.
+    """Spotify music on the Sonos speakers: search, play, skip and volume.
 
     Plays Spotify music, playlists and favorites in the Sonos zones, with pause, skip and
     volume. Keep can search Spotify and start what it finds in any room, and once the user's

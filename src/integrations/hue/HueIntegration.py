@@ -19,7 +19,7 @@ from common.logging import info, trace
 
 
 class HueIntegration(Integration, HomeAutomation):
-    """The house through Philips Hue.
+    """The lights, rooms and scenes of a Philips Hue bridge, plus its sensors.
 
     Makes a Hue bridge a home automation backend: Keep sees every light and room with its
     state, switches and dims them, recalls the scenes, and reads the motion sensors'

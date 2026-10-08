@@ -152,7 +152,7 @@ class _ArloTfaHandler(TfaCodeHandler):
 
 
 class ArloCameraIntegration(Integration, CameraProvider):
-    """Arlo camera snapshots.
+    """A fresh snapshot from any Arlo camera, so Keep can say what it sees.
 
     Fetches a fresh snapshot from an Arlo camera so Keep can say what it sees. Signing in takes
     the Arlo account, its 2FA included.

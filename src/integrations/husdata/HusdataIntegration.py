@@ -74,7 +74,7 @@ def to_wire(celsius: float) -> int:
 
 
 class HusdataIntegration(Integration):
-    """The heat pump through a Husdata H60/H66 gateway.
+    """The heat pump via a Husdata H60/H66 gateway: readings and setpoints.
 
     Shows the heat pump's temperatures, running state and alarm in the prompt, and sets the
     room target and the hot water setpoint when asked.

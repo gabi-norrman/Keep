@@ -16,7 +16,7 @@ DEFAULT_CALENDAR = "Home"
 
 
 class CalDAVIntegration(AccountHealth, Integration, CalendarSource):
-    """Calendars over CalDAV: iCloud or any server.
+    """Calendars over CalDAV, iCloud or any server: read and add events.
 
     Reads the calendars of every account listed under caldav.accounts and creates events in
     them, so Keep can say what is on the schedule and add to it when asked.

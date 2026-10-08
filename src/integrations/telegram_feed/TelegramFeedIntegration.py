@@ -27,7 +27,7 @@ CODE_REUSE_NOTE = ("Asked again within a few minutes, Telegram repeats the same 
 
 
 class TelegramFeedIntegration(Integration, Feed):
-    """The owner's Telegram chats.
+    """The owner's Telegram chats, followed as a feed into Keep's history.
 
     Follows the personal Telegram account, so the messages of its chats land in Keep's history,
     as a feed. Signing in takes the phone number, the code Telegram sends and the account's 2FA

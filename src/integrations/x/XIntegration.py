@@ -12,7 +12,7 @@ class XSearchError(Exception):
 
 
 class XIntegration(Integration):
-    """Search of X (Twitter) posts.
+    """Search of X (Twitter) posts, to find what is being said about a topic.
 
     Searches the posts on X, so Keep can find what is being said about a topic.
 

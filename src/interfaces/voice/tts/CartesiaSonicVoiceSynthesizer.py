@@ -12,7 +12,7 @@ from common.ConfigManager import config
 
 
 class CartesiaSonicVoiceSynthesizer(WebSocketVoiceSynthesizer, Integration):
-    """A voice from Cartesia Sonic.
+    """A voice from Cartesia Sonic, streamed as the answer is written.
 
     Speaks Keep's replies with Cartesia's Sonic TTS, streamed while the answer is still being
     written.

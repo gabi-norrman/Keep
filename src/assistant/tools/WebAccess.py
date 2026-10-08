@@ -132,7 +132,7 @@ class _LoopThread:
 
 
 class WebAccess(Integration):
-    """Web search and browsing.
+    """Web search and browsing: reads pages and clicks through sites itself.
 
     Gives Keep the web: it searches, reads pages and clicks through a site in a browser of its
     own when a task needs it. It needs no credentials and is on unless switched off.

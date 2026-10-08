@@ -16,7 +16,7 @@ from .integration_fakes import (FakeIntegration, KettleIntegration, LampIntegrat
 
 ENABLED = module.STATUS[IntegrationState.OK].label
 DISABLED = module.STATUS[IntegrationState.DISABLED].label
-DESCRIPTION_MAX = 48    # "a few words": what fits the table's "What it is" column on a narrow screen
+DESCRIPTION_MAX = 72    # one line: what fits the table's "Description" column on a narrow screen
 DETAILS_MAX = 300       # one to three sentences
 
 

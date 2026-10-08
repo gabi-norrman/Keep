@@ -2,7 +2,7 @@ from .GeminiVoiceSynthesizer import GeminiVoiceSynthesizer
 
 
 class Chirp3VoiceSynthesizer(GeminiVoiceSynthesizer):
-    """A voice from Google Chirp 3 HD.
+    """A Google Chirp 3 HD voice, talking after the first words of an answer.
 
     Speaks Keep's replies with the Chirp 3 HD voices of Google Cloud TTS, which start talking
     after the first words of an answer.

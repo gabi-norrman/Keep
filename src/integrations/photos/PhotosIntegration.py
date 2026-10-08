@@ -45,7 +45,7 @@ LIMIT ?
 
 
 class PhotosIntegration(Integration, Feed):
-    """The Photos library, searchable.
+    """The Photos library, indexed by a vision model and searchable by words.
 
     Indexes the macOS Photos library with a vision model, so Keep can search the family's photos
     and videos and show them. What it indexes also lands in Keep's history, as a feed.

@@ -55,7 +55,7 @@ class GoogleAccount:
 
 
 class GoogleIntegration(AccountHealth, Integration, MailSource, CalendarSource):
-    """Gmail and Google Calendar, one Google sign-in.
+    """Gmail and Google Calendar, mail and events, with one Google sign-in.
 
     Reads, searches and files the Gmail of every Google account listed under google.accounts,
     sends from the one the user means, and shows and adds to their Google calendars; an

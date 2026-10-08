@@ -13,7 +13,7 @@ ACCOUNTS_KEY = f"{SECTION}.accounts"
 
 
 class ImapMailIntegration(AccountHealth, Integration, MailSource):
-    """Mail over IMAP: iCloud, Gmail, any server.
+    """Mail over IMAP from iCloud, Gmail or any server: read, file and send.
 
     Reads, searches and files the mail of every account listed under imap.accounts and sends
     from the one the user means; iCloud and Gmail sign in with an app password, any other

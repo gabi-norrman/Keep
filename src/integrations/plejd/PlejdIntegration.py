@@ -22,7 +22,7 @@ NO_MESH = "No Plejd unit in Bluetooth range — the mesh is not connected."
 
 
 class PlejdIntegration(Integration, HomeAutomation):
-    """Plejd lights over Bluetooth.
+    """Plejd lights and scenes over Bluetooth, no gateway needed.
 
     Makes the Plejd mesh a home automation backend: Keep sees every light, relay and scene of
     the site and switches, dims and runs them through any powered Plejd unit in Bluetooth range

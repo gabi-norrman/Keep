@@ -51,7 +51,7 @@ class MicrosoftAccount:
 
 
 class MicrosoftIntegration(AccountHealth, Integration, MailSource, CalendarSource):
-    """Microsoft 365 mail and calendars over Graph.
+    """Microsoft 365 mail and calendars over Graph: read, send and add events.
 
     Reads, searches and files the mail of every Microsoft account listed under
     microsoft.accounts, sends from the one the user means, and shows and adds to their

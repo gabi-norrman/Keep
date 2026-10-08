@@ -69,7 +69,7 @@ def import_neonize():
 
 
 class WhatsAppIntegration(Integration, Feed):
-    """The owner's WhatsApp account as a linked device.
+    """The owner's WhatsApp as a linked device: chats as a feed, and sending.
 
     Brings the owner's WhatsApp chats into Keep's history, as a feed, and sends a WhatsApp
     message to a contact or a group when asked. Linking takes the owner's phone number and
