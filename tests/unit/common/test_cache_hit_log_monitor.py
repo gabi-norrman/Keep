@@ -50,15 +50,6 @@ class TestTheLogLine:
         assert monitor._take([b"Claude cache: 5 read, 5 uncached (total 10, 50% cached)  <- no timestamp"]) == 0
         assert not monitor._sums
 
-    def test_the_trace_of_a_quoted_cache_line_is_not_itself_a_cache_mention(self, tmp_path, monkeypatch):
-        """The trace lands in the log the monitor scans: an excerpt carrying the needle would be
-        picked up by the next pass and echoed again, one layer of escaping deeper each time."""
-        traced = []
-        monkeypatch.setattr("common.CacheHitLogMonitor.trace", traced.append)
-        monitor, _, _ = make_monitor(tmp_path, monkeypatch)
-        monitor._take([b"I| telegrambot | API call succeeded: <code>Claude cache: ... 33596 uncached</code>, ~3s"])
-        assert len(traced) == 1 and CacheHitLogMonitor.NEEDLE.decode() not in traced[0]
-
 
 @pytest.mark.unit
 class TestDailyAverages:

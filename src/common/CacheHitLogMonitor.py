@@ -120,12 +120,11 @@ class CacheHitLogMonitor:
         for line in lines:
             if self.NEEDLE not in line:
                 continue
+            # A line that mentions the cache without being a cache line (a quote in a reply the
+            # Telegram bot logged) is skipped in silence: a trace of it would land in this log
+            # and be read back on every startup pass.
             match = self.LINE_RE.search(line)
             if not match:
-                # A quote of a cache line in a reply (the Telegram bot logs what it sends) lands
-                # here too; the excerpt drops the needle so a later pass does not echo the echo.
-                trace("CacheHitLogMonitor: a line mentions the cache but is not a cache line: "
-                      f"{line[-80:].replace(self.NEEDLE, b'Claude cache ')!r}")
                 continue
             try:
                 day = datetime.strptime(match.group(1).decode(), "%Y-%m-%d").date()
