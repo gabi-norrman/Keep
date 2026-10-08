@@ -1,3 +1,4 @@
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -191,6 +192,40 @@ class TestLink:
             assert integration.open_feed() is True
         assert integration._horizon_ts == 1_234.0 and integration._connected_name == "Marcus"
 
+    def test_open_feed_rebuilds_a_client_whose_connect_raised(self, integration, monkeypatch):
+        """connect() raised on the client thread: that client never connects, so the next open
+        must not wait on it but build a fresh one (else every open fails until a manual restart)."""
+        mod.SESSION_PATH.write_bytes(b"sqlite")
+        monkeypatch.setattr(mod, "CONNECT_TIMEOUT", 0.01)
+        dead = integration._client
+        integration._connected.clear()
+        integration._open_error = "RuntimeError: bad session"
+        ended = threading.Thread(target=lambda: None)
+        ended.start()
+        ended.join()
+        integration._thread = ended
+        started = []
+
+        def start():
+            integration._client = FakeClient()
+            started.append(integration._client)
+            integration._thread = None
+            integration._connected.set()
+
+        with patch.object(integration, "_start_client", side_effect=start), \
+                patch("assistant.integration.FeedRunner.Feeds.horizon_for", return_value=0.0):
+            assert integration.open_feed() is True
+        assert dead.stopped and started == [integration._client]
+
+    def test_a_client_still_connecting_is_not_rebuilt(self, integration, monkeypatch):
+        mod.SESSION_PATH.write_bytes(b"sqlite")
+        monkeypatch.setattr(mod, "CONNECT_TIMEOUT", 0.01)
+        integration._connected.clear()
+        with patch.object(integration, "_start_client") as start:
+            assert integration.open_feed() is False
+        start.assert_not_called()
+        assert not integration._client.stopped
+
     def test_login_wants_an_international_number(self, integration):
         code, failure = integration.login("0701740605")
         assert code is None and "country code" in failure
@@ -228,6 +263,40 @@ class TestLink:
             code, failure = integration.login("+46701740605")
         assert failure is None and code == "ABCD-EFGH"
         assert stale.stopped and started == [integration._client]
+
+    def test_a_newer_login_supersedes_the_waiter_of_the_old_code(self, integration):
+        """whatsapp_login run twice while the first code is out: the first waiter must neither stop
+        the second login's client when its own wait ends nor start the feed on the second pairing."""
+        integration._connected.clear()
+        started = []
+
+        def start():
+            integration._client = FakeClient()
+            integration._client.PairPhone = lambda digits, push: "ABCDEFGH"
+            started.append(integration._client)
+            integration._unpaired.set()
+
+        entered = threading.Event()
+        real_wait = integration._paired.wait
+
+        def wait(timeout=None):
+            entered.set()
+            return real_wait(timeout)
+
+        integration._paired.wait = wait
+        answers = []
+        with patch.object(integration, "_start_client", side_effect=start):
+            assert integration.login("+46701740605")[1] is None
+            first = threading.Thread(target=lambda: answers.append(integration.wait_paired(timeout=5)))
+            first.start()
+            assert entered.wait(1)
+            assert integration.login("+46701740605")[1] is None
+        integration._on_pair_status(None, SimpleNamespace(Error="", ID=fakes.jid(OWNER), Platform="android"))
+        integration._connected.set()
+        first.join(1)
+        assert answers == ["a newer whatsapp_login replaced this code"]
+        assert integration._client is started[1] and not started[1].stopped
+        assert integration.wait_paired(timeout=1) is None
 
     def test_open_feed_leaves_the_client_and_the_session_alone_while_a_code_is_out(self, integration, monkeypatch):
         mod.SESSION_PATH.write_bytes(b"sqlite")

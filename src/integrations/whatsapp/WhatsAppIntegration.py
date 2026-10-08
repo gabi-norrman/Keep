@@ -109,6 +109,7 @@ class WhatsAppIntegration(Integration, Feed):
         self._own_user: str = ""
         self._login_lock = threading.Lock()
         self._login_phone: Optional[str] = None
+        self._login_attempt = 0          # counts the pairing codes issued; a waiter of an earlier one stands down
         self._paired_at: Optional[float] = None
         self._last_history_chunk: Optional[float] = None
         self._history_complete = False
@@ -224,6 +225,12 @@ class WhatsAppIntegration(Integration, Feed):
             return False
         if self._client is None:
             self._start_client()
+        elif self._client_thread_dead():
+            # connect() raised (a bad session file, no network at boot): that client never
+            # connects again, so waiting on it would fail every open until a manual restart
+            info(f"WhatsApp: the client thread ended ({self._open_error or 'no error recorded'}) — rebuilding it")
+            self._stop_client()
+            self._start_client()
         if not self._connected.wait(CONNECT_TIMEOUT):
             if self._pairing_pending():
                 self._open_error = "pairing in progress — the code goes into the phone first"
@@ -259,9 +266,10 @@ class WhatsAppIntegration(Integration, Feed):
         if not entries and self._history_in_progress():
             self._queued.wait(POLL_INTERVAL)
             entries = self._drain(backfill)
-        if self._pending_entries:
-            entries = self._pending_entries + entries
-            self._pending_entries = []
+        # swap first: a send() appending between a read and a reset would be lost
+        pending, self._pending_entries = self._pending_entries, []
+        if pending:
+            entries = pending + entries
         newest = max([since] + [e.timestamp for e in entries])
         return FeedBatch(entries, cursor=repr(newest), exhausted=not self._history_in_progress())
 
@@ -458,6 +466,10 @@ class WhatsAppIntegration(Integration, Feed):
         self._thread.start()
         info(f"WhatsApp: client started on {SESSION_PATH.name}")
 
+    def _client_thread_dead(self) -> bool:
+        """A client whose connect() returned or raised: nothing will ever set `_connected` on it."""
+        return self._thread is not None and not self._thread.is_alive()
+
     def _stop_client(self):
         """Drop the socket, then cancel the Go side. `disconnect` is what ends the link's
         connection (at once); `stop` does not make the blocking `connect` return in neonize
@@ -628,6 +640,9 @@ class WhatsAppIntegration(Integration, Feed):
             if self._client is not None:
                 # an unpaired client's socket is gone once WhatsApp's pairing window closed
                 # (PairPhone then fails with "websocket not connected"): a fresh one each time
+                if self._login_phone is not None and not self._paired.is_set():
+                    info(f"WhatsApp login: a code is still out for +{self._login_phone} — "
+                         f"this login supersedes it, its waiter stands down")
                 info("WhatsApp login: rebuilding the unpaired client for a fresh socket")
                 self._stop_client()
             self._start_client()
@@ -643,6 +658,7 @@ class WhatsAppIntegration(Integration, Feed):
                 error(f"WhatsApp login: pairing request failed: {type(e).__name__}: {e}")
                 return None, f"WhatsApp login failed: WhatsApp refused the pairing request ({e})"
             self._login_phone = digits
+            self._login_attempt += 1
             code = code if "-" in code or len(code) != 8 else f"{code[:4]}-{code[4:]}"
             info(f"WhatsApp login: pairing code issued for +{digits}, valid for a few minutes")
             return code, None
@@ -652,8 +668,14 @@ class WhatsAppIntegration(Integration, Feed):
     def wait_paired(self, timeout: float = PAIR_TIMEOUT) -> Optional[str]:
         """Block until the phone accepted the code; None then, else what went wrong. A code
         that never landed ends the attempt: the client goes (its socket is dead by then) and
-        the next login starts clean."""
-        if not self._paired.wait(timeout):
+        the next login starts clean. A waiter whose code a newer login replaced stands down
+        without touching the client — that one belongs to the newer attempt now."""
+        attempt = self._login_attempt
+        paired = self._paired.wait(timeout)
+        if attempt != self._login_attempt:
+            info(f"WhatsApp login: pairing attempt {attempt} was superseded by attempt {self._login_attempt}")
+            return "a newer whatsapp_login replaced this code"
+        if not paired:
             failure = self._pair_error or "the code was not entered in time — run whatsapp_login again for a new one"
             info(f"WhatsApp login: the pairing attempt is over ({failure}) — stopping the unpaired client")
             self._login_phone = None
