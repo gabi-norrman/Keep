@@ -28,19 +28,19 @@ whats_new() {  # $1..$2: the released commits — prints Claude's user-facing su
   local log
   log=$(git log --reverse --format='%h %s%n%b' "$1..$2")
   local prompt
-  prompt="You are writing the release note for a home assistant called Keep, sent to the household that talks to it.
+  prompt="You are writing the release note for a home assistant called Keep, sent to the users of the system.
 The release is $version. Below are the commits it brings, oldest first, as '<hash> <subject>' followed by the body.
 Run \`git show <hash>\` or \`git show --stat <hash>\` when a message does not make the user-facing effect clear.
 
-Create a user friendly, fairly punchy and nice \"what's new\" for this release. Format it so that it will look nice
+Create a user friendly, punchy and nice \"what's new\" for this release. Format it so that it will look nice
 in a Telegram chat: the bot sends HTML, so use <b>…</b> and <i>…</i> only, blank lines between items, an emoji
 or two where it helps, nothing else (no markdown, no headers, no code spans, no tables). Do not open with a
 title or the version: the message that carries the note already says which release it is.
 
 The readers are not developers. Describe what they will notice — what Keep can now do, what got better, what
-was fixed — never how it was built. Leave out refactors, tests, tooling, docs and anything with no visible
-effect; if nothing visible changed, say so in one friendly line. Group related commits into one item; keep
-it under 15 lines. Output only the note, nothing before or after it.
+was fixed and why — never how it was built. Leave out refactors, tests, tooling, docs and anything with no visible
+effect (if appropriate add a line about general performance/bug/stability fixes); if nothing visible changed, say so
+in one friendly line. Group related commits into one item. Output only the note, nothing before or after it.
 
 Commits:
 $log"
