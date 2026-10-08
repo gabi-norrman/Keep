@@ -118,5 +118,7 @@ You: `browse_extract()`
 You: `browse_close()`
 Then answer the user.
 
+When a site took several attempts to get through, save or update a procedure with the steps that worked, so the next visit does not have to rediscover them.
+
 ### Stop-and-wait
 `browse_open()`, `browse_act()`, `browse_key()`, `browse_inspect()`, `browse_snapshot()`, `browse_wait()`, `browse_network()`, `browse_click_at()`, `browse_eval()`, `browse_extract()`, `browse_screenshot()`, `send_screenshot()` return data: emit them and stop generating; the result arrives in the next round.
