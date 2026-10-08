@@ -292,8 +292,7 @@ wake_word_near_misses: [mission, missions, we shall]
 #    # batch_wait_minutes: 90 # minutes to an hour later); false, or no answer within the wait → the ordinary call
 #  cache_auditor:
 #    llm: OllamaLLM
-#  photo_indexing:         # indexes Apple Photos stills and videos, one call each (thousands on a backfill);
-#                         # the family briefing the backfill sends instead of the bank is extracted by `smart`
+#  photo_indexing:         # indexes Apple Photos stills and videos, one call each (thousands on a backfill).
 #    llm: GeminiLLM         # Needs native video input for the videos, so Gemini is the only full backend
 #    # model: gemini-3.8-flash
 #  code_quality:            # model for the nightly Claude Code CLI runs (CodeQualityMaintainer)

@@ -5,17 +5,20 @@ import threading
 import time
 from pathlib import Path
 
-from assistant.llm import create_llm, parse_llm_config
 from assistant.llm.AbstractLLM import AbstractLLM, LLMUnavailable
 from common.Paths import CACHE_DIR
 from common.logging import info, error, trace
 
 NO_MEMORY = "(no memory available)"
 
-EXTRACT_PROMPT = """You are preparing the briefing a photo analyst reads before describing a family's photo and video library. From the memory bank below, extract only what helps recognise who, what and where is in a photo or video.
-Leave out irrelevant things: preferences, rules, tasks, how the assistant should behave. 
-Aim for 700 to 900 words: carry every name, look, place and belonging the bank gives, with the detail that tells people and places apart. 
-Write markdown. Return only the briefing."""
+EXTRACT_PROMPT = """You are preparing the briefing a photo analyst reads before describing a family's photo and video library. From the memory bank below, extract only what helps recognise who, what and where is in a photo or video:
+- the household: every person by name, with relationship, approximate age or birth year, and anything known about their looks
+- pets, by name and kind
+- the home and the places the family frequents (summer house, grandparents' house, workplace, school, usual holiday spots), with town or country
+- cars, boats, bikes and other recognisable belongings
+- family facts that date or explain photos: birthdays, anniversaries, moves, renovations, recurring events
+
+Leave out everything else: preferences, rules, contacts outside the family, tasks, how the assistant should behave, anything secret. Write markdown bullet lists under headings, in the language of the bank. Aim for 700 to 900 words: carry every name, look, place and belonging the bank gives, with the detail that tells people and places apart, but never pad with anything outside the headings and never invent. Return only the briefing."""
 
 
 class PhotoContext:
@@ -34,14 +37,13 @@ class PhotoContext:
     CACHE_PATH = CACHE_DIR / "photo_context.json"
     _lock = threading.Lock()
     _memo: tuple[str, str] | None = None    # (bank digest, extract) of the last answer
-    _llm: AbstractLLM | None = None         # the smart tier, built on the first extraction
 
     @classmethod
-    def briefing(cls, bank: str) -> str:
+    def briefing(cls, bank: str, llm: AbstractLLM) -> str:
         """The briefing for `bank`, from memory, the cache file or one extraction call. An empty
-        bank needs no call. When the call fails — the smart tier being out included, which says
-        nothing about the indexing backend — the whole bank stands in for this photo and the
-        extraction is tried again on the next one."""
+        bank needs no call. When the call fails the whole bank stands in for this photo and the
+        extraction is tried again on the next one; the provider refusing every request
+        (LLMUnavailable) is the caller's to handle, as for the photo itself."""
         if not bank.strip():
             return NO_MEMORY
         digest = hashlib.sha256(bank.encode()).hexdigest()
@@ -50,7 +52,7 @@ class PhotoContext:
                 return cls._memo[1]
             extract = cls._read_cached(digest)
             if extract is None:
-                extract = cls._extract(bank, digest)
+                extract = cls._extract(bank, digest, llm)
                 if extract is None:
                     return bank
             cls._memo = (digest, extract)
@@ -72,27 +74,13 @@ class PhotoContext:
         return data["extract"]
 
     @classmethod
-    def _smart_llm(cls) -> AbstractLLM:
-        """Reading a whole bank for what tells people and places apart is the curator's kind of
-        work, not the cheap indexing model's. One call per bank version, so no prompt cache."""
-        if cls._llm is None:
-            name, model = parse_llm_config('smart')
-            llm = create_llm(name, model, prompt_cache=False)
-            llm.initialize()
-            info(f"Photos: the photo-context extraction runs on {llm.name()}")
-            cls._llm = llm
-        return cls._llm
-
-    @classmethod
-    def _extract(cls, bank: str, digest: str) -> str | None:
+    def _extract(cls, bank: str, digest: str, llm: AbstractLLM) -> str | None:
         info(f"Photos: extracting the photo context from the memory bank ({len(bank)} chars)")
         t0 = time.time()
         try:
-            extract = (cls._smart_llm().think(system_message=EXTRACT_PROMPT, user_message=bank) or "").strip()
-        except LLMUnavailable as e:
-            error(f"Photos: the smart tier is unavailable for the photo-context extraction ({e}) — "
-                  "this photo gets the whole bank")
-            return None
+            extract = (llm.think(system_message=EXTRACT_PROMPT, user_message=bank) or "").strip()
+        except LLMUnavailable:
+            raise
         except Exception as e:
             error(f"Photos: could not extract the photo context ({e}) — this photo gets the whole bank")
             return None

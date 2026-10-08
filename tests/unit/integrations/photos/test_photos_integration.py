@@ -2696,15 +2696,13 @@ class TestPhotosFeedProviderRefusal:
         reply = '{"short_description":"a","detailed_description":"b","pretty_score":1,"family_importance_score":2}'
         bank = "Marcus likes his coffee black. The dog is called Rufus. Never book meetings before nine."
         llm = Mock()
-        llm.think.return_value = reply
+        llm.think.side_effect = lambda system_message, user_message, **kw: \
+            "- the dog Rufus" if system_message == EXTRACT_PROMPT else reply
         llm.think_with_video.return_value = reply
-        smart = Mock()
-        smart.think.return_value = "- the dog Rufus"
         processor = PhotoProcessor()
         processor._llm = llm
         PhotoContext._memo = None
         with patch.object(PhotoProcessor, '_read_memory', return_value=bank), \
-             patch.object(PhotoContext, '_llm', smart), \
              patch.object(PhotoContext, '_read_cached', return_value=None), \
              patch.object(PhotoContext, 'CACHE_PATH', Path("/nonexistent/photo_context.json")):
             processor._analyze_with_llm(b"jpeg", "2026-01-01 10:00", "Home", "", "", "photo", backfill=True)
@@ -2714,10 +2712,9 @@ class TestPhotosFeedProviderRefusal:
                                               backfill=True)
             processor._analyze_video_with_llm(b"mp4", "video/mp4", "2026-01-02 10:00", "Home", "", "", "video", 12.0)
         PhotoContext._memo = None
-        smart.think.assert_called_once_with(system_message=EXTRACT_PROMPT, user_message=bank)
-        assert not any(c.kwargs["system_message"] == EXTRACT_PROMPT for c in llm.think.call_args_list), \
-            "the indexing model is never asked to read the bank"
-        photos = [c.kwargs["system_message"] for c in llm.think.call_args_list]
+        extractions = [c for c in llm.think.call_args_list if c.kwargs["system_message"] == EXTRACT_PROMPT]
+        assert len(extractions) == 1 and extractions[0].kwargs["user_message"] == bank
+        photos = [c.kwargs["system_message"] for c in llm.think.call_args_list if c not in extractions]
         videos = [c.kwargs["system_message"] for c in llm.think_with_video.call_args_list]
         backfilled, live = [photos[0], photos[1], videos[0]], [photos[2], videos[1]]
         assert all("Rufus" in s and "coffee" not in s for s in backfilled)
