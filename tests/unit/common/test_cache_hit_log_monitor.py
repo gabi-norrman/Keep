@@ -50,6 +50,15 @@ class TestTheLogLine:
         assert monitor._take([b"Claude cache: 5 read, 5 uncached (total 10, 50% cached)  <- no timestamp"]) == 0
         assert not monitor._sums
 
+    def test_the_trace_of_a_quoted_cache_line_is_not_itself_a_cache_mention(self, tmp_path, monkeypatch):
+        """The trace lands in the log the monitor scans: an excerpt carrying the needle would be
+        picked up by the next pass and echoed again, one layer of escaping deeper each time."""
+        traced = []
+        monkeypatch.setattr("common.CacheHitLogMonitor.trace", traced.append)
+        monitor, _, _ = make_monitor(tmp_path, monkeypatch)
+        monitor._take([b"I| telegrambot | API call succeeded: <code>Claude cache: ... 33596 uncached</code>, ~3s"])
+        assert len(traced) == 1 and CacheHitLogMonitor.NEEDLE.decode() not in traced[0]
+
 
 @pytest.mark.unit
 class TestDailyAverages:
@@ -94,6 +103,24 @@ class TestScanning:
         scan(monitor)
         assert tab.cache_daily == [(today, 50.0)], "a line counted twice would pull the mean off"
         assert monitor._offset == log.stat().st_size
+
+    def test_a_pass_stops_at_the_size_it_started_with(self, tmp_path, monkeypatch):
+        """The monitor's own trace lines are appended to the log while a pass reads it; a pass
+        that read on to the end would chase them and keep going for as long as it wrote."""
+        monitor, tab, log = make_monitor(tmp_path, monkeypatch, CHUNK_BYTES=37, CHUNK_PAUSE=0)
+        today = date.today()
+        log.write_bytes(log_line(str(today), 40) + log_line(str(today), 60))
+        size_at_start = log.stat().st_size
+
+        def take_and_append(lines, _take=monitor._take):
+            with log.open("ab") as f:
+                f.write(log_line(str(today), 0))
+            return _take(lines)
+
+        monkeypatch.setattr(monitor, "_take", take_and_append)
+        scan(monitor)
+        assert monitor._offset == size_at_start
+        assert tab.cache_daily == [(today, 50.0)], "what was appended during the pass is the next pass's"
 
     def test_a_line_cut_by_a_chunk_boundary_is_still_counted(self, tmp_path, monkeypatch):
         monitor, tab, log = make_monitor(tmp_path, monkeypatch, CHUNK_BYTES=37, CHUNK_PAUSE=0)

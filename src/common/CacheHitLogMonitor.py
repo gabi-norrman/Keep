@@ -96,11 +96,13 @@ class CacheHitLogMonitor:
             self._publish()
             return
 
+        # The pass ends at the size it started with: the log grows while it runs — with this
+        # monitor's own lines among the growth — and the rest is the next pass's.
         lines = 0
         with path.open("rb") as f:
             f.seek(self._offset)
-            while not stop_event.is_set():
-                chunk = f.read(self.CHUNK_BYTES)
+            while not stop_event.is_set() and self._offset < size:
+                chunk = f.read(min(self.CHUNK_BYTES, size - self._offset))
                 if not chunk:
                     break
                 self._offset += len(chunk)
@@ -120,7 +122,10 @@ class CacheHitLogMonitor:
                 continue
             match = self.LINE_RE.search(line)
             if not match:
-                trace(f"CacheHitLogMonitor: cache line in an unexpected shape: {line[-80:]!r}")
+                # A quote of a cache line in a reply (the Telegram bot logs what it sends) lands
+                # here too; the excerpt drops the needle so a later pass does not echo the echo.
+                trace("CacheHitLogMonitor: a line mentions the cache but is not a cache line: "
+                      f"{line[-80:].replace(self.NEEDLE, b'Claude cache ')!r}")
                 continue
             try:
                 day = datetime.strptime(match.group(1).decode(), "%Y-%m-%d").date()
