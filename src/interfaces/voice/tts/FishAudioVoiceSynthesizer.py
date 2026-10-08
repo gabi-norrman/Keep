@@ -21,8 +21,8 @@ class FishAudioVoiceSynthesizer(WebSocketVoiceSynthesizer, Integration):
     Streams over the websocket API."""
 
     # Fish S2.x renders bracket markers ([whisper], [laugh], ...) as audio, so stray
-    # tags must reach the API instead of being stripped by the base class. The feature
-    # is disabled at the prompt level (see VoiceSynthesizer.SUPPORTS_EMOTION_TAGS).
+    # tags must reach the API instead of being stripped by the base class — while
+    # `tts.emotions` is on (see VoiceSynthesizer.SUPPORTS_EMOTION_TAGS).
     SUPPORTS_EMOTION_TAGS = True
 
     CONFIG_SECTION = "fish"

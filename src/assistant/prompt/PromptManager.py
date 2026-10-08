@@ -1,5 +1,6 @@
 import base64
 import difflib
+import re
 import threading
 import time
 import os
@@ -21,7 +22,7 @@ from .MessageHistory import MessageHistory, THINKING_TAG_INSTRUCTION
 from common.FloxyDatabase import FloxyDatabase
 from common.ConfigManager import config
 from common.logging import error, info, trace, fine
-from common.Paths import SRC_DIR
+from common.Paths import RES_DIR, SRC_DIR
 
 # Frames from these AIServer/src packages count as "ours" in the section-update trigger trace.
 _OWN_PACKAGE_DIRS = tuple(f"{SRC_DIR / pkg}/" for pkg in ("assistant", "common", "interfaces", "integrations"))
@@ -724,8 +725,8 @@ class PromptManager:
         """Fill every placeholder the templates and toolkit files use: the sections given — by
         their own placeholder, or in the {INTEGRATION_DATA} block for the ones with a heading —
         then {TOOLKITS} (assistant.commands.Toolkits, the toolkits offered now), {PHOTO_COUNT}
-        (`photo_count` if given, else the DB's, refreshed at most daily), {WAKE_WORD} and
-        {WAKE_INTERVAL_MINUTES} (config-driven)."""
+        (`photo_count` if given, else the DB's, refreshed at most daily), {WAKE_WORD},
+        {WAKE_INTERVAL_MINUTES} and {EMOTION_TAGS} (config-driven)."""
         from assistant.commands import Toolkits
         for key, content in sections.items():
             text = text.replace("{" + key.upper() + "}", content)
@@ -735,8 +736,22 @@ class PromptManager:
             text = text.replace("{TOOLKITS}", Toolkits.render_index(self._monitor()))
         if "{PHOTO_COUNT}" in text:
             text = text.replace("{PHOTO_COUNT}", photo_count or f"~{self._get_photo_count()}")
+        if self.EMOTION_TAGS in text:
+            text = re.sub(re.escape(self.EMOTION_TAGS) + r"\n*", lambda _: self._emotion_tags_block(), text)
         text = text.replace("{WAKE_WORD}", config.get('wake_word', 'Michelle'))
         return text.replace("{WAKE_INTERVAL_MINUTES}", self._wake_interval_minutes_str())
+
+    EMOTION_TAGS = "{EMOTION_TAGS}"
+    EMOTION_TAGS_FILE = RES_DIR / "voice_emotions.md"
+
+    def _emotion_tags_block(self) -> str:
+        """The {EMOTION_TAGS} text of the voice toolkit: the audio tag reference while
+        `tts.emotions` is on, nothing while it is off (the synthesizers strip tags then)."""
+        if not (config.get('tts', {}) or {}).get('emotions', False):
+            trace("tts.emotions is off — the voice toolkit goes without the emotion tags block.")
+            return ""
+        trace("tts.emotions is on — the voice toolkit carries the emotion tags block.")
+        return self.EMOTION_TAGS_FILE.read_text(encoding="utf-8").rstrip() + "\n\n"
 
     def _render_data_block(self, contents: dict[str, str]) -> str:
         """The {INTEGRATION_DATA} text: every running section with a heading, in SECTION_ORDER,

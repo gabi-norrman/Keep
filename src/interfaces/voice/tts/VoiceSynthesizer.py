@@ -19,7 +19,8 @@ class VoiceSynthesizer(ABC):
     # Whether this synthesizer renders bracket emotion tags ([laughing], [sighing], ...)
     # as audio. When False, such tags are stripped from the text before synthesis so
     # they aren't spoken literally. Subclasses that support them override to True.
-    # The prompt's EMOTION TAGS section asks the LLM for them; ElevenLabs decides per model
+    # The voice toolkit's EMOTION TAGS block asks the LLM for them while `tts.emotions` is
+    # on (off by default — then every engine strips them); ElevenLabs decides per model
     # (only the v3/v4 family performs them), so the flag is a property there.
     SUPPORTS_EMOTION_TAGS: bool = False
 
@@ -51,6 +52,11 @@ class VoiceSynthesizer(ABC):
     def configured_voice(section: str, default: str, key: str = 'voice') -> str:
         """The voice id `tts.<section>.<key>` names, else the engine's stock voice."""
         return ((config.get('tts', {}) or {}).get(section) or {}).get(key) or default
+
+    @staticmethod
+    def emotions_enabled() -> bool:
+        """`tts.emotions`: whether the voice performs emotion tags at all (off by default)."""
+        return bool((config.get('tts', {}) or {}).get('emotions', False))
 
     def impl_name(self) -> str:
         """Human-readable name of the actual synthesizer doing the work.
@@ -149,7 +155,7 @@ class VoiceSynthesizer(ABC):
                     text = re.sub(r",\s*" + re.escape(name), " " + name, text, flags=re.IGNORECASE)
             return text
 
-        strip_tags = not self.SUPPORTS_EMOTION_TAGS
+        strip_tags = not (self.emotions_enabled() and self.SUPPORTS_EMOTION_TAGS)
 
         def open_tag_hold(text):
             """Hold-back length for a trailing, not-yet-closed emotion tag (an
@@ -163,7 +169,7 @@ class VoiceSynthesizer(ABC):
             if strip_tags and "[" in text:
                 stripped = re.sub(r"\s*\[[^\]]*\]\s*", " ", text)
                 if stripped != text:
-                    trace(f"Stripped emotion tag(s) for {type(self).__name__} (no tag support)")
+                    trace(f"Stripped emotion tag(s) for {type(self).__name__} (tts.emotions off or no tag support)")
                     text = stripped
             return apply_replacements(text)
 

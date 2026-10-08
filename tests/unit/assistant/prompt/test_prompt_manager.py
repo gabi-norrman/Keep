@@ -1608,6 +1608,22 @@ def test_render_template_fills_sections_and_config_values(prompt_test_environmen
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("tts, carries_tags", [({"emotions": True}, True), ({"emotions": False}, False), ({}, False)])
+def test_voice_toolkit_carries_the_emotion_tags_only_while_tts_emotions_is_on(prompt_test_environment, monkeypatch,
+                                                                              tts, carries_tags):
+    from assistant.prompt import PromptManager as module
+    from assistant.commands import Toolkits
+    real_get = module.config.get
+    monkeypatch.setattr(module.config, "get", lambda key, default=None: tts if key == "tts" else real_get(key, default))
+    manager = PromptManager(test_suite=True)
+    rendered = Toolkits.render(Toolkits.by_name("voice"), manager.render_template)
+    assert ("[whispers]" in rendered) is carries_tags
+    assert "{EMOTION_TAGS}" not in rendered
+    assert "false_positive()" in rendered
+    assert "\n\n\n" not in rendered
+
+
+@pytest.mark.unit
 def test_section_without_a_placeholder_emits_no_delta_note(tmp_path, monkeypatch):
     """A section whose data reaches the LLM another way has nothing in the prompt to diff
     against, so a change to it must not produce a 'section updated' note."""

@@ -1,3 +1,4 @@
+import pytest
 from unittest.mock import patch
 
 from common.RequestKilledException import RequestKilledException
@@ -252,13 +253,33 @@ class TestVoiceSynthesizerEmotionTags:
         assert "[laughing]" not in combined
         assert "no way, that worked?" in combined
 
-    def test_tags_kept_when_supported(self):
-        """SUPPORTS_EMOTION_TAGS=True → tags pass through untouched"""
+    def test_tags_kept_when_supported(self, monkeypatch):
+        """SUPPORTS_EMOTION_TAGS=True and tts.emotions on → tags pass through untouched"""
+        monkeypatch.setattr(VoiceSynthesizer, "emotions_enabled", staticmethod(lambda: True))
         vs = TagAwareVoiceSynthesizer()
         vs.llm_text_stream = iter(["[laughing] no way!"])
         vs._feed_text_to_queue()
         combined = self._collect_text(vs)
         assert "[laughing]" in combined
+
+    def test_tags_stripped_from_a_capable_engine_while_emotions_are_off(self, monkeypatch):
+        """tts.emotions off: a tag the LLM writes anyway is never performed"""
+        monkeypatch.setattr(VoiceSynthesizer, "emotions_enabled", staticmethod(lambda: False))
+        vs = TagAwareVoiceSynthesizer()
+        vs.llm_text_stream = iter(["[laughing] no way!"])
+        vs._feed_text_to_queue()
+        combined = self._collect_text(vs)
+        assert "[laughing]" not in combined
+        assert "no way!" in combined
+
+    @pytest.mark.parametrize("tts, expected", [({}, False), (None, False), ({"emotions": False}, False),
+                                               ({"emotions": True}, True)])
+    def test_emotions_follow_the_tts_emotions_config_key_and_are_off_without_it(self, monkeypatch, tts, expected):
+        """`tts.emotions` is a contract with config.yaml; an install without the key stays off"""
+        from interfaces.voice.tts import VoiceSynthesizer as module
+        real_get = module.config.get
+        monkeypatch.setattr(module.config, "get", lambda key, default=None: tts if key == "tts" else real_get(key, default))
+        assert VoiceSynthesizer.emotions_enabled() is expected
 
     def test_tag_split_across_chunks_stripped(self):
         """A tag split over multiple chunks is held back, then stripped whole"""

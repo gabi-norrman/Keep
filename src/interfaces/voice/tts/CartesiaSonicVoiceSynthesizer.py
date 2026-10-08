@@ -19,8 +19,8 @@ class CartesiaSonicVoiceSynthesizer(WebSocketVoiceSynthesizer, Integration):
 
     Streams over the websocket API."""
 
-    # Can render emotion tags, but the feature is currently disabled at the prompt
-    # level (see VoiceSynthesizer.SUPPORTS_EMOTION_TAGS) — it was a bit wonky.
+    # Can render emotion tags; whether the LLM is asked for them is the `tts.emotions`
+    # config key (see VoiceSynthesizer.SUPPORTS_EMOTION_TAGS).
     SUPPORTS_EMOTION_TAGS = True
 
     CONFIG_SECTION = "cartesia"

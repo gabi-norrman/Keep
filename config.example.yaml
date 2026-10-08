@@ -312,6 +312,10 @@ language: en-US         # drives TTS synthesis language for every engine that ac
                         # wants e.g. sv-SE, not bare sv).
 
 tts:
+  # Emotion tags: the LLM directs the voice with audio tags ([laughs], [whispers], [sarcastic]) and the
+  # engine performs them. Needs an engine that can (ElevenLabs v3/v4, Cartesia, Gemini, Fish); off, the
+  # LLM is not told about tags and any it writes are stripped before synthesis. Optional, default false.
+  emotions: false
   # Names the LLM addresses people by. A listed name loses the comma before it (", Sam" is
   # spoken as " Sam": the pause sounds wrong); a pronunciation is how a name is spelled for
   # the engine, and tts.<engine>.name_pronunciations overrides it for one engine. Optional.
