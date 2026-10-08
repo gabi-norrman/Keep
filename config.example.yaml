@@ -128,12 +128,15 @@ telegram_bot:
 
 # >> imessage: src/integrations/imessage/config.example.yaml
 
+# >> whatsapp: src/integrations/whatsapp/config.example.yaml
+
 # Feeds: integrations that pour into the history (iMessage, the personal Telegram feed). A feed
 # that has never run catches up this many months back; one that was merely stopped resumes where
 # it left off. Moving a horizon further back re-reads from there (the history dedupes).
 feeds:
   imessage: { backfill_months: 60 }   # five years; chat.db rows are cheap
   telegram_feed: { backfill_months: 1 }
+  whatsapp: { backfill_months: 36 }    # read at linking time: the phone uploads that much history once, when the device links
   photos: { backfill_months: 1, backfill_batch: false }   # one LLM call per photo or video, on the ai.photo_indexing tier (Gemini 3.8 Flash by default)
   # On a fresh install the first-run pipeline raises photos to 36 once the first memory bank is curated
   # (plans/FTUE_PIPELINE_PLAN.md); a wider value set by hand is left alone.

@@ -1,0 +1,8 @@
+# The WhatsApp integration: the server linked to the owner's own WhatsApp account as a companion
+# device (like WhatsApp Web), feeding their chats into the history and sending messages as them.
+# No keys: enable it, then link the account with whatsapp_login(phone) from any chat (the code
+# goes into the phone under Linked devices) or in the console's WhatsApp tab. The phone must open
+# WhatsApp at least every 14 days or WhatsApp unlinks every companion. The history arrives once, at
+# linking, as deep as feeds.whatsapp.backfill_months asks — a deeper horizon later means relinking.
+whatsapp:
+  blacklist: []      # messages from people/groups whose name contains any of these are skipped

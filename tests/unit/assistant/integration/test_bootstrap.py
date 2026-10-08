@@ -65,13 +65,14 @@ class TestStartFeeds:
         from integrations.photos.PhotosIntegration import PhotosIntegration
         from integrations.indigo.IndigoIntegration import IndigoIntegration
         from integrations.home_assistant.HomeAssistantIntegration import HomeAssistantIntegration
+        from integrations.whatsapp.WhatsAppIntegration import WhatsAppIntegration
         history = Mock(name="message_history")
 
         bootstrap.start_feeds(history)
 
         by_class = {call.args[0]: call.kwargs["start"] for call in monitor.register_class.call_args_list}
         assert set(by_class) == {IMessageIntegration, TelegramFeedIntegration, PhotosIntegration,
-                                 IndigoIntegration, HomeAssistantIntegration}
+                                 IndigoIntegration, HomeAssistantIntegration, WhatsAppIntegration}
         # The hook is what register_class runs now and again on every restart_integration.
         with patch.object(Feeds, "get_instance") as feeds:
             for cls, start in by_class.items():

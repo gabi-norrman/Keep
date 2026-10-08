@@ -41,6 +41,7 @@ GROUPS = {
     'src/integrations/telegram_feed': ('telegram_feed', 'The owner’s own Telegram account as a feed of their chats.'),
     'src/integrations/tesla': ('tesla', 'The cars through the Tessie API: state, climate, trunk and navigation.'),
     'src/integrations/weather': ('weather', 'The YR (met.no) weather forecast for the home location.'),
+    'src/integrations/whatsapp': ('whatsapp', 'The owner’s WhatsApp account as a companion device: a feed of their chats and the way to send a message as them.'),
     'src/integrations/x': ('x', 'Searching X posts through xAI’s server-side search.'),
     'src/common': ('common', 'Shared plumbing: config, logging, paths, the SQLite database, system monitors and the version.'),
     'src/common/vault': ('vault', 'The encrypted secret store and the redactor that keeps secrets away from LLM providers.'),

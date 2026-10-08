@@ -52,6 +52,9 @@ enabled and reports "needs 2FA". It sends the code to the user's Telegram app (b
 in), opens the masked prompt for it, then for the account's two-step verification password when it has one, and
 starts the feed. A code that expired or a cancelled prompt comes back as text; run it again for a new code.
 
+The WhatsApp integration (the user's own account, read into the history and written to) has no keys: enable it, and
+its link — `whatsapp_login(phone)`, a code the user types into the phone, from any chat — is in the whatsapp toolkit.
+
 `microsoft_login(account: str)` — signs a Microsoft 365 account (an entry of `microsoft.accounts`, by its name) in, e.g.
 `microsoft_login("Work")`, from any chat. It comes back with a code and the address to type it at
 (microsoft.com/devicelogin); tell the user both, nothing comes back to paste. The code lives about fifteen minutes;
