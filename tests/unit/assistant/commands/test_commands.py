@@ -6,6 +6,7 @@ from unittest.mock import Mock, call, patch, MagicMock
 import pytest
 
 from assistant.ChannelProfile import profile_for
+from assistant.commands.CommandParser import CommandParser
 from assistant.commands.Commands import Commands
 from assistant.tools.WebAccess import WebAccess
 
@@ -809,6 +810,20 @@ class TestCmdSelfAnalysis:
             assert commands_instance.cmd_self_improvement("fix") == "disabled"
         fire.assert_not_called()
         mock_cqm.analyze_code.assert_not_called()
+
+    def test_parsed_request_reaches_the_agent_whole(self, commands_instance):
+        """The request the LLM wrote, commas and all, is what Claude Code is asked to do:
+        prod's run of 2026-10-08 got the words before the first comma and nothing else."""
+        request = ("Marcus asked at 10:46 on Oct 8, 2026: the approval prompt shows no handle, "
+                   "so he could not tell which Bob it was about to text. Fix: show it, with a test.")
+        parser = CommandParser(["self_improvement"])
+        (name, params), _ = parser.extract_command_and_params(f"self_improvement({request})")
+        with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
+             patch.object(commands_instance, "fire_and_forget") as fire:
+            mock_cqm.unavailable_reason.return_value = ""
+            commands_instance.run(name, params)
+        fire.assert_called_once()
+        assert fire.call_args.args[1] == request
 
     """The self-analysis command is fire-and-forget (background thread). We
     run the inner callable synchronously by intercepting fire_and_forget

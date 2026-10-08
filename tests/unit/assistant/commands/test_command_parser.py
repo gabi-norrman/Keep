@@ -561,13 +561,24 @@ class TestCommandParser:
         result, remainder = parser.extract_command_and_params(content)
         assert result is not None, f"Failed to parse command. Content length: {len(content)}"
         assert result[0] == "self_improvement"
-        joined = ", ".join(result[1])
-        assert "Telegram HTML formatting" in joined
-        assert "TelegramBotIntegration.py" in joined
-        assert "(around lines 376-420)" in joined
-        assert "(around line 376-383)" in joined
-        assert "(around line 400-404)" in joined
+        # One verbatim argument: the dispatch hands a single-parameter command its first
+        # piece only, so a request split on its commas would lose everything after the first
+        assert len(result[1]) == 1
+        request = result[1][0]
+        assert request.startswith("Fix the Telegram HTML formatting")
+        assert request.endswith("only fix TelegramBotIntegration.py.")
+        assert "(around lines 376-420)" in request
+        assert "re.sub(r'<[^>]*>', '', text)" in request
         assert remainder == ""
+
+    def test_free_text_request_with_commas_and_apostrophe_is_one_argument(self, parser):
+        """A self_analysis question is prose: a comma does not start a second argument, an
+        apostrophe does not open a string for the paren matching, and nothing is cleaned."""
+        question = ("At 19:21 on Oct 7, Marcus's timer (three minutes, kitchen) never rang; "
+                    "why, and was it the gate?")
+        result, remainder = parser.extract_command_and_params(f"self_analysis({question}) then more")
+        assert result == ("self_analysis", [question])
+        assert remainder == " then more"
 
     def test_self_improvement_find_complete_command(self, parser):
         """find_complete_command should recognize the deeply nested self_improvement"""
