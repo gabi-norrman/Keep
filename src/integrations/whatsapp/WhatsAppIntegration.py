@@ -216,10 +216,19 @@ class WhatsAppIntegration(Integration, Feed):
             self._open_error = f"not linked — {LOGIN_HINT}"
             info(f"WhatsApp: {self._open_error}")
             return False
+        if self._pairing_pending():
+            # the login owns the client until the phone answers: a pairing code is only good
+            # on the socket that asked for it, so this must neither rebuild nor drop it
+            self._open_error = "pairing in progress — the code goes into the phone first"
+            info(f"WhatsApp: feed not opening, {self._open_error}")
+            return False
         if self._client is None:
             self._start_client()
         if not self._connected.wait(CONNECT_TIMEOUT):
-            if self._unpaired.is_set():
+            if self._pairing_pending():
+                self._open_error = "pairing in progress — the code goes into the phone first"
+                info(f"WhatsApp: feed not opening, {self._open_error} (a login started on this client meanwhile)")
+            elif self._unpaired.is_set():
                 self._drop_session("the session file holds no linked device")
                 self._open_error = f"not linked — {LOGIN_HINT}"
             else:
@@ -614,8 +623,12 @@ class WhatsAppIntegration(Integration, Feed):
         try:
             if self._client is not None and self._connected.is_set() and self._client.is_logged_in:
                 return None, f"WhatsApp is already linked as {self._connected_name or 'the account'} — nothing to do"
-            if self._client is None:
-                self._start_client()
+            if self._client is not None:
+                # an unpaired client's socket is gone once WhatsApp's pairing window closed
+                # (PairPhone then fails with "websocket not connected"): a fresh one each time
+                info("WhatsApp login: rebuilding the unpaired client for a fresh socket")
+                self._stop_client()
+            self._start_client()
             if not self._unpaired.wait(QR_TIMEOUT):
                 if self._connected.is_set():
                     return None, "WhatsApp is already linked — nothing to do"
@@ -635,9 +648,15 @@ class WhatsAppIntegration(Integration, Feed):
             self._login_lock.release()
 
     def wait_paired(self, timeout: float = PAIR_TIMEOUT) -> Optional[str]:
-        """Block until the phone accepted the code; None then, else what went wrong."""
+        """Block until the phone accepted the code; None then, else what went wrong. A code
+        that never landed ends the attempt: the client goes (its socket is dead by then) and
+        the next login starts clean."""
         if not self._paired.wait(timeout):
-            return self._pair_error or "the code was not entered in time — run whatsapp_login again for a new one"
+            failure = self._pair_error or "the code was not entered in time — run whatsapp_login again for a new one"
+            info(f"WhatsApp login: the pairing attempt is over ({failure}) — stopping the unpaired client")
+            self._login_phone = None
+            self._stop_client()
+            return failure
         if not self._connected.wait(CONNECT_TIMEOUT):
             return "paired, but the connection did not come up"
         self._identify()
@@ -645,6 +664,11 @@ class WhatsAppIntegration(Integration, Feed):
 
     def login_in_progress(self) -> bool:
         return self._login_lock.locked()
+
+    def _pairing_pending(self) -> bool:
+        """A login is asking for a code, or one is out and the phone has not answered yet."""
+        return self._login_lock.locked() or (self._login_phone is not None and not self._paired.is_set()
+                                             and not self._logged_out)
 
     def finish_login(self) -> Optional[dict]:
         """Start the feed on the client that just paired — in place, no rebuild, so the
@@ -654,7 +678,7 @@ class WhatsAppIntegration(Integration, Feed):
 
     def get_auth_status(self) -> dict:
         """The auth status for the TUI tab, from what the feed already knows."""
-        if self._login_lock.locked() or (self._login_phone and not self._paired.is_set() and not self._logged_out):
+        if self._pairing_pending():
             return {"status": "needs_auth", "message": "Pairing in progress — type the code into the phone"}
         if self._logged_out:
             return {"status": "needs_auth", "message": "WhatsApp unlinked the server — press Ctrl-P to link again"}

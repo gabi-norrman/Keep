@@ -197,6 +197,52 @@ class TestLink:
     def test_wait_paired_reports_a_code_that_was_not_entered(self, integration):
         assert "whatsapp_login" in integration.wait_paired(timeout=0.01)
 
+    def test_a_code_that_never_landed_ends_the_attempt_and_frees_the_client(self, integration):
+        client = integration._client
+        integration._login_phone = "46701740605"
+        integration._paired.clear()
+        assert integration.get_auth_status()["message"].startswith("Pairing in progress")
+        integration.wait_paired(timeout=0.01)
+        assert client.stopped and integration._client is None
+        assert not integration.get_auth_status()["message"].startswith("Pairing in progress")
+
+    def test_login_on_an_unpaired_client_rebuilds_it_for_a_fresh_socket(self, integration):
+        stale = integration._client
+        stale.logged_in = False
+        integration._connected.clear()
+        started = []
+
+        def start():
+            integration._client = FakeClient()
+            integration._client.PairPhone = lambda digits, push: "ABCDEFGH"
+            started.append(integration._client)
+            integration._unpaired.set()
+
+        with patch.object(integration, "_start_client", side_effect=start):
+            code, failure = integration.login("+46701740605")
+        assert failure is None and code == "ABCD-EFGH"
+        assert stale.stopped and started == [integration._client]
+
+    def test_open_feed_leaves_the_client_and_the_session_alone_while_a_code_is_out(self, integration, monkeypatch):
+        mod.SESSION_PATH.write_bytes(b"sqlite")
+        monkeypatch.setattr(mod, "CONNECT_TIMEOUT", 0.01)
+        client = integration._client
+        integration._connected.clear()
+        integration._unpaired.set()
+        integration._login_phone = "46701740605"
+        integration._paired.clear()
+        assert integration.open_feed() is False
+        assert "pairing in progress" in integration.open_error
+        assert mod.SESSION_PATH.exists() and integration._client is client and not client.stopped
+
+    def test_open_feed_drops_a_session_without_a_device_when_no_code_is_out(self, integration, monkeypatch):
+        mod.SESSION_PATH.write_bytes(b"sqlite")
+        monkeypatch.setattr(mod, "CONNECT_TIMEOUT", 0.01)
+        integration._connected.clear()
+        integration._unpaired.set()
+        assert integration.open_feed() is False
+        assert not mod.SESSION_PATH.exists() and "whatsapp_login" in integration.open_error
+
     def test_wipe_targets_name_the_session_and_its_sidecars(self, integration):
         paths = [p for p, _ in WhatsAppIntegration.wipe_targets()]
         assert paths[0] == mod.SESSION_PATH and len(paths) == 4
