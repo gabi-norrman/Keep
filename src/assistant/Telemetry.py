@@ -330,6 +330,5 @@ class Telemetry:
             return
         try:
             self._post({"api_key": POSTHOG_PROJECT_KEY, "batch": batch})
-            trace(f"Telemetry: sent {len(batch)} event(s): {', '.join(e['event'] for e in batch)}")
         except Exception as e:
             error(f"Telemetry: dropping {len(batch)} event(s), post failed: {e}")
