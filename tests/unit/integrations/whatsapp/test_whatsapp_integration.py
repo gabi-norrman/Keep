@@ -286,3 +286,28 @@ class TestSend:
             raise RuntimeError("server said no")
         integration._client.send_message = refuse
         assert "server said no" in integration.send("Bob", "hi")
+
+
+class TestImportNeonize:
+    def test_the_root_logger_level_survives_neonizes_basic_config(self, monkeypatch, tmp_path):
+        """neonize runs logging.basicConfig(level=INFO) on import; the process-wide level must
+        not change, while neonize's own loggers keep INFO."""
+        import logging
+        import sys
+        from types import ModuleType
+        root = logging.getLogger()
+        monkeypatch.setattr(root, "level", logging.WARNING)
+        monkeypatch.setattr(root, "handlers", [])
+        monkeypatch.setattr(logging.getLogger("whatsmeow"), "level", logging.NOTSET)
+        (tmp_path / "neonize.py").write_text(
+            "import logging\nlogging.basicConfig(level=logging.INFO, handlers=[logging.NullHandler()])\n")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.delitem(sys.modules, "neonize", raising=False)
+        monkeypatch.setitem(sys.modules, "magic", ModuleType("magic"))
+
+        neonize = mod.import_neonize()
+
+        assert neonize.__file__ == str(tmp_path / "neonize.py")
+        assert root.level == logging.WARNING
+        assert logging.getLogger("whatsmeow").getEffectiveLevel() == logging.INFO
+        assert not logging.getLogger("httpx").isEnabledFor(logging.INFO)

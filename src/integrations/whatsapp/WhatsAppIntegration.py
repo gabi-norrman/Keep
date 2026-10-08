@@ -1,3 +1,4 @@
+import logging
 import os
 import queue
 import re
@@ -52,7 +53,18 @@ def import_neonize():
         stub.from_file = lambda path, mime=False: mimetypes.guess_type(path)[0] or "application/octet-stream"
         sys.modules["magic"] = stub
         note("WhatsApp: libmagic is not installed — media sends would need `brew install libmagic`; text is unaffected")
+    root = logging.getLogger()
+    level_before = root.level
     import neonize
+    # neonize's import runs logging.basicConfig(level=INFO): the root logger goes from WARNING
+    # to INFO and every stdlib logger in the process (httpx, google_genai, …) starts spilling
+    # into the log through stderr. Put the root back and keep INFO for neonize's own loggers,
+    # whose pairing and reconnect lines are the ones wanted.
+    if root.level != level_before:
+        root.setLevel(level_before)
+        for name in ("whatsmeow", "Whatsmeow"):
+            logging.getLogger(name).setLevel(logging.INFO)
+        trace(f"WhatsApp: neonize raised the root logger to INFO on import — restored to {logging.getLevelName(level_before)}")
     return neonize
 
 
