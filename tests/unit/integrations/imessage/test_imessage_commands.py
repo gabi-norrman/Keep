@@ -53,3 +53,25 @@ class TestCmdSendImessage:
             commands_instance.run("send_imessage", ["Bob", "line one\nline two"])
         sent = inst.send.call_args[0][1]
         assert "line one\nline two" in sent
+
+
+class TestSendImessageApproval:
+    """The approval card names the handle the message goes to, or why there is none."""
+
+    @staticmethod
+    def _resolver(handle, err):
+        return patch("integrations.imessage.IMessageIntegration.IMessageIntegration.resolve_recipient",
+                     return_value=(handle, err))
+
+    def test_describe_names_the_reason_when_the_recipient_does_not_resolve(self, commands_instance):
+        with self._resolver(None, "unknown contact: Erik (cache has 3 names)"):
+            text = commands_instance.describe("send_imessage", "Erik, hello")
+        assert "Erik" in text and "unknown contact" in text
+        assert "(" not in text.split("unknown contact")[0]   # no handle is promised
+
+    def test_describe_shows_the_handle_the_message_goes_to(self, commands_instance):
+        with self._resolver("+46701740605", None), \
+             patch("integrations.imessage.IMessageIntegration.IMessageIntegration.display_name_for_handle",
+                   return_value="Alice Smith"):
+            text = commands_instance.describe("send_imessage", "Alice, hello")
+        assert "+46701740605" in text and "Alice Smith" in text

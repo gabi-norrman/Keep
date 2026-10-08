@@ -24,6 +24,8 @@ class IMessageCommands(CommandSet):
         from integrations.imessage.IMessageIntegration import IMessageIntegration
         return IMessageIntegration.get_instance().send(recipient, body)
 
+    # The approval card names the handle the message goes to, or why there is none — the user
+    # approves a number, never a bare name.
     def describe_send_imessage(self, p):
         recipient = p.split(",", 1)[0].strip() if p else ""
         if not recipient:
@@ -32,7 +34,9 @@ class IMessageCommands(CommandSet):
             from integrations.imessage.IMessageIntegration import IMessageIntegration
             imessage = IMessageIntegration.get_instance()
             handle, err = imessage.resolve_recipient(recipient)
-            if handle and not err and handle.lower() != recipient.lower():
+            if err:
+                return f"Sending iMessage to {recipient} — {err}"
+            if handle.lower() != recipient.lower():
                 display = imessage.display_name_for_handle(handle) or recipient
                 return f"Sending iMessage to {display} ({handle})"
         except Exception as e:
