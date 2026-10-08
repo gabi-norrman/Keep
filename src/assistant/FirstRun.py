@@ -143,6 +143,15 @@ def brief_due(verbose: bool = True) -> bool:
     return due
 
 
+def install_age_days(now: float = None, state_path: Path = None) -> float | None:
+    """How many days ago this install first started, by the pipeline's state file — None for an
+    established install that pre-dates the pipeline and has no file."""
+    state = State.load(state_path)
+    if state is None:
+        return None
+    return ((now if now is not None else time.time()) - state.started_at) / 86400
+
+
 def in_ftue(now: float = None, state_path: Path = None, activity_path: Path = None, verbose: bool = True) -> bool:
     """Whether setup is in progress: fewer than `FTUE_INTEGRATION_THRESHOLD` integrations
     enabled, or the install younger than `FTUE_INSTALL_DAYS` (an established install that
@@ -154,8 +163,7 @@ def in_ftue(now: float = None, state_path: Path = None, activity_path: Path = No
         log("FTUE check: too few integrations enabled — setup in progress")
         return True
     now = now if now is not None else time.time()
-    state = State.load(state_path)
-    age_days = (now - state.started_at) / 86400 if state else None
+    age_days = install_age_days(now, state_path)
     age = f"{age_days:.1f} day(s) old" if age_days is not None else "established"
     if age_days is None or age_days >= FTUE_INSTALL_DAYS:
         log(f"FTUE check: the install is {age} (>= {FTUE_INSTALL_DAYS} days) — setup is not in progress")
