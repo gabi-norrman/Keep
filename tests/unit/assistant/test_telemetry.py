@@ -275,6 +275,38 @@ class TestStatus:
         feeds = reported()
         assert feeds.index({"iMessage": 400}) < feeds.index({"iMessage": 410})
 
+    def test_a_status_sizes_the_prompt_as_the_dashboard_does(self, settings, sent):
+        stats = [("memory", 2048, 0.0), ("weather", 512, 0.0), ("history", 1024, 0.0), ("static", 3072, 0.0)]
+        t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
+        t.start(prompt_stats=lambda: stats)
+        t.status()
+        t.stop()
+        [status] = _by_name(sent, "status")
+        assert status["properties"]["prompt_kb"] == 6.5
+        assert status["properties"]["prompt_sections"] == {"memory": 2.0, "weather": 0.5, "history": 1.0, "static": 3.0}
+
+    def test_a_prompt_not_yet_built_or_a_failing_provider_leaves_the_status_without_a_size(self, settings, sent):
+        stats = {"value": []}
+
+        def provider():
+            if stats["value"] is None:
+                raise RuntimeError("no prompt manager")
+            return stats["value"]
+
+        t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
+        t.start(prompt_stats=provider)
+        t.feed_count("iMessage", 1)
+        t.status()
+        stats["value"] = None
+        t.feed_count("iMessage", 2)
+        t.status()
+        stats["value"] = [("static", 1024, 0.0)]
+        t.status()
+        t.stop()
+        statuses = _by_name(sent, "status")
+        assert [s["properties"].get("prompt_kb") for s in statuses] == [None, None, 1.0]
+        assert all("prompt_sections" not in s["properties"] for s in statuses[:2])
+
     def test_an_install_that_opted_out_sends_no_status_or_memory_size(self, settings, telemetry, sent):
         settings["telemetry.enabled"] = False
         telemetry.feed_count("iMessage", 400)

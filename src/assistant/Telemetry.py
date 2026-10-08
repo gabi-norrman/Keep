@@ -1,7 +1,7 @@
 """Anonymous usage telemetry for the closed beta: an event when the user speaks, one when the
 assistant answers, one when an integration is switched on or off, one per TUI tab opened, the
-size of the memory after a curation, the install's status — what every running feed holds and
-which integrations are on, hourly when it changed —, a daily heartbeat — and, for the install's first `TRANSCRIPT_DAYS`, the transcript itself.
+size of the memory after a curation, the install's status — what every running feed holds,
+which integrations are on and how big the prompt is, hourly when it changed —, a daily heartbeat — and, for the install's first `TRANSCRIPT_DAYS`, the transcript itself.
 
 An install is known only by a random id (`telemetry.id`, written to config.yaml on the first
 start) and `telemetry.enabled: false` turns the whole thing off — read again for every event,
@@ -57,7 +57,9 @@ def _post_http(payload: dict) -> None:
 class Telemetry:
     """The process-wide sink: `user_turn` / `assistant_turn` / `tab_change` /
     `integration_switch` / `memory_size` / `heartbeat` enqueue, `feed_count` / `feed_stopped`
-    keep the counts the worker thread's `status` reports, and that thread posts. Before `start()` (or when disabled) every call is a no-op."""
+    keep the counts the worker thread's `status` reports — beside the prompt sizes it reads
+    through the `prompt_stats` callable `start()` is given —, and that thread posts. Before
+    `start()` (or when disabled) every call is a no-op."""
 
     _instance: Optional["Telemetry"] = None
 
@@ -83,6 +85,7 @@ class Telemetry:
         self._dropped = 0
         self._feed_counts: dict[str, int] = {}      # running feed → what it holds, per its last pass
         self._last_status: Optional[dict] = None    # the status last sent, so an unchanged one is not
+        self._prompt_stats: Optional[Callable[[], list[tuple[str, int, float]]]] = None
 
     @property
     def active(self) -> bool:
@@ -100,7 +103,10 @@ class Telemetry:
 
     # --- lifecycle ------------------------------------------------------------------------
 
-    def start(self):
+    def start(self, prompt_stats: Optional[Callable[[], list[tuple[str, int, float]]]] = None):
+        """*prompt_stats* is `PromptManager.get_section_stats` — (section, bytes, last update)
+        per section, history and the static rest — the `status` sizes the prompt from."""
+        self._prompt_stats = prompt_stats
         if not config.get("telemetry.enabled", True):
             info("Telemetry: off (telemetry.enabled is false).")
             return
@@ -208,14 +214,33 @@ class Telemetry:
             if self._feed_counts.pop(feed, None) is not None:
                 trace(f"Telemetry: feed {feed} stopped, out of the status from here.")
 
+    def _prompt_sizes(self) -> dict:
+        """The prompt as the console's Dashboard sizes it: `prompt_kb`, the whole of what the LLM
+        is sent (template, sections and history), and `prompt_sections` with each part's KB.
+        Empty before the prompt is built, or without a provider."""
+        if self._prompt_stats is None:
+            return {}
+        try:
+            stats = self._prompt_stats()
+        except Exception as e:
+            error(f"Telemetry: could not size the prompt for the status: {e}")
+            return {}
+        total = sum(size for _, size, _ in stats)
+        if total <= 0:
+            trace("Telemetry: no prompt built yet, the status goes without its size.")
+            return {}
+        return {"prompt_kb": round(total / 1024, 1),
+                "prompt_sections": {name: round(size / 1024, 1) for name, size, _ in stats}}
+
     def status(self):
-        """What the install holds: the count of every running feed and the integrations that
-        are on. The worker calls this STATUS_FIRST_DELAY after start and every STATUS_INTERVAL
-        from then; an event goes out when any of it differs from the one last sent — a
-        catch-up shows as an hourly curve, a quiet install as nothing."""
+        """What the install holds: the count of every running feed, the integrations that
+        are on and the size of the prompt. The worker calls this STATUS_FIRST_DELAY after start
+        and every STATUS_INTERVAL from then; an event goes out when any of it differs from the
+        one last sent — a catch-up shows as an hourly curve, a quiet install as nothing (the
+        history grows with every turn, so a used install reports hourly)."""
         with self._lock:
             feeds = dict(self._feed_counts)
-        snapshot = {"feeds": feeds, "integrations": sorted(config.enabled_integrations())}
+        snapshot = {"feeds": feeds, "integrations": sorted(config.enabled_integrations()), **self._prompt_sizes()}
         if snapshot == self._last_status:
             trace("Telemetry: status unchanged since the last one sent, nothing to report.")
             return
@@ -223,8 +248,9 @@ class Telemetry:
         self._last_status = snapshot
         if not self._on():
             return
+        prompt = f", prompt {snapshot['prompt_kb']} KB" if "prompt_kb" in snapshot else ""
         trace(f"Telemetry: status — {len(snapshot['integrations'])} integration(s) on, "
-              + (", ".join(f"{name} {count}" for name, count in feeds.items()) or "no running feed"))
+              + (", ".join(f"{name} {count}" for name, count in feeds.items()) or "no running feed") + prompt)
         self._enqueue("status", snapshot)
 
     def heartbeat(self, startup: bool = False):
