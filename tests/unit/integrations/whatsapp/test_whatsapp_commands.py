@@ -98,17 +98,33 @@ class TestCmdSendWhatsapp:
         with patch("integrations.whatsapp.WhatsAppIntegration.WhatsAppIntegration") as cls:
             wa = cls.get_instance.return_value
             wa.resolve_recipient.return_value = ("46701740611@s.whatsapp.net", "Bob Berg", None)
+            wa.phone_for.return_value = "+46701740611"
             wa.is_known.return_value = True
             text = owner.describe_send_whatsapp('"Bob", "hi"')
             assert "Bob Berg" in text and "+46701740611" in text, "a name is approved with the number it resolved to"
             wa.resolve_recipient.return_value = ("46701740699@s.whatsapp.net", "+46701740699", None)
+            wa.phone_for.return_value = "+46701740699"
             wa.is_known.return_value = False
             text = owner.describe_send_whatsapp("+46701740699, hi")
             assert text.count("+46701740699") == 1 and "no earlier chat" in text
             wa.resolve_recipient.return_value = ("120363000000000001@g.us", "Family", None)
+            wa.phone_for.return_value = None
             wa.is_known.return_value = True
             text = owner.describe_send_whatsapp("Family, hi")
             assert "group" in text and "Family" in text and "+" not in text
+
+    def test_the_approval_card_never_shows_a_lid_as_a_number(self, commands_instance):
+        owner = commands_instance._owner("send_whatsapp")
+        with patch("integrations.whatsapp.WhatsAppIntegration.WhatsAppIntegration") as cls:
+            wa = cls.get_instance.return_value
+            wa.resolve_recipient.return_value = ("221010443927802@lid", "Bob Berg", None)
+            wa.is_known.return_value = True
+            wa.phone_for.return_value = "+46701740611"
+            text = owner.describe_send_whatsapp("Bob, hi")
+            assert "+46701740611" in text and "221010443927802" not in text
+            wa.phone_for.return_value = None
+            text = owner.describe_send_whatsapp("Bob, hi")
+            assert "Bob Berg" in text and "221010443927802" not in text and "+" not in text
             wa.resolve_recipient.return_value = (None, None, "unknown contact: Carol")
             assert owner.describe_send_whatsapp("Carol, hi") == "Sending WhatsApp message to Carol — unknown contact: Carol"
 

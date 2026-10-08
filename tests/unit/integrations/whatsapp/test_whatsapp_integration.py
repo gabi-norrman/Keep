@@ -350,6 +350,19 @@ class TestRecipients:
     def test_a_group_name_resolves_to_the_group(self, integration):
         assert integration.resolve_recipient("family")[0] == f"{GROUP}@g.us"
 
+    def test_a_contact_with_number_privacy_resolves_to_its_lid_and_the_phone_stays_known(self, integration):
+        """WhatsApp answers the registration check with a lid for such an account: the send goes
+        to the lid, and the number behind it is what the approval card shows — not the lid."""
+        integration._client = FakeClient(CONTACTS, GROUPS, lids={BOB: "221010443927802"})
+        jid, display, err = integration.resolve_recipient("Bob")
+        assert (jid, display, err) == ("221010443927802@lid", "Bob Berg", None)
+        assert integration.phone_for(jid) == f"+{BOB}"
+
+    def test_phone_for_a_phone_jid_a_group_and_an_unmapped_lid(self, integration):
+        assert integration.phone_for(f"{ALICE}@s.whatsapp.net") == f"+{ALICE}"
+        assert integration.phone_for(f"{GROUP}@g.us") is None
+        assert integration.phone_for("999000000000001@lid") is None
+
     def test_an_international_number_is_checked_on_whatsapp(self, integration):
         integration._client = FakeClient(CONTACTS, GROUPS, on_whatsapp={ALICE})
         assert integration.resolve_recipient("+46 70 174 06 10")[0] == f"{ALICE}@s.whatsapp.net"

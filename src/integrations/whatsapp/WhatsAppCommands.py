@@ -90,13 +90,13 @@ class WhatsAppCommands(CommandSet):
             jid, display, err = whatsapp.resolve_recipient(recipient)
             if err:
                 return f"Sending WhatsApp message to {recipient} — {err}"
-            user, server = jid_parts(jid)
-            if server == SERVER_GROUP:
+            number = whatsapp.phone_for(jid)
+            if jid_parts(jid)[1] == SERVER_GROUP:
                 line = f"Sending WhatsApp message to the group {display}"
+            elif number is None or display == number:
+                line = f"Sending WhatsApp message to {display}"
             else:
-                number = f"+{user}"
-                line = f"Sending WhatsApp message to {number}" if display == number else \
-                    f"Sending WhatsApp message to {display} ({number})"
+                line = f"Sending WhatsApp message to {display} ({number})"
             if not whatsapp.is_known(recipient):
                 line += " — no earlier chat with this number"
             return line

@@ -824,7 +824,25 @@ class WhatsAppIntegration(Integration, Feed):
         if not answers or not answers[0].IsIn:
             return None, f"+{user} is not on WhatsApp"
         jid = self._jid_string(answers[0].JID)
+        lid_user, server = msgs.jid_parts(jid)
+        if server == msgs.SERVER_LID and lid_user:
+            # an account with number privacy on answers with its lid: remember whose it is,
+            # so the approval card and an incoming message still show the phone number
+            trace(f"WhatsApp: +{user} is on WhatsApp as lid {lid_user}")
+            self._lid_to_pn[lid_user] = user
         return jid or f"{user}@{msgs.SERVER_USER}", None
+
+    def phone_for(self, jid: str) -> Optional[str]:
+        """The phone number behind a resolved JID (`+46…`): the JID's own for a phone JID, the
+        mapped one for a lid, None for a group or a lid nothing maps — never a lid dressed up
+        as a number."""
+        user, server = msgs.jid_parts(jid or "")
+        if server == msgs.SERVER_USER and user.isdigit():
+            return f"+{user}"
+        if server == msgs.SERVER_LID:
+            pn = self._phone_user_of_lid(user)
+            return f"+{pn}" if pn else None
+        return None
 
     def is_known(self, recipient: str) -> bool:
         """Whether the owner has a chat or an address-book entry behind *recipient* — the

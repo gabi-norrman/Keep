@@ -86,10 +86,12 @@ class FakeContactStore:
 class FakeClient:
     """What the integration calls on neonize's client, recorded."""
 
-    def __init__(self, contacts: dict | None = None, groups: dict | None = None, on_whatsapp: set | None = None):
+    def __init__(self, contacts: dict | None = None, groups: dict | None = None, on_whatsapp: set | None = None,
+                 lids: dict | None = None):
         self.contact = FakeContactStore(contacts or {})
         self._groups = groups or {}              # group user → title
         self._on_whatsapp = on_whatsapp          # None: everyone asked for is on WhatsApp
+        self._lids = lids or {}                  # phone user → lid user, for an account with number privacy on
         self.sent: list[tuple[str, str]] = []
         self.downloads: dict[int, bytes] = {}
         self.logged_in = True
@@ -114,7 +116,8 @@ class FakeClient:
         for number in numbers:
             user = number.lstrip("+")
             is_in = self._on_whatsapp is None or user in self._on_whatsapp
-            answers.append(SimpleNamespace(Query=number, IsIn=is_in, JID=jid(user)))
+            answer_jid = jid(self._lids[user], "lid") if user in self._lids else jid(user)
+            answers.append(SimpleNamespace(Query=number, IsIn=is_in, JID=answer_jid))
         return answers
 
     def send_message(self, to, message, **kwargs):
