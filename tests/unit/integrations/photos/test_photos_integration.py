@@ -2671,6 +2671,19 @@ class TestPhotosFeedProviderRefusal:
         assert video_a["system_message"] == video_b["system_message"]
         assert "Beach" in video_b["user_message"] and "slow-motion" in video_b["user_message"]
 
+    def test_the_first_run_stub_is_not_sent_as_memory(self):
+        """Until the first curation the bank is the shipped stub: teaching notes and another
+        family's examples, which would only mislead the vision model about who is in a photo."""
+        from assistant import MemoryFile
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        stub = MemoryFile.FIRST_RUN_STUB.read_text()
+        assert MemoryFile.is_placeholder(stub), "the shipped stub must be recognised as uncurated"
+        with patch.object(MemoryFile, "read", return_value=stub):
+            assert PhotoProcessor._read_memory() == ""
+            assert "(no memory available)" in PhotoProcessor()._photo_system_prompt()
+        with patch.object(MemoryFile, "read", return_value="Marcus lives at Storgatan 1"):
+            assert PhotoProcessor._read_memory() == "Marcus lives at Storgatan 1"
+
 
 REPLY = '{"short_description":"a barn","detailed_description":"red barn","pretty_score":40,"family_importance_score":10}'
 

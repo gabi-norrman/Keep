@@ -31,6 +31,8 @@ LEGACY_MEMORY_FILE = "memory.md"
 # What a fresh install starts from: a placeholder heading plus the concepts the assistant
 # may teach the user over time. The first curation rewrites it into a real bank.
 FIRST_RUN_STUB = RES_DIR / "first_run_memory.md"
+# What the stub opens with; a bank that still starts so has never been curated.
+PLACEHOLDER_HEADING = "# Long-term memory bank (placeholder)"
 
 lock = threading.RLock()
 
@@ -72,6 +74,11 @@ def read(path: str = MEMORY_FILE) -> str:
             return ""
         with open(path, "r") as f:
             return f.read()
+
+
+def is_placeholder(text: str) -> bool:
+    """Whether `text` is still the first-run stub, i.e. no curation has rewritten it yet."""
+    return text.startswith(PLACEHOLDER_HEADING)
 
 
 def append(text: str, path: str = MEMORY_FILE):

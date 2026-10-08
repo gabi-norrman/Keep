@@ -1326,11 +1326,17 @@ class PhotoProcessor:
 
     @staticmethod
     def _read_memory() -> str:
+        """The memory bank for the description prompts, or "" while the bank is still the first-run
+        stub: its teaching notes and another family's examples would only mislead the vision model."""
         try:
-            return MemoryFile.read()
+            bank = MemoryFile.read()
         except Exception as e:
             trace(f"Photos: could not read the memory bank: {e}")
-        return ""
+            return ""
+        if MemoryFile.is_placeholder(bank):
+            trace("Photos: the memory bank is still the first-run stub, describing without memory")
+            return ""
+        return bank
 
     @staticmethod
     def _home_time(timestamp: float) -> str:

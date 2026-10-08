@@ -220,8 +220,7 @@ def brief() -> str:
 # --- The pipeline -------------------------------------------------------------------------
 
 STATE_FILE = AISERVER_DIR / "first_run.json"
-# What `res/first_run_memory.md` opens with; a bank that still starts so has never been curated.
-PLACEHOLDER_HEADING = "# Long-term memory bank (placeholder)"
+PLACEHOLDER_HEADING = MemoryFile.PLACEHOLDER_HEADING
 # The Photos horizon once the first bank exists: what config.example.yaml's one month becomes.
 FULL_PHOTOS_BACKFILL_MONTHS = 36
 PHOTOS_BACKFILL_KEY = "feeds.photos.backfill_months"
@@ -302,7 +301,7 @@ def begin_if_fresh(seeded: bool, path: Path = None) -> bool:
         state = State.load(path)
         info(f"First run: pipeline state found — {state.stage.value if state else 'unreadable'}")
         return state is not None
-    if not seeded and not MemoryFile.read().startswith(PLACEHOLDER_HEADING):
+    if not seeded and not MemoryFile.is_placeholder(MemoryFile.read()):
         info("First run: established install (a curated memory bank, no pipeline state) — no pipeline")
         return False
     State.fresh().save(path)
