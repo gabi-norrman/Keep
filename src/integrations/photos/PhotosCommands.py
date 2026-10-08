@@ -2,10 +2,11 @@ from dataclasses import dataclass
 import os
 from typing import Optional
 
-from assistant.ChannelProfile import PHOTO_TARGET_KITCHEN_TV
+from assistant.ChannelProfile import PHOTO_TARGET_SCREEN
 from assistant.commands.CommandSet import CommandSet
 from assistant.commands.Commands import NO_NOTIFICATION_CHANNEL
 from assistant.Notifier import notifier
+from common.ConfigManager import config
 from common.FloxyDatabase import FloxyDatabase
 from common.logging import trace, info, error, fine
 
@@ -22,7 +23,9 @@ class MediaPayload:
 
 class PhotosCommands(CommandSet):
     """The photo library's commands: search the indexed photos and videos, and show some —
-    in the chat that asked, or on the kitchen TV for a channel whose photos go there."""
+    in the chat that asked, or full screen on the server's display for a spoken request when
+    `photos.show_on_screen` is on (`photos.screen_prepare_command` runs first, e.g. to switch
+    the TV to the Mac's input); off, a spoken request's photo goes to the chat too."""
     MULTI_PARAM_COMMANDS = frozenset({"show_photo", "search_photos"})
 
     def cmd_show_photo(self, *args: str):
@@ -49,8 +52,8 @@ class PhotosCommands(CommandSet):
         if prep_error:
             return f"show_photo failed: {self._format_single_photo_error(photo_id, prep_error)}"
 
-        if self.profile.photo_target == PHOTO_TARGET_KITCHEN_TV:
-            return self._show_photo_on_kitchen_tv(payload.uuid, payload.caption)
+        if self._shows_on_screen():
+            return self._show_photo_on_screen(payload.uuid, payload.caption)
 
         if payload.kind == "video":
             sent = notifier().send_video(payload.data, caption=payload.caption, thumbnail=payload.thumbnail,
@@ -63,8 +66,8 @@ class PhotosCommands(CommandSet):
         return ""
 
     def _run_show_photo_album(self, photo_ids: list[int], route: Optional[dict] = None) -> str:
-        if self.profile.photo_target == PHOTO_TARGET_KITCHEN_TV:
-            info(f"{self.profile.name}: showing first photo only from album of {len(photo_ids)} (single TV frame)")
+        if self._shows_on_screen():
+            info(f"{self.profile.name}: showing first photo only from album of {len(photo_ids)} (one screen)")
             return self._run_show_single_photo(photo_ids[0], route=route)
 
         album_photos: list[tuple[bytes, str]] = []
@@ -253,26 +256,36 @@ class PhotosCommands(CommandSet):
             return f"photo {photo_id} database error: {detail}"
         return f"photo {photo_id} {prep_error}"
 
+    def _shows_on_screen(self) -> bool:
+        """A spoken request's photo goes to the server's screen only when the install says it has
+        one; without `photos.show_on_screen` it goes to the chat like everyone else's."""
+        if self.profile.photo_target != PHOTO_TARGET_SCREEN:
+            return False
+        if config.get("photos.show_on_screen", False):
+            return True
+        info(f"{self.profile.name}: photos.show_on_screen is off, sending the photo to the chat instead of the screen")
+        return False
+
     @staticmethod
-    def _show_photo_on_kitchen_tv(uuid: str, caption: str) -> str:
+    def _show_photo_on_screen(uuid: str, caption: str) -> str:
         import subprocess
 
-        trace(f"Switching Kitchen TV to PC mode")
-        try:
-            result = subprocess.run(
-                ["./main.py", "setpcmode"],
-                cwd=os.path.expanduser("~/Documents/Floxy/TheFrameAPI"),
-                timeout=10,
-                capture_output=True, text=True,
-            )
-            fine(f"setpcmode stdout: {result.stdout.strip()}")
-            fine(f"setpcmode stderr: {result.stderr.strip()}")
-            if result.returncode != 0:
-                error(f"setpcmode exited with code {result.returncode}")
-                return f"show_photo failed: setpcmode exited with code {result.returncode}: {result.stderr.strip()}"
-        except Exception as e:
-            error(f"Failed to set Kitchen TV to PC mode: {e}")
-            return f"show_photo failed: could not switch Kitchen TV to PC mode: {e}"
+        prepare = (config.get("photos.screen_prepare_command", "") or "").strip()
+        if prepare:
+            trace(f"Preparing the screen: {prepare}")
+            try:
+                result = subprocess.run(prepare, shell=True, timeout=10, capture_output=True, text=True)
+                fine(f"screen_prepare_command stdout: {result.stdout.strip()}")
+                fine(f"screen_prepare_command stderr: {result.stderr.strip()}")
+                if result.returncode != 0:
+                    error(f"screen_prepare_command exited with code {result.returncode}")
+                    return (f"show_photo failed: photos.screen_prepare_command exited with code "
+                            f"{result.returncode}: {result.stderr.strip()}")
+            except Exception as e:
+                error(f"screen_prepare_command failed: {e}")
+                return f"show_photo failed: could not prepare the screen: {e}"
+        else:
+            trace("No photos.screen_prepare_command, opening the photo as the screen is")
 
         trace(f"Opening photo {uuid} in Photos app via AppleScript")
         applescript = f'''
@@ -301,7 +314,7 @@ class PhotosCommands(CommandSet):
             error(f"Failed to open photo in Photos app: {e}")
             return f"show_photo failed: could not open photo in Photos app: {e}"
 
-        info(f"Showing photo {uuid} on Kitchen TV: {caption}")
+        info(f"Showing photo {uuid} on the screen: {caption}")
         return ""
 
     def cmd_search_photos(self, *args: str):

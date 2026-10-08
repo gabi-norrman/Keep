@@ -134,7 +134,7 @@ def test_real_example_parses_and_has_the_known_sections():
         ConfigSchema.reset()
         names = ConfigSchema.sections()
         assert {"imap", "caldav", "mail", "tesla", "ai", "vault"} <= set(names)
-        assert "photos" not in names   # its videos block is defaults only, nothing the LLM should be offered to tune
+        assert "photos" in names   # the folder's fragment: show_on_screen is the user's to set through config_set
         assert ConfigSchema.leaf_type("ai.fast.llm") is str
         assert "\nmail:\n  send_from:" in ConfigSchema.section_text("mail")
         assert ConfigSchema.section_text("imap").rstrip().endswith("the server does that itself")   # the fragment, pointed at from the root

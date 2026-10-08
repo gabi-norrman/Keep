@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
 import pytest
@@ -6,6 +7,13 @@ from assistant.ChannelProfile import profile_for
 from assistant.commands.Commands import Commands
 from integrations.photos.ICloudPhotoDownloader import NoVideoRenditionError, PhotoNotInCloudError
 from integrations.photos.PhotosCommands import MediaPayload, PhotosCommands
+
+
+@contextmanager
+def _screen_config(**values):
+    with patch("integrations.photos.PhotosCommands.config") as cfg:
+        cfg.get.side_effect = lambda key, default=None: values.get(key, default)
+        yield
 
 
 def photo_commands(commands) -> PhotosCommands:
@@ -337,41 +345,70 @@ class TestCmdShowPhoto:
 
     def test_show_photo_multiple_ids_voice_to_voice_shows_first(self, commands_instance):
         commands_instance._current_profile = profile_for("VoiceToVoice")
-        with patch.object(photo_commands(commands_instance), '_run_show_single_photo', return_value="") as mock_single:
+        with _screen_config(**{"photos.show_on_screen": True}), \
+             patch.object(photo_commands(commands_instance), '_run_show_single_photo', return_value="") as mock_single:
             result = photo_commands(commands_instance)._run_show_photo("10", "20", "30")
 
         mock_single.assert_called_once_with(10, route=None)
         assert result == ""
 
 
-class TestShowPhotoOnKitchenTV:
-    def test_setpcmode_nonzero_exit(self):
+class TestShowPhotoOnScreen:
+    @pytest.fixture(autouse=True)
+    def screen(self):
+        with _screen_config(**{"photos.show_on_screen": True, "photos.screen_prepare_command": "switch-tv"}):
+            yield
+
+    def test_prepare_command_nonzero_exit(self):
         mock_result = Mock(returncode=1, stdout="", stderr="device not found")
-        with patch("subprocess.run", return_value=mock_result):
-            result = PhotosCommands._show_photo_on_kitchen_tv("ABC-123", "Sunset")
-        assert "setpcmode exited with code 1" in result
+        with patch("subprocess.run", return_value=mock_result) as run:
+            result = PhotosCommands._show_photo_on_screen("ABC-123", "Sunset")
+        assert run.call_args.args[0] == "switch-tv" and run.call_args.kwargs["shell"] is True
+        assert "exited with code 1" in result
         assert "device not found" in result
 
-    def test_setpcmode_exception(self):
+    def test_prepare_command_exception(self):
         with patch("subprocess.run", side_effect=TimeoutError("timed out")):
-            result = PhotosCommands._show_photo_on_kitchen_tv("ABC-123", "Sunset")
-        assert "could not switch Kitchen TV to PC mode" in result
+            result = PhotosCommands._show_photo_on_screen("ABC-123", "Sunset")
+        assert "could not prepare the screen" in result
         assert "timed out" in result
 
     def test_osascript_nonzero_exit(self):
         ok_result = Mock(returncode=0, stdout="", stderr="")
         fail_result = Mock(returncode=1, stdout="", stderr="script error")
         with patch("subprocess.run", side_effect=[ok_result, fail_result]):
-            result = PhotosCommands._show_photo_on_kitchen_tv("ABC-123", "Sunset")
+            result = PhotosCommands._show_photo_on_screen("ABC-123", "Sunset")
         assert "AppleScript exited with code 1" in result
         assert "script error" in result
 
     def test_osascript_exception(self):
         ok_result = Mock(returncode=0, stdout="", stderr="")
         with patch("subprocess.run", side_effect=[ok_result, TimeoutError("script hung")]):
-            result = PhotosCommands._show_photo_on_kitchen_tv("ABC-123", "Sunset")
+            result = PhotosCommands._show_photo_on_screen("ABC-123", "Sunset")
         assert "could not open photo in Photos app" in result
         assert "script hung" in result
+
+    def test_without_a_prepare_command_only_the_applescript_runs(self):
+        with _screen_config(**{"photos.show_on_screen": True}):
+            with patch("subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as run:
+                result = PhotosCommands._show_photo_on_screen("ABC-123", "Sunset")
+        assert result == ""
+        assert run.call_count == 1 and run.call_args.args[0][0] == "osascript"
+
+
+class TestSpokenPhotoWithoutAScreen:
+    """A voice request on an install without `photos.show_on_screen` gets its photo in the chat."""
+
+    def test_falls_back_to_the_chat(self, commands_instance):
+        from assistant.ChannelProfile import VOICE_TO_VOICE
+        commands_instance._current_profile = VOICE_TO_VOICE
+        owner = photo_commands(commands_instance)
+        with _screen_config(), \
+             patch.object(owner, "_prepare_photo_send_payload", return_value=(MediaPayload(b"jpg", "cap", "uuid", "photo"), None)), \
+             patch.object(owner, "_show_photo_on_screen") as screen, \
+             patch("assistant.Notifier._notifier", Mock()) as bot:
+            result = owner._run_show_single_photo(1)
+        assert result == "" and not screen.called and bot.send_photo.called
 
 
 @pytest.mark.unit

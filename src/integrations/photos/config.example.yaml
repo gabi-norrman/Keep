@@ -1,0 +1,7 @@
+photos:
+  # A spoken request's photo (voice has no chat to send it to): on, the Photos app opens it full
+  # screen on the server's display; off, it goes to the notification chat like every other.
+  show_on_screen: false
+  # A shell command run before the photo opens, for example one that switches the TV the server
+  # is plugged into to the Mac's input. Optional.
+  # screen_prepare_command: ""

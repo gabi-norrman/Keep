@@ -17,7 +17,7 @@ The `sort_by` parameter controls result ordering: `"relevance"` (default, best k
 beautiful photos first), `"family"` (most important family photos first), or `"best"` (combined pretty+family score).
 Don't talk about the family/pretty scores with the user - that's too technical.
 
-To show a photo or video to the user (sent via Telegram if text chat or shown on Kitchen TV when VoiceToVoice), use the
+To show a photo or video to the user (sent to the chat, or shown on the house's screen when the request was spoken and the install has one), use the
 photo ID from search results:
 
 `show_photo(photo_id: int or comma-separated ints)`

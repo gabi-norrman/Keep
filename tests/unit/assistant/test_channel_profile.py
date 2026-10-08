@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from assistant.ChannelProfile import AUTONOMOUS, PHOTO_TARGET_CHAT, PHOTO_TARGET_KITCHEN_TV, PROFILES, TELEGRAM, TEXT_CHAT, VOICE_TO_VOICE, ChannelProfile, profile_for
+from assistant.ChannelProfile import AUTONOMOUS, PHOTO_TARGET_CHAT, PHOTO_TARGET_SCREEN, PROFILES, TELEGRAM, TEXT_CHAT, VOICE_TO_VOICE, ChannelProfile, profile_for
 
 
 class TestTable:
@@ -23,7 +23,7 @@ class TestTable:
             assert isinstance(profile, ChannelProfile)
             assert profile.name == name
             assert profile.llm_tier in ("fast", "smart")
-            assert profile.photo_target in (PHOTO_TARGET_CHAT, PHOTO_TARGET_KITCHEN_TV)
+            assert profile.photo_target in (PHOTO_TARGET_CHAT, PHOTO_TARGET_SCREEN)
 
 # --- call sites ------------------------------------------------------------------------
 
@@ -140,16 +140,20 @@ class TestCommandsReadProfile:
     def test_show_photo_target_follows_profile(self, commands, source):
         commands._current_profile = profile_for(source)
         with patch.object(commands._owner("show_photo"), "_prepare_photo_send_payload", return_value=(MediaPayload(b"jpg", "cap", "uuid", "photo"), None)), \
-             patch.object(commands._owner("show_photo"), "_show_photo_on_kitchen_tv", return_value="tv") as tv, \
-             patch("assistant.Notifier._notifier", Mock()) as bot:
+             patch.object(commands._owner("show_photo"), "_show_photo_on_screen", return_value="tv") as tv, \
+             patch("assistant.Notifier._notifier", Mock()) as bot, \
+             patch("integrations.photos.PhotosCommands.config") as cfg:
+            cfg.get.side_effect = lambda key, default=None: {"photos.show_on_screen": True}.get(key, default)
             result = commands._owner("show_photo")._run_show_single_photo(1)
-        on_tv = profile_for(source).photo_target == PHOTO_TARGET_KITCHEN_TV
+        on_tv = profile_for(source).photo_target == PHOTO_TARGET_SCREEN
         assert tv.called is on_tv
         assert bot.send_photo.called is not on_tv
         assert result == ("tv" if on_tv else "")
 
     def test_album_collapses_to_first_photo_on_the_tv(self, commands):
         commands._current_profile = VOICE_TO_VOICE
-        with patch.object(commands._owner("show_photo"), "_run_show_single_photo", return_value="") as single:
+        with patch.object(commands._owner("show_photo"), "_run_show_single_photo", return_value="") as single, \
+             patch("integrations.photos.PhotosCommands.config") as cfg:
+            cfg.get.side_effect = lambda key, default=None: {"photos.show_on_screen": True}.get(key, default)
             assert commands._owner("show_photo")._run_show_photo_album([7, 8, 9]) == ""
         single.assert_called_once_with(7, route=None)

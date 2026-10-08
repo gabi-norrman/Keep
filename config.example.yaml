@@ -79,6 +79,7 @@ mail:
 # evicts the originals) are downloaded through the iCloud session, so without icloud.apple_id and
 # icloud.password the feed logs "iCloud not configured", can only nudge macOS with brctl and leaves
 # evicted photos waiting or unindexed. Set up iCloud first, then enable Photos.
+# >> photos: src/integrations/photos/config.example.yaml
 
 # >> arlo: src/integrations/arlo/config.example.yaml
 

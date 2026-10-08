@@ -16,7 +16,7 @@ SOURCE_TELEGRAM = "Telegram"
 SOURCE_CONSOLE = "Console"
 SOURCE_AUTONOMOUS = "autonomous"
 
-PHOTO_TARGET_KITCHEN_TV = "kitchen_tv"
+PHOTO_TARGET_SCREEN = "screen"
 PHOTO_TARGET_CHAT = "chat"
 
 
@@ -37,7 +37,8 @@ class ChannelProfile:
     notification_ephemeral: bool
     # Also report the notification text to the observer hub.
     notify_observers_of_commands: bool
-    # Where show_photo renders: the kitchen TV (spoken channel) or the chat (Telegram).
+    # Where show_photo renders: the server's screen (spoken channel — only while `photos.show_on_screen`
+    # is on, else the chat) or the chat (Telegram).
     photo_target: str
     # send_screenshot needs a screen to send to.
     screenshot_allowed: bool
@@ -59,7 +60,7 @@ class ChannelProfile:
 VOICE_TO_VOICE = ChannelProfile(
     name=SOURCE_VOICE, llm_tier="fast", brevity_directive=True, forward_thinking=False,
     command_notifications=False, notification_ephemeral=False, notify_observers_of_commands=False,
-    photo_target=PHOTO_TARGET_KITCHEN_TV, screenshot_allowed=False,
+    photo_target=PHOTO_TARGET_SCREEN, screenshot_allowed=False,
     streams_tokens=False, preload_toolkits=("home", "music", "tesla", "weather"), fixed_toolkits=("voice",),
 )
 
