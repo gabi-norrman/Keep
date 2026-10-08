@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from assistant.integration.Accounts import (AccountHealth, id_prefix, id_prefixes, named_entries, render_accounts_status)
+from assistant.integration.Accounts import (AccountHealth, id_prefix, id_prefixes, named_entries, render_accounts_status, slug)
 
 
 @pytest.mark.unit
@@ -37,6 +37,13 @@ class TestNamedEntries:
         entries = [{"name": "Work", "address": "a"}, {"name": " work ", "address": "b"}]
         (index, entry), = named_entries(entries, "imap")
         assert index == 0 and entry["address"] == "a"
+
+    def test_two_names_that_would_share_a_token_file_keep_the_first(self):
+        """The slug is the token file name of a signing-in account: `Work Mail` and `Work-Mail`
+        would overwrite each other's sign-in."""
+        entries = [{"name": "Work Mail"}, {"name": "Work-Mail"}, {"name": "Work Mail 2"}]
+        assert [e["name"] for _, e in named_entries(entries, "google")] == ["Work Mail", "Work Mail 2"]
+        assert slug("Work Mail") == slug("work-mail")
 
     def test_anything_but_a_list_of_sections_is_no_entries(self):
         assert named_entries(None, "imap") == [] and named_entries("Personal", "imap") == []

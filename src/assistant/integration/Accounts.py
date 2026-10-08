@@ -5,12 +5,21 @@ and the per-account health check behind `Integration.accounts_status()`.
 An account is named by the user (`name` in config); the name is what the assistant calls it,
 what `mail.send_from` and the sending-account argument of `send_email` name, and what the id
 prefix in a listing (PE-AB) is derived from. A duplicate name is logged and the entry skipped —
-two accounts the assistant cannot tell apart would route a read or a send to the wrong one."""
+two accounts the assistant cannot tell apart would route a read or a send to the wrong one. Two
+names are the same when their slugs are: the slug is also the token file name of an account
+that signs in (Google, Microsoft), so `Work Mail` and `Work-Mail` would share one token."""
+import re
 from typing import Optional
 
 from common.logging import info, trace
 
 STATE_OK, STATE_ERROR, STATE_UNKNOWN = "ok", "error", "unknown"
+
+
+def slug(name: str) -> str:
+    """`Charlotte's Mail` → `charlotte-s-mail`: the file-safe form of an account name, and what
+    `named_entries` tells two names apart by."""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "account"
 
 
 def id_prefix(name: str, taken: set[str]) -> str:
@@ -62,10 +71,10 @@ def named_entries(entries, section: str) -> list[tuple[int, dict]]:
         if not name:
             info(f"Accounts: {section}.accounts[{index}] has no name, skipped")
             continue
-        if name.lower() in seen:
-            info(f"Accounts: {section}.accounts[{index}] repeats the name '{name}', skipped")
+        if slug(name) in seen:
+            info(f"Accounts: {section}.accounts[{index}] repeats the name '{name}' (same slug '{slug(name)}'), skipped")
             continue
-        seen.add(name.lower())
+        seen.add(slug(name))
         out.append((index, entry))
     trace(f"Accounts: {len(out)} of {len(entries)} {section}.accounts entries usable")
     return out

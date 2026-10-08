@@ -13,7 +13,6 @@ has expired (up to fifteen minutes), so a caller runs it on a thread. The app re
 works without a rebuild; the MSAL application is built on first use since its constructor
 discovers the authority over the network."""
 import os
-import re
 import threading
 import time
 from dataclasses import dataclass
@@ -23,6 +22,7 @@ from typing import Callable, Optional
 
 import msal
 
+from assistant.integration.Accounts import slug
 from common.logging import error, info, trace
 from common.Paths import CACHE_DIR
 
@@ -49,10 +49,6 @@ class DeviceFlow:
     @property
     def instructions(self) -> str:
         return f"go to {self.verification_uri} and enter the code {self.user_code}"
-
-
-def slug(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "account"
 
 
 def token_path(name: str) -> Path:

@@ -16,7 +16,6 @@ client (`google.oauth.client_id` / `client_secret`) is read at call time so a ke
 config_request works without a rebuild."""
 import json
 import os
-import re
 import secrets
 import threading
 import time
@@ -28,6 +27,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
 
+from assistant.integration.Accounts import slug
 from common.logging import error, info, trace
 from common.Paths import CACHE_DIR
 
@@ -61,10 +61,6 @@ class SignIn:
         return (f"open {self.url} in any browser and sign in{who}; the browser then lands on a "
                 f"{REDIRECT_URI}… page that will not load — that is expected — copy that page's whole address "
                 f"from the address bar and paste it back")
-
-
-def slug(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "account"
 
 
 def token_path(name: str) -> Path:
