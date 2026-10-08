@@ -1405,6 +1405,23 @@ class TestGeminiLLMVideo:
 
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
+    def test_an_outage_refuses_a_large_clip_before_it_is_uploaded(self, mock_types, mock_config):
+        """A refused request must leave no private clip on Gemini: the outage check comes before
+        the Files API upload, not after it (where the raise escaped the delete)."""
+        from assistant.llm import GeminiLLM as module
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        from assistant.llm.GeminiLLM import INLINE_VIDEO_LIMIT
+        llm = self._uploading_llm(mock_config)
+        module._outage.note(RuntimeError("429 RESOURCE_EXHAUSTED spend-based rate limit"), "gemini-video")
+
+        with pytest.raises(LLMUnavailable):
+            llm._create_completion_with_video("sys", "describe", b"v" * (INLINE_VIDEO_LIMIT + 1), "video/mp4", None)
+
+        llm.client.files.upload.assert_not_called()
+        llm.client.models.generate_content.assert_not_called()
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
     def test_empty_response_returns_empty_string_instead_of_none(self, mock_types, mock_config):
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.GeminiLLM import GeminiLLM

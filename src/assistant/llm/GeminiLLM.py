@@ -596,6 +596,15 @@ class GeminiLLM(AbstractLLM):
                                       mime_type: str, fps: float | None) -> str:
         self._ensure_initialized()
 
+        # The photo indexer is the one caller, and its system instruction (the video analyst's
+        # instructions and the memory bank) is the same from clip to clip: serve it from the same
+        # explicit cache the stills use, so a clip pays full price for its frames only.
+        system_instruction = self.strip_cache_markers(system_message)
+        reason = _outage.active(background=True)
+        if reason:
+            # before the upload and the cache call: no file on Gemini, and no cache, for a request that is refused
+            raise LLMUnavailable(reason)
+
         video_metadata = types.VideoMetadata(fps=fps) if fps else None
         size_mb = len(video_bytes) / 1024 / 1024
         uploaded = None
@@ -611,14 +620,6 @@ class GeminiLLM(AbstractLLM):
                 video_metadata=video_metadata,
             )
         contents = [{'role': 'user', 'parts': [video_part, {'text': user_message}]}]
-
-        # The photo indexer is the one caller, and its system instruction (the video analyst's
-        # instructions and the memory bank) is the same from clip to clip: serve it from the same
-        # explicit cache the stills use, so a clip pays full price for its frames only.
-        system_instruction = self.strip_cache_markers(system_message)
-        reason = _outage.active(background=True)
-        if reason:
-            raise LLMUnavailable(reason)    # before the cache call: no cache for a key that is refused
         cache = self._cached_system(system_instruction, SYSTEM_CACHE_TTL_SECONDS)
 
         info(f"Gemini: sending video ({size_mb:.1f} MB, {mime_type}"
