@@ -7,6 +7,7 @@ names none. The vobject or JSON parsing is the backend's; what crosses the contr
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date
+from typing import Optional
 
 from .Event import Event
 
@@ -53,6 +54,12 @@ class CalendarAccount(ABC):
     def calendars(self) -> list[CalendarInfo]:
         """Every calendar of the account; may raise."""
         ...
+
+    def listed_name(self, alias: str) -> Optional[str]:
+        """The name `calendars()` lists for an alias the account understands besides the listed
+        names (Google's "primary" and the account address for its own calendar), or None when
+        `alias` is no alias. Asked only after the listed names were matched."""
+        return None
 
     @abstractmethod
     def events(self, calendar_names: list[str], start: date, end: date) -> list[Event]:

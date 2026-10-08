@@ -155,6 +155,10 @@ class GoogleCalendarAccount(CalendarAccount):
     def calendars(self) -> list[CalendarInfo]:
         return [CalendarInfo(name) for name in self._ids(refresh=True)]
 
+    def listed_name(self, alias: str) -> Optional[str]:
+        resolved = self._resolve(alias)
+        return resolved[0] if resolved else None
+
     # --- events ------------------------------------------------------------------------------
 
     def _home_tz(self):

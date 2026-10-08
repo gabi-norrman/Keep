@@ -98,12 +98,16 @@ class CalendarAccess:
     def _header(cls, account: CalendarAccount) -> tuple[str, list[CalendarInfo]]:
         """`Family (CalDAV): Home, Kids — not shown: Birthdays`, and the calendars whose events are shown."""
         calendars = account.calendars()
-        shown_names = {name.lower() for name in account.shown_calendars}
-        if shown_names:
-            shown = [c for c in calendars if c.name.lower() in shown_names]
-            missing = shown_names - {c.name.lower() for c in shown}
+        if account.shown_calendars:
+            shown, missing = [], []
+            for wanted in account.shown_calendars:
+                calendar = cls._match(account, calendars, wanted)
+                if calendar is None:
+                    missing.append(wanted)
+                elif calendar not in shown:
+                    shown.append(calendar)
             if missing:
-                info(f"{account.name}: shown_calendars names calendars the account does not have: {sorted(missing)}. "
+                info(f"{account.name}: shown_calendars names calendars the account does not have: {missing}. "
                      f"Available: {[c.name for c in calendars]}")
         else:
             trace(f"{account.name}: shown_calendars not set, showing all {len(calendars)} calendars")
@@ -118,6 +122,20 @@ class CalendarAccess:
             header += " — not shown: " + ", ".join(hidden_labels)
         return header, shown
 
+    @staticmethod
+    def _match(account: CalendarAccount, calendars: list[CalendarInfo], wanted: str) -> Optional[CalendarInfo]:
+        """The calendar `wanted` names among `calendars`: a listed name whatever its case, else an
+        alias the account resolves itself (Google's "primary"), else None."""
+        lowered = wanted.strip().lower()
+        for calendar in calendars:
+            if calendar.name.lower() == lowered:
+                return calendar
+        listed = account.listed_name(wanted)
+        if listed is not None:
+            trace(f"{account.name}: '{wanted}' is the account's alias of calendar '{listed}'")
+            return next((c for c in calendars if c.name == listed), None)
+        return None
+
     def _resolve(self, name: str) -> tuple[Optional[tuple[CalendarAccount, CalendarInfo]], str]:
         """The account and calendar `name` means — `Kids`, or `Family/Kids` when two accounts
         have a Kids — or None and the reason; the reason names what exists."""
@@ -128,11 +146,13 @@ class CalendarAccess:
         for account in self._accounts:
             if account_part and account.name.lower() != account_part.strip().lower():
                 continue
-            for calendar in account.calendars():
+            calendars = account.calendars()
+            for calendar in calendars:
                 if calendar.holds_events:
                     available.append(f"{account.name}/{calendar.name}" if len(self._accounts) > 1 else calendar.name)
-                if calendar.name.lower() == (calendar_part if account_part else wanted).strip().lower():
-                    found.append((account, calendar))
+            matched = self._match(account, calendars, calendar_part if account_part else wanted)
+            if matched is not None:
+                found.append((account, matched))
         if not found:
             info(f"Calendar: no calendar named '{wanted}'")
             return None, f"no calendar named '{wanted}'. Available: {', '.join(available) or 'none'}"

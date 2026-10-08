@@ -30,8 +30,9 @@ def stockholm():
 
 class _Account(CalendarAccount):
     """A calendar account over dicts: `calendars` maps a name to its events (None for a
-    Reminders list), `aliases` are the names create_event takes besides the listed ones (the
-    way Google takes "primary"), `created` records what create_event was handed."""
+    Reminders list), `aliases` maps the names the account takes besides the listed ones to the
+    listed one they mean (the way Google takes "primary"), `created` records what create_event
+    was handed."""
 
     service_name = "dicts"
 
@@ -41,7 +42,7 @@ class _Account(CalendarAccount):
         self._shown = list(shown)
         self._default = default
         self._failing = failing
-        self._aliases = set(aliases)
+        self._aliases = dict(aliases)
         self.created: List[tuple] = []
         self.asked: List[list] = []
 
@@ -65,6 +66,9 @@ class _Account(CalendarAccount):
         if self._failing:
             raise ConnectionError("failed")
         return [CalendarInfo(name, events is not None) for name, events in self._calendars.items()]
+
+    def listed_name(self, alias):
+        return self._aliases.get(alias.lower())
 
     def events(self, calendar_names, start, end):
         self.asked.append(list(calendar_names))
@@ -124,6 +128,18 @@ class TestFetch:
         text = CalendarAccess([_household()]).fetch(*WEEK)
         assert "Dentist Charlotte" in text and "Budget review" in text
         assert "load_calendar" not in text
+
+    def test_a_shown_name_the_account_resolves_as_an_alias_shows_that_calendar(self):
+        """The documented `shown_calendars: [primary]` of a Google account: "primary" is never a
+        listed name, the account says which one it means."""
+        day = date(2025, 6, 15)
+        account = _Account("Google", {"marcus@example.com": [_event("Standup", day, 9, "marcus@example.com")],
+                                      "Family": [_event("Dinner", day, 18, "Family")]},
+                           shown=["Primary", "marcus@example.com"], aliases={"primary": "marcus@example.com"})
+        text = CalendarAccess([account]).fetch(*WEEK)
+        assert "Standup" in text and "Dinner" not in text
+        assert account.asked == [["marcus@example.com"]], "the alias is resolved once and asked by its listed name"
+        assert text.startswith("Google (dicts): marcus@example.com — not shown: Family")
 
     def test_a_shown_name_the_account_lacks_shows_nothing_but_names_the_rest(self):
         text = CalendarAccess([_household(shown=["Nope"])]).fetch(*WEEK)
@@ -186,6 +202,13 @@ class TestLoad:
 
         assert "Budget review" in text and "Dentist Charlotte" not in text
         assert text.startswith("Calendar 'Work', ")
+
+    def test_an_alias_the_account_resolves_loads_its_calendar(self):
+        tomorrow = date.today() + timedelta(days=1)
+        account = _Account("Google", {"marcus@example.com": [_event("Standup", tomorrow, 9, "marcus@example.com")]},
+                           aliases={"primary": "marcus@example.com"})
+        text = CalendarAccess([account]).load(["primary"])
+        assert "Standup" in text and account.asked == [["marcus@example.com"]]
 
     def test_an_unknown_name_fails_and_says_which_calendars_exist(self):
         tomorrow = date.today() + timedelta(days=1)
@@ -253,7 +276,7 @@ class TestCreate:
     def test_a_default_the_account_resolves_itself_is_handed_over_unchanged(self):
         """Google's default is "primary", an alias the account understands but never lists: the
         composite must not refuse it on the listed names alone."""
-        account = _Account("Google", {"marcus@example.com": []}, default="primary", aliases=("primary",))
+        account = _Account("Google", {"marcus@example.com": []}, default="primary", aliases={"primary": "marcus@example.com"})
         where = CalendarAccess([account]).create("Dentist", "2025-10-28", "10:00", "11:00")
         (calendar_name, _), = account.created
         assert calendar_name == "primary" and where == "Google/primary"
