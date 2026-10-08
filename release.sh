@@ -16,6 +16,10 @@
 # brings the tag along with the commit, and the server's first start on it announces the
 # note (common/StartupTracker.py reads it through Version.release_notes()). A missing
 # `claude` or a failed run leaves the tag without a note and never fails the release.
+#
+# The commits listed and summarised reach back to the last release tagged on an earlier day,
+# not merely to the previous release: installs update nightly, so a household that gets the
+# evening release never saw the midday one, and its note has to cover the whole day.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -67,8 +71,21 @@ if [ -n "$current" ] && ! git merge-base --is-ancestor "$current" "$commit"; the
   exit 1
 fi
 
+# The baseline the listing and the note start from: the newest release tag from before today
+# that is behind the target. The day's first release has none newer than origin/release itself.
+baseline="$current"
+today=$(date +%Y-%m-%d)
+while read -r day tag; do
+  [[ "$day" < "$today" ]] || continue
+  tagged=$(git rev-parse -q --verify "refs/tags/$tag^{commit}") || continue
+  if git merge-base --is-ancestor "$tagged" "$commit"; then baseline="$tagged"; break; fi
+done < <(git for-each-ref --sort=-taggerdate 'refs/tags/v*' --format='%(taggerdate:format-local:%Y-%m-%d) %(refname:short)')
+
 echo "Releasing $version ($short)"
-[ -n "$current" ] && git log --oneline "$current..$commit" | sed 's/^/  /'
+if [ -n "$baseline" ]; then
+  [ "$baseline" != "$current" ] && echo "  (since $(git describe --tags --exact-match "$baseline" 2>/dev/null || git rev-parse --short "$baseline"), the last release before today — the ones released earlier today are included)"
+  git log --oneline "$baseline..$commit" | sed 's/^/  /'
+fi
 
 existing=$(git rev-parse -q --verify "refs/tags/$version^{commit}" || true)
 if [ -n "$existing" ] && [ "$existing" != "$commit" ]; then
@@ -79,8 +96,8 @@ note=""
 if [ -n "$existing" ]; then
   note=$(git tag -l --format='%(contents:body)' "$version")
   echo "Tag $version exists already; keeping its what's new."
-elif [ -n "$current" ]; then
-  note=$(whats_new "$current" "$commit")
+elif [ -n "$baseline" ]; then
+  note=$(whats_new "$baseline" "$commit")
 fi
 echo; echo "What's new in $version:"; echo; echo "${note:-(none)}"; echo
 
