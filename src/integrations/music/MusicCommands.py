@@ -126,10 +126,10 @@ class MusicCommands(CommandSet):
             info(f"spotify_login_code: signed in, but the playlist library did not load — {problem}")
             text += (f"The playlist library could not be loaded yet ({problem}); it is tried again every "
                      f"{integration.REFRESH_INTERVAL_SECONDS // 60} minutes, and the S- ids appear in "
-                     "SONOS PLAYLISTS AND ZONES once it has.")
+                     "MUSIC once it has.")
         else:
             listed, total = len(integration.get_spotify_playlists()), integration.spotify_playlists_total()
-            text += (f"{listed} of the account's {total} playlists appear in SONOS PLAYLISTS AND ZONES (ids S-0, "
+            text += (f"{listed} of the account's {total} playlists appear in MUSIC (ids S-0, "
                      "S-1, …) within a minute — read them from the section before naming one — and can be "
                      "started with play_music.")
         if from_chat:

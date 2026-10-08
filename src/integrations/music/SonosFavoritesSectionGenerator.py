@@ -16,7 +16,7 @@ class SonosFavoritesSectionGenerator(PromptSectionGenerator):
     later. It reads the integration the IntegrationMonitor built and never builds one; it runs
     only while Sonos & Spotify is on, so a house without it never looks for a speaker."""
     key = "sonos"
-    heading = "# SONOS PLAYLISTS AND ZONES"
+    heading = "# MUSIC"
     intro = ("Favorites, Sonos playlists and the user's own Spotify playlists the `music` toolkit can start "
              "(ids `F-0`, `P-0`, `S-0`, …), curated by the user:")
     CHECK_INTERVAL = 60

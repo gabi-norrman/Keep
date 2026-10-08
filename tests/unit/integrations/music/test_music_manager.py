@@ -561,7 +561,7 @@ class TestSpotifyUserPlaylists:
             ("Road Trip", "spotify:playlist:rt2", ""),
             ("Shared Dinner", "spotify:playlist:sd3", "Alice")]
         assert total == 57
-        client.current_user_playlists.assert_called_once_with(limit=MusicManager.SPOTIFY_PLAYLISTS_IN_PROMPT)
+        client.current_user_playlists.assert_called_once_with(limit=MusicManager.PLAYLISTS_IN_PROMPT)
         client.next.assert_not_called()
         assert mm.spotify_library_error() == ""
 
@@ -612,6 +612,21 @@ class TestSpotifyUserPlaylists:
             mm._refresh_tick()
         schedule.assert_called_once_with(mm.REFRESH_INTERVAL_SECONDS)
         assert mm.get_playlists() == ["Fresh"]
+
+    def test_the_sonos_lists_are_cut_to_the_prompt_cap_in_the_apps_order_so_the_ids_match(self):
+        mm = make_music_manager()
+        mm._spotify_auth.signed_in.return_value = False
+        mm._discover_sonos_zones = Mock(return_value={"Kitchen": Mock()})
+        cap = MusicManager.PLAYLISTS_IN_PROMPT
+        mm._fetch_playlists_from_sonos = Mock(return_value=[f"Playlist {n}" for n in range(cap + 5)])
+        mm._fetch_favorites_from_sonos = Mock(return_value=[f"Favorite {n}" for n in range(cap - 1)])
+
+        mm._refresh_playlists_and_favorites()
+
+        assert mm.get_playlists() == [f"Playlist {n}" for n in range(cap)]
+        assert mm.get_favorites() == [f"Favorite {n}" for n in range(cap - 1)]
+        assert mm._uri_to_playlist_name(f"P-{cap - 1}") == f"Playlist {cap - 1}"
+        assert mm._uri_to_playlist_name(f"P-{cap}") is None
 
     def test_the_user_client_follows_the_access_token(self):
         mm = make_music_manager()

@@ -16,7 +16,7 @@ class MusicZonesSectionGenerator(PromptSectionGenerator):
     while Sonos & Spotify is on, so a house without it never looks for a speaker.
     """
     key = "music_zones"
-    heading = "## Zones"
+    heading = "## Sonos zones"
     intro = ("The zones music can play in. If no zone/room is specified assume the user means the Kitchen, unless "
              "previous context suggests otherwise:")
 

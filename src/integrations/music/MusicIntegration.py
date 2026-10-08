@@ -64,10 +64,11 @@ class MusicIntegration(Integration):
 
     Sonos playlists (`P-n`), Sonos favorites (`F-n`) and the user's Spotify playlists (`S-n`)
     are cached and refreshed every 30 minutes; Spotify search results get short ids the LLM
-    can refer back to within the conversation. Search runs on the app's client credentials;
-    only the user's playlist library needs the user token `SpotifyAuth` keeps. The library is
-    read in Spotify's order (newest added first) and only its first `SPOTIFY_PLAYLISTS_IN_PROMPT`
-    stand in the prompt — every one of them is a prompt line on every request. A playlist is
+    can refer back to within the conversation. Each of the three lists is cut to its first
+    `PLAYLISTS_IN_PROMPT` entries — every one of them is a prompt line on every request — in
+    the order its source gives: the Sonos lists as the Sonos app shows them, the Spotify library
+    newest added first. Search runs on the app's client credentials; only the user's playlist
+    library needs the user token `SpotifyAuth` keeps. A playlist is
     started by its URI through the Sonos Spotify service (ShareLinkPlugin), so Sonos resolves
     the tracks with the household's Spotify account. Spotify-owned playlists (Discover Weekly,
     Release Radar, the editorial ones) are left out of `/me/playlists` for an app in development
@@ -78,7 +79,7 @@ class MusicIntegration(Integration):
     renew (`NotSignedIn`) empties it, and that is said once as a system note and in the health
     check until the next `spotify_login`."""
 
-    SPOTIFY_PLAYLISTS_IN_PROMPT = 20
+    PLAYLISTS_IN_PROMPT = 10
 
     CACHE_EXPIRY_SECONDS = 30 * 60
     REFRESH_INTERVAL_SECONDS = 30 * 60
@@ -157,11 +158,20 @@ class MusicIntegration(Integration):
 
             zone_name = next(iter(zones.keys()))
 
+            playlists = self._first_in_prompt("Sonos playlists", self._fetch_playlists_from_sonos(zone_name))
+            favorites = self._first_in_prompt("Sonos favorites", self._fetch_favorites_from_sonos(zone_name))
             with self._cache_lock:
-                self._playlists_cache = self._fetch_playlists_from_sonos(zone_name)
-                self._favorites_cache = self._fetch_favorites_from_sonos(zone_name)
+                self._playlists_cache = playlists
+                self._favorites_cache = favorites
         except Exception as e:
             error(f"Error refreshing playlists and favorites cache: {e}")
+
+    def _first_in_prompt(self, what: str, names: List[str]) -> List[str]:
+        """The part of a Sonos list that gets P-/F- ids: the first PLAYLISTS_IN_PROMPT, the rest
+        is reachable by name only."""
+        if len(names) > self.PLAYLISTS_IN_PROMPT:
+            info(f"{what}: {len(names)} found, the first {self.PLAYLISTS_IN_PROMPT} get prompt ids")
+        return names[:self.PLAYLISTS_IN_PROMPT]
 
     def _refresh_spotify_playlists(self) -> bool:
         """Reloads the signed-in user's playlist library and tells the listeners. False when
@@ -201,7 +211,7 @@ class MusicIntegration(Integration):
                 error(f"Spotify library listener {callback} failed: {e}")
 
     def _fetch_spotify_playlists(self) -> Optional[tuple[List[SpotifyPlaylist], int]]:
-        """The first SPOTIFY_PLAYLISTS_IN_PROMPT playlists of the user's library in Spotify's
+        """The first PLAYLISTS_IN_PROMPT playlists of the user's library in Spotify's
         order (newest added first) and the library's size — name and URI only, since Sonos
         resolves the tracks itself. Empty when no user is signed in or the sign-in has to be
         renewed, None when the fetch failed for now (the cached list stands)."""
@@ -211,7 +221,7 @@ class MusicIntegration(Integration):
             return [], 0
         try:
             spotify = self._get_user_client()
-            page = spotify.current_user_playlists(limit=self.SPOTIFY_PLAYLISTS_IN_PROMPT) or {}
+            page = spotify.current_user_playlists(limit=self.PLAYLISTS_IN_PROMPT) or {}
             playlists: List[SpotifyPlaylist] = []
             # Spotify answers a null item for a playlist this app may not see at all (a Spotify-owned one).
             for item in page.get('items') or []:

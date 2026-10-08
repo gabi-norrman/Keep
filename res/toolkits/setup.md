@@ -69,7 +69,7 @@ The link lives about ten minutes; an expired or reused code comes back as text �
 still to sign in.
 
 `spotify_login()` — signs the household's Spotify account in for the Sonos & Spotify integration, from any chat, so
-the newest 20 playlists of the user's own Spotify library (own and followed) are listed in SONOS PLAYLISTS AND ZONES
+the newest 10 playlists of the user's own Spotify library (own and followed) are listed in MUSIC
 with "S-" ids and can be started with play_music. Spotify-made playlists (Discover Weekly, Release Radar) are not
 among them — Spotify hides them from apps like this one; a Sonos favorite is the way to those. Same dance as
 google_login: it comes back with a link, the user opens it in any browser, signs in, and lands on a
