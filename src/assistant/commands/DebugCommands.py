@@ -52,7 +52,8 @@ RECENT_AUDIO_COUNT = 10
 # alike; a missing one is skipped. Each is zipped into BACKUP_DIR before it is deleted.
 DATABASE_PATH = AISERVER_DIR / "floxy.db"
 BACKUP_DIR = CACHE_DIR / "wipe-backups"
-TELEGRAM_SESSION = AISERVER_DIR / "telegram_feed.session"
+# The sessions an integration keeps in the tree (the Telegram feed's, WhatsApp's) are the
+# integration's own `wipe_targets`, gathered by integration_targets().
 WIPE_TARGETS = [
     (DATABASE_PATH, "database: dialog history, usage stats, photo index, feeds"),
     (CONFIG_PATH, "config.yaml (the next start writes a skeleton and asks for the required keys)"),
@@ -60,8 +61,6 @@ WIPE_TARGETS = [
     (MEMORY_DIR, "long-term memory: bank, procedures, watch list"),
     (AISERVER_DIR / "memory.md", "long-term memory bank of an install from before memory/"),
     (FirstRun.STATE_FILE, "first-run pipeline state"),
-    (TELEGRAM_SESSION, "Telegram feed login (Telethon session, logged out on Telegram first)"),
-    (TELEGRAM_SESSION.with_name(TELEGRAM_SESSION.name + "-journal"), "Telegram feed session journal"),
     (AISERVER_DIR / ".cache", "Spotify token cache"),
     (ICLOUD_SESSION_DIR, "iCloud session, trust token and cookies"),
     (CACHE_DIR / "config-backups", "config backups (hold the old credentials)"),
@@ -83,6 +82,16 @@ STOP_DELAY_SECONDS = 2.0
 # zipping (a 270 MB database takes ~30 s with no visible progress) used to run alongside
 # it and write into the same database snapshot the first was zipping: a torn backup.
 _wipe_lock = threading.Lock()
+
+
+def integration_targets() -> list[tuple[Path, str]]:
+    """The signed-in state the integration folders keep in the tree, each folder's own
+    `Integration.wipe_targets`, in discovery order."""
+    from assistant.integration.bootstrap import integration_classes
+    targets = []
+    for cls in integration_classes():
+        targets += cls.wipe_targets()
+    return targets
 
 
 def external_targets() -> list[tuple[Path, str]]:
@@ -471,7 +480,7 @@ class DebugCommands:
 
     def cmd_WIPE(self, args: str) -> str:
         """Simulate a new user: zip the user state into cache/wipe-backups, delete it (config.yaml included) and stop the server. Needs `//wipe confirm`."""
-        present = [(p, d) for p, d in WIPE_TARGETS + external_targets() if p.exists()]
+        present = [(p, d) for p, d in WIPE_TARGETS + integration_targets() + external_targets() if p.exists()]
         wipe_only = [(p, d) for p, d in WIPE_ONLY_TARGETS if p.exists()]
         if args.lower() != "confirm":
             info(f"//wipe without confirm: {len(present)} item(s) would be backed up and wiped")
@@ -527,11 +536,24 @@ class DebugCommands:
     @staticmethod
     def _log_out(present) -> dict[Path, str]:
         """The server-side log-outs before the files go: a Telethon session stays authorized
-        on the account after its file is deleted. What happened, per path, for the listing."""
-        if not any(path == TELEGRAM_SESSION for path, _ in present):
-            return {}
-        from integrations.telegram_feed.TelegramFeedIntegration import TelegramFeedIntegration
-        return {TELEGRAM_SESSION: TelegramFeedIntegration.log_out()}
+        on the account after its file is deleted, a WhatsApp link stays a linked device. Every
+        integration with a wipe target present gets its `log_out`; what happened goes on its
+        first target, for the listing."""
+        from assistant.integration.bootstrap import integration_classes
+        present_paths = {path for path, _ in present}
+        notes: dict[Path, str] = {}
+        for cls in integration_classes():
+            targets = [path for path, _ in cls.wipe_targets() if path in present_paths]
+            if not targets:
+                continue
+            try:
+                outcome = cls.log_out()
+            except Exception as e:
+                error(f"//wipe: {cls.__name__}.log_out raised {type(e).__name__}: {e}")
+                outcome = f"log-out failed ({type(e).__name__}: {e})"
+            if outcome:
+                notes[targets[0]] = outcome
+        return notes
 
     def _wipe_plan(self, present, wipe_only) -> str:
         if not present and not wipe_only:

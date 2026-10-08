@@ -1059,10 +1059,8 @@ class Commands:
             elif status["last_error"]:
                 line += f" — {status['last_error']}"
         elif state == "needs_2fa":
-            if status["name"] == self.TELEGRAM_FEED:
-                line += " — sign the account in with telegram_login(phone) from the console chat"
-            else:
-                line += " — the login must be completed in the console's tab for it (the code arrives by SMS or email)"
+            line += " — " + (status.get("login_hint")
+                             or "the login must be completed in the console's tab for it (the code arrives by SMS or email)")
         elif status["last_error"]:
             line += f" — {status['last_error'][:300]}"
         return line

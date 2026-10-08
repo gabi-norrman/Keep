@@ -1,6 +1,7 @@
 import re
 from abc import ABC, abstractmethod
 from enum import Enum
+from pathlib import Path
 from typing import List, Optional
 
 from .SingletonMixin import SingletonMixin
@@ -43,6 +44,22 @@ class Integration(SingletonMixin, ABC):
     # Its data is private (messages, mail, calendar, photos, cameras): the console's Catalog
     # tab tags it so, and the status of IntegrationMonitor carries the flag.
     sensitive: bool = False
+    # What list_integrations says next to "needs 2FA": how the sign-in is done, when the
+    # integration has a way of its own (a login command). Empty: the console's tab for it.
+    login_hint: str = ""
+
+    @classmethod
+    def wipe_targets(cls) -> list[tuple[Path, str]]:
+        """The files of a signed-in state the integration keeps in the tree, each with its
+        description — what `//wipe` backs up and deletes beside the core's own targets."""
+        return []
+
+    @classmethod
+    def log_out(cls) -> Optional[str]:
+        """Called by `//wipe` before its `wipe_targets` go, so a session that stays authorized
+        on the account after its file is deleted is ended there first. Returns what happened,
+        for the wipe's listing; None when there is nothing to end."""
+        return None
 
     @classmethod
     def config_name(cls) -> str:

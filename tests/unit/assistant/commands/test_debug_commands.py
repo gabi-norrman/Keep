@@ -172,6 +172,7 @@ def wipe_env(tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(dc_mod, "WIPE_ONLY_TARGETS", [(cache / "chrome_profile", "browser profile")])
     monkeypatch.setattr(dc_mod, "external_targets", lambda: [(external / "token.cache", "Ring token")])
+    monkeypatch.setattr(dc_mod, "integration_targets", lambda: [])
     monkeypatch.setattr(dc_mod, "_stop_server", lambda: stops.append(True))
     monkeypatch.setattr(dc_mod, "STOP_DELAY_SECONDS", 0.0)
     return root, stops
@@ -586,13 +587,15 @@ def test_first_run_reset_deletes_the_state(first_run_state):
 
 def test_wipe_logs_the_telegram_session_out_before_deleting_it(wipe_env, monkeypatch):
     """Telethon's log-out deletes the file itself; the listing still names it. A failed
-    log-out is noted and the file deleted anyway."""
+    log-out is noted and the file deleted anyway. The session is the Telegram folder's own
+    wipe target, gathered by discovery."""
     root, stops = wipe_env
     session = root / "telegram_feed.session"
     session.write_bytes(b"sqlite")
-    monkeypatch.setattr(dc_mod, "TELEGRAM_SESSION", session)
-    monkeypatch.setattr(dc_mod, "WIPE_TARGETS", dc_mod.WIPE_TARGETS + [(session, "Telegram feed login")])
     from integrations.telegram_feed.TelegramFeedIntegration import TelegramFeedIntegration
+    monkeypatch.setattr(TelegramFeedIntegration, "wipe_targets", classmethod(lambda cls: [(session, "Telegram feed login")]))
+    monkeypatch.setattr("assistant.integration.bootstrap.integration_classes", lambda: [TelegramFeedIntegration])
+    monkeypatch.setattr(dc_mod, "integration_targets", lambda: [(session, "Telegram feed login")])
 
     def log_out():
         session.unlink()

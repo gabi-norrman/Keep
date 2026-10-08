@@ -3,6 +3,7 @@ import os
 import queue
 import threading
 import time
+from pathlib import Path
 from typing import Callable, List, Optional
 
 from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
@@ -41,6 +42,7 @@ class TelegramFeedIntegration(Integration, Feed):
     itself made `needs_2fa()` false from the first code request on: the tab said "Connected" and
     the feed opened an unauthorized session."""
     sensitive = True
+    login_hint = "sign the account in with telegram_login(phone) from the console chat"
 
     poll_interval = POLL_INTERVAL
     item_noun = "messages"
@@ -69,6 +71,12 @@ class TelegramFeedIntegration(Integration, Feed):
         from assistant.integration.FeedRunner import Feeds
         Feeds.get_instance().stop(self.feed_name)
         self._shutdown_loop()
+
+    @classmethod
+    def wipe_targets(cls) -> list[tuple[Path, str]]:
+        session = Path(SESSION_FILE + '.session')
+        return [(session, "Telegram feed login (Telethon session, logged out on Telegram first)"),
+                (session.with_name(session.name + "-journal"), "Telegram feed session journal")]
 
     @classmethod
     def log_out(cls) -> str:

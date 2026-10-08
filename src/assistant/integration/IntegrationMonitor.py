@@ -248,6 +248,35 @@ class IntegrationMonitor:
         self.notify()
         return {"restartable": True, "status": self._status(rebuilt)}
 
+    def restart_in_place(self, name: str) -> Optional[dict]:
+        """A sign-in landed on the running instance (WhatsApp pairs on the feed's own
+        connection, and the history the phone then uploads comes on that connection): run
+        the start hook on the instance as it is, no rebuild, then the health check. Same
+        answer shape as `restart`; None for an unknown name."""
+        integration = self.find(name)
+        if integration is None:
+            info(f"Integration restart in place: no integration named '{name}'")
+            return None
+        with self._lock:
+            record = self._restartable.get(integration.name.lower())
+        if isinstance(integration, (DisabledIntegration, UnavailableIntegration)):
+            info(f"Integration restart in place: '{integration.name}' is {integration.state.value}, nothing to start")
+            return {"restartable": record is not None, "status": self._status(integration)}
+        if integration.needs_2fa():
+            integration.state = IntegrationState.NEEDS_2FA
+            info(f"Integration '{integration.name}' still requires 2FA — not started")
+            self.notify()
+            return {"restartable": record is not None, "status": self._status(integration)}
+        info(f"Starting integration {integration.name} in place...")
+        if record is not None and record[1] is not None:
+            record[1](integration)
+        self._await_feed_open(integration)
+        self._check_integration(integration)
+        info(f"Integration '{integration.name}' started in place: {integration.state.value}"
+             + (f" ({integration.last_error})" if integration.last_error else ""))
+        self.notify()
+        return {"restartable": record is not None, "status": self._status(integration)}
+
     def _await_feed_open(self, integration: Integration):
         """A Feed's start hook only spawns its thread; the connection its health check reads
         is built by open_feed on that thread. Checked a millisecond later the restart
@@ -407,6 +436,7 @@ class IntegrationMonitor:
             "config_keys": list(integration.config_keys),
             "restartable": restartable,
             "sensitive": (integration.cls if isinstance(integration, DisabledIntegration) else type(integration)).sensitive,
+            "login_hint": (integration.cls if isinstance(integration, DisabledIntegration) else type(integration)).login_hint,
             "accounts": integration.accounts_status(),
         }
         if isinstance(integration, Feed):

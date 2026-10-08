@@ -16,8 +16,6 @@ CORE_PACKAGES = ("assistant", "common")
 CORE_IMPORTS_BY_NAME = {
     # Self Improvement is the integration that switches the nightly runs on
     "assistant/agents/CodeQualityMaintainer.py": {"self_improvement"},
-    # //wipe logs the Telegram Feed session out on the account before its file is deleted
-    "assistant/commands/DebugCommands.py": {"telegram_feed"},
 }
 
 # (folder, the folder it imports): the cameras' 2FA codes arrive by iMessage, which hands

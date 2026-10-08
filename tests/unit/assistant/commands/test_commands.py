@@ -1948,11 +1948,18 @@ class TestCmdRestartIntegration:
             assert commands_instance._run_restart_integration("gmial") == \
                 "No integration named 'gmial'. Known: Gmail, Tesla"
 
-class TestRestartNamesTheTelegramLogin:
+class TestRestartNamesTheLogin:
+    """The monitor's status carries the integration's `login_hint`; without one the console's tab is named."""
+
     def test_restart_needs_2fa_names_the_command(self, commands_instance):
-        status = {"name": "Telegram Feed", "state": "needs_2fa", "last_error": None, "config_keys": []}
+        status = {"name": "Telegram Feed", "state": "needs_2fa", "last_error": None, "config_keys": [],
+                  "login_hint": "sign the account in with telegram_login(phone) from the console chat"}
         assert commands_instance._describe_restart(status, True) == \
             "Telegram Feed restarted: needs 2FA — sign the account in with telegram_login(phone) from the console chat"
+
+    def test_restart_needs_2fa_without_a_hint_names_the_tab(self, commands_instance):
+        status = {"name": "iCloud", "state": "needs_2fa", "last_error": None, "config_keys": [], "login_hint": ""}
+        assert "console's tab" in commands_instance._describe_restart(status, True)
 
 class TestLoadToolkitEcho:
     """4065d62f: the Home tab's progress line names the toolkit(s) being loaded."""
