@@ -318,10 +318,6 @@ class ClaudeLLM(AbstractLLM):
             )
         return self.client.messages.create(**api_params)
 
-    def _report_ttft(self, ttft: float):
-        from common.TTFTMonitor import TTFTMonitor
-        TTFTMonitor.get_instance().record(self.model, round(ttft, 2))
-
     OVERLOADED_RETRY_DELAYS = [0.5, 1.5, 3, 3, 3]
 
     # Fable (claude-fable-5) occasionally completes a turn with only 2-6 output tokens
@@ -345,7 +341,6 @@ class ClaudeLLM(AbstractLLM):
         empty-reply misfire), log stop_reason and the block types we did get so
         the failure mode is diagnosable from floxy.out.
         """
-        t_start = time.time()
         first_token_seen = False
         stop_reason = None
         block_types = []
@@ -357,9 +352,7 @@ class ClaudeLLM(AbstractLLM):
             elif event.type == 'content_block_start':
                 block_types.append(getattr(event.content_block, 'type', '?'))
             elif event.type == 'content_block_delta' and event.delta.type == 'text_delta':
-                if not first_token_seen:
-                    first_token_seen = True
-                    self._report_ttft(time.time() - t_start)
+                first_token_seen = True
                 yield event.delta.text
             elif event.type == 'message_delta':
                 stop_reason = getattr(event.delta, 'stop_reason', None) or stop_reason
@@ -426,9 +419,7 @@ class ClaudeLLM(AbstractLLM):
         response = None
         for attempt, delay in enumerate(self.OVERLOADED_RETRY_DELAYS, start=1):
             try:
-                t_start = time.time()
                 response = self._create_message(api_params)
-                self._report_ttft(time.time() - t_start)
                 break
             except APIStatusError as e:
                 if not self._is_retryable(e):
@@ -440,9 +431,7 @@ class ClaudeLLM(AbstractLLM):
                      f"attempt {attempt}/{max_attempts}), retrying in {delay}s...")
                 time.sleep(delay)
         if response is None:
-            t_start = time.time()
             response = self._create_message(api_params)
-            self._report_ttft(time.time() - t_start)
         self._log_cache_usage(response.usage)
         self._log_output_tokens(response.usage)
         self._last_stop_reason = getattr(response, 'stop_reason', None)

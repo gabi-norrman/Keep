@@ -486,8 +486,12 @@ class DialogManager:
                 info(f"First token from {self.ai.name()}: {self.time_to_first_token}s.")
                 # CachedLLM decides hit/miss before yielding its first token, so the flag
                 # is already accurate here.
-                observers().on_first_token(self.time_to_first_token,
-                                           getattr(self.ai, "last_response_was_cached", False))
+                from_cache = getattr(self.ai, "last_response_was_cached", False)
+                observers().on_first_token(self.time_to_first_token, from_cache)
+                # The dashboard's TTFT is the model's, whichever backend it is; a reply served
+                # from the response cache never reached a model and would chart as 0 s.
+                if not from_cache:
+                    TTFTMonitor.get_instance().record(getattr(self.ai, "model", ""), self.time_to_first_token)
                 # initialize audio playback as soon as possible, so pyaudio has time to boot up when we're waiting for first sound chunk
                 if not self.web_request_handler.ctx.text_only:
                     self.web_request_handler.initialize_audio_playback()

@@ -6,7 +6,11 @@ _EMPTY_DEQUE: collections.deque = collections.deque()
 
 
 class TTFTMonitor:
-    """Keeps recent time-to-first-token and prompt-cache-hit history per LLM model for the DashboardTab."""
+    """Keeps recent time-to-first-token and prompt-cache-hit history per LLM model for the DashboardTab.
+
+    `samples` is the one chronological list of every recorded TTFT with the model it came from,
+    for the chart that shows the smart and the fast model side by side; `smart_ttft` / `fast_ttft`
+    are the per-model views of the same recordings."""
 
     _instance: Optional['TTFTMonitor'] = None
     HISTORY_SIZE = 60
@@ -23,6 +27,7 @@ class TTFTMonitor:
 
     def __init__(self):
         self._data: dict[str, collections.deque] = {}
+        self._samples: collections.deque = collections.deque(maxlen=self.HISTORY_SIZE)
         self._cache_pct: collections.deque = collections.deque(maxlen=self.HISTORY_SIZE)
         self.smart_model: str = ""
         self.fast_model: str = ""
@@ -39,9 +44,15 @@ class TTFTMonitor:
         if model not in self._data:
             self._data[model] = collections.deque(maxlen=self.HISTORY_SIZE)
         self._data[model].append(ttft)
+        self._samples.append((model, ttft))
 
     def record_cache_pct(self, pct: int):
         self._cache_pct.append(pct)
+
+    @property
+    def samples(self) -> collections.deque:
+        """(model, ttft) pairs in the order they were recorded, every model together."""
+        return self._samples
 
     @property
     def cache_pct(self) -> collections.deque:

@@ -1,18 +1,20 @@
-"""The four dashboard monitors are stopped and started by tab switches, on the TUI's input
+"""The dashboard monitors are stopped and started by tab switches, on the TUI's input
 thread: a stop must not wait for a loop that is mid-sample, and coming back to the tab before
-that loop has ended must still leave a loop running."""
+that loop has ended must still leave a loop running. The log scanner runs from startup
+instead, but shares the start/stop contract."""
 import threading
 from unittest.mock import Mock
 
 import pytest
 
 from common.AnthropicCostMonitor import AnthropicCostMonitor
+from common.CacheHitLogMonitor import CacheHitLogMonitor
 from common.GpuMonitor import GpuMonitor
 from common.MemoryLogMonitor import MemoryLogMonitor
 from common.TempMonitor import TempMonitor
 
 MONITORS = [(GpuMonitor, "_update_metrics"), (AnthropicCostMonitor, "_fetch_cost_data"),
-            (MemoryLogMonitor, "_scan"), (TempMonitor, "_sample")]
+            (MemoryLogMonitor, "_scan"), (TempMonitor, "_sample"), (CacheHitLogMonitor, "_scan")]
 
 
 @pytest.fixture(params=MONITORS, ids=lambda m: m[0].__name__)
@@ -22,7 +24,7 @@ def stuck(request, monkeypatch):
     monitor = cls(Mock())
     entered, release, samples = threading.Event(), threading.Event(), []
 
-    def sample():
+    def sample(*_):
         samples.append(threading.current_thread())
         if len(samples) == 1:
             entered.set()

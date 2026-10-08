@@ -59,3 +59,20 @@ class TestCachePct:
             mon.record_cache_pct(i)
         assert len(mon.cache_pct) == TTFTMonitor.HISTORY_SIZE
         assert mon.cache_pct[0] == 10
+
+
+class TestSamples:
+    def test_samples_keep_every_model_in_the_order_recorded(self):
+        mon = TTFTMonitor()
+        mon.register_models("smart", "fast")
+        mon.record("smart", 1.0)
+        mon.record("fast", 0.1)
+        mon.record("smart", 1.2)
+        assert list(mon.samples) == [("smart", 1.0), ("fast", 0.1), ("smart", 1.2)]
+
+    def test_samples_are_capped_like_the_per_model_lists(self):
+        mon = TTFTMonitor()
+        for i in range(TTFTMonitor.HISTORY_SIZE + 5):
+            mon.record("a" if i % 2 else "b", float(i))
+        assert len(mon.samples) == TTFTMonitor.HISTORY_SIZE
+        assert mon.samples[0] == ("a", 5.0)

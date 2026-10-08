@@ -112,6 +112,10 @@ class CachedLLM(AbstractLLM):
     def missing_api_key(self) -> str | None:
         return self.llm.missing_api_key()
 
+    @property
+    def model(self) -> str:
+        return self.llm.model
+
     def name(self) -> str:
         return self.llm.name()
 

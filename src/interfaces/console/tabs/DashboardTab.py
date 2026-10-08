@@ -2,7 +2,7 @@ import collections
 import math
 import textwrap
 import time
-from typing import TYPE_CHECKING, Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from .TabView import TabView, CONTENT_TOP
 from interfaces.console import Theme
@@ -13,6 +13,7 @@ from interfaces.console.widgets.Board import MeterRow
 from interfaces.console.widgets.FeedStrip import SHORT_NAMES, SYMBOL_FAILED, SYMBOL_PAUSED, SYMBOL_RUNNING, format_eta
 from common.GpuMonitor import GpuMonitor
 from common.AnthropicCostMonitor import AnthropicCostMonitor
+from common.CacheHitLogMonitor import CacheHitLogMonitor
 from common.MemoryLogMonitor import MemoryLogMonitor
 from common.TempMonitor import TempMonitor
 from common.TTFTMonitor import TTFTMonitor
@@ -37,10 +38,14 @@ class FeedRow(NamedTuple):
 
 
 class DashboardTab(TabView):
-    """Tab charting GPU, CPU, temperature, memory, TTFT and API cost over time, with a row of
-    status tiles underneath: integration health, last-request timing, resource meters and
-    prompt sections. Everything sits in flat tiles — a title strip over a tinted body — on a
-    three-column grid (four for the status row)."""
+    """Tab charting GPU, CPU, temperature, memory, TTFT, prompt-cache hits and API cost over
+    time, with a row of status tiles underneath: integration health, last-request timing,
+    resource meters and prompt sections. Everything sits in flat tiles — a title strip over a
+    tinted body — on a three-column grid (four for the status row).
+
+    The samplers behind the charts run only while the tab shows (`on_activate` / `on_deactivate`);
+    the log scan behind the per-day cache chart is the exception — a startup-and-daily job
+    that starts with the console and runs whether the tab shows or not."""
 
     SUMMARY_ROWS = 4
     SUMMARY_H = SUMMARY_ROWS + Tile.CARD_CHROME
@@ -93,6 +98,9 @@ class DashboardTab(TabView):
         self.memory_word_count: int = 0
         self.memory_log_error: str = ""
 
+        self.cache_daily: list = []             # (day, mean hit % or None) per calendar day, written by CacheHitLogMonitor
+        self.cache_daily_error: str = ""
+
         self.cpu_temp: float = 0.0
         self.gpu_temp: float = 0.0
         self.temp_error: str = ""
@@ -102,6 +110,8 @@ class DashboardTab(TabView):
         self._cost_monitor = AnthropicCostMonitor(dashboard_tab=self, fetch_interval=300.0)
         self._memory_log_monitor = MemoryLogMonitor(dashboard_tab=self, fetch_interval=300.0)
         self._temp_monitor = TempMonitor(dashboard_tab=self, update_interval=30.0)
+        self._cache_log_monitor = CacheHitLogMonitor(dashboard_tab=self)
+        self._cache_log_monitor.start()
 
     def draw(self, screen: TUIScreen, frame: int):
         self._frame = frame
@@ -429,7 +439,7 @@ class DashboardTab(TabView):
 
     def _draw_columns(self, screen: TUIScreen, chart_x: int, chart_y: int, chart_w: int, chart_h: int,
                       history, max_value: float, color_for: Callable[[float], Color],
-                      guides: Optional[Dict[int, Color]] = None):
+                      guides: Optional[Dict[int, Color]] = None, colors: Optional[Sequence[Color]] = None):
         """One column per value, the newest at the right, each bar shading up from its colour's
         deep companion to the colour itself — reached at the height of the tallest column on
         show, so a quiet chart keeps its colour. The shading never runs faster than the whole
@@ -437,14 +447,18 @@ class DashboardTab(TabView):
         from deep to full between neighbouring rows and read as a cap of another colour.
         The shading steps every half row: a full cell is a lower half block in one shade over
         the next shade as its background. A column's top cell, filled to an eighth, has one.
-        `color_for(value)` gives a column its colour; `guides` maps a chart row to the colour
-        of a dashed line drawn across the empty part of the chart.
+        `color_for(value)` gives a column its colour, unless `colors` names one per sample
+        (aligned with `history`); `guides` maps a chart row to the colour of a dashed line
+        drawn across the empty part of the chart.
         A full cell is never drawn over the ground, so the seams Terminal.app leaves between
         cells show the bar's colour."""
         data = list(history)
+        own_colors = list(colors) if colors is not None else [None] * len(data)
         if len(data) > chart_w:
-            data = data[-chart_w:]
-        data = [0.0] * (chart_w - len(data)) + data
+            data, own_colors = data[-chart_w:], own_colors[-chart_w:]
+        padding = chart_w - len(data)
+        data = [0.0] * padding + data
+        own_colors = [None] * padding + own_colors
         guides = guides or {}
         base: Dict[Color, Color] = {}
         peak = max(data) if data else 0.0
@@ -454,7 +468,7 @@ class DashboardTab(TabView):
 
         for col_idx, value in enumerate(data):
             cx = chart_x + col_idx
-            fg = color_for(value)
+            fg = own_colors[col_idx] or color_for(value)
             if fg not in base:
                 base[fg] = Theme.mix(Theme.COLOR_PANEL_BG, Theme.deep(fg), 0.8)
             filled_rows = (value / max_value) * chart_h if max_value > 0 else 0
@@ -494,9 +508,10 @@ class DashboardTab(TabView):
     def _draw_bar_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int,
                         history: collections.deque, fg: Color,
                         label: str, value_str: str,
-                        max_value: float = 100.0, y_axis_format=None):
+                        max_value: float = 100.0, y_axis_format=None, colors: Optional[Sequence[Color]] = None):
         """A chart tile: the title strip with the latest value, a labelled y-axis (percent
-        unless `y_axis_format` says otherwise) and the columns over dashed rules at the labels."""
+        unless `y_axis_format` says otherwise) and the columns over dashed rules at the labels,
+        in `fg` or each in its own colour from `colors`."""
         Tile.draw_card(screen, self._cards, x, y, width, chart_h + Tile.CARD_CHROME, label, value_str, fg)
 
         chart_y = y + Tile.CARD_TOP
@@ -514,7 +529,7 @@ class DashboardTab(TabView):
         screen.reset_color()
 
         self._draw_columns(screen, chart_x, chart_y, chart_w, chart_h, history, max_value, lambda _: fg,
-                           guides={row: Theme.COLOR_GRID for row in rows})
+                           guides={row: Theme.COLOR_GRID for row in rows}, colors=colors)
         if not history:
             note = "no samples yet"
             screen.set_color(Theme.COLOR_DIM)
@@ -546,27 +561,14 @@ class DashboardTab(TabView):
 
     DEFAULT_TTFT_MAX_SECONDS = 5.0
 
+    TTFT_SMART_COLOR = Theme.COLOR_CYAN
+    TTFT_FAST_COLOR = Theme.COLOR_PURPLE
+
     def _draw_ttft_charts_row(self, screen: TUIScreen, columns: List[Tuple[int, int]], y: int, chart_height: int):
-        (x, chart_w), (fast_x, fast_w), (cache_x, cache_w) = columns
+        (ttft_x, ttft_w), (daily_x, daily_w), (cache_x, cache_w) = columns
         monitor = TTFTMonitor.get_instance()
-
-        smart_data = monitor.smart_ttft
-        smart_label = f"Smart AI TTFT ({monitor.smart_model_short})" if monitor.smart_model_short else "Smart AI TTFT"
-        smart_value = f"{smart_data[-1]:.2f}s" if smart_data else ""
-        smart_max = self._ttft_max(smart_data)
-        self._draw_bar_chart(screen, x, y, chart_w, chart_height,
-                             smart_data, Theme.COLOR_CYAN,
-                             smart_label, smart_value,
-                             max_value=smart_max, y_axis_format=self._format_seconds)
-
-        fast_data = monitor.fast_ttft
-        fast_label = f"Fast AI TTFT ({monitor.fast_model_short})" if monitor.fast_model_short else "Fast AI TTFT"
-        fast_value = f"{fast_data[-1]:.2f}s" if fast_data else ""
-        fast_max = self._ttft_max(fast_data)
-        self._draw_bar_chart(screen, fast_x, y, fast_w, chart_height,
-                             fast_data, Theme.COLOR_PURPLE,
-                             fast_label, fast_value,
-                             max_value=fast_max, y_axis_format=self._format_seconds)
+        self._draw_ttft_chart(screen, ttft_x, y, ttft_w, chart_height, monitor)
+        self._draw_cache_daily_chart(screen, daily_x, y, daily_w, chart_height)
 
         cache_data = monitor.cache_pct
         cache_value = f"{cache_data[-1]}%" if cache_data else ""
@@ -575,7 +577,42 @@ class DashboardTab(TabView):
                              "KV-Cache Hit %", cache_value,
                              max_value=100.0, y_axis_format=self._format_pct)
 
-    def _ttft_max(self, data: collections.deque) -> float:
+    def _draw_ttft_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int, monitor: TTFTMonitor):
+        """Both models in one chart: a column per request in the order they came, the smart
+        model's cyan and the fast model's purple, with the two names as a legend in the title
+        strip and the latest sample as the value in its model's colour."""
+        tiers = {monitor.smart_model: self.TTFT_SMART_COLOR, monitor.fast_model: self.TTFT_FAST_COLOR}
+        samples = [(model, ttft) for model, ttft in monitor.samples if model in tiers]
+        values = [ttft for _, ttft in samples]
+        colors = [tiers[model] for model, _ in samples]
+        value = f"{values[-1]:.2f}s" if values else ""
+        label = "TTFT"
+        self._draw_bar_chart(screen, x, y, width, chart_h, values, colors[-1] if colors else self.TTFT_SMART_COLOR,
+                             label, value, max_value=self._ttft_max(values), y_axis_format=self._format_seconds,
+                             colors=colors)
+        legend = [(short, color) for short, color in ((monitor.smart_model_short, self.TTFT_SMART_COLOR),
+                                                      (monitor.fast_model_short, self.TTFT_FAST_COLOR)) if short]
+        legend_x = x + 2 + display_width(label) + 2
+        legend_w = x + width - 2 - legend_x - (display_width(value) + 2 if value else 0)
+        if legend and legend_w > 0:
+            Tile.write_segments(screen, legend_x, y, legend_w, legend)
+
+    def _draw_cache_daily_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int):
+        """A column per calendar day: the mean prompt-cache hit of the day's requests, from the
+        log scan. A day without a request is an empty column; the value is the latest day that
+        had one, so a quiet morning still shows yesterday's figure."""
+        series = self.cache_daily
+        with_requests = [(day, avg) for day, avg in series if avg is not None]
+        value = f"{with_requests[-1][0]:%-d %b} {with_requests[-1][1]:.0f}%" if with_requests else ""
+        self._draw_bar_chart(screen, x, y, width, chart_h, [avg or 0.0 for _, avg in series], Theme.COLOR_TEAL,
+                             "KV-Cache Hit % per day", value, max_value=100.0, y_axis_format=self._format_pct)
+        if not series and self.cache_daily_error:
+            screen.set_color(Theme.COLOR_DIM)
+            screen.set_bg_color(Theme.COLOR_PANEL_BG)
+            screen.write_at(x + 2, y + Tile.CARD_TOP, fit(self.cache_daily_error, width - 4))
+            screen.reset_color()
+
+    def _ttft_max(self, data: Sequence[float]) -> float:
         max_val = max(data) if data else 0
         return self._nice_ceil(max_val) if max_val > self.DEFAULT_TTFT_MAX_SECONDS else self.DEFAULT_TTFT_MAX_SECONDS
 

@@ -66,6 +66,21 @@ class TestDrawColumns:
             shades += [style.fg, style.bg]
         assert len(set(shades)) == 2 * tall and shades[-1] == C
 
+    def test_per_sample_colours_follow_their_columns_through_cut_and_padding(self):
+        other = Color(50, 100, 200)
+
+        def bottoms(colors=None, color_for=lambda v: C, history=(100.0,) * 7):
+            screen = TUIScreen(20, 10)
+            make_tab()._draw_columns(screen, CHART_X, CHART_Y, CHART_W, CHART_H, list(history), 100.0, color_for,
+                                     colors=colors)
+            return [screen.next_frame[CHART_Y - 1 + 3][CHART_X - 1 + i].style.fg for i in range(CHART_W)]
+
+        in_c, in_other = bottoms()[0], bottoms(color_for=lambda v: other)[0]
+        # seven samples on five columns: the first two fall off, and their colours with them
+        assert bottoms(colors=[other, other, C, other, C, C, other]) == [in_c, in_other, in_c, in_c, in_other]
+        padded = bottoms(colors=[other], history=(100.0,))
+        assert padded[-1] == in_other and padded[0] == Theme.COLOR_PANEL_BG
+
     def test_guides_show_only_where_no_bar_covers_them(self):
         screen = draw([0.0, 0.0, 0.0, 0.0, 75.0], guides={1: C, 3: C})   # rows count up from the base
         assert column(screen, CHART_X) == "┄ ┄ "

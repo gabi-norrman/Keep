@@ -672,6 +672,25 @@ def test_stream_llm_response_with_thinking_passes_flag(monkeypatch):
 
 
 @pytest.mark.unit
+def test_the_first_token_records_the_models_ttft_for_the_dashboard(monkeypatch):
+    """Whichever backend answers — the fast tier is not always Claude — its TTFT reaches the
+    dashboard from here; a reply served from the response cache never reached a model."""
+    recorded = []
+    ttft = Mock(record=lambda model, seconds: recorded.append((model, seconds)))
+    monkeypatch.setattr('assistant.DialogManager.TTFTMonitor.get_instance', staticmethod(lambda: ttft))
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    dm.ai.model = "gemini-fast"
+    monkeypatch.setattr('assistant.DialogManager.time.time', TimeStub([1.4]))
+
+    list(dm.process_llm_stream(iter(["Hello"]), 1.0, False))
+    assert recorded == [("gemini-fast", pytest.approx(0.4))]
+
+    dm.ai.last_response_was_cached = True
+    list(dm.process_llm_stream(iter(["Hello"]), 1.0, False))
+    assert len(recorded) == 1
+
+
+@pytest.mark.unit
 def test_process_llm_stream_replaces_backticks(monkeypatch):
     dm, console = make_dialog_manager(monkeypatch, [])
 
