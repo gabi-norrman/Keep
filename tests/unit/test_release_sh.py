@@ -12,6 +12,7 @@ whole budget — and an earlier release is origin's `release` branch and tag put
 same way, not a first run of the script. For the same reason no test here lets the script
 get as far as its `git push`: the run that pushes costs more than a unit test may.
 """
+import os
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -19,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from .git_sandbox import History, empty_repo, git, spawn
+from .git_sandbox import History, empty_repo, git, git_env, spawn
 
 RELEASE_SH = Path(__file__).resolve().parents[2] / 'release.sh'
 
@@ -54,8 +55,19 @@ class Repos:
     def keep_local(self) -> list[str]:
         return self.history.write(self.dev)
 
-    def release(self, *args: str) -> subprocess.CompletedProcess:
-        return spawn(['bash', str(self.dev / 'release.sh'), *args], timeout=30)
+    def release(self, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+        return spawn(['bash', str(self.dev / 'release.sh'), *args], timeout=30, env=env)
+
+    def stub_claude(self, tmp_path: Path) -> dict:
+        """An environment whose `claude` prints the prompt it was given, so the dry run's
+        "what's new" shows what the script asked for."""
+        bin_dir = tmp_path / 'bin'
+        bin_dir.mkdir()
+        stub = bin_dir / 'claude'
+        stub.write_text('#!/bin/sh\necho "$2"\n')
+        stub.chmod(0o755)
+        env = git_env()
+        return {**env, 'PATH': str(bin_dir) + os.pathsep + env['PATH']}
 
     def origin_state(self) -> tuple[str | None, dict[str, str]]:
         """Where origin's `release` branch is (None without one) and the commit each tag names."""
@@ -126,3 +138,35 @@ class TestRepeatedRelease:
         result = repos.release(second)
         assert result.returncode == 0, result.stderr
         assert 'already at v2026.09.2 ' in result.stdout
+
+
+class TestIgnoredCommits:
+    """--ignore-commits keeps the named commits out of the note Claude writes, and out of
+    nothing else: they are released, and the listing says they were left out."""
+
+    def test_ignored_commits_are_listed_but_kept_out_of_the_prompt(self, repos, tmp_path):
+        repos.commits('2026.08')
+        repos.released('v2026.08.1')
+        repos.commits('2026.09', '2026.09', '2026.09')
+        _, second, third, fourth = repos.push()
+        result = repos.release('--dry-run', '--ignore-commits', f'{second[:7]},{third[:7]}',
+                               env=repos.stub_claude(tmp_path))
+        assert result.returncode == 0, result.stderr
+        listing, prompt = result.stdout.split("What's new in", 1)
+        assert all(edit in listing for edit in ('edit 2', 'edit 3', 'edit 4'))
+        assert listing.count('left out') == 2
+        assert 'edit 4' in prompt
+        assert 'edit 2' not in prompt and 'edit 3' not in prompt
+        assert repos.origin_state()[0] != fourth
+
+    def test_a_commit_the_release_does_not_bring_is_refused(self, repos):
+        repos.commits('2026.08')
+        repos.released('v2026.08.1')
+        repos.commits('2026.09')
+        first, _ = repos.push()
+        result = repos.release('--dry-run', '--ignore-commits', first[:7])
+        assert result.returncode != 0
+        assert first[:7] in result.stderr
+        result = repos.release('--dry-run', '--ignore-commits', 'zzzz')
+        assert result.returncode != 0
+        assert 'zzzz' in result.stderr

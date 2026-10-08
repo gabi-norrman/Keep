@@ -10,6 +10,10 @@
 #                           `git push -f origin <commit>:release`)
 #   ./release.sh --dry-run [<commit>]
 #                           run the checks and print the what's new, but neither tag nor push
+#   ./release.sh --ignore-commits <hash>[,<hash>…] [<commit>]
+#                           leave these released commits out of the what's new (a change
+#                           the household should not be told about, or one a later commit
+#                           undid); the commits are released all the same
 #
 # Before tagging, Claude Code (`claude -p`) reads the released commits and writes a "what's
 # new" for the household, which becomes the body of the annotated tag. An install's pull
@@ -23,14 +27,28 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+ignored=()  # full hashes of the --ignore-commits, resolved once the release range is known
+is_ignored() {  # $1: a full commit hash
+  local h
+  for h in ${ignored[@]+"${ignored[@]}"}; do [ "$h" = "$1" ] && return 0; done
+  return 1
+}
+
 whats_new() {  # $1..$2: the released commits — prints Claude's user-facing summary of them
   command -v claude >/dev/null || { echo "claude is not on PATH — no what's new." >&2; return 0; }
-  local log
-  log=$(git log --reverse --format='%h %s%n%b' "$1..$2")
+  local log="" c
+  while read -r c; do
+    is_ignored "$c" && continue
+    log+="$(git log -1 --format='%h %s%n%b' "$c")"$'\n'
+  done < <(git rev-list --reverse "$1..$2")
+  local left_out=""
+  [ ${#ignored[@]} -gt 0 ] && left_out="
+Some commits of the release were deliberately left out of the list; write only about the ones listed and do not
+go looking for others."
   local prompt
   prompt="You are writing the release note for a home assistant called Keep, sent to the users of the system.
 The release is $version. Below are the commits it brings, oldest first, as '<hash> <subject>' followed by the body.
-Run \`git show <hash>\` or \`git show --stat <hash>\` when a message does not make the user-facing effect clear.
+Run \`git show <hash>\` or \`git show --stat <hash>\` when a message does not make the user-facing effect clear.$left_out
 
 Create a user friendly, punchy and nice \"what's new\" for this release. Format it so that it will look nice
 in a Telegram chat: the bot sends HTML, so use <b>…</b> and <i>…</i> only, blank lines between items, an emoji
@@ -50,7 +68,18 @@ $log"
 }
 
 dry_run=false
-if [ "${1:-}" = "--dry-run" ]; then dry_run=true; shift; fi
+ignore=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry_run=true; shift ;;
+    --ignore-commits=*) list="${1#*=}"; read -ra hashes <<< "${list//,/ }"; ignore+=(${hashes[@]+"${hashes[@]}"}); shift ;;
+    --ignore-commits)
+      [ $# -ge 2 ] || { echo "--ignore-commits needs a list of commit hashes." >&2; exit 1; }
+      read -ra hashes <<< "${2//,/ }"; ignore+=(${hashes[@]+"${hashes[@]}"}); shift 2 ;;
+    --*) echo "Unknown option $1." >&2; exit 1 ;;
+    *) break ;;
+  esac
+done
 
 git fetch -q origin
 target="${1:-origin/master}"
@@ -81,10 +110,23 @@ while read -r day tag; do
   if git merge-base --is-ancestor "$tagged" "$commit"; then baseline="$tagged"; break; fi
 done < <(git for-each-ref --sort=-taggerdate 'refs/tags/v*' --format='%(taggerdate:format-local:%Y-%m-%d) %(refname:short)')
 
+# An ignored commit has to be one the note would otherwise cover: anything else is a typo.
+for h in ${ignore[@]+"${ignore[@]}"}; do
+  full=$(git rev-parse -q --verify "$h^{commit}") || { echo "--ignore-commits: $h is not a commit." >&2; exit 1; }
+  if ! git merge-base --is-ancestor "$full" "$commit" || { [ -n "$baseline" ] && git merge-base --is-ancestor "$full" "$baseline"; }; then
+    echo "--ignore-commits: $h is not among the commits this release brings." >&2; exit 1
+  fi
+  ignored+=("$full")
+done
+
 echo "Releasing $version ($short)"
 if [ -n "$baseline" ]; then
   [ "$baseline" != "$current" ] && echo "  (since $(git describe --tags --exact-match "$baseline" 2>/dev/null || git rev-parse --short "$baseline"), the last release before today — the ones released earlier today are included)"
-  git log --oneline "$baseline..$commit" | sed 's/^/  /'
+  while read -r c; do
+    line=$(git log -1 --oneline "$c")
+    is_ignored "$c" && line="$line   (left out of the what's new)"
+    echo "  $line"
+  done < <(git rev-list "$baseline..$commit")
 fi
 
 existing=$(git rev-parse -q --verify "refs/tags/$version^{commit}" || true)
