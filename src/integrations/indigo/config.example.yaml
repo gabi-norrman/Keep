@@ -2,6 +2,11 @@ indigo:
   host: YOUR_INDIGO_HOST
   login: YOUR_INDIGO_LOGIN
   password: YOUR_INDIGO_PASSWORD
+  # The house's state and event log are read over ssh (key-based login, no prompt) from the Indigo Mac.
+  # Optional — these are the defaults.
+  # ssh_user: media                              # the account on the Indigo Mac to log in as
+  # prompt_file: Documents/Floxy/prompt.txt      # the state file a script there keeps current, relative to that account's home
+  # log_refiner: /usr/local/bin/python3 Documents/Floxy/AI/Tools/LogRefiner/log_refiner.py   # prints the day's events, one "HH:MM:SS (x mins ago) type: device" line each
   # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
   prompt_filters:
     - SomeNoisyVariableName

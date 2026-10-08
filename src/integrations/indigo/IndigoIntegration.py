@@ -24,6 +24,7 @@ from common.logging import info, trace
 
 POLL_INTERVAL = 5
 REST_PORT = 8176
+# The ssh side (`indigo.ssh_user` / `prompt_file` / `log_refiner` override these).
 SSH_USER = "media"
 PROMPT_FILE = "Documents/Floxy/prompt.txt"
 LOG_REFINER = "/usr/local/bin/python3 Documents/Floxy/AI/Tools/LogRefiner/log_refiner.py"
@@ -194,12 +195,17 @@ class IndigoIntegration(Integration, Feed, HomeAutomation):
                 trace(f"Indigo: not a state line, skipped: {line[:80]}")
         return entities
 
+    @staticmethod
+    def _ssh_target() -> str:
+        return f"{config.get('indigo.ssh_user', SSH_USER)}@{config.get('indigo.host')}"
+
     def _read_prompt_file(self) -> str:
+        prompt_file = config.get('indigo.prompt_file', PROMPT_FILE)
         result = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                                 f"{SSH_USER}@{config.get('indigo.host')}", f"cat {PROMPT_FILE}"],
+                                 self._ssh_target(), f"cat {prompt_file}"],
                                 capture_output=True, text=True, timeout=15)
         if result.returncode != 0 or not result.stdout:
-            raise RuntimeError(f"could not read {PROMPT_FILE} on the Indigo host: "
+            raise RuntimeError(f"could not read {prompt_file} on the Indigo host: "
                                f"exit {result.returncode} {result.stderr.strip()}")
         return result.stdout
 
@@ -247,7 +253,7 @@ class IndigoIntegration(Integration, Feed, HomeAutomation):
     def _run_log_refiner(self) -> str:
         result = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-             f"{SSH_USER}@{config.get('indigo.host')}", LOG_REFINER],
+             self._ssh_target(), config.get('indigo.log_refiner', LOG_REFINER)],
             capture_output=True, text=True, timeout=15)
         if result.returncode != 0:
             raise RuntimeError(f"log_refiner exited {result.returncode}: {result.stderr.strip()}")
