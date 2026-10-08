@@ -870,6 +870,15 @@ class TestNameKeys:
     def test_strips_surrounding_whitespace(self):
         assert IMessageIntegration._name_keys("  Alice  ", "  Smith  ") == ["Alice", "Alice Smith"]
 
+    def test_middle_name_answers_to_either_surname_half_and_the_whole(self):
+        # prod 2026-10-08: a card filed as first "Erik", middle "Norrman", last "Elgh" was unknown
+        # as "Erik Norrman" and as "Erik Norrman Elgh" alike
+        assert IMessageIntegration._name_keys("Dave", "Elgh", "Norrman") == \
+            ["Dave", "Dave Norrman", "Dave Elgh", "Dave Norrman Elgh"]
+
+    def test_middle_name_without_last(self):
+        assert IMessageIntegration._name_keys("Dave", None, "Norrman") == ["Dave", "Dave Norrman"]
+
 
 @pytest.mark.unit
 class TestRecordFullName:
@@ -882,6 +891,11 @@ class TestRecordFullName:
         m = {}
         IMessageIntegration._record_full_name(m, "Alice", None, "+12345678901")
         assert m == {"+12345678901": "Alice"}
+
+    def test_middle_name_is_part_of_the_full_name(self):
+        m = {}
+        IMessageIntegration._record_full_name(m, "Dave", "Elgh", "+12345678901", "Norrman")
+        assert m == {"+12345678901": "Dave Norrman Elgh"}
 
     def test_first_writer_wins(self):
         """If two contacts share a handle, the first one written sticks (last writer would be ambiguous anyway)."""
@@ -1092,17 +1106,19 @@ class TestRefreshContactCacheRanking:
 
     @staticmethod
     def _address_book(root, people):
-        """Write a minimal AddressBook-v22.abcddb; `people` are (first, last, phones, emails) with
-        phones as (number, label) tuples."""
+        """Write a minimal AddressBook-v22.abcddb; `people` are (first, last, phones, emails) — or
+        (first, middle, last, phones, emails) — with phones as (number, label) tuples."""
         db = root / "Library" / "Application Support" / "AddressBook" / "Sources" / "ABC" / "AddressBook-v22.abcddb"
         db.parent.mkdir(parents=True)
         with sqlite3.connect(db) as conn:
-            conn.execute("CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT, ZLASTNAME TEXT)")
+            conn.execute("CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT, ZMIDDLENAME TEXT, "
+                         "ZLASTNAME TEXT)")
             conn.execute("CREATE TABLE ZABCDPHONENUMBER (Z_PK INTEGER PRIMARY KEY, ZOWNER INTEGER, "
                          "ZFULLNUMBER TEXT, ZLABEL TEXT)")
             conn.execute("CREATE TABLE ZABCDEMAILADDRESS (Z_PK INTEGER PRIMARY KEY, ZOWNER INTEGER, ZADDRESS TEXT)")
-            for pk, (first, last, phones, emails) in enumerate(people, start=1):
-                conn.execute("INSERT INTO ZABCDRECORD VALUES (?, ?, ?)", (pk, first, last))
+            for pk, person in enumerate(people, start=1):
+                first, middle, last, phones, emails = person if len(person) == 5 else (person[0], None, *person[1:])
+                conn.execute("INSERT INTO ZABCDRECORD VALUES (?, ?, ?, ?)", (pk, first, middle, last))
                 for number, label in phones:
                     conn.execute("INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER, ZLABEL) VALUES (?, ?, ?)",
                                  (pk, number, label))
@@ -1118,6 +1134,13 @@ class TestRefreshContactCacheRanking:
         handle, err = m.resolve_recipient(name)
         assert err is None
         return handle, m
+
+    def test_card_with_a_middle_name_resolves_by_first_and_middle(self, tmp_path):
+        people = [("Dave", "Norrman", "Elgh", [("070-174 06 08", "_$!<Mobile>!$_")], [])]
+        handle, m = self._resolve(tmp_path, people, {}, "Dave Norrman")
+        assert handle == "0701740608"
+        assert m.resolve_recipient("Dave Norrman Elgh")[0] == "0701740608"
+        assert m.display_name_for_handle(handle) == "Dave Norrman Elgh"
 
     def test_landline_first_on_card_still_resolves_to_mobile(self, tmp_path):
         people = [("Bob", "Jones", [("031-12 34 56", "_$!<Home>!$_"), ("070-174 06 05", "_$!<Mobile>!$_")], [])]

@@ -602,20 +602,19 @@ class IMessageIntegration(Integration, Feed):
             entries.append((handle, label))
 
     @classmethod
-    def _record_full_name(cls, mapping: dict[str, str], first: str | None, last: str | None, raw_handle: str):
-        """Map handle → 'First Last' (or just 'First' if no last). Used to render canonical names
-        in approval dialogs even when the caller passed only a first name."""
+    def _record_full_name(cls, mapping: dict[str, str], first: str | None, last: str | None, raw_handle: str,
+                          middle: str | None = None):
+        """Map handle → the card's full name ('First Middle Last', the parts that are set). Used to
+        render canonical names in approval dialogs even when the caller passed only a first name."""
         if not first or not raw_handle:
             return
         handle = cls._prefer_handle(raw_handle)
         if not handle:
             return
-        f = first.strip()
-        l = (last or "").strip()
-        if not f:
+        parts = [part.strip() for part in (first, middle, last) if part and part.strip()]
+        if not parts:
             return
-        full = f"{f} {l}" if l else f
-        mapping.setdefault(handle, full)
+        mapping.setdefault(handle, " ".join(parts))
 
     def display_name_for_handle(self, handle: str) -> Optional[str]:
         """Canonical 'First Last' for a resolved handle, or None if unknown."""
@@ -624,16 +623,23 @@ class IMessageIntegration(Integration, Feed):
         return self._handle_to_full_name.get(handle)
 
     @staticmethod
-    def _name_keys(first: str | None, last: str | None) -> list[str]:
-        """Lookup keys to register for a contact: first name, and 'first last' when last is present.
-        Last-name-only is intentionally omitted — too easy to collide across contacts."""
-        keys: list[str] = []
+    def _name_keys(first: str | None, last: str | None, middle: str | None = None) -> list[str]:
+        """Lookup keys to register for a contact: the first name, then 'first last', and with a middle
+        name on the card also 'first middle' and 'first middle last' — a Swedish double surname is
+        often filed as middle + last, and the user says either half. Last-name-only is intentionally
+        omitted — too easy to collide across contacts."""
         f = (first or "").strip()
+        m = (middle or "").strip()
         l = (last or "").strip()
-        if f:
-            keys.append(f)
-        if f and l:
+        if not f:
+            return []
+        keys = [f]
+        if m:
+            keys.append(f"{f} {m}")
+        if l:
             keys.append(f"{f} {l}")
+        if m and l:
+            keys.append(f"{f} {m} {l}")
         return keys
 
     @staticmethod
@@ -953,8 +959,8 @@ class IMessageIntegration(Integration, Feed):
             for db_path in source_dbs:
                 try:
                     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
-                        for first, last, phone, label in conn.execute("""
-                            SELECT r.ZFIRSTNAME, r.ZLASTNAME, p.ZFULLNUMBER, p.ZLABEL
+                        for first, middle, last, phone, label in conn.execute("""
+                            SELECT r.ZFIRSTNAME, r.ZMIDDLENAME, r.ZLASTNAME, p.ZFULLNUMBER, p.ZLABEL
                             FROM ZABCDRECORD r JOIN ZABCDPHONENUMBER p ON p.ZOWNER = r.Z_PK
                             WHERE r.ZFIRSTNAME IS NOT NULL AND p.ZFULLNUMBER IS NOT NULL
                             ORDER BY r.Z_PK, p.Z_PK
@@ -965,19 +971,19 @@ class IMessageIntegration(Integration, Feed):
                             suffix = self._phone_suffix(phone)
                             if suffix:
                                 cache[suffix] = first
-                            for name_key in self._name_keys(first, last):
+                            for name_key in self._name_keys(first, last, middle):
                                 self._add_candidate(candidates, name_key, phone, label)
-                            self._record_full_name(handle_to_full, first, last, phone)
+                            self._record_full_name(handle_to_full, first, last, phone, middle)
 
-                        for first, last, email in conn.execute("""
-                            SELECT r.ZFIRSTNAME, r.ZLASTNAME, e.ZADDRESS
+                        for first, middle, last, email in conn.execute("""
+                            SELECT r.ZFIRSTNAME, r.ZMIDDLENAME, r.ZLASTNAME, e.ZADDRESS
                             FROM ZABCDRECORD r JOIN ZABCDEMAILADDRESS e ON e.ZOWNER = r.Z_PK
                             WHERE r.ZFIRSTNAME IS NOT NULL AND e.ZADDRESS IS NOT NULL
                         """):
                             cache[email.lower()] = first
-                            for name_key in self._name_keys(first, last):
+                            for name_key in self._name_keys(first, last, middle):
                                 self._add_candidate(candidates, name_key, email)
-                            self._record_full_name(handle_to_full, first, last, email)
+                            self._record_full_name(handle_to_full, first, last, email, middle)
                 except Exception as e:
                     fine(f"iMessage: skipping contact source {db_path.parent.name}: {e}")
 
