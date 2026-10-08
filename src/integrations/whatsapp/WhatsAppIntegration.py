@@ -592,7 +592,9 @@ class WhatsAppIntegration(Integration, Feed):
         if msgs.jid_parts(sender)[1] == msgs.SERVER_LID and alt and msgs.jid_parts(alt)[1] == msgs.SERVER_USER:
             self._lid_to_pn[msgs.jid_parts(sender)[0]] = msgs.jid_parts(alt)[0]
             sender = alt
-        self._live.put(Incoming(timestamp=float(event.Info.Timestamp), chat=chat, sender=sender,
+        # neonize stamps a live event in milliseconds; a history-sync row (messageTimestamp)
+        # is in seconds, and the feed, the horizon and the history rows all run on seconds.
+        self._live.put(Incoming(timestamp=float(event.Info.Timestamp) / 1000.0, chat=chat, sender=sender,
                                 from_me=bool(source.IsFromMe), push_name=event.Info.Pushname or "",
                                 message=event.Message, from_history=False, edit=getattr(event.Info, "Edit", "") or ""))
         self._queued.set()

@@ -44,9 +44,9 @@ def ephemeral(inner) -> SimpleNamespace:
     return SimpleNamespace(conversation="", ephemeralMessage=SimpleNamespace(message=inner))
 
 
-def live_event(message, chat: str, sender: str, from_me: bool = False, push_name: str = "", timestamp: int = 1_700_000_000,
+def live_event(message, chat: str, sender: str, from_me: bool = False, push_name: str = "", timestamp: int = 1_700_000_000_000,
                sender_alt=None, edit: str = "", chat_server: str = "s.whatsapp.net", sender_server: str = "s.whatsapp.net"):
-    """A MessageEv as the integration reads it."""
+    """A MessageEv as the integration reads it; `timestamp` is unix milliseconds, as neonize stamps it."""
     source = SimpleNamespace(Chat=jid(chat, chat_server), Sender=jid(sender, sender_server), SenderAlt=sender_alt,
                              IsFromMe=from_me, IsGroup=chat_server == "g.us")
     info = SimpleNamespace(MessageSource=source, Timestamp=timestamp, Pushname=push_name, Edit=edit, ID="ABC")

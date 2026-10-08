@@ -43,14 +43,20 @@ def receive(integration, message, chat=ALICE, sender=ALICE, **kwargs):
 
 class TestLiveMessages:
     def test_a_received_text_becomes_a_history_entry_with_the_contact_name(self, integration):
-        receive(integration, fakes.text_message("lunch?"), timestamp=1_700_000_100)
+        receive(integration, fakes.text_message("lunch?"), timestamp=1_700_000_100_000)
         batch = integration.fetch(None, backfill=False)
         assert [e.content for e in batch.entries] == ["WhatsApp received:\nFrom Alice Andersson to Marcus: lunch?"]
         assert batch.entries[0].timestamp == 1_700_000_100 and batch.cursor == repr(1_700_000_100.0)
         assert batch.exhausted
 
+    def test_a_live_event_is_stamped_in_milliseconds_and_stored_in_seconds(self, integration):
+        """Contract with neonize: MessageEv.Info.Timestamp is unix milliseconds, the feed runs on seconds."""
+        receive(integration, fakes.text_message("now"), timestamp=1_700_000_100_000)
+        batch = integration.fetch(None, backfill=False)
+        assert batch.entries[0].timestamp == 1_700_000_100.0
+
     def test_the_cursor_never_moves_back(self, integration):
-        receive(integration, fakes.text_message("late"), timestamp=1_600_000_000)
+        receive(integration, fakes.text_message("late"), timestamp=1_600_000_000_000)
         assert integration.fetch(repr(1_700_000_000.0), backfill=False).cursor == repr(1_700_000_000.0)
 
     def test_a_group_message_resolves_the_group_name_through_the_client(self, integration):
