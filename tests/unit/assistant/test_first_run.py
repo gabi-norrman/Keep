@@ -36,6 +36,12 @@ class TestState:
         path.write_text(content)
         assert State.load(path) is None
 
+    def test_install_age_is_days_since_the_first_start_and_none_without_a_file(self, tmp_path):
+        path = tmp_path / "first_run.json"
+        State(stage=Stage.SETUP, started_at=1_000_000.0, entered_at=1_000_000.0).save(path)
+        assert FirstRun.install_age_days(now=1_000_000.0 + 2.5 * 86400, state_path=path) == pytest.approx(2.5)
+        assert FirstRun.install_age_days(now=1_000_000.0, state_path=tmp_path / "nope.json") is None
+
     def test_span(self):
         state = State.fresh()
         assert state.span is None

@@ -246,7 +246,7 @@ The end game is 100% local. Keep already runs on local models and once the local
 > [!IMPORTANT]
 > **Beta telemetry.** During the beta Keep sends anonymous usage events: a random install id, the Keep version, which
 > interface and integrations are in use, which you switch on or off, which TUI tabs you open, and the names of the
-> commands a turn ran — never their arguments. While you are setting Keep up, the events also carry your queries and
-> Keep's replies, so we can see where the first steps trip people up; once setup is done, that part is switched off
-> for good. Vault secrets are placeholders in the transcript too. `telemetry.enabled: false` in `config.yaml` turns
+> commands a turn ran — never their arguments. For the first seven days after you install, the events also carry
+> your queries and Keep's replies, so we can see where the first steps trip people up; after that, the text stays
+> home. Vault secrets are placeholders in the transcript too. `telemetry.enabled: false` in `config.yaml` turns
 > it all off.

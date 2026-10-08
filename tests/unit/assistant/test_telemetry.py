@@ -1,5 +1,5 @@
-"""The beta telemetry: what leaves the machine, under which switch, and the latch that ends the
-transcript once the install's setup is over."""
+"""The beta telemetry: what leaves the machine, under which switch, and the week after the
+first start in which the turns carry their text."""
 import time
 import uuid
 from unittest.mock import Mock
@@ -9,14 +9,14 @@ import pytest
 import assistant.Telemetry as telemetry_module
 import common.ConfigManager as config_module
 from assistant.Telemetry import Telemetry
-from common import ConfigSchema, ConfigStore
+from common import ConfigStore
 
 
 @pytest.fixture
 def settings(monkeypatch):
     """A config with telemetry fully on and no id yet; the project key is built in; config
     writes are recorded, not performed."""
-    values = {"telemetry.enabled": True, "telemetry.content": True, "telemetry.id": "", "owner_name": "Marcus"}
+    values = {"telemetry.enabled": True, "telemetry.id": "", "owner_name": "Marcus"}
     monkeypatch.setattr(config_module.config, "get", lambda key, default=None: values.get(key, default))
     monkeypatch.setattr(config_module.config, "enabled_integrations", lambda: ["Tesla", "Weather"])
     monkeypatch.setattr(telemetry_module, "POSTHOG_PROJECT_KEY", "phc_fictional")
@@ -32,7 +32,7 @@ def sent():
 @pytest.fixture
 def telemetry(settings, sent):
     """Started with a fake poster; `stop()` flushes, so a test stops it before asserting."""
-    t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
+    t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
     t.start()
     yield t
     t.stop()
@@ -49,7 +49,7 @@ def _by_name(sent, name) -> list[dict]:
 class TestSwitches:
     def test_disabled_in_config_sends_nothing(self, settings, sent):
         settings["telemetry.enabled"] = False
-        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
+        t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
         t.start()
         t.user_turn("hello", "console")
         t.stop()
@@ -71,7 +71,7 @@ class TestSwitches:
         assert len(_by_name(sent, "heartbeat")) == 1   # the one from start
 
     def test_events_still_queued_at_the_opt_out_are_discarded(self, settings, sent):
-        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
+        t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
         t._send([{"event": "user_turn"}])
         settings["telemetry.enabled"] = False
         t._send([{"event": "assistant_turn"}])
@@ -79,7 +79,7 @@ class TestSwitches:
 
     def test_without_a_built_in_key_nothing_is_sent(self, settings, sent, monkeypatch):
         monkeypatch.setattr(telemetry_module, "POSTHOG_PROJECT_KEY", "")
-        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
+        t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
         t.start()
         t.user_turn("hello", "console")
         t.stop()
@@ -102,7 +102,7 @@ class TestInstallId:
 
     def test_an_existing_id_is_kept(self, settings, sent):
         settings["telemetry.id"] = "8f1c9b2a-0000-4000-8000-000000000001"
-        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
+        t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
         t.start()
         t.stop()
         ConfigStore.set_value.assert_not_called()
@@ -141,9 +141,8 @@ class TestEvents:
         assert len(texts) == 3
         assert all("4111" not in text and "{{secret:marcus-visa}}" in text for text in texts)
 
-    def test_content_off_in_config_keeps_the_text_out_but_the_command_names_in(self, settings, sent):
-        settings["telemetry.content"] = False
-        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
+    def test_past_the_first_week_the_text_stays_home_but_the_command_names_go(self, settings, sent):
+        t = Telemetry(post=sent.append, install_age_days=lambda: 7.0)
         t.start()
         t.user_turn("read my mail", "Telegram")
         t.assistant_turn("Three new messages.", "Telegram", commands=["check_mail"])
@@ -157,7 +156,7 @@ class TestEvents:
         assert ConfigStore.set_value.call_args.args[0] == "telemetry.id"
 
     def test_events_go_out_in_batches_no_larger_than_the_limit_and_none_is_lost(self, settings, sent):
-        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
+        t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
         t.start()
         count = telemetry_module.BATCH_LIMIT * 2 + 7
         for i in range(count):
@@ -172,7 +171,7 @@ class TestEvents:
         coming after the one sent at start, and say it is not a start."""
         import time
         monkeypatch.setattr(telemetry_module, "HEARTBEAT_INTERVAL", 0.002)
-        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
+        t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
         t.start()
         deadline = time.time() + 1.0
         while time.time() < deadline and len(_by_name(sent, "heartbeat")) < 3:
@@ -206,10 +205,10 @@ class TestEvents:
             if len(posts) == 1:
                 raise ConnectionError("down")
 
-        t = Telemetry(post=post, setup_in_progress=lambda: True)
+        t = Telemetry(post=post, install_age_days=lambda: 2.0)
         t.start()
         t.stop()          # the startup heartbeat fails
-        t2 = Telemetry(post=post, setup_in_progress=lambda: True)
+        t2 = Telemetry(post=post, install_age_days=lambda: 2.0)
         t2.start()
         t2.user_turn("hello", "console")
         t2.stop()
@@ -222,7 +221,7 @@ class TestQueueLimit:
             self, settings, sent, monkeypatch):
         monkeypatch.setattr(telemetry_module, "QUEUE_LIMIT", 2)
         monkeypatch.setattr(Telemetry, "active", property(lambda self: True))   # on, but no worker drains the queue
-        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
+        t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
         for n in range(5):
             t.user_turn(f"turn {n}", "console")
         assert t._dropped == 3 and t._queue.qsize() == 2
@@ -259,7 +258,7 @@ class TestStatus:
             self, settings, sent, monkeypatch):
         monkeypatch.setattr(telemetry_module, "STATUS_FIRST_DELAY", 0.005)
         monkeypatch.setattr(telemetry_module, "STATUS_INTERVAL", 0.005)
-        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
+        t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
         t.start()
         t.feed_count("iMessage", 400)
 
@@ -285,45 +284,51 @@ class TestStatus:
         assert not _by_name(sent, "status") and not _by_name(sent, "memory_size")
 
 
-class TestSetupLatch:
-    def test_the_end_of_setup_latches_content_off_in_config_and_says_what_is_on(self, settings, sent):
-        in_setup = [True]
-        t = Telemetry(post=sent.append, setup_in_progress=lambda: in_setup[0])
+class TestTranscriptWindow:
+    def test_the_window_closes_on_the_seventh_day_without_touching_config(self, settings, sent):
+        age = [6.9]
+        t = Telemetry(post=sent.append, install_age_days=lambda: age[0])
         t.start()
         t.user_turn("hi", "console")
-        in_setup[0] = False
+        age[0] = 7.0
         t.user_turn("what did Alice write?", "console")
         t.stop()
         first, second = _by_name(sent, "user_turn")
         assert first["properties"]["query"] == "hi"
         assert "query" not in second["properties"]
-        [off] = _by_name(sent, "content_off")
-        assert off["properties"]["integrations"] == ["Tesla", "Weather"]
-        assert ("telemetry.content", "false") in [c.args for c in ConfigStore.set_value.call_args_list]
+        assert [c.args[0] for c in ConfigStore.set_value.call_args_list] == ["telemetry.id"]
 
-    def test_setup_coming_back_does_not_reopen_the_transcript(self, settings, sent):
-        """The latch is for good: once config says no, the FTUE's verdict is not asked again."""
-        settings["telemetry.content"] = False
-        asked = []
-        t = Telemetry(post=sent.append, setup_in_progress=lambda: asked.append(True) or True)
+    def test_an_install_without_a_first_run_state_sends_no_text(self, settings, sent):
+        t = Telemetry(post=sent.append, install_age_days=lambda: None)
         t.start()
         t.user_turn("hi", "console")
         t.stop()
         [turn] = _by_name(sent, "user_turn")
-        assert "query" not in turn["properties"] and asked == []
+        assert "query" not in turn["properties"]
+        [heartbeat] = _by_name(sent, "heartbeat")
+        assert heartbeat["properties"]["content"] is False
 
-    def test_the_default_verdict_is_the_ftue_s(self, monkeypatch):
+    def test_a_content_false_left_by_the_old_latch_in_config_does_not_close_the_window(self, settings, sent):
+        """Contract with the beta installs' config.yaml: the earlier rule latched
+        `telemetry.content: false` there, and a two-day-old install must get its remaining days."""
+        settings["telemetry.content"] = False
+        t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
+        t.start()
+        t.user_turn("hi", "console")
+        t.stop()
+        [turn] = _by_name(sent, "user_turn")
+        assert turn["properties"]["query"] == "hi"
+
+    def test_the_default_age_is_the_first_run_state_s(self, monkeypatch):
         from assistant import FirstRun
-        monkeypatch.setattr(FirstRun, "in_ftue", lambda: False)
-        assert telemetry_module.setup_in_progress() is False
-        monkeypatch.setattr(FirstRun, "in_ftue", lambda: True)
-        assert telemetry_module.setup_in_progress() is True
+        monkeypatch.setattr(FirstRun, "install_age_days", lambda: None)
+        assert telemetry_module.install_age_days() is None
+        monkeypatch.setattr(FirstRun, "install_age_days", lambda: 3.5)
+        assert telemetry_module.install_age_days() == 3.5
 
 
 class TestConfigContract:
     def test_the_telemetry_keys_are_settable_through_the_config_store(self):
-        """Contract with config.example.yaml: the server writes `telemetry.id` and latches
-        `telemetry.content` through ConfigStore, which refuses keys the example lacks."""
+        """Contract with config.example.yaml: the server writes `telemetry.id` through
+        ConfigStore, which refuses keys the example lacks."""
         ConfigStore.check_key("telemetry.id")
-        ConfigStore.check_key("telemetry.content")
-        assert ConfigSchema.leaf_type("telemetry.content") is bool

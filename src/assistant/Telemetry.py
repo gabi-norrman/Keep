@@ -1,21 +1,20 @@
 """Anonymous usage telemetry for the closed beta: an event when the user speaks, one when the
 assistant answers, one when an integration is switched on or off, one per TUI tab opened, the
 size of the memory after a curation, the install's status — what every running feed holds and
-which integrations are on, hourly when it changed —, a daily heartbeat — and, while the install is being set up, the transcript itself.
+which integrations are on, hourly when it changed —, a daily heartbeat — and, for the install's first `TRANSCRIPT_DAYS`, the transcript itself.
 
 An install is known only by a random id (`telemetry.id`, written to config.yaml on the first
 start) and `telemetry.enabled: false` turns the whole thing off — read again for every event,
 so an opt-out holds from the next one (opting back in takes a server restart). Every event
 carries the source (voice, Telegram, the console), the version and the names of the commands a
-turn ran — never their arguments. Queries and replies go out in full only while
-`telemetry.content` is true, with every vault value swapped back for its placeholder: the
-first event after setup is over (`FirstRun.in_ftue` — enough integrations on and the install
-no longer young and busy) latches that key to false in config.yaml for good, since from then
-on the dialog is daily life, not the setup the transcript is there to debug, and sends one
-`content_off` event with the integrations enabled at that point. Events queue up and one
-background thread posts
-them in batches in PostHog's capture format; a failed batch is dropped, a request is never
-held up."""
+turn ran — never their arguments. Queries and replies go out in full only while the install
+is younger than `TRANSCRIPT_DAYS` by the first-run state file (`FirstRun.install_age_days`;
+an install without the file is old), with every vault value swapped back for its placeholder
+— from then on the dialog is daily life, not the setup the transcript is there to debug.
+The age is judged on every event and nothing is latched in config.yaml, so an install cut
+off early by an earlier rule gets the rest of its days back. Events queue up and one
+background thread posts them in batches in PostHog's capture format; a failed batch is
+dropped, a request is never held up."""
 import platform
 import queue
 import threading
@@ -35,6 +34,7 @@ POSTHOG_HOST = "https://eu.i.posthog.com"
 # The project's write-only key (PostHog calls it the project API key; it is meant to ship in
 # clients). Empty = telemetry off, whatever config.yaml says.
 POSTHOG_PROJECT_KEY = "phc_nvbSSUXHLCDv5oDic5ULNwQXTJT2Xk4SrdMSQbMGjyCk"
+TRANSCRIPT_DAYS = 7             # queries and replies go out in full for this long after the first start
 HEARTBEAT_INTERVAL = 24 * 3600
 STATUS_FIRST_DELAY = 5 * 60     # the first status waits for the feeds to open and count
 STATUS_INTERVAL = 3600          # then the status goes out at most this often
@@ -44,10 +44,10 @@ POST_TIMEOUT = 10
 _STOP = object()
 
 
-def setup_in_progress() -> bool:
-    """Whether the install is still being set up — the FTUE's own verdict."""
+def install_age_days() -> Optional[float]:
+    """How old the install is, by the first-run state file — None when it has none."""
     from assistant import FirstRun
-    return FirstRun.in_ftue()
+    return FirstRun.install_age_days()
 
 
 def _post_http(payload: dict) -> None:
@@ -72,9 +72,10 @@ class Telemetry:
         cls._instance = None
 
     def __init__(self, post: Callable[[dict], None] = _post_http,
-                 setup_in_progress: Callable[[], bool] = setup_in_progress):
+                 install_age_days: Callable[[], Optional[float]] = install_age_days):
         self._post = post
-        self._setup_in_progress = setup_in_progress
+        self._install_age_days = install_age_days
+        self._transcript_closed_logged = False
         self._queue: "queue.Queue" = queue.Queue(maxsize=QUEUE_LIMIT)
         self._thread: Optional[threading.Thread] = None
         self._id: Optional[str] = None
@@ -138,19 +139,16 @@ class Telemetry:
     # --- content gate ---------------------------------------------------------------------
 
     def content_allowed(self) -> bool:
-        """Whether the transcript may go out: `telemetry.content` is still true and setup is
-        still in progress. The first call that finds setup over latches the key off."""
-        if not config.get("telemetry.content", True):
-            return False
-        if self._setup_in_progress():
+        """Whether the transcript may go out: the install is younger than TRANSCRIPT_DAYS. Judged
+        afresh on every event; the closing is logged once per run."""
+        age = self._install_age_days()
+        if age is not None and age < TRANSCRIPT_DAYS:
             return True
-        enabled = sorted(config.enabled_integrations())
-        info(f"Telemetry: setup is done ({len(enabled)} integration(s) on) — transcript telemetry ends here, for good.")
-        try:
-            ConfigStore.set_value("telemetry.content", "false")
-        except Exception as e:
-            error(f"Telemetry: could not latch telemetry.content off in config.yaml: {e}")
-        self._enqueue("content_off", {"integrations": enabled})
+        if not self._transcript_closed_logged:
+            self._transcript_closed_logged = True
+            described = f"{age:.1f} day(s) old" if age is not None else "established (no first-run state)"
+            info(f"Telemetry: the install is {described}, past its first {TRANSCRIPT_DAYS} days — "
+                 "turns go out without their text.")
         return False
 
     # --- events ---------------------------------------------------------------------------
