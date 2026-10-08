@@ -229,33 +229,60 @@ class TestQueueLimit:
         assert sent == []
 
 
-class TestFeedCount:
-    def test_a_changed_count_waits_for_the_hour_and_each_feed_has_its_own(self, telemetry, sent):
-        telemetry.feed_count("iCloud Photos", 10)
-        telemetry.feed_count("iCloud Photos", 25)       # changed, but within the hour
-        telemetry.feed_count("iMessage", 400)
-        telemetry.stop()
-        assert [(e["properties"]["feed"], e["properties"]["count"]) for e in _by_name(sent, "feed_count")] \
-            == [("iCloud Photos", 10), ("iMessage", 400)]
-
-    def test_once_the_interval_is_over_the_number_of_that_moment_goes_out_and_an_unchanged_one_never(
-            self, telemetry, sent, monkeypatch):
-        monkeypatch.setattr(telemetry_module, "FEED_COUNT_INTERVAL", 0.02)
+class TestStatus:
+    def test_a_status_carries_every_running_feed_as_it_stands_and_the_integrations_on(self, telemetry, sent):
         telemetry.feed_count("iCloud Photos", 10)
         telemetry.feed_count("iCloud Photos", 25)
-        time.sleep(0.03)
-        telemetry.feed_count("iCloud Photos", 30)
-        time.sleep(0.03)
-        telemetry.feed_count("iCloud Photos", 30)
+        telemetry.feed_count("iMessage", 400)
+        telemetry.feed_count("Telegram", 3)
+        telemetry.feed_stopped("Telegram")
+        telemetry.status()
         telemetry.stop()
-        assert [e["properties"]["count"] for e in _by_name(sent, "feed_count")] == [10, 30]
+        [status] = _by_name(sent, "status")
+        assert status["properties"]["feeds"] == {"iCloud Photos": 25, "iMessage": 400}
+        assert status["properties"]["integrations"] == ["Tesla", "Weather"]
 
-    def test_an_install_that_opted_out_sends_no_count(self, settings, telemetry, sent):
+    def test_an_unchanged_status_is_not_repeated_and_a_changed_one_is(self, settings, telemetry, sent, monkeypatch):
+        telemetry.feed_count("iCloud Photos", 10)
+        telemetry.status()
+        telemetry.status()
+        telemetry.feed_count("iCloud Photos", 30)
+        telemetry.status()
+        monkeypatch.setattr(config_module.config, "enabled_integrations", lambda: ["Tesla", "Weather", "Ring"])
+        telemetry.status()
+        telemetry.stop()
+        statuses = _by_name(sent, "status")
+        assert [s["properties"]["feeds"]["iCloud Photos"] for s in statuses] == [10, 30, 30]
+        assert statuses[-1]["properties"]["integrations"] == ["Ring", "Tesla", "Weather"]
+
+    def test_the_worker_sends_the_status_on_its_own_after_the_first_delay_and_then_on_the_interval(
+            self, settings, sent, monkeypatch):
+        monkeypatch.setattr(telemetry_module, "STATUS_FIRST_DELAY", 0.005)
+        monkeypatch.setattr(telemetry_module, "STATUS_INTERVAL", 0.005)
+        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
+        t.start()
+        t.feed_count("iMessage", 400)
+
+        def reported() -> list[dict]:
+            return [s["properties"]["feeds"] for s in _by_name(sent, "status")]
+
+        deadline = time.time() + 1.0
+        while time.time() < deadline and {"iMessage": 400} not in reported():
+            time.sleep(0.002)
+        t.feed_count("iMessage", 410)
+        while time.time() < deadline and {"iMessage": 410} not in reported():
+            time.sleep(0.002)
+        t.stop()
+        feeds = reported()
+        assert feeds.index({"iMessage": 400}) < feeds.index({"iMessage": 410})
+
+    def test_an_install_that_opted_out_sends_no_status_or_memory_size(self, settings, telemetry, sent):
         settings["telemetry.enabled"] = False
         telemetry.feed_count("iMessage", 400)
+        telemetry.status()
         telemetry.memory_size(3000, 19000, 4, 7)
         telemetry.stop()
-        assert not _by_name(sent, "feed_count") and not _by_name(sent, "memory_size")
+        assert not _by_name(sent, "status") and not _by_name(sent, "memory_size")
 
 
 class TestSetupLatch:

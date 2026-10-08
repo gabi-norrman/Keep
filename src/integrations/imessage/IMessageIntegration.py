@@ -64,7 +64,6 @@ class IMessageIntegration(Integration, Feed):
 
     poll_interval = POLL_INTERVAL
     item_noun = "messages"
-    count_in_telemetry = True
     default_backfill_months = 60    # five years: chat.db rows are cheap, no LLM call per message
 
     def __init__(self):

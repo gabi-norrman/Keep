@@ -1,7 +1,7 @@
 """Anonymous usage telemetry for the closed beta: an event when the user speaks, one when the
 assistant answers, one when an integration is switched on or off, one per TUI tab opened, the
-size of the memory after a curation, how many photos and messages are indexed (at most hourly),
-a daily heartbeat — and, while the install is being set up, the transcript itself.
+size of the memory after a curation, the install's status — what every running feed holds and
+which integrations are on, hourly when it changed —, a daily heartbeat — and, while the install is being set up, the transcript itself.
 
 An install is known only by a random id (`telemetry.id`, written to config.yaml on the first
 start) and `telemetry.enabled: false` turns the whole thing off — read again for every event,
@@ -36,7 +36,8 @@ POSTHOG_HOST = "https://eu.i.posthog.com"
 # clients). Empty = telemetry off, whatever config.yaml says.
 POSTHOG_PROJECT_KEY = "phc_nvbSSUXHLCDv5oDic5ULNwQXTJT2Xk4SrdMSQbMGjyCk"
 HEARTBEAT_INTERVAL = 24 * 3600
-FEED_COUNT_INTERVAL = 3600      # a feed's count goes out at most this often
+STATUS_FIRST_DELAY = 5 * 60     # the first status waits for the feeds to open and count
+STATUS_INTERVAL = 3600          # then the status goes out at most this often
 BATCH_LIMIT = 50
 QUEUE_LIMIT = 1000
 POST_TIMEOUT = 10
@@ -55,8 +56,8 @@ def _post_http(payload: dict) -> None:
 
 class Telemetry:
     """The process-wide sink: `user_turn` / `assistant_turn` / `tab_change` /
-    `integration_switch` / `memory_size` / `feed_count` / `heartbeat` enqueue, the worker thread
-    posts. Before `start()` (or when disabled) every call is a no-op."""
+    `integration_switch` / `memory_size` / `heartbeat` enqueue, `feed_count` / `feed_stopped`
+    keep the counts the worker thread's `status` reports, and that thread posts. Before `start()` (or when disabled) every call is a no-op."""
 
     _instance: Optional["Telemetry"] = None
 
@@ -79,7 +80,8 @@ class Telemetry:
         self._id: Optional[str] = None
         self._lock = threading.Lock()
         self._dropped = 0
-        self._feed_counts: dict[str, tuple[int, float]] = {}    # feed → the count last reported, and when
+        self._feed_counts: dict[str, int] = {}      # running feed → what it holds, per its last pass
+        self._last_status: Optional[dict] = None    # the status last sent, so an unchanged one is not
 
     @property
     def active(self) -> bool:
@@ -197,23 +199,35 @@ class Telemetry:
                                       "procedures": procedures})
 
     def feed_count(self, feed: str, count: int):
-        """How many items *feed* holds (photos indexed, messages read in). The feed's thread
-        calls this on every pass; an event goes out when the number differs from the one last
-        reported, and at most once per FEED_COUNT_INTERVAL for a feed — a catch-up shows as an
-        hourly curve, a quiet feed as nothing."""
-        if not self.active:
+        """How many items *feed* holds (photos indexed, messages read in); the feed's thread
+        says so on every pass, and the next `status` carries the number of that moment."""
+        with self._lock:
+            self._feed_counts[feed] = count
+
+    def feed_stopped(self, feed: str):
+        """*feed*'s thread has ended: the next `status` lists running feeds only."""
+        with self._lock:
+            if self._feed_counts.pop(feed, None) is not None:
+                trace(f"Telemetry: feed {feed} stopped, out of the status from here.")
+
+    def status(self):
+        """What the install holds: the count of every running feed and the integrations that
+        are on. The worker calls this STATUS_FIRST_DELAY after start and every STATUS_INTERVAL
+        from then; an event goes out when any of it differs from the one last sent — a
+        catch-up shows as an hourly curve, a quiet install as nothing."""
+        with self._lock:
+            feeds = dict(self._feed_counts)
+        snapshot = {"feeds": feeds, "integrations": sorted(config.enabled_integrations())}
+        if snapshot == self._last_status:
+            trace("Telemetry: status unchanged since the last one sent, nothing to report.")
             return
-        last = self._feed_counts.get(feed)
-        now = time.time()
-        if last is not None and (count == last[0] or now - last[1] < FEED_COUNT_INTERVAL):
-            return
-        # Recorded before the opt-out check, so an opted-out install is asked hourly, not per pass.
-        self._feed_counts[feed] = (count, now)
+        # Recorded before the opt-out check, so an opted-out install is asked hourly, not more.
+        self._last_status = snapshot
         if not self._on():
             return
-        trace(f"Telemetry: {feed} holds {count} item(s)"
-              + (f", {last[0]} when last reported" if last is not None else ", first report of this run"))
-        self._enqueue("feed_count", {"feed": feed, "count": count})
+        trace(f"Telemetry: status — {len(snapshot['integrations'])} integration(s) on, "
+              + (", ".join(f"{name} {count}" for name, count in feeds.items()) or "no running feed"))
+        self._enqueue("status", snapshot)
 
     def heartbeat(self, startup: bool = False):
         """Once a day and at start: the install is alive, and what it is — so churn can be told
@@ -249,8 +263,10 @@ class Telemetry:
 
     def _run(self):
         next_heartbeat = time.time() + HEARTBEAT_INTERVAL
+        next_status = time.time() + STATUS_FIRST_DELAY
         while True:
-            batch, stop = self._take_batch(timeout=min(60.0, max(0.0, next_heartbeat - time.time())))
+            due = min(next_heartbeat, next_status)
+            batch, stop = self._take_batch(timeout=min(60.0, max(0.0, due - time.time())))
             if batch:
                 self._send(batch)
             if stop:
@@ -258,6 +274,9 @@ class Telemetry:
             if time.time() >= next_heartbeat:
                 self.heartbeat()
                 next_heartbeat += HEARTBEAT_INTERVAL
+            if time.time() >= next_status:
+                self.status()
+                next_status = time.time() + STATUS_INTERVAL
 
     def _take_batch(self, timeout: float) -> tuple[list[dict], bool]:
         """Up to BATCH_LIMIT queued events — blocking *timeout* for the first — and whether

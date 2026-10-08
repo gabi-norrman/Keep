@@ -31,10 +31,6 @@ class Feed(ABC):
     poll_interval: float = 5.0          # seconds between fetches once the feed is live
     default_backfill_months: int = 1    # horizon when feeds.<slug>.backfill_months is not set
     item_noun: str = "items"            # plural, what the dashboard counts: "4202 messages"
-    # True: the beta telemetry reports how many items the feed holds (the number alone, when it
-    # changes, at most hourly — assistant/Telemetry.py). For the feeds that index a personal
-    # store (photos, messages), not for a stream of house events.
-    count_in_telemetry: bool = False
 
     @property
     @abstractmethod

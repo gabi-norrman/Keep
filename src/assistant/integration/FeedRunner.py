@@ -240,6 +240,7 @@ class FeedRunner:
                 self._feed.close_feed()
             except Exception as e:
                 trace(f"Feed '{self.name}': close_feed raised {type(e).__name__}: {e}")
+            Telemetry.get_instance().feed_stopped(self.name)
 
     def _flush_unstored(self):
         """One last try at the batch the history refused before the thread ends: its entries
@@ -288,10 +289,8 @@ class FeedRunner:
             self._recounted_at = time.time()
 
     def _report_count(self):
-        """The telemetry's count of what the feed holds, for a feed that asks for it; the sink
-        decides whether this pass's number is news (changed, and an hour since the last)."""
-        if not self._feed.count_in_telemetry:
-            return
+        """The telemetry's count of what the feed holds; its hourly status carries the number
+        of that moment for every running feed."""
         try:
             Telemetry.get_instance().feed_count(self.name, self._stored)
         except Exception as e:

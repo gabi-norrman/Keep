@@ -142,18 +142,12 @@ class TestCatchUp:
         assert row["live_since"] is not None
         assert row["last_entry_ts"] == HORIZON + 30
 
-    def test_a_feed_that_asks_for_it_reports_what_it_holds_to_the_telemetry(self, floxy_db):
+    def test_a_feed_reports_what_it_holds_to_the_telemetry_and_that_it_stopped(self, floxy_db):
         feed = ScriptedFeed([[HORIZON + 10, HORIZON + 20], [HORIZON + 30]])
-        feed.count_in_telemetry = True
         with patch("assistant.integration.FeedRunner.Telemetry") as telemetry:
             run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
         assert telemetry.get_instance().feed_count.call_args.args == ("Scripted", 3)
-
-    def test_a_feed_that_does_not_ask_reports_no_count(self, floxy_db):
-        feed = ScriptedFeed([[HORIZON + 10]])
-        with patch("assistant.integration.FeedRunner.Telemetry") as telemetry:
-            run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
-        telemetry.get_instance().feed_count.assert_not_called()
+        telemetry.get_instance().feed_stopped.assert_called_once_with("Scripted")
 
     def test_cursor_is_persisted_after_every_batch(self, floxy_db):
         seen = []

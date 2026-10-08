@@ -55,7 +55,6 @@ class PhotosIntegration(Integration, Feed):
     sensitive = True
 
     poll_interval = POLL_INTERVAL
-    count_in_telemetry = True
 
     def __init__(self):
         super().__init__()
