@@ -99,11 +99,16 @@ class TestCmdSendWhatsapp:
             wa = cls.get_instance.return_value
             wa.resolve_recipient.return_value = ("46701740611@s.whatsapp.net", "Bob Berg", None)
             wa.is_known.return_value = True
-            assert owner.describe_send_whatsapp('"Bob", "hi"') == "Sending WhatsApp message to Bob Berg (Bob)"
+            text = owner.describe_send_whatsapp('"Bob", "hi"')
+            assert "Bob Berg" in text and "+46701740611" in text, "a name is approved with the number it resolved to"
             wa.resolve_recipient.return_value = ("46701740699@s.whatsapp.net", "+46701740699", None)
             wa.is_known.return_value = False
             text = owner.describe_send_whatsapp("+46701740699, hi")
-            assert text == "Sending WhatsApp message to +46701740699 — no earlier chat with this number"
+            assert text.count("+46701740699") == 1 and "no earlier chat" in text
+            wa.resolve_recipient.return_value = ("120363000000000001@g.us", "Family", None)
+            wa.is_known.return_value = True
+            text = owner.describe_send_whatsapp("Family, hi")
+            assert "group" in text and "Family" in text and "+" not in text
             wa.resolve_recipient.return_value = (None, None, "unknown contact: Carol")
             assert owner.describe_send_whatsapp("Carol, hi") == "Sending WhatsApp message to Carol — unknown contact: Carol"
 

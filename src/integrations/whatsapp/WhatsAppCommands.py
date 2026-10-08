@@ -4,6 +4,7 @@ from assistant.commands.CommandSet import CommandSet
 from assistant.commands.Commands import normalize_llm_escapes
 from assistant.SystemNote import system_note
 from common.logging import info, trace
+from integrations.whatsapp.WhatsAppMessages import SERVER_GROUP, jid_parts
 
 NOTE_SOURCE = "WhatsApp"
 INTEGRATION = "WhatsApp"
@@ -89,10 +90,13 @@ class WhatsAppCommands(CommandSet):
             jid, display, err = whatsapp.resolve_recipient(recipient)
             if err:
                 return f"Sending WhatsApp message to {recipient} — {err}"
-            line = f"Sending WhatsApp message to {display}" if display == recipient else \
-                f"Sending WhatsApp message to {display} ({recipient})"
-            if jid and "@g.us" not in jid and display != recipient and display.startswith("+"):
-                line = f"Sending WhatsApp message to {display}"
+            user, server = jid_parts(jid)
+            if server == SERVER_GROUP:
+                line = f"Sending WhatsApp message to the group {display}"
+            else:
+                number = f"+{user}"
+                line = f"Sending WhatsApp message to {number}" if display == number else \
+                    f"Sending WhatsApp message to {display} ({number})"
             if not whatsapp.is_known(recipient):
                 line += " — no earlier chat with this number"
             return line
