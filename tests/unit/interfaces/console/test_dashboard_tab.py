@@ -252,6 +252,27 @@ class TestDrawFeedsPanel:
         assert row_text(screen, 5) == "", "the tile's closing row stays empty"
 
 
+@pytest.mark.unit
+class TestSummaryHeight:
+    """The summary row grows with the feeds and the mics so no row is clipped."""
+
+    @staticmethod
+    def height(feeds: int, mics: int = 0) -> int:
+        tab = make_tab()
+        tab._feed_statuses = lambda: [(f"f{i}", status()) for i in range(feeds)]
+        tab._mic_noise_floors = lambda: [(f"mic{i}", None, None, None) for i in range(mics)]
+        return tab._summary_height() - Tile.CARD_CHROME
+
+    def test_few_feeds_leave_the_utilization_meters_their_rows(self):
+        assert self.height(feeds=0) == self.height(feeds=3) == DashboardTab.SUMMARY_ROWS
+
+    def test_one_row_per_feed_once_they_outnumber_the_meters(self):
+        assert self.height(feeds=6) == 6
+
+    def test_the_mics_count_too(self):
+        assert self.height(feeds=2, mics=5) == 5
+
+
 # --- Meters, tiles and the grid ------------------------------------------------------------------
 
 from interfaces.console.widgets.Board import MeterRow

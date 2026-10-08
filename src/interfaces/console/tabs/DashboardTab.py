@@ -47,8 +47,7 @@ class DashboardTab(TabView):
     the log scan behind the per-day cache chart is the exception — a startup-and-daily job
     that starts with the console and runs whether the tab shows or not."""
 
-    SUMMARY_ROWS = 4
-    SUMMARY_H = SUMMARY_ROWS + Tile.CARD_CHROME
+    SUMMARY_ROWS = 4    # the Utilization tile's meters: the summary row is never shorter than them
 
     HISTORY_SIZE = 120
     BLOCK_CHARS = [' ', '\u2581', '\u2582', '\u2583', '\u2584', '\u2585', '\u2586', '\u2587', '\u2588']
@@ -120,8 +119,9 @@ class DashboardTab(TabView):
         y = self._draw_header(screen, Board.LEFT, CONTENT_TOP) + 1
 
         thirds = self._columns(screen, 3)
-        self._draw_summary_panel(screen, thirds, y)
-        y += self.SUMMARY_H + 1
+        summary_h = self._summary_height()
+        self._draw_summary_panel(screen, thirds, y, summary_h)
+        y += summary_h + 1
 
         # The status tiles below the charts grow with the integration list and the outposts,
         # so the three chart rows (tile = chart_height + CARD_CHROME, plus a gap row) take whatever
@@ -189,12 +189,18 @@ class DashboardTab(TabView):
         screen.reset_color()
         return y + 1
 
-    def _draw_summary_panel(self, screen: TUIScreen, columns: List[Tuple[int, int]], y: int):
+    def _summary_height(self) -> int:
+        """Height of the summary tiles: one row per running feed and per local mic, never fewer
+        than the utilization meters, plus the tile's own rows — the chart rows below shrink to fit it."""
+        rows = max(self.SUMMARY_ROWS, len(self._feed_statuses()), len(self._mic_noise_floors()))
+        return rows + Tile.CARD_CHROME
+
+    def _draw_summary_panel(self, screen: TUIScreen, columns: List[Tuple[int, int]], y: int, panel_h: int):
         """Three tiles on the chart grid: utilization, mic noise floor, feeds."""
         (util_x, util_w), (noise_x, noise_w), (feeds_x, feeds_w) = columns
-        self._draw_utilization_panel(screen, util_x, y, util_w, self.SUMMARY_H)
-        self._draw_noise_floor_panel(screen, noise_x, y, noise_w, self.SUMMARY_H)
-        self._draw_feeds_panel(screen, feeds_x, y, feeds_w, self.SUMMARY_H)
+        self._draw_utilization_panel(screen, util_x, y, util_w, panel_h)
+        self._draw_noise_floor_panel(screen, noise_x, y, noise_w, panel_h)
+        self._draw_feeds_panel(screen, feeds_x, y, feeds_w, panel_h)
 
     def _draw_utilization_panel(self, screen: TUIScreen, x: int, y: int, panel_w: int, panel_h: int):
         Tile.draw_card(screen, self._cards, x, y, panel_w, panel_h, "Utilization")
