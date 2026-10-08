@@ -778,6 +778,13 @@ class Commands:
     def request_route(self) -> Optional[dict]:
         return self._request_route()
 
+    def asked_from_chat(self) -> bool:
+        """Whether a chat asked for the running command — its reply shows there, so a text
+        meant for the user's eyes (a sign-in link) needs no note pushed to the chats. False
+        for voice, the HTTP clients and an autonomous run. Captured on the command worker,
+        like `request_route`."""
+        return (self._request_route() or {}).get("conversation") is not None
+
     def media_tag(self, photo: dict) -> str:
         return self._media_tag(photo)
 

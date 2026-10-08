@@ -4,7 +4,7 @@ import time
 
 from assistant.commands.CommandSet import CommandSet
 from assistant.SystemNote import system_note
-from common.logging import info
+from common.logging import info, trace
 
 INTEGRATION = "Microsoft 365"
 NOTE_SOURCE = "Microsoft 365"
@@ -15,15 +15,16 @@ class MicrosoftCommands(CommandSet):
 
     def cmd_microsoft_login(self, parameter_string: str):
         """Starts the device-code flow for the named account: the code and the URL come back
-        as the command's result and as a system note in every chat; the wait for the user to
+        as the command's result, which the LLM relays (plus a system note to the chats when no
+        chat asked, since a code cannot be heard); the wait for the user to
         type the code runs on a thread of its own and ends in a second note, so no chat and no
         command worker is held for the quarter of an hour the code lives."""
         name = self.commands.first_argument(parameter_string)
         if not name:
             return 'microsoft_login failed: name the account, e.g. microsoft_login("Work")'
-        self.background_command(self._run_microsoft_login, (name,), lane=self.commands.CONFIG_LANE)
+        self.background_command(self._run_microsoft_login, (name, self.commands.asked_from_chat()), lane=self.commands.CONFIG_LANE)
 
-    def _run_microsoft_login(self, name: str) -> str:
+    def _run_microsoft_login(self, name: str, from_chat: bool = False) -> str:
         monitor = self.commands.integration_monitor()
         integration = monitor.find(INTEGRATION)
         if integration is None or not hasattr(integration, "login_begin"):
@@ -42,7 +43,10 @@ class MicrosoftCommands(CommandSet):
         account = integration.account(name)
         text = (f"Microsoft 365 sign-in for {account.name}: {flow.instructions}. The code is valid for about "
                 f"{max(1, int((flow.expires_at - time.time()) // 60))} minutes; a note follows when the account is signed in.")
-        system_note(NOTE_SOURCE, text)
+        if from_chat:
+            trace("microsoft_login: a chat asked, the reply carries the code — no note pushed")
+        else:
+            system_note(NOTE_SOURCE, text)
         threading.Thread(target=self._wait_for_sign_in, args=(integration, monitor, account.name, flow),
                          name=f"MicrosoftLogin-{account.name}", daemon=True).start()
         return text

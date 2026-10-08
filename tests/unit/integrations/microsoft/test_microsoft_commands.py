@@ -43,7 +43,7 @@ class TestCmdMicrosoftLogin:
     def test_runs_in_the_background_with_the_account_name(self, commands_instance):
         with patch.object(commands_instance, "background_command") as bg:
             assert commands_instance.run("microsoft_login", ['"Work"']) == ""
-        bg.assert_called_once_with(commands_instance._owner("microsoft_login")._run_microsoft_login, ("Work",), lane=Commands.CONFIG_LANE)
+        bg.assert_called_once_with(commands_instance._owner("microsoft_login")._run_microsoft_login, ("Work", False), lane=Commands.CONFIG_LANE)
 
     def test_without_a_name_it_refuses(self, commands_instance):
         with patch.object(commands_instance, "background_command") as bg:
@@ -63,6 +63,15 @@ class TestCmdMicrosoftLogin:
         assert "signed in" in second and "marcus@company.example" in second
         integration.login_finish.assert_called_once_with("Work", integration.login_begin.return_value)
         monitor.check_now.assert_called_once_with("Microsoft 365")
+
+    def test_a_chat_that_asked_gets_the_code_in_the_reply_alone_and_only_the_signed_in_note(self, commands_instance):
+        integration = _integration()
+        with patch.object(Commands, "_integration_monitor", return_value=_monitor(integration)), \
+             patch(f"{MODULE}.system_note") as note, patch(f"{MODULE}.threading.Thread", InlineThread):
+            reply = commands_instance._owner("microsoft_login")._run_microsoft_login("Work", from_chat=True)
+        assert "ABCD-1234" in reply
+        assert [c.args[1] for c in note.call_args_list if "ABCD-1234" in c.args[1]] == []
+        assert "signed in" in note.call_args_list[-1].args[1]
 
     def test_an_expired_code_ends_in_a_note_that_says_to_run_it_again(self, commands_instance):
         integration = _integration(finish="the code expired before it was entered")

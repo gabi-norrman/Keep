@@ -37,7 +37,7 @@ class TestCmdGoogleLogin:
     def test_runs_in_the_background_with_the_account_name(self, commands_instance):
         with patch.object(commands_instance, "background_command") as bg:
             assert commands_instance.run("google_login", ['"Personal"']) == ""
-        bg.assert_called_once_with(commands_instance._owner("google_login")._run_google_login, ("Personal",), lane=Commands.CONFIG_LANE)
+        bg.assert_called_once_with(commands_instance._owner("google_login")._run_google_login, ("Personal", False), lane=Commands.CONFIG_LANE)
 
     def test_without_a_name_it_refuses(self, commands_instance):
         with patch.object(commands_instance, "background_command") as bg:
@@ -53,6 +53,13 @@ class TestCmdGoogleLogin:
         assert "google_login_code" in reply and "localhost:18722" in reply and "will not load" in reply
         assert note.call_args.args[1] == reply
         integration.login_begin.assert_called_once_with("Personal")
+
+    def test_a_chat_that_asked_gets_the_link_in_the_reply_alone_not_as_a_note_too(self, commands_instance):
+        integration = _integration()
+        with patch.object(Commands, "_integration_monitor", return_value=_monitor(integration)), patch(f"{MODULE}.system_note") as note:
+            reply = commands_instance._owner("google_login")._run_google_login("Personal", from_chat=True)
+        assert URL in reply
+        note.assert_not_called()
 
     def test_an_unknown_account_and_a_disabled_integration_are_errors(self, commands_instance):
         integration = _integration()
@@ -73,7 +80,7 @@ class TestCmdGoogleLoginCode:
     def test_the_pasted_address_goes_to_the_background_unquoted_and_whole(self, commands_instance):
         with patch.object(commands_instance, "background_command") as bg:
             assert commands_instance.run("google_login_code", [f'"{PASTED}"']) == ""
-        bg.assert_called_once_with(commands_instance._owner("google_login_code")._run_google_login_code, (PASTED,), lane=Commands.CONFIG_LANE)
+        bg.assert_called_once_with(commands_instance._owner("google_login_code")._run_google_login_code, (PASTED, False), lane=Commands.CONFIG_LANE)
 
     def test_without_anything_pasted_it_refuses(self, commands_instance):
         with patch.object(commands_instance, "background_command") as bg:
@@ -88,6 +95,15 @@ class TestCmdGoogleLoginCode:
 
         integration.login_finish.assert_called_once_with(PASTED)
         assert "signed in" in reply and "marcus@example.com" in reply and note.call_args.args[1] == reply
+        monitor.check_now.assert_called_once_with("Google")
+
+    def test_a_chat_that_finished_the_sign_in_reads_the_outcome_in_the_reply_alone(self, commands_instance):
+        integration = _integration()
+        monitor = _monitor(integration)
+        with patch.object(Commands, "_integration_monitor", return_value=monitor), patch(f"{MODULE}.system_note") as note:
+            reply = commands_instance._owner("google_login_code")._run_google_login_code(PASTED, from_chat=True)
+        assert "signed in" in reply
+        note.assert_not_called()
         monitor.check_now.assert_called_once_with("Google")
 
     def test_a_failed_exchange_is_the_reason_and_no_note(self, commands_instance):

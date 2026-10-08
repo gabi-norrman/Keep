@@ -66,15 +66,17 @@ class MusicCommands(CommandSet):
 
     def cmd_spotify_login(self, parameter_string: str):
         """Starts the flow: the sign-in URL and what to do with it come back as the command's
-        result and as a system note in every chat."""
-        self.background_command(self._run_spotify_login, (), lane=self.commands.CONFIG_LANE)
+        result, which the LLM relays; when no chat asked (voice), a system note puts the link
+        in the chats too, since a link cannot be heard."""
+        self.background_command(self._run_spotify_login, (self.commands.asked_from_chat(),), lane=self.commands.CONFIG_LANE)
 
     def cmd_spotify_login_code(self, parameter_string: str):
-        """Finishes the flow with the whole address the browser landed on."""
+        """Finishes the flow with the whole address the browser landed on; the outcome is the
+        command's result, and a note to the chats only when no chat asked."""
         pasted = parameter_string.strip().strip("\"'`").strip()
         if not pasted:
             return 'spotify_login_code failed: paste the address the browser landed on, e.g. spotify_login_code("http://127.0.0.1:8888/callback?code=...&state=...")'
-        self.background_command(self._run_spotify_login_code, (pasted,), lane=self.commands.CONFIG_LANE)
+        self.background_command(self._run_spotify_login_code, (pasted, self.commands.asked_from_chat()), lane=self.commands.CONFIG_LANE)
 
     def _integration(self, command: str):
         """(integration, "") when Sonos & Spotify can sign a user in, else (None, the reason)."""
@@ -89,7 +91,7 @@ class MusicCommands(CommandSet):
             return None, f"{INTEGRATION} is {label} — set api_keys.spotify.client_id and client_secret and enable it first."
         return integration, ""
 
-    def _run_spotify_login(self) -> str:
+    def _run_spotify_login(self, from_chat: bool = False) -> str:
         integration, problem = self._integration("spotify_login")
         if integration is None:
             return problem
@@ -100,10 +102,13 @@ class MusicCommands(CommandSet):
             return f"spotify_login failed: {e}"
         text = (f"Spotify sign-in: {sign_in.instructions} into the chat as "
                 f'spotify_login_code("<the pasted address>") (quote it). The link is valid for about ten minutes.')
-        system_note(NOTE_SOURCE, text)
+        if from_chat:
+            trace("spotify_login: a chat asked, the reply carries the link — no note pushed")
+        else:
+            system_note(NOTE_SOURCE, text)
         return text
 
-    def _run_spotify_login_code(self, pasted: str) -> str:
+    def _run_spotify_login_code(self, pasted: str, from_chat: bool = False) -> str:
         integration, problem = self._integration("spotify_login_code")
         if integration is None:
             return problem
@@ -126,7 +131,10 @@ class MusicCommands(CommandSet):
             listed, total = len(integration.get_spotify_playlists()), integration.spotify_playlists_total()
             text += (f"{listed} of the account's {total} playlists are listed in SONOS PLAYLISTS AND ZONES (ids S-0, "
                      "S-1, …) from the next request and can be started with play_music.")
-        system_note(NOTE_SOURCE, text)
+        if from_chat:
+            trace("spotify_login_code: a chat asked, the reply says it — no note pushed")
+        else:
+            system_note(NOTE_SOURCE, text)
         return text
 
     def describe_spotify_login(self, p):          return "Signing the Spotify account in"

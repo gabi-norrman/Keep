@@ -1,7 +1,7 @@
 """The google_login and google_login_code commands: the browser sign-in of a Google account from any chat."""
 from assistant.commands.CommandSet import CommandSet
 from assistant.SystemNote import system_note
-from common.logging import info
+from common.logging import info, trace
 
 INTEGRATION = "Google"
 NOTE_SOURCE = "Google"
@@ -12,18 +12,20 @@ class GoogleCommands(CommandSet):
 
     def cmd_google_login(self, parameter_string: str):
         """Starts the flow for the named account: the sign-in URL and what to do with it come
-        back as the command's result and as a system note in every chat."""
+        back as the command's result, which the LLM relays; when no chat asked (voice), a system
+        note puts the link in the chats too, since a link cannot be heard."""
         name = self.commands.first_argument(parameter_string)
         if not name:
             return 'google_login failed: name the account, e.g. google_login("Personal")'
-        self.background_command(self._run_google_login, (name,), lane=self.commands.CONFIG_LANE)
+        self.background_command(self._run_google_login, (name, self.commands.asked_from_chat()), lane=self.commands.CONFIG_LANE)
 
     def cmd_google_login_code(self, parameter_string: str):
-        """Finishes the flow with the whole address the browser landed on."""
+        """Finishes the flow with the whole address the browser landed on; the outcome is the
+        command's result, and a note to the chats only when no chat asked."""
         pasted = parameter_string.strip().strip("\"'`").strip()
         if not pasted:
             return 'google_login_code failed: paste the address the browser landed on, e.g. google_login_code("http://localhost:18722/?state=...&code=...")'
-        self.background_command(self._run_google_login_code, (pasted,), lane=self.commands.CONFIG_LANE)
+        self.background_command(self._run_google_login_code, (pasted, self.commands.asked_from_chat()), lane=self.commands.CONFIG_LANE)
 
     def _integration(self, command: str):
         """(integration, "") when Google can sign in, else (None, the reason)."""
@@ -38,7 +40,7 @@ class GoogleCommands(CommandSet):
             return None, f"{INTEGRATION} is {label} — set google.oauth.client_id, google.oauth.client_secret and google.accounts and enable it first."
         return integration, ""
 
-    def _run_google_login(self, name: str) -> str:
+    def _run_google_login(self, name: str, from_chat: bool = False) -> str:
         integration, problem = self._integration("google_login")
         if integration is None:
             return problem
@@ -51,10 +53,13 @@ class GoogleCommands(CommandSet):
         account = integration.account(name)
         text = (f"Google sign-in for {account.name}: {sign_in.instructions} into the chat as "
                 f'google_login_code("<the pasted address>") (quote it). The link is valid for about ten minutes.')
-        system_note(NOTE_SOURCE, text)
+        if from_chat:
+            trace("google_login: a chat asked, the reply carries the link — no note pushed")
+        else:
+            system_note(NOTE_SOURCE, text)
         return text
 
-    def _run_google_login_code(self, pasted: str) -> str:
+    def _run_google_login_code(self, pasted: str, from_chat: bool = False) -> str:
         integration, problem = self._integration("google_login_code")
         if integration is None:
             return problem
@@ -70,7 +75,10 @@ class GoogleCommands(CommandSet):
         signed_in_as = account.auth.signed_in_as()
         text = (f"Google: {name} is signed in" + (f" as {signed_in_as}" if signed_in_as else "")
                 + ". Its mail and calendars are available from the next request.")
-        system_note(NOTE_SOURCE, text)
+        if from_chat:
+            trace("google_login_code: a chat asked, the reply says it — no note pushed")
+        else:
+            system_note(NOTE_SOURCE, text)
         try:
             self.commands.integration_monitor().check_now(INTEGRATION)
         except Exception as e:

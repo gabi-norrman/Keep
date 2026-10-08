@@ -2,6 +2,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from assistant.AssistantRequest import RequestContext
 from assistant.commands.Commands import Commands
 from assistant.commands.Toolkits import TOOLKITS
 from integrations.music.MusicCommands import MusicCommands
@@ -80,7 +81,7 @@ class TestSpotifyLogin:
     def test_login_runs_in_the_config_lane(self, commands_instance):
         with patch.object(commands_instance, "background_command") as bg:
             assert commands_instance.run("spotify_login", [""]) == ""
-        bg.assert_called_once_with(commands_instance._owner("spotify_login")._run_spotify_login, (), lane=Commands.CONFIG_LANE)
+        bg.assert_called_once_with(commands_instance._owner("spotify_login")._run_spotify_login, (False,), lane=Commands.CONFIG_LANE)
 
     def test_the_link_and_the_paste_instruction_come_back_as_the_result_and_a_note(self, commands_instance):
         integration = _integration()
@@ -90,6 +91,19 @@ class TestSpotifyLogin:
         assert URL in reply and "spotify_login_code" in reply and "127.0.0.1:8888" in reply and "will not load" in reply
         assert note.call_args.args[1] == reply
         integration.login_begin.assert_called_once_with()
+
+    def test_a_chat_that_asked_gets_the_link_in_the_reply_alone_not_as_a_note_too(self, commands_instance):
+        integration = _integration()
+        with patch.object(Commands, "_integration_monitor", return_value=_monitor(integration)), patch(f"{MODULE}.system_note") as note:
+            reply = commands_instance._owner("spotify_login")._run_spotify_login(from_chat=True)
+        assert URL in reply
+        note.assert_not_called()
+
+    def test_whether_a_chat_asked_is_captured_when_the_command_is_dispatched(self, commands_instance):
+        commands_instance._current_context = RequestContext(source="telegram", conversation=4711)
+        with patch.object(commands_instance, "background_command") as bg:
+            commands_instance.run("spotify_login", [""])
+        assert bg.call_args.args[1] == (True,)
 
     def test_a_missing_client_and_a_disabled_integration_are_errors(self, commands_instance):
         integration = _integration()
@@ -107,7 +121,7 @@ class TestSpotifyLogin:
     def test_the_pasted_address_goes_to_the_background_unquoted_and_whole(self, commands_instance):
         with patch.object(commands_instance, "background_command") as bg:
             assert commands_instance.run("spotify_login_code", [f'"{PASTED}"']) == ""
-        bg.assert_called_once_with(commands_instance._owner("spotify_login_code")._run_spotify_login_code, (PASTED,), lane=Commands.CONFIG_LANE)
+        bg.assert_called_once_with(commands_instance._owner("spotify_login_code")._run_spotify_login_code, (PASTED, False), lane=Commands.CONFIG_LANE)
 
     def test_without_anything_pasted_it_refuses(self, commands_instance):
         with patch.object(commands_instance, "background_command") as bg:
@@ -122,6 +136,13 @@ class TestSpotifyLogin:
         assert "signed in as Marcus" in text and "3 of the account's 3 playlists" in text and "S-0" in text
         assert note.call_args.args[1] == text
         integration.login_finish.assert_called_once_with(PASTED)
+
+    def test_a_chat_that_finished_the_sign_in_reads_the_outcome_in_the_reply_alone(self, commands_instance):
+        integration = _integration(playlists=3)
+        with patch.object(Commands, "_integration_monitor", return_value=_monitor(integration)), patch(f"{MODULE}.system_note") as note:
+            text = commands_instance._owner("spotify_login_code")._run_spotify_login_code(PASTED, from_chat=True)
+        assert "signed in as Marcus" in text
+        note.assert_not_called()
 
     def test_a_signed_in_account_whose_library_did_not_load_says_so_instead_of_a_count(self, commands_instance):
         integration = _integration(playlists=0)
