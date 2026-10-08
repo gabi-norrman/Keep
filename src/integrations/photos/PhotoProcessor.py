@@ -1350,11 +1350,11 @@ class PhotoProcessor:
         few assets a day, and a `remember` of the morning is in the afternoon's photo. The
         backfill sends thousands, so it carries the briefing PhotoContext extracts from the bank
         instead — about a thousand tokens of people, places and pets, just over the provider's
-        cache minimum, rather than the bank's thousands of preferences and rules; one extraction
-        call per bank version."""
+        cache minimum, rather than the bank's thousands of preferences and rules; one call of the
+        smart tier per bank version."""
         bank = self._read_memory()
         if backfill:
-            return PhotoContext.briefing(bank, self._get_llm())
+            return PhotoContext.briefing(bank)
         return bank or NO_MEMORY
 
     def _photo_system_prompt(self, backfill: bool = False) -> str:
