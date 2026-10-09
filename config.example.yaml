@@ -67,6 +67,9 @@ mail:
 
 # >> tesla: src/integrations/tesla/config.example.yaml
 
+
+# >> hyundai: src/integrations/hyundai/config.example.yaml
+
 # >> aseko: src/integrations/aseko/config.example.yaml
 
 # >> husdata: src/integrations/husdata/config.example.yaml

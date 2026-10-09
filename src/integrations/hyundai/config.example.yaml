@@ -1,0 +1,28 @@
+# Hyundai, Kia and Genesis cars, the "Hyundai" integration: the cars' state in the prompt and the car_*
+# commands (climate on and off, max defrost, a navigation destination) through the Bluelink / Kia Connect
+# app's own API. Nothing to register: sign in with the account the phone app uses. The API is reverse
+# engineered (the hyundai_kia_connect_api library behind Home Assistant's kia_uvo) and breaks once or twice
+# a year when the app's login changes; a library update usually fixes it. The state read is what the
+# manufacturer's servers last heard from the car; nothing here wakes the car, which drains its 12 V battery.
+# region: europe, europe_cci (the newer Hyundai/Kia Europe backend, try it when europe refuses the login),
+# usa, canada, australia, new_zealand (Kia only), china, india, brazil. Europe, Australia and New Zealand
+# have the full command set and navigation; the US a subset without navigation; Brazil no lock.
+# brand: hyundai, kia or genesis (Genesis only in Canada and Europe).
+# pin: the account's PIN — needed for commands in Canada and the US, and for the control token in Europe,
+# Australia and India; leave it empty elsewhere. Canada, and Kia in the US, send a one-time code on the first
+# sign-in: the console's Hyundai tab sends and takes it, and the token is kept in cache/hyundai/ after that.
+# vehicles: name is the vehicle_id the assistant uses, vin the car's VIN as the app shows it; leave the list
+# out to offer every car of the account under its own name.
+hyundai:
+  username: your_address@example.com
+  password: YOUR_BLUELINK_PASSWORD
+  pin: ""
+  region: europe
+  brand: hyundai
+  climate_temperature_c: 21          # the cabin target car_climate_on and car_max_defrost ask for
+  climate_minutes: 10                # how long a remote climate run lasts
+  vehicles:
+    - name: family_car
+      display_name: Family Ioniq
+      vin: YOUR_HYUNDAI_VIN
+      default: true

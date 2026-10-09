@@ -40,6 +40,7 @@ GROUPS = {
     'src/integrations/self_improvement': ('self_improvement', 'The switch and health check for Keep working on its own code through the Claude Code CLI.'),
     'src/integrations/telegram_feed': ('telegram_feed', 'The owner’s own Telegram account as a feed of their chats, and the account Keep sends Telegram messages from.'),
     'src/integrations/tesla': ('tesla', 'The Teslas through the Tessie API, a VehicleProvider: state, climate, trunk and navigation.'),
+    'src/integrations/hyundai': ('hyundai', 'The Hyundais, Kias and Genesis cars through the Bluelink / Kia Connect app API, a VehicleProvider: state, climate and navigation.'),
     'src/integrations/weather': ('weather', 'The YR (met.no) weather forecast for the home location.'),
     'src/integrations/whatsapp': ('whatsapp', 'The owner’s WhatsApp account as a companion device: a feed of their chats and the way to send a message as them.'),
     'src/integrations/x': ('x', 'Searching X posts through xAI’s server-side search.'),
