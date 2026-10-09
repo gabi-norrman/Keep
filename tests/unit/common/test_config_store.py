@@ -163,6 +163,9 @@ class TestSetValue:
     @pytest.mark.parametrize("key,reason", [
         ("vault.key", "cannot be changed"),
         ("interfaces.http.enabled", "cannot be changed"),
+        ("indigo.log_refiner", "cannot be changed"),
+        ("indigo.ssh_user", "cannot be changed"),
+        ("photos.screen_prepare_command", "cannot be changed"),
         ("interfaces", "not a single value"),
         ("gmail.password", "not a known setting"),
         ("pager/password", "not a known setting"),

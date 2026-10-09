@@ -25,8 +25,12 @@ from common.logging import info, trace
 # Keys the assistant may not touch: changing vault.key locks the existing vault out, and
 # interfaces.http is always on (the launcher never reads its flag — every other interface
 # registers routes on it). The other interfaces.* flags are the user's to flip from the chat;
-# they take effect at the next server restart (config_set says so).
-DENIED_PREFIXES = ("vault.key", "interfaces.http")
+# they take effect at the next server restart (config_set says so). The last four are run
+# as commands — over ssh on the Indigo Mac, in a shell before a photo opens — so a value the
+# LLM could write (a prompt injection reaching config_set) would run within the next poll.
+DENIED_PREFIXES = ("vault.key", "interfaces.http",
+                   "indigo.ssh_user", "indigo.prompt_file", "indigo.log_refiner",
+                   "photos.screen_prepare_command")
 BACKUP_DIR = CACHE_DIR / "config-backups"
 BACKUPS_KEPT = 10
 
