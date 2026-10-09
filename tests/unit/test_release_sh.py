@@ -183,9 +183,9 @@ class TestReachBack:
         repos.commits('2026.09')
         return repos.push()
 
-    def test_the_days_second_release_covers_the_commits_of_its_first(self, repos, tmp_path):
+    def test_the_days_second_release_covers_the_commits_of_its_first(self, repos):
         self._two_releases_today(repos)
-        result = repos.release('--dry-run', env=repos.stub_claude(tmp_path))
+        result = repos.release('--dry-run')
         assert result.returncode == 0, result.stderr
         listing, prompt = result.stdout.split("What's new in", 1)
         assert 'v2026.08.1' in listing
@@ -193,9 +193,9 @@ class TestReachBack:
             assert all(edit in text for edit in ('edit 2', 'edit 3', 'edit 4'))
             assert 'edit 1' not in text
 
-    def test_a_commit_of_the_days_first_release_may_be_left_out_of_the_note(self, repos, tmp_path):
+    def test_a_commit_of_the_days_first_release_may_be_left_out_of_the_note(self, repos):
         _, second, _, _ = self._two_releases_today(repos)
-        result = repos.release('--dry-run', '--ignore-commits', second[:7], env=repos.stub_claude(tmp_path))
+        result = repos.release('--dry-run', '--ignore-commits', second[:7])
         assert result.returncode == 0, result.stderr
         listing, prompt = result.stdout.split("What's new in", 1)
         assert 'edit 2' in listing and 'left out' in listing
