@@ -60,6 +60,7 @@ class PhotosTab(IntegrationTab):
         self._photo: Optional[dict] = None
         self._sort_mode_idx: int = 1
         self._last_load_time: float = 0
+        self._cramped_height: Optional[int] = None  # the board height the no-picture trace was last logged for
         self._reload_interval: float = 30.0
         self._loading: bool = False
         self._processing: bool = False
@@ -217,7 +218,9 @@ class PhotosTab(IntegrationTab):
             if picture_h >= PICTURE_MIN_ROWS + Tile.CARD_CHROME:
                 self._draw_picture(screen, Board.LEFT, y, available, picture_h)
                 y += picture_h + 1
-            else:
+                self._cramped_height = None
+            elif self._cramped_height != height:   # once per resize, not once per frame
+                self._cramped_height = height
                 trace(f"Photos tab: no room for the picture over the text on a {height}-row board")
             self._draw_text_column(screen, Board.LEFT, y, available, bottom, photo, facts)
         Tile.tint_cards(screen, self._cards)
