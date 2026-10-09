@@ -50,8 +50,8 @@ def test_home_missing_from_the_window_is_loaded_with_its_data():
 
 @pytest.mark.unit
 def test_the_configured_list_replaces_the_channels_own():
-    CONFIGURED["preload_toolkits"] = {SOURCE_VOICE: ["music", "tesla"], "Telegram": ["web"]}
-    assert ToolkitPreloader.preload(_prompt_manager({}), HOME_ONLY) == ["music", "tesla"]
+    CONFIGURED["preload_toolkits"] = {SOURCE_VOICE: ["music", "cars"], "Telegram": ["web"]}
+    assert ToolkitPreloader.preload(_prompt_manager({}), HOME_ONLY) == ["music", "cars"]
     CONFIGURED["preload_toolkits"] = {SOURCE_VOICE: []}
     assert ToolkitPreloader.preload(_prompt_manager({}), HOME_ONLY) == []
 
@@ -232,13 +232,13 @@ class TestRequestProcessorHook:
         self._handler(RequestContext(source=SOURCE_VOICE, user_input="hi"))._preload_toolkits(pm)
         texts = [c.args[0] for c in pm.add_command_result.call_args_list]
         assert [Toolkits.loaded_name(line) for t in texts for line in t.split("\n") if Toolkits.loaded_name(line)] \
-            == ["voice", "home", "music", "tesla", "weather"]
+            == ["voice", "home", "music", "cars", "weather"]
 
     @pytest.mark.unit
-    def test_voice_request_with_home_and_tesla_in_the_window_still_preloads_music(self):
+    def test_voice_request_with_home_and_cars_in_the_window_still_preloads_music(self):
         """The 2026-09-14 case: home was preloaded on an earlier turn, and "turn off the music"
         still spent a round on load_toolkit(music) — now music rides along with home."""
-        pm = _prompt_manager({"voice": 1000.0, "home": 1000.0, "tesla": 1000.0, "weather": 1000.0})
+        pm = _prompt_manager({"voice": 1000.0, "home": 1000.0, "cars": 1000.0, "weather": 1000.0})
         self._handler(RequestContext(source=SOURCE_VOICE, user_input="turn off the music"))._preload_toolkits(pm)
         pm.add_command_result.assert_called_once()
         text = pm.add_command_result.call_args.args[0]

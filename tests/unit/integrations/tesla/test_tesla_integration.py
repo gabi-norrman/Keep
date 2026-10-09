@@ -1,12 +1,12 @@
 import pytest
 import requests
 
+from assistant.integration.VehicleProvider import VehicleSpec, VehicleState
 from integrations.tesla.TeslaIntegration import (
     TeslaIntegration,
     TeslaAPIError,
     TeslaCommandError,
     TeslaConfigurationError,
-    TeslaVehicleSpec,
 )
 
 
@@ -59,6 +59,34 @@ def build_default_config():
     }
 
 
+
+
+def family(api):
+    """The default car's spec, as the fleet would hand it to the provider."""
+    return api.vehicles()[0]
+
+
+@pytest.mark.unit
+class TestVehicles:
+    def test_the_entry_becomes_a_spec_with_the_name_as_id_and_the_vin_as_handle(self):
+        spec = family(TeslaIntegration(config=build_default_config()))
+        assert spec == VehicleSpec(id="family", label="Floxy", handle="VIN123", aliases=("Floxy", "VIN123"), is_default=True)
+
+    def test_without_a_display_name_the_name_is_the_label(self):
+        api = TeslaIntegration(config={"tessie_access_token": "tok", "vehicles": [{"name": "work", "vin": "VIN9"}]})
+        spec = family(api)
+        assert spec.label == "work" and spec.aliases == ("VIN9",) and not spec.is_default
+
+    def test_an_entry_that_is_not_a_mapping_is_skipped(self):
+        api = TeslaIntegration(config={"tessie_access_token": "tok", "vehicles": ["oops", {"name": "a", "vin": "V"}]})
+        assert [s.id for s in api.vehicles()] == ["a"]
+
+    def test_only_invalid_entries_is_a_configuration_error(self):
+        api = TeslaIntegration(config={"tessie_access_token": "tok", "vehicles": ["oops"]})
+        with pytest.raises(TeslaConfigurationError):
+            api.vehicles()
+
+
 @pytest.mark.unit
 def test_set_max_defrost_success():
     session = FakeSession()
@@ -69,9 +97,9 @@ def test_set_max_defrost_success():
     )
 
     api = TeslaIntegration(config=build_default_config(), session=session)
-    result = api.set_max_defrost("family")
+    result = api.max_defrost(family(api))
 
-    assert "Max defrost enabled" in result
+    assert "Max defrost enabled" in result and "Floxy" in result
 
     post_calls = [call for call in session.calls if call[0] == "POST"]
     assert len(post_calls) == 1
@@ -90,7 +118,7 @@ def test_start_air_conditioning_failure():
     api = TeslaIntegration(config=build_default_config(), session=session)
 
     with pytest.raises(TeslaCommandError, match="vehicle offline"):
-        api.start_air_conditioning("family")
+        api.climate_on(family(api))
 
 
 @pytest.mark.unit
@@ -100,47 +128,45 @@ def test_missing_tessie_token():
 
 
 @pytest.mark.unit
-class TestTeslaVehicleSpec:
-    def test_matches_by_name(self):
-        spec = TeslaVehicleSpec(name="family", vin="VIN1", display_name="Floxy")
-        assert spec.matches("family") is True
+class TestVehicleState:
+    def _api(self, state):
+        session = FakeSession()
+        session.queue_response("GET", f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/state", DummyResponse(200, state))
+        return TeslaIntegration(config=build_default_config(), session=session)
 
-    def test_matches_by_display_name(self):
-        spec = TeslaVehicleSpec(name="family", vin="VIN1", display_name="Floxy")
-        assert spec.matches("Floxy") is True
+    def test_tessies_state_is_folded_into_the_contract(self):
+        api = self._api({
+            "state": "online",
+            "drive_state": {"latitude": 57.5, "longitude": 12.0, "speed": 80, "shift_state": "D",
+                            "active_route_minutes_to_arrival": 12.7, "active_route_destination": "IKEA",
+                            "timestamp": 1_700_000_000_000},
+            "charge_state": {"usable_battery_level": 60},
+            "climate_state": {"inside_temp": 21.5},
+        })
+        state = api.vehicle_state(family(api))
+        assert state == VehicleState(connectivity="online", in_gear=True, speed_kmh=80, latitude=57.5, longitude=12.0,
+                                     battery_percent=60, cabin_temp_c=21.5, destination="IKEA", minutes_to_arrival=12.7)
+        assert state.is_driving
 
-    def test_matches_by_vin_case_insensitive(self):
-        spec = TeslaVehicleSpec(name="family", vin="VIN123", display_name="Floxy")
-        assert spec.matches("vin123") is True
+    def test_an_asleep_car_carries_the_snapshots_time_and_a_stopped_one_is_not_driving(self):
+        api = self._api({
+            "state": "asleep",
+            "drive_state": {"latitude": 57.5, "longitude": 12.0, "speed": None, "shift_state": "P",
+                            "timestamp": 1_700_000_000_000},
+            "charge_state": {"usable_battery_level": 59},
+            "climate_state": {},
+        })
+        state = api.vehicle_state(family(api))
+        assert state.data_time == 1_700_000_000 and state.connectivity == "asleep"
+        assert not state.in_gear and not state.is_driving and state.cabin_temp_c is None
 
-    def test_matches_returns_false_for_empty(self):
-        spec = TeslaVehicleSpec(name="family", vin="VIN1", display_name="Floxy")
-        assert spec.matches("") is False
+    def test_an_online_car_has_no_data_time_even_with_a_timestamp(self):
+        api = self._api({"state": "online", "drive_state": {"timestamp": 1_700_000_000_000}, "charge_state": {}})
+        assert api.vehicle_state(family(api)).data_time is None
 
-    def test_label_fallback_display_name(self):
-        spec = TeslaVehicleSpec(name="family", vin="VIN1", display_name="Floxy")
-        assert spec.label() == "Floxy"
-
-    def test_label_fallback_name(self):
-        spec = TeslaVehicleSpec(name="family", vin="VIN1", display_name=None)
-        assert spec.label() == "family"
-
-    def test_label_fallback_vin(self):
-        spec = TeslaVehicleSpec(name=None, vin="VIN1", display_name=None)
-        assert spec.label() == "VIN1"
-
-    def test_label_fallback_car(self):
-        spec = TeslaVehicleSpec(name=None, vin=None, display_name=None)
-        assert spec.label() == "car"
-
-
-@pytest.mark.unit
-def test_select_vehicle_spec_no_match_raises():
-    api = TeslaIntegration(config=build_default_config())
-    with pytest.raises(TeslaConfigurationError, match="No Tesla vehicle matches"):
-        api._select_vehicle_spec("nonexistent")
-
-
+    def test_missing_blocks_leave_every_field_unset(self):
+        state = self._api({}).vehicle_state(family(self._api({})))
+        assert state == VehicleState()
 @pytest.mark.unit
 def test_api_get_non_200_raises():
     session = FakeSession()
@@ -179,7 +205,7 @@ def test_start_air_conditioning_success():
     session.queue_response("POST", f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/command/start_climate",
                            DummyResponse(200, {"result": True}))
     api = TeslaIntegration(config=build_default_config(), session=session)
-    result = api.start_air_conditioning("family")
+    result = api.climate_on(family(api))
     assert "Air conditioning started" in result
 
 
@@ -189,7 +215,7 @@ def test_stop_air_conditioning_success():
     session.queue_response("POST", f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/command/stop_climate",
                            DummyResponse(200, {"result": True}))
     api = TeslaIntegration(config=build_default_config(), session=session)
-    result = api.stop_air_conditioning("family")
+    result = api.climate_off(family(api))
     assert "Air conditioning stopped" in result
 
 
@@ -199,7 +225,7 @@ def test_open_trunk_success():
     session.queue_response("POST", f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/command/activate_rear_trunk",
                            DummyResponse(200, {"result": True}))
     api = TeslaIntegration(config=build_default_config(), session=session)
-    result = api.open_trunk("family")
+    result = api.open_trunk(family(api))
     assert "Trunk opened" in result
 
     post_calls = [call for call in session.calls if call[0] == "POST"]
@@ -222,14 +248,20 @@ def test_api_post_merges_extra_body_params():
 
 
 @pytest.mark.unit
-def test_require_vehicle_spec_with_vin_raises_on_missing_vin():
+def test_a_car_without_a_vin_is_listed_but_cannot_be_driven():
     config = {
         "tessie_access_token": "tok",
         "vehicles": [{"name": "novin", "display_name": "No VIN Car"}],
     }
-    api = TeslaIntegration(config=config)
+    session = FakeSession()
+    api = TeslaIntegration(config=config, session=session)
+    spec = family(api)
+    assert spec.handle is None and spec.label == "No VIN Car"
     with pytest.raises(TeslaConfigurationError, match="missing VIN"):
-        api._require_vehicle_spec_with_vin("novin")
+        api.open_trunk(spec)
+    with pytest.raises(TeslaConfigurationError, match="missing VIN"):
+        api.vehicle_state(spec)
+    assert session.calls == []
 
 
 @pytest.mark.unit
@@ -242,7 +274,7 @@ def test_navigate_to_shares_the_destination_on_the_query_string():
     config["navigation_locale"] = "sv-SE"
     api = TeslaIntegration(config=config, session=session)
 
-    result = api.navigate_to("family", "Storgatan 1, Stockholm")
+    result = api.navigate_to(family(api), "Storgatan 1, Stockholm")
 
     assert "Storgatan 1, Stockholm" in result and "Floxy" in result
     post_calls = [call for call in session.calls if call[0] == "POST"]
@@ -258,7 +290,7 @@ def test_navigate_to_without_a_configured_locale_falls_back_to_the_default():
                            DummyResponse(200, {"result": True}))
     api = TeslaIntegration(config=build_default_config(), session=session)
 
-    api.navigate_to(None, "59.3293,18.0686")
+    api.navigate_to(family(api), "59.3293,18.0686")
 
     assert session.calls[0][2]["params"]["locale"] == TeslaIntegration.DEFAULT_NAVIGATION_LOCALE
 
@@ -268,7 +300,7 @@ def test_navigate_to_refuses_a_blank_destination_without_a_request():
     session = FakeSession()
     api = TeslaIntegration(config=build_default_config(), session=session)
     with pytest.raises(TeslaCommandError):
-        api.navigate_to("family", "   ")
+        api.navigate_to(family(api), "   ")
     assert session.calls == []
 
 
@@ -279,4 +311,4 @@ def test_navigate_to_reports_the_cars_refusal():
                            DummyResponse(200, {"result": False, "reason": "vehicle unavailable"}))
     api = TeslaIntegration(config=build_default_config(), session=session)
     with pytest.raises(TeslaCommandError, match="vehicle unavailable"):
-        api.navigate_to("family", "Storgatan 1")
+        api.navigate_to(family(api), "Storgatan 1")

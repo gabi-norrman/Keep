@@ -26,7 +26,7 @@ IntegrationMonitor's verdict): a folder toolkit while its folder's integration i
 core toolkit that fronts a contract (`needs` — home automation, the mail and calendar
 sources) while an enabled integration implements it. One that is not offered is out of the
 index, `load_toolkit` and the preloads answer that its integration is off, and its commands
-are refused — the LLM never hears of a Tesla the house does not have.
+are refused — the LLM never hears of a car the house does not have.
 """
 import re
 from dataclasses import dataclass
@@ -37,6 +37,7 @@ import yaml
 
 from assistant.integration.CameraProvider import CameraProvider
 from assistant.integration.HomeAutomation import HomeAutomation
+from assistant.integration.VehicleProvider import VehicleProvider
 from assistant.integration.calendar.CalendarSource import CalendarSource
 from assistant.integration.mail.MailSource import MailSource
 from common.Paths import INTEGRATIONS_DIR, RES_DIR
@@ -178,6 +179,9 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
             sections=("home",), needs=HomeAutomation),
     Toolkit("cameras", "a still image from every camera of the house, or from the ones you name",
             ("fetch_camera_images",), needs=CameraProvider),
+    Toolkit("cars", "the cars: defrost, climate, trunk, navigation",
+            ("car_max_defrost", "car_climate_on", "car_climate_off", "car_open_trunk", "car_navigate"),
+            needs=VehicleProvider),
     Toolkit("web", "read a web page or google something; anything that needs current information",
             ("open_url", "google"), sections=("web",)),
     Toolkit("browser", "drive a real browser when a page needs clicking, typing or a date picker before it "
@@ -209,7 +213,7 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
 # The order of the index, which is part of the prompt: a toolkit keeps its place wherever its
 # file lives. A toolkit not named here (a new folder's) comes after these, by name.
 INDEX_ORDER = ("home", "cameras", "web", "browser", "x", "email", "imessage", "whatsapp", "telegram", "music", "photos", "location", "calendar",
-               "shopping_list", "weather", "timers", "tesla", "husdata", "history", "vault", "setup", "developer", "voice")
+               "shopping_list", "weather", "timers", "cars", "husdata", "history", "vault", "setup", "developer", "voice")
 
 TOOLKITS: tuple[Toolkit, ...] = assemble(CORE_TOOLKITS, discover(), INDEX_ORDER)
 trace(f"Toolkits: {len(CORE_TOOLKITS)} core, {len(TOOLKITS) - len(CORE_TOOLKITS)} from integration folders")

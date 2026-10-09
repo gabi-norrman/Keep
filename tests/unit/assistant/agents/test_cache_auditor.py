@@ -32,7 +32,7 @@ class TestCacheAuditorInit:
         from assistant.agents.CacheAuditor import CacheAuditor
         CacheAuditor()
         names = mock_command_parser.call_args[0][0]
-        assert {'turn_on', 'load_toolkit', 'tesla_open_trunk', 'search_x'} <= set(names)
+        assert {'turn_on', 'load_toolkit', 'car_open_trunk', 'search_x'} <= set(names)
         assert not any(name.startswith(('cmd_', 'describe_', '_')) for name in names)
 
 @pytest.mark.unit

@@ -30,7 +30,7 @@ class PromptSectionGenerator(ABC):
     """
     key: str = ""
     # The heading line the section stands under in the {INTEGRATION_DATA} block, hashes
-    # included ("# CURRENT TESLA CAR INFO", "## Zones"); "" for a section placed otherwise.
+    # included ("# CURRENT CAR INFO", "## Zones"); "" for a section placed otherwise.
     heading: str = ""
     # The text between the heading and the data — what the data is and how to use it.
     intro: str = ""

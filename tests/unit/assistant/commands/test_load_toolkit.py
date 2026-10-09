@@ -113,8 +113,8 @@ def test_unknown_and_empty_names(commands):
 @pytest.mark.unit
 def test_without_a_prompt_manager_the_raw_file_is_served(commands):
     with patch.object(Commands, "_prompt_manager", staticmethod(lambda: None)):
-        result = commands._run_load_toolkit("tesla")
-    assert "tesla_open_trunk" in result
+        result = commands._run_load_toolkit("cars")
+    assert "car_open_trunk" in result
 
 
 @pytest.mark.unit

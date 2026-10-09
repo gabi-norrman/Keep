@@ -31,7 +31,7 @@ class KettleSectionGenerator(PromptSectionGenerator):
 class CarSectionGenerator(KettleSectionGenerator):
     """Takes a key SECTION_ORDER places, to stand ahead of the kettle in the block."""
     __module__ = "integrations.garage.CarSectionGenerator"
-    key = "car_info"
+    key = "pool"
     heading = "# THE CAR"
     intro = ""
     data = "Car: parked"
@@ -104,7 +104,7 @@ def manager(workspace):
 @pytest.mark.unit
 def test_a_gated_section_waits_for_its_integration_and_the_manager_listens_for_it(manager):
     assert "kettle" not in manager.sections and "brew" not in manager.sections
-    assert {"kettle", "car_info", "brew"} <= set(manager.section_classes())
+    assert {"kettle", "pool", "brew"} <= set(manager.section_classes())
     assert manager._on_integrations_changed in manager.monitor.listeners
     assert ("start", "KettleState") not in manager.lifecycle
     assert manager.DATA_BLOCK not in manager.prompt and "THE KETTLE" not in manager.prompt
@@ -145,10 +145,10 @@ def test_the_block_keeps_section_order_and_leaves_out_a_section_with_nothing_to_
     manager.monitor.folders.update(kettle=True, garage=True)
     manager.monitor.notify()
     assert manager.prompt.index("# THE CAR") < manager.prompt.index("# THE KETTLE"), \
-        "car_info has a place in SECTION_ORDER, a new folder's key comes after"
-    assert manager._section_positions["kettle"] > manager._section_positions["car_info"] > manager._section_positions["memory"]
+        "pool has a place in SECTION_ORDER, a new folder's key comes after"
+    assert manager._section_positions["kettle"] > manager._section_positions["pool"] > manager._section_positions["memory"]
     CarSectionGenerator.data = "   "
-    manager.sections["car_info"].content = "   "
+    manager.sections["pool"].content = "   "
     manager._assemble_prompt()
     assert "# THE CAR" not in manager.prompt and "# THE KETTLE" in manager.prompt
 

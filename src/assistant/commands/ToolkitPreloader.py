@@ -1,14 +1,14 @@
 """Proactive toolkit loading: the toolkits a channel wants in the LLM's window before a
 request from it starts (`ChannelProfile.preload_toolkits`, or the `preload_toolkits.<channel>`
-config list in its place — voice wants `home`, with the home data, `music`, `tesla` and
+config list in its place — voice wants `home`, with the home data, `music`, `cars` and
 `weather`, since "turn on the kitchen lamp", "turn off the music", "defrost the car" and
 "will it rain" are the product and a `load_toolkit` round there costs a second or two on
 every request), in front of them the channel's `ChannelProfile.fixed_toolkits`, which no
 config list replaces (voice's `voice`: the spoken dialog style lives there and not in the
 prompt), plus whatever the caller adds for the moment (`FirstRun.preload_toolkits` — the
 `setup` toolkit while the FTUE lasts, on any channel). A toolkit whose integration is off
-(`Toolkit.offered_by`, the IntegrationMonitor's verdict) is skipped: a house without a Tesla
-preloads no Tesla.
+(`Toolkit.offered_by`, the IntegrationMonitor's verdict) is skipped: a house without a car
+preloads no `cars`.
 
 Runs on the request thread right before the messages are assembled, after the history
 window is trimmed the way `get_messages` is about to (so "in the window" means the same

@@ -25,6 +25,7 @@ from assistant.SystemNote import system_note
 from assistant.Telemetry import Telemetry
 from .CommandEcho import describe_completion
 from assistant.integration import CameraProvider as cameras
+from assistant.integration import VehicleProvider as vehicles
 from common.FloxyDatabase import FloxyDatabase
 from common.vault.Vault import Vault, VaultError, DuplicateSecret, KINDS
 
@@ -82,7 +83,7 @@ class Commands:
         "vault_request", "config_set", "load_toolkit", "schedule_wakeup",
         "load_watch", "save_watch", "delete_watch",
         "load_procedure", "save_procedure", "delete_procedure",
-        "create_event", "load_calendar", "fetch_camera_images",
+        "create_event", "load_calendar", "fetch_camera_images", "car_navigate",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
@@ -589,6 +590,61 @@ class Commands:
 
         results.insert(0, {"type": "text", "text": "Here are the current camera images from around the house:"})
         return results
+
+    # --- The cars: every VehicleProvider's, resolved per call through the fleet ---
+
+    @staticmethod
+    def _car_label(vehicle_id: str) -> str:
+        return vehicle_id.strip() or "the car"
+
+    @staticmethod
+    def _run_car_action(vehicle_id: str, verb: str, *args, silent: bool = False) -> str:
+        """Resolve the car and run one provider action on it. The text for the LLM: the
+        provider's line (nothing when `silent` — the LLM's own reply stands), or why it
+        failed: no provider ready, an id that names no car, a brand that refuses."""
+        fleet = vehicles.fleet()
+        if not fleet.providers:
+            return vehicles.no_provider_hint()
+        try:
+            provider, spec = fleet.resolve(vehicle_id)
+            info(f"Cars: {verb} on {spec.label} through {provider.name}")
+            result = getattr(provider, verb)(spec, *args)
+            info(f"Cars: {provider.name} — {result}")
+            return "" if silent else result
+        except vehicles.VehicleError as e:
+            info(f"Cars: {verb} failed — {e}")
+            return f"Car command failed: {e}"
+
+    def _car_command(self, vehicle_id: str, verb: str):
+        self.background_command(lambda p: self._run_car_action(p, verb, silent=True), vehicle_id)
+
+    def cmd_car_max_defrost(self, parameter_string: str):
+        self._car_command(parameter_string, "max_defrost")
+
+    def cmd_car_climate_on(self, parameter_string: str):
+        self._car_command(parameter_string, "climate_on")
+
+    def cmd_car_climate_off(self, parameter_string: str):
+        self._car_command(parameter_string, "climate_off")
+
+    def cmd_car_open_trunk(self, parameter_string: str):
+        self._car_command(parameter_string, "open_trunk")
+
+    @staticmethod
+    def _navigation_args(args: tuple) -> tuple[str, str]:
+        """(vehicle_id, destination) from the LLM's arguments: the vehicle leads and the rest
+        is the destination, re-joined so an unquoted address keeps its commas; a lone argument
+        is a destination for the default car."""
+        parts = [a.strip() for a in args if a and a.strip()]
+        if len(parts) == 1:
+            return "", parts[0]
+        return (parts[0] if parts else ""), ", ".join(parts[1:])
+
+    def cmd_car_navigate(self, *args: str):
+        vehicle_id, destination = self._navigation_args(args)
+        if not destination:
+            return "car_navigate failed: expected 'vehicle_id, destination' parameters"
+        self.background_command(lambda v, d: self._run_car_action(v, "navigate_to", d), (vehicle_id, destination))
 
     def cmd_self_analysis(self, parameter_string: str):
         reason = CodeQualityMaintainer.unavailable_reason()
@@ -1562,6 +1618,14 @@ class Commands:
         recipient = p.split(",", 1)[0].strip() if p else ""
         return f"Sending email to {recipient}" if recipient else "Sending email"
     def describe_fetch_camera_images(self, p):    return "Fetching camera images"
+    def describe_car_max_defrost(self, p):        return f"Turning on max defrost in {self._car_label(p)}"
+    def describe_car_climate_on(self, p):         return f"Turning on the climate in {self._car_label(p)}"
+    def describe_car_climate_off(self, p):        return f"Turning off the climate in {self._car_label(p)}"
+    def describe_car_open_trunk(self, p):         return f"Opening the trunk of {self._car_label(p)}"
+
+    def describe_car_navigate(self, p):
+        _vehicle, destination = self._navigation_args(tuple(p.split(",")) if p else ())
+        return f"Sending the car's navigation to {destination}" if destination else "Sending the car a navigation destination"
     def describe_self_analysis(self, p):          return "Running self-analysis"
     def describe_self_improvement(self, p):       return "Running self-improvement"
     def describe_restart_server(self, p):         return "Restarting server"

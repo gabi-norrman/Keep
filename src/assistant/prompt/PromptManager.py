@@ -18,6 +18,7 @@ from .sections.VaultSectionGenerator import VaultSectionGenerator
 from .sections.HomeSectionGenerator import HomeSectionGenerator
 from .sections.WebSectionGenerator import WebSectionGenerator
 from .sections.CalendarSectionGenerator import CalendarSectionGenerator
+from .sections.CarSectionGenerator import CarSectionGenerator
 from .MessageHistory import MessageHistory, THINKING_TAG_INSTRUCTION
 from common.FloxyDatabase import FloxyDatabase
 from common.ConfigManager import config
@@ -144,7 +145,8 @@ class PromptManager:
             'vault': VaultSectionGenerator(self),
             'web': WebSectionGenerator(self),
         }
-        gated: dict[str, type] = {'home': HomeSectionGenerator, 'calendar': CalendarSectionGenerator}
+        gated: dict[str, type] = {'home': HomeSectionGenerator, 'calendar': CalendarSectionGenerator,
+                                  'car_info': CarSectionGenerator}
         for cls in generator_classes:
             if not cls.key:
                 error(f"Section generator {cls.__module__}.{cls.__name__} declares no key, left out")

@@ -27,12 +27,12 @@ def sonos(tmp_path, monkeypatch):
     return module.SonosFavoritesSectionGenerator(None)
 
 
-def tesla(tmp_path, monkeypatch):
-    from integrations.tesla import TeslaSectionGenerator as module
+def cars(tmp_path, monkeypatch):
+    from assistant.prompt.sections import CarSectionGenerator as module
     monkeypatch.setattr(module, "config", Mock(get_home_latitude=Mock(return_value=57.0),
                                                get_home_longitude=Mock(return_value=12.0)))
-    monkeypatch.setattr(module, "TeslaIntegration", Mock())
-    return module.TeslaSectionGenerator(None)
+    monkeypatch.setattr(module, "active", lambda: [])
+    return module.CarSectionGenerator(None)
 
 
 def icloud(tmp_path, monkeypatch):
@@ -46,7 +46,7 @@ def vault(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("build", [memory, sonos, tesla, icloud, vault], ids=lambda f: f.__name__)
+@pytest.mark.parametrize("build", [memory, sonos, cars, icloud, vault], ids=lambda f: f.__name__)
 def test_stop_ends_the_sections_own_loop_at_once(build, tmp_path, monkeypatch):
     section = build(tmp_path, monkeypatch)
     section._fetch_content = lambda: "x"
