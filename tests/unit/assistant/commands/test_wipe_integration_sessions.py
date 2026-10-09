@@ -66,3 +66,15 @@ def test_a_log_out_that_raises_is_a_note_not_a_crash(tmp_path):
          patch.object(lamp, "log_out", side_effect=boom):
         notes = dc_mod.DebugCommands._log_out([(session, "Lamp login")])
     assert "no network" in notes[session]
+
+
+def test_the_spotify_sign_in_is_the_music_folders_wipe_target():
+    """Contract with `//wipe`: the refresh token spotipy keeps under cache/oauth is a signed-in
+    state, so it must be among the targets discovery gathers, under the token path the sign-in
+    writes — not the `.cache` file of spotipy's default handler, which the folder no longer uses."""
+    from integrations.music.MusicIntegration import MusicIntegration
+    from integrations.music.SpotifyAuth import TOKEN_PATH
+    with patch("assistant.integration.bootstrap.integration_classes", return_value=[MusicIntegration]):
+        paths = [path for path, _ in dc_mod.integration_targets()]
+    assert paths == [TOKEN_PATH]
+    assert not any(p.name == ".cache" for p, _ in dc_mod.WIPE_TARGETS)

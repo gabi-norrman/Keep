@@ -4,6 +4,7 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Dict, Optional
 
 import soco
@@ -17,7 +18,7 @@ from common.logging import trace, info, error
 from common.ConfigManager import ConfigManager
 from assistant.integration.Integration import Integration
 from assistant.SystemNote import system_note
-from integrations.music.SpotifyAuth import SpotifyAuth, SignIn, NotSignedIn, TokenUnavailable
+from integrations.music.SpotifyAuth import SpotifyAuth, SignIn, NotSignedIn, TokenUnavailable, TOKEN_PATH
 
 
 @dataclass(frozen=True)
@@ -185,6 +186,10 @@ class MusicIntegration(Integration):
             self._spotify_playlists_total = total
         self._notify_library_listeners()
         return True
+
+    @classmethod
+    def wipe_targets(cls) -> list[tuple[Path, str]]:
+        return [(TOKEN_PATH, "Spotify sign-in (refresh token)")]
 
     @classmethod
     def add_library_listener(cls, callback):

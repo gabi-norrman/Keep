@@ -61,7 +61,6 @@ WIPE_TARGETS = [
     (MEMORY_DIR, "long-term memory: bank, procedures, watch list"),
     (AISERVER_DIR / "memory.md", "long-term memory bank of an install from before memory/"),
     (FirstRun.STATE_FILE, "first-run pipeline state"),
-    (AISERVER_DIR / ".cache", "Spotify token cache"),
     (ICLOUD_SESSION_DIR, "iCloud session, trust token and cookies"),
     (CACHE_DIR / "config-backups", "config backups (hold the old credentials)"),
     (CACHE_DIR / "last_startup.json", "startup tracker"),
