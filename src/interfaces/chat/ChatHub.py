@@ -209,15 +209,33 @@ class ChatHub(SingletonMixin):
                     error(f"{transport.name} [{conv}]: send_text failed: {e}")
         return accepted
 
-    def _origin(self, source: Optional[str], conversation: Any) -> list[tuple[ChatTransport, Any]]:
+    def _origin(self, source: Optional[str], conversation: Any, *,
+                owners_only: bool = False) -> list[tuple[ChatTransport, Any]]:
         """The (transport, conversation) a request came from, when a registered transport
-        carries that source; empty for requests from outside the chat layer."""
+        carries that source; empty for requests from outside the chat layer. With
+        *owners_only* the conversation must also be one the transport names as an owner's:
+        a question that gates an action (an approval, a secret) is the owner's to answer,
+        never the requester's — a bot any chat may talk to must not let a stranger approve
+        their own send_email — so a non-owner origin is empty too, and the owner chats are
+        asked instead."""
         if source is None or conversation is None:
             return []
         origin = [(transport, conversation) for transport in self.transports if transport.source == source]
         if not origin:
             trace(f"No chat transport registered for source {source!r}, every owner chat gets it instead.")
+        elif owners_only:
+            origin = [(t, c) for t, c in origin if c in self._owners_of(t)]
+            if not origin:
+                info(f"{source} chat {conversation} is not an owner conversation — the owner chats are asked instead.")
         return origin
+
+    @staticmethod
+    def _owners_of(transport: ChatTransport) -> list:
+        try:
+            return list(transport.owner_conversations())
+        except Exception as e:
+            error(f"{transport.name}: owner_conversations failed: {e}")
+            return []
 
     def send_command_notification(self, text: str, ephemeral: bool = False,
                                   source: Optional[str] = None, conversation: Any = None) -> Any:
@@ -333,7 +351,8 @@ class ChatHub(SingletonMixin):
         outside the chat layer), block until the first answer, the timeout, or — when no chat
         can show the question — return "unavailable" at once.
         Returns "approve", "deny", "timeout" or "unavailable". Safe to call from any thread."""
-        targets = self._origin(source, conversation) or self._targets()
+        origin = self._origin(source, conversation, owners_only=True)
+        targets = origin or self._targets()
         if not targets:
             info(f"Approval request skipped (no chat conversation to ask): {title}")
             return DECISION_UNAVAILABLE
@@ -343,7 +362,7 @@ class ChatHub(SingletonMixin):
         entry = {"future": concurrent.futures.Future(), "prompts": []}
         with self._approvals_lock:
             self._pending_approvals[token] = entry
-        where = f"{source} chat {conversation}" if self._origin(source, conversation) else f"{len(targets)} owner chat(s)"
+        where = f"{source} chat {conversation}" if origin else f"{len(targets)} owner chat(s)"
         info(f"Approval requested [{token[:8]}] in {where}: {title} (timeout={wait_seconds:.0f}s)")
 
         for transport, conv in targets:
@@ -410,7 +429,7 @@ class ChatHub(SingletonMixin):
         open in one of those chats. See `Notifier.request_secret` for the `accept` contract.
         Safe to call from any thread; the value never passes through here as anything but
         an argument to `accept`."""
-        targets = self._origin(source, conversation) or self._targets()
+        targets = self._origin(source, conversation, owners_only=True) or self._targets()
         if not targets:
             info(f"Secret request skipped (no chat conversation to ask): {title}")
             return DECISION_UNAVAILABLE

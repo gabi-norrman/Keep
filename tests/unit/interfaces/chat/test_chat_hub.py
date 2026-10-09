@@ -696,6 +696,38 @@ class TestSecrets:
 
 
 @pytest.mark.unit
+class TestQuestionsAreTheOwnersToAnswer:
+    """A bot with an empty allowed_chat_ids lets anyone talk; the approval gate was the last
+    line, so a stranger's request must not put the approval in the stranger's chat."""
+
+    def test_an_approval_from_a_non_owner_chat_is_asked_in_the_owner_chats(self, hub, transport):
+        result = {}
+        t = threading.Thread(target=lambda: result.update(d=hub.request_approval(
+            "send_email", timeout=2.0, source=transport.source, conversation=999)), daemon=True)
+        t.start()
+        assert wait_until(lambda: any(c[0] == "approval" for c in transport.calls))
+        assert [c[1] for c in transport.calls if c[0] == "approval"] == [111]
+        token = next(c[2] for c in transport.calls if c[0] == "approval")
+        hub.resolve_approval(token, "deny")
+        t.join(timeout=2)
+        assert result["d"] == "deny"
+
+    def test_an_approval_with_no_owner_chat_at_all_is_unavailable(self, hub, transport):
+        transport.owners = []
+        assert hub.request_approval("send_email", timeout=0.1, source=transport.source, conversation=999) == "unavailable"
+        assert transport.calls == []
+
+    def test_a_secret_prompt_from_a_non_owner_chat_opens_in_the_owner_chats(self, hub, transport):
+        t = threading.Thread(target=lambda: hub.request_secret(
+            "t", "d", lambda v: "ok", timeout=2.0, source=transport.source, conversation=999), daemon=True)
+        t.start()
+        assert wait_until(lambda: any(c[0] == "secret" for c in transport.calls))
+        assert [c[1] for c in transport.calls if c[0] == "secret"] == [111]
+        assert hub.claim_secret(transport, 111, "4111") is True
+        t.join(timeout=2)
+
+
+@pytest.mark.unit
 class TestQuestionsReachEveryOwner:
     """telegram_bot.notify_chat_ids narrows the proactive pushes only: an approval or a secret
     prompt still goes to every owner conversation, since any of them may answer."""
