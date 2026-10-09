@@ -67,6 +67,8 @@ mail:
 
 # >> tesla: src/integrations/tesla/config.example.yaml
 
+# >> volvo: src/integrations/volvo/config.example.yaml
+
 
 # >> hyundai: src/integrations/hyundai/config.example.yaml
 

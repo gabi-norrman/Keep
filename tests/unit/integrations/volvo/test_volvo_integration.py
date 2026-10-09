@@ -1,0 +1,335 @@
+"""The Volvo folder as a VehicleProvider: the cars from `volvo.vehicles`, the state composed from
+the Connected Vehicle, Energy and Location APIs and cached for a minute, the climatization
+commands and their invoke status, the API's refusals as VehicleErrors, and the three actions
+Volvo lacks answering Unsupported."""
+import time
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from assistant.integration.VehicleProvider import Unsupported, VehicleError, VehicleProvider, VehicleSpec
+from integrations.volvo import VolvoAuth as auth_module
+from integrations.volvo import VolvoIntegration as module
+from integrations.volvo.VolvoAuth import NotSignedIn, token_path
+from integrations.volvo.VolvoIntegration import (VolvoApiError, VolvoCommandError, VolvoIntegration, VolvoRateLimited)
+
+from .volvo_fakes import (NOW_ISO, VIN, FakeVolvo, StubAuth, command_result, details, energy_value, location, value)
+
+CONFIG = "integrations.volvo.VolvoIntegration.ConfigManager.get_instance"
+CONNECTED = f"/connected-vehicle/v2/vehicles/{VIN}"
+ENERGY_STATE = f"/energy/v2/vehicles/{VIN}/state"
+LOCATION = f"/location/v1/vehicles/{VIN}/location"
+VEHICLES = [{"name": "family_xc40", "display_name": "Family XC40", "vin": VIN, "default": True},
+            {"name": "v60", "vin": "YV1KEP47L00000002"}]
+
+
+def _config(vehicles=VEHICLES, api_key="vcc-key", client_id="app-id", client_secret="app-secret"):
+    values = {"volvo.vehicles": vehicles, "volvo.vcc_api_key": api_key,
+              "volvo.oauth.client_id": client_id, "volvo.oauth.client_secret": client_secret}
+    config = MagicMock()
+    config.get.side_effect = lambda key, *default: values.get(key, default[0] if default else None)
+    return patch(CONFIG, return_value=config)
+
+
+@pytest.fixture(autouse=True)
+def fresh(tmp_path):
+    VolvoIntegration.reset_instance()
+    with patch.object(auth_module, "TOKEN_DIR", tmp_path / "oauth"):
+        yield tmp_path / "oauth"
+    VolvoIntegration.reset_instance()
+
+
+def build(fake: FakeVolvo, auth=None) -> VolvoIntegration:
+    integration = VolvoIntegration(session=fake)
+    integration.auth = auth or StubAuth()
+    return integration
+
+
+def electric_car(fake: FakeVolvo, availability="AVAILABLE", engine="STOPPED", battery="72", electric_range="310", stamp=NOW_ISO):
+    fake.route("GET", CONNECTED, details("ELECTRIC"))
+    fake.route("GET", f"{CONNECTED}/command-accessibility", {"data": {"availabilityStatus": value(availability, stamp)}})
+    fake.route("GET", f"{CONNECTED}/engine-status", {"data": {"engineStatus": value(engine, stamp)}})
+    fake.route("GET", f"{CONNECTED}/statistics", {"data": {"averageSpeed": value(47, stamp, "km/h"), "distanceToEmptyBattery": value(290, stamp, "km")}})
+    fake.route("GET", ENERGY_STATE, {"batteryChargeLevel": energy_value(battery, stamp, "percentage"),
+                                     "electricRange": energy_value(electric_range, stamp, "km"),
+                                     "chargingStatus": energy_value("IDLE", stamp)})
+    fake.route("GET", LOCATION, location(stamp=stamp))
+
+
+def spec(integration: VolvoIntegration) -> VehicleSpec:
+    return integration.vehicles()[0]
+
+
+@pytest.mark.unit
+class TestVehicles:
+    def test_the_entries_become_specs_the_name_the_id_the_vin_the_handle(self):
+        with _config():
+            integration = build(FakeVolvo())
+            assert isinstance(integration, VehicleProvider)
+            cars = integration.vehicles()
+
+        assert [c.id for c in cars] == ["family_xc40", "v60"]
+        assert cars[0].label == "Family XC40" and cars[0].handle == VIN and cars[0].is_default
+        assert cars[0].matches("family xc40") and cars[0].matches(VIN)
+        assert cars[1].label == "v60" and not cars[1].is_default
+
+    def test_the_config_keys_are_the_four_the_sign_in_and_the_calls_need_a_contract_with_config_yaml(self):
+        with _config():
+            assert build(FakeVolvo()).config_keys == ["volvo.vcc_api_key", "volvo.oauth.client_id", "volvo.oauth.client_secret", "volvo.vehicles"]
+
+    def test_a_car_without_a_vin_cannot_be_read(self):
+        with _config(vehicles=[{"name": "nameless"}]):
+            integration = build(FakeVolvo())
+            with pytest.raises(VehicleError, match="VIN"):
+                integration.vehicle_state(spec(integration))
+
+
+@pytest.mark.unit
+class TestVehicleState:
+    def test_an_electric_car_parked_and_reachable(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        with _config():
+            integration = build(fake)
+            state = integration.vehicle_state(spec(integration))
+
+        assert state.connectivity == "online" and not state.in_gear and not state.is_driving
+        assert state.battery_percent == 72 and state.range_km == 310 and state.fuel_percent is None
+        assert (state.latitude, state.longitude) == (59.3456, 17.9876)      # GeoJSON lists longitude first
+        assert state.data_time == 1791533700.0                               # 2026-10-09T08:15:00Z
+        assert state.speed_kmh is None and state.destination is None
+        assert {c.path for c in fake.api_calls()} == {CONNECTED, f"{CONNECTED}/command-accessibility", f"{CONNECTED}/engine-status",
+                                                      f"{CONNECTED}/statistics", ENERGY_STATE, LOCATION}
+        assert f"{CONNECTED}/fuel" not in {c.path for c in fake.api_calls()}
+
+    def test_every_call_carries_the_bearer_token_and_the_vcc_api_key(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        with _config(api_key="vcc-key-77"):
+            integration = build(fake, StubAuth(token="at.77"))
+            integration.vehicle_state(spec(integration))
+
+        for call in fake.api_calls():
+            assert call.headers["Authorization"] == "Bearer at.77" and call.headers["vcc-api-key"] == "vcc-key-77"
+
+    def test_a_running_engine_or_a_car_in_use_is_in_gear_and_asleep_or_offline_cars_say_so(self):
+        for availability, engine, in_gear, connectivity in (("CAR_IN_USE", "STOPPED", True, "online"),
+                                                             ("AVAILABLE", "RUNNING", True, "online"),
+                                                             ("POWER_SAVING_MODE", "STOPPED", False, "asleep"),
+                                                             ("NO_INTERNET", "STOPPED", False, "offline"),
+                                                             ("UNSPECIFIED", "STOPPED", False, None)):
+            fake = FakeVolvo()
+            electric_car(fake, availability=availability, engine=engine)
+            with _config():
+                VolvoIntegration.reset_instance()
+                integration = build(fake)
+                state = integration.vehicle_state(spec(integration))
+            assert (state.in_gear, state.connectivity) == (in_gear, connectivity), availability
+
+    def test_a_combustion_car_reads_fuel_and_tank_range_not_the_energy_api(self):
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, details("DIESEL", "V60"))
+        fake.route("GET", f"{CONNECTED}/command-accessibility", {"data": {"availabilityStatus": value("AVAILABLE")}})
+        fake.route("GET", f"{CONNECTED}/engine-status", {"data": {"engineStatus": value("STOPPED")}})
+        fake.route("GET", f"{CONNECTED}/statistics", {"data": {"distanceToEmptyTank": value(540, unit="km")}})
+        fake.route("GET", f"{CONNECTED}/fuel", {"data": {"fuelAmount": value(38, unit="l")}})
+        fake.route("GET", LOCATION, location())
+        with _config():
+            integration = build(fake)
+            state = integration.vehicle_state(spec(integration))
+
+        assert state.battery_percent is None and state.fuel_percent is None and state.range_km == 540
+        paths = {c.path for c in fake.api_calls()}
+        assert f"{CONNECTED}/fuel" in paths and ENERGY_STATE not in paths
+
+    def test_a_hybrid_adds_the_electric_and_the_tank_range_and_reads_its_battery(self):
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, details("PETROL/ELECTRIC", "XC60"))
+        fake.route("GET", f"{CONNECTED}/command-accessibility", {"data": {"availabilityStatus": value("AVAILABLE")}})
+        fake.route("GET", f"{CONNECTED}/engine-status", {"data": {"engineStatus": value("STOPPED")}})
+        fake.route("GET", f"{CONNECTED}/statistics", {"data": {"distanceToEmptyTank": value(400, unit="km"), "distanceToEmptyBattery": value(35, unit="km")}})
+        fake.route("GET", ENERGY_STATE, {"batteryChargeLevel": energy_value("64.5", unit="percentage"), "electricRange": energy_value("38", unit="km")})
+        fake.route("GET", f"{CONNECTED}/fuel", {"data": {"fuelAmount": value(30, unit="l")}})
+        with _config():
+            integration = build(fake)
+            state = integration.vehicle_state(spec(integration))
+
+        assert state.battery_percent == 64 and state.range_km == 438
+        assert state.latitude is None       # no location route: the 404 of an unsupported region is not an error
+
+    def test_a_car_whose_energy_api_fails_still_gets_a_line_from_the_other_reads(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        fake.route("GET", ENERGY_STATE, {"error": {"message": "INTERNAL_ERROR", "description": "try later"}}, status=500)
+        with _config():
+            integration = build(fake)
+            state = integration.vehicle_state(spec(integration))
+
+        assert state.battery_percent is None and state.range_km == 290     # the statistics' battery range stands in
+        assert state.latitude == 59.3456
+
+    def test_a_car_none_of_whose_reads_answer_is_an_error_not_an_empty_line(self):
+        fake = FakeVolvo()
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoApiError, match="none of the state reads"):
+                integration.vehicle_state(spec(integration))
+
+    def test_the_state_is_cached_for_a_minute_and_the_details_for_good(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            first = integration.vehicle_state(car)
+            calls_after_first = len(fake.api_calls())
+            assert integration.vehicle_state(car) is first
+            assert len(fake.api_calls()) == calls_after_first
+
+            with patch.object(module.time, "time", return_value=time.time() + module.STATE_TTL + 1):
+                integration.vehicle_state(car)
+            assert len(fake.api_calls()) == 2 * calls_after_first - 1       # everything but the vehicle details again
+
+    def test_a_rate_limited_api_is_one_clear_error_not_five_failed_reads(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        fake.route("GET", f"{CONNECTED}/command-accessibility", {"error": {"message": "TOO_MANY_REQUESTS"}}, status=429)
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoRateLimited, match="rate limit"):
+                integration.vehicle_state(spec(integration))
+        assert len(fake.api_calls()) == 2       # the details, then the first refused read stopped the rest
+
+    def test_an_unsigned_in_integration_raises_the_login_hint_before_calling_the_api(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        with _config():
+            integration = build(fake, StubAuth(signed_in=False))
+            with pytest.raises(NotSignedIn, match="volvo_login"):
+                integration.vehicle_state(spec(integration))
+        assert fake.api_calls() == []
+
+    def test_a_refused_token_names_the_scopes_and_the_sign_in(self):
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, {"error": {"message": "FORBIDDEN", "description": "scope missing"}}, status=403)
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoApiError, match="scope"):
+                integration.vehicle_state(spec(integration))
+
+
+@pytest.mark.unit
+class TestCommands:
+    def test_climate_on_posts_climatization_start_and_a_completed_status_is_the_reply(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        fake.route("POST", f"{CONNECTED}/commands/climatization-start", command_result("COMPLETED"))
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            integration.vehicle_state(car)
+            reply = integration.climate_on(car)
+
+        assert "Family XC40" in reply and "started" in reply
+        post = fake.sent("POST", f"{CONNECTED}/commands/climatization-start")[0]
+        assert post.headers["Content-Type"] == "application/json" and post.headers["vcc-api-key"] == "vcc-key"
+
+    def test_a_command_drops_the_cached_state_so_the_next_read_is_fresh(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        fake.route("POST", f"{CONNECTED}/commands/climatization-stop", command_result("DELIVERED"))
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            integration.vehicle_state(car)
+            reads = len(fake.api_calls())
+            assert "stopped" in integration.climate_off(car)
+            integration.vehicle_state(car)
+        assert len(fake.api_calls()) > reads + 1
+
+    def test_a_rejected_command_is_an_error_with_volvos_reason(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        fake.route("POST", f"{CONNECTED}/commands/climatization-start", command_result("REJECTED", "Car in use"))
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoCommandError, match="REJECTED.*Car in use"):
+                integration.climate_on(spec(integration))
+
+    def test_a_command_the_api_refuses_is_the_api_error(self):
+        fake = FakeVolvo()
+        fake.route("POST", f"{CONNECTED}/commands/climatization-start", {"error": {"message": "UNPROCESSABLE", "description": "not supported by this car"}}, status=422)
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoApiError, match="not supported"):
+                integration.climate_on(spec(integration))
+
+    def test_defrost_trunk_and_navigation_are_unsupported_without_a_call(self):
+        fake = FakeVolvo()
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            with pytest.raises(Unsupported, match="defrost"):
+                integration.max_defrost(car)
+            with pytest.raises(Unsupported, match="trunk"):
+                integration.open_trunk(car)
+            with pytest.raises(Unsupported, match="destination"):
+                integration.navigate_to(car, "Stockholm")
+        assert fake.api_calls() == []
+
+
+@pytest.mark.unit
+class TestHealthAndSignIn:
+    def test_health_is_the_first_cars_details(self):
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, details())
+        with _config():
+            integration = build(fake)
+            assert integration.check_health() is True
+            assert not integration.needs_2fa()
+
+    def test_health_without_a_sign_in_raises_the_hint_and_needs_2fa_says_the_owner_must_sign_in(self):
+        with _config():
+            integration = build(FakeVolvo(), StubAuth(signed_in=False))
+            assert integration.needs_2fa()
+            with pytest.raises(NotSignedIn):
+                integration.check_health()
+            assert build(FakeVolvo(), StubAuth(again=True)).needs_2fa()
+
+    def test_the_login_hint_names_the_command(self):
+        assert "volvo_login" in VolvoIntegration.login_hint
+
+    def test_the_auth_status_for_the_tab(self):
+        with _config():
+            assert build(FakeVolvo(), StubAuth(signed_in=False)).get_auth_status()["status"] == "needs_auth"
+            assert build(FakeVolvo(), StubAuth(again=True)).get_auth_status()["status"] == "needs_auth"
+            assert build(FakeVolvo()).get_auth_status()["status"] == "authenticated"
+        with _config(client_secret=""):
+            assert build(FakeVolvo()).get_auth_status()["status"] == "error"
+
+    def test_a_sign_in_or_sign_out_drops_the_cached_states(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            integration.vehicle_state(car)
+            reads = len(fake.api_calls())
+            integration.auth.sign_out = lambda: None
+            integration.sign_out()
+            integration.vehicle_state(car)
+        assert len(fake.api_calls()) > reads
+
+    def test_wipe_targets_log_out_and_losing_the_config_remove_the_token_file(self, fresh):
+        fresh.mkdir(parents=True)
+        token_path().write_text("{}")
+        assert [p for p, _ in VolvoIntegration.wipe_targets()] == [token_path()]
+
+        assert VolvoIntegration.log_out()
+        assert not token_path().exists()
+        assert VolvoIntegration.log_out() is None
+
+        token_path().write_text("{}")
+        with _config():
+            build(FakeVolvo()).on_not_configured()
+        assert not token_path().exists()

@@ -1,0 +1,30 @@
+# Volvo (the "Volvo" integration): where each Volvo is, whether it is in use, its charge or range,
+# and climate on/off through the official Volvo Cars API (cars from model year 2010 with Volvo On
+# Call, or 2020 with Google built-in; Europe, the Americas, the Middle East and Africa). Volvo
+# issues the credentials per app, so the household publishes its own app once, in minutes, at
+# https://developer.volvocars.com (a free developer account):
+#   1. "Create API application" gives the vcc_api_key (the VCC API key sent with every call).
+#   2. "Publish application": name and description, redirect URI http://localhost:18723/ (exactly
+#      that), the Connected Vehicle API, the Energy API and the Location API, with the scopes
+#      openid conve:vehicle_relation conve:engine_status conve:fuel_status conve:battery_charge_level
+#      conve:trip_statistics conve:command_accessibility conve:commands conve:climatization_start_stop
+#      energy:capability:read energy:state:read location:read. The client id and client secret are on
+#      the confirmation page; the app works while it shows "Publication under Review".
+# Then sign in with the Volvo ID the cars belong to: volvo_login() from the chat, or the console's
+# Volvo tab, gives a link to open in any browser; after the sign-in the browser lands on a
+# http://localhost:18723/... page that does not load — that is expected — and that page's whole
+# address is pasted back (volvo_login_code, or Ctrl-E in the tab). The tokens are kept in
+# cache/oauth/volvo.json; a refresh token unused for seven days lapses and the sign-in is asked for
+# again. The app has 10,000 calls a day: the state is read at most once a minute per car.
+# The VIN of each car is in the Volvo Cars app under the car's details; `name` is the vehicle_id the
+# assistant uses, `display_name` what it calls the car.
+volvo:
+  vcc_api_key: YOUR_VCC_API_KEY
+  oauth:
+    client_id: YOUR_VOLVO_APP_CLIENT_ID
+    client_secret: YOUR_VOLVO_APP_CLIENT_SECRET
+  vehicles:
+    - name: volvo
+      display_name: Family XC40
+      vin: YOUR_VOLVO_VIN
+      default: false

@@ -1,0 +1,2 @@
+# The Volvo Cars API is plain REST over the root's `requests`; Home Assistant's async client
+# (volvocarsapi) fits neither the sync VehicleProvider contract nor the paste sign-in, so nothing extra.

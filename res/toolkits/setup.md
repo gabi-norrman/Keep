@@ -75,6 +75,12 @@ The link lives about ten minutes; an expired or reused code comes back as text �
 `google.oauth.client_id` and `client_secret` set and the integration enabled; list_integrations shows the accounts
 still to sign in.
 
+`volvo_login()` — signs the household's Volvo ID in for the Volvo integration (one account, no argument), from any
+chat, exactly like google_login: a link, a http://localhost:18723/... page that does not load, its whole address
+pasted back with `volvo_login_code(pasted: str)`, quoted. A sign-in left unused for a week lapses — run volvo_login
+again. Needs `volvo.vcc_api_key`, `volvo.oauth.client_id`, `client_secret` and `volvo.vehicles` set and the
+integration enabled.
+
 `spotify_login()` — signs the household's Spotify account in for the Sonos & Spotify integration, from any chat, so
 the newest 10 playlists of the user's own Spotify library (own and followed) are listed in MUSIC
 with "S-" ids and can be started with play_music. Spotify-made playlists (Discover Weekly, Release Radar) are not
@@ -103,4 +109,4 @@ the state it came back with — if it failed, say why and offer to re-enter the 
 the chat, and never guess a key that config_help does not list.
 
 ### Stop-and-wait
-`list_integrations()`, `config_help()`, `config_request()`, `config_set()`, `restart_integration()`, `enable_integration()`, `disable_integration()`, `telegram_login()`, `microsoft_login()`, `google_login()`, `google_login_code()`, `spotify_login()`, `spotify_login_code()` return data: emit them and stop generating; the result arrives in the next round.
+`list_integrations()`, `config_help()`, `config_request()`, `config_set()`, `restart_integration()`, `enable_integration()`, `disable_integration()`, `telegram_login()`, `microsoft_login()`, `google_login()`, `google_login_code()`, `volvo_login()`, `volvo_login_code()`, `spotify_login()`, `spotify_login_code()` return data: emit them and stop generating; the result arrives in the next round.
