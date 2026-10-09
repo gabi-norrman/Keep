@@ -11,33 +11,64 @@ used for brand popularity.
 Manufacturers are closing their app APIs to third parties (BMW in September 2025, VW Group in May
 2026), so everything "unofficial" below can stop working without notice. Re-check before building.
 
-## Volvo — official API, needs one Keep app
+## Volvo — official API, each user publishes their own app
 
 - **Access.** Volvo Cars Developer Portal, free. Two credentials on every call: a *VCC API key*
-  (an "API application" in a developer account, no review, 10,000 calls a day per key, so one key
-  per car) and an *OAuth client* (authorization code with PKCE; the owner signs in with their Volvo
-  ID, a one-time code arrives by mail). Production OAuth credentials need the app **published**,
-  which Volvo reviews manually — forum reports say two to three weeks; unpublished test tokens
-  expire after about five minutes.
-- **Who registers.** Every user creates the free developer account and the API key themselves
-  (like the Tessie token). The OAuth client should be **one Keep app published once**, otherwise
-  each user waits weeks for a review before anything works. Home Assistant does the same through
-  Nabu Casa account linking. Open questions to settle on the portal (it blocks anonymous fetches):
-  whether a public client with PKCE and no secret is accepted, and what the review asks for
-  (privacy policy, company details). Keep needs a redirect endpoint for the OAuth callback and a
-  periodic re-login, since grants expire.
+  (an "API application" in a developer account) and an *OAuth client* (authorization code with
+  PKCE against Volvo ID; the owner signs in in a browser, a one-time code arrives by mail). Volvo's
+  own sample app (`volvo-cars/developer-portal-api-samples`, last commit April 2026) runs the code
+  flow with PKCE **and** a client secret, and its README says both the client id and the secret
+  "are provided after the application publishing process is completed". Every community client
+  (Home Assistant's custom-credentials path, evcc, the archived `thomasddn/volvo-cars-api`) sends
+  both. PKCE is on top of the secret, not instead of it, so a pure public client like the Tesla
+  flow is not what the portal issues. One caveat: Volvo ID's OpenID discovery document advertises
+  `none` among the token-endpoint auth methods and a device-code grant, so the *server* could do
+  both; whether an app issued by the portal is allowed to is untested — a five-minute try with a
+  real app (code exchange without the secret, then the device authorization endpoint) settles it.
+- **Publishing.** No blocking human review. Publishing an app is a form (name, description, the
+  APIs it uses, scopes, redirect URIs) and the client id and secret are on the confirmation page
+  at once; the app then shows "Publication under Review", which evcc users in April 2025 confirmed
+  does not stop it from working. The "14 to 21 days" and "weeks of review" figures in older
+  threads and third-party profiles predate this and are obsolete.
+- **Token lifetimes.** Access tokens are short, about 30 minutes (one report of 5). Refresh-token
+  rotation is on by default: every refresh returns a new refresh token and invalidates the old one,
+  so the integration must persist the newest one after each refresh (July 2025 reports saw the new
+  token missing from some responses, so keep the old one until a new one arrives). An unrotated
+  refresh token dies after **7 days**, after which the owner has to sign in again — quoted from
+  Volvo's docs by community developers in June and July 2025. Home Assistant also says custom
+  credentials have "a limited grant period" requiring periodic re-login; the exact maximum is not
+  on any page we could reach. A "6 months" figure circulating online is the Energy API v1 to v2
+  migration window, not a grant lifetime — treat the maximum grant as unknown. Only the
+  authorization code flow is documented (no device-code flow at the portal level, see above), so
+  the owner's browser must reach a Keep callback URL once.
+- **Limits.** 10,000 requests a day per app (Home Assistant's docs; a third-party profile adds 100
+  reads and 10 commands a minute per Volvo ID and client, HTTP 429 beyond). A full poll is about a
+  dozen calls, so Home Assistant uses one app per car. Grant expiry and the daily cap are the two
+  things the integration's health check should surface.
+- **Who registers what.** Keep cannot ship a client secret in an open-source, self-hosted app, so
+  there are two shapes:
+  1. **Per-user app (the plan).** Each household publishes its own app on the portal (seconds, no
+     review) and pastes client id, client secret and API key into `config.yaml`; Keep hosts the
+     callback on its own HTTP interface, opens the Volvo ID login once and refreshes from then on,
+     re-prompting when the refresh token has lapsed. This is Home Assistant's "custom application
+     credentials" path. Uglier onboarding, zero infrastructure.
+  2. **Keep relay.** One published Keep app whose secret lives on a small token-exchange service,
+     the Nabu Casa model. Clean onboarding, but a service to run that holds every user's refresh
+     tokens — the thing the local-first setup avoids. Only worth it if Keep ever has hosted
+     infrastructure anyway.
 - **Reads.** Doors, windows, hood, tailgate, lock state, odometer, fuel, battery percentage,
   electric range, charging status and power, location and heading, tire and fluid warnings,
   service due. No live updates; Home Assistant polls doors and lock every minute, energy every two,
-  the rest every 15 to 30 minutes, about a dozen calls per full poll.
+  the rest every 15 to 30 minutes.
 - **Commands.** Lock, unlock, climate start and stop, flash lights, honk, engine start for fifteen
   minutes on combustion and hybrid cars. **No** charge start or stop, no navigation, no climate
   status or scheduling. Honk and flash have drained 12 V batteries.
 - **Cars.** Model year 2010 and later with Volvo On Call, or 2020 and later with Google Built-In.
   Europe, Middle East, Africa, the Americas. Capabilities vary by model; a "list commands" call
   tells what a given car accepts.
-- **Verdict.** The cleanest option: official, stable, nearly the Tesla toolkit minus navigation.
-  Build first.
+- **Verdict.** Still the cleanest option: official, stable, nearly the Tesla toolkit minus
+  navigation, and the per-user app makes it buildable with no Keep-side registration at all. Build
+  first, with "paste your own credentials" onboarding.
 
 ## Hyundai / Kia / Genesis — unofficial, nothing to register
 
