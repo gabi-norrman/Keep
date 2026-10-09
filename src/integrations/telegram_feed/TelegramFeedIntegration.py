@@ -13,6 +13,7 @@ from common.logging import info, trace, error, fine
 from assistant.PromptInjectionDetector import is_prompt_injection
 from common.ConfigManager import config
 from common.Paths import AISERVER_DIR
+from common.RateLimiter import RateLimiter
 from assistant.tools.MediaAnalyzer import media_analyzer, KIND_VIDEO
 
 
@@ -20,6 +21,10 @@ SESSION_FILE = str(AISERVER_DIR / 'telegram_feed')
 CATCH_UP_DIALOGS = 30       # the most recent dialogs a catch-up walks
 POLL_INTERVAL = 2           # seconds between drains of the live event queue
 LOOP_CALL_TIMEOUT = 15
+DIRECTORY_DIALOGS = 300     # the dialogs a recipient lookup walks, with the contact list beside them
+DIRECTORY_TTL = 300         # seconds a built directory serves lookups (the approval card and the send share one)
+SEND_RATE_LIMIT_WINDOW = 60.0
+SEND_RATE_LIMIT_MAX = 5
 LOGOUT_TIMEOUT = 30         # seconds for //wipe's log-out, connect included
 LOGIN_HINT = "sign the account in with telegram_login(phone) from the console chat, or in the console's Telegram tab"
 CODE_REUSE_NOTE = ("Asked again within a few minutes, Telegram repeats the same code without sending a new message — "
@@ -27,11 +32,11 @@ CODE_REUSE_NOTE = ("Asked again within a few minutes, Telegram repeats the same 
 
 
 class TelegramFeedIntegration(Integration, Feed):
-    """The owner's Telegram chats, followed as a feed into Keep's history.
+    """The owner's own Telegram account: a feed of its chats, plus sending.
 
     Follows the personal Telegram account, so the messages of its chats land in Keep's history,
-    as a feed. Signing in takes the phone number, the code Telegram sends and the account's 2FA
-    password.
+    as a feed, and sends messages from it (`send_telegram`). Signing in takes the phone number,
+    the code Telegram sends and the account's 2FA password.
 
     The account through Telethon as a Feed (plans/FEED_PLAN.md): a catch-up walks the recent
     dialogs for messages newer than the cursor (a timestamp); live, the NewMessage handler
@@ -62,6 +67,9 @@ class TelegramFeedIntegration(Integration, Feed):
         self._login_lock = threading.Lock()
         self._loop_lock = threading.Lock()
         self._live: "queue.Queue[FeedEntry]" = queue.Queue()
+        self._rate_limiter = RateLimiter(SEND_RATE_LIMIT_MAX, SEND_RATE_LIMIT_WINDOW)
+        self._directory: dict[str, dict[int, tuple]] = {}   # lowercase name → {entity id: (entity, display)}
+        self._directory_built: float = 0.0
 
     def _on_reset(self):
         self.shut_down()
@@ -270,6 +278,101 @@ class TelegramFeedIntegration(Integration, Feed):
                 self._live.put(FeedEntry(msg.date.timestamp(), content))
         except Exception as e:
             trace(f"TelegramFeed: error handling message: {e}")
+
+    # --- sending ------------------------------------------------------------------------------
+
+    @staticmethod
+    def _display(entity) -> str:
+        title = getattr(entity, 'title', None)
+        if title:
+            return title
+        name = " ".join(filter(None, (getattr(entity, 'first_name', None), getattr(entity, 'last_name', None))))
+        return name or getattr(entity, 'username', None) or str(getattr(entity, 'id', '?'))
+
+    def _index(self, entity):
+        """File *entity* under every name it answers to: full name, first name, title, @username."""
+        display = self._display(entity)
+        keys = {display.lower()}
+        first = getattr(entity, 'first_name', None)
+        if first:
+            keys.add(first.lower())
+        username = getattr(entity, 'username', None)
+        if username:
+            keys.add(username.lower())
+            keys.add(f"@{username.lower()}")
+        for key in keys:
+            self._directory.setdefault(key, {})[entity.id] = (entity, display)
+
+    async def _build_directory(self):
+        from telethon.tl.functions.contacts import GetContactsRequest
+        self._directory = {}
+        dialogs = await self._client.get_dialogs(limit=DIRECTORY_DIALOGS)
+        for dialog in dialogs:
+            if not self._is_own_bot(dialog.entity):
+                self._index(dialog.entity)
+        contacts = 0
+        try:
+            for user in (await self._client(GetContactsRequest(hash=0))).users:
+                self._index(user)
+                contacts += 1
+        except Exception as e:
+            error(f"TelegramFeed: reading the contacts failed: {type(e).__name__}: {e}")
+        self._directory_built = time.time()
+        info(f"TelegramFeed: directory built — {len(dialogs)} dialogs, {contacts} contacts")
+
+    async def _lookup(self, recipient: str):
+        """(entity, display, error) for a name, a @username or a phone number (contacts only)."""
+        candidate = " ".join(recipient.split())
+        if candidate.startswith("+") and candidate[1:].replace(" ", "").isdigit():
+            try:
+                entity = await self._client.get_entity(candidate.replace(" ", ""))
+            except Exception as e:
+                return None, None, f"{candidate} is not one of the account's contacts ({type(e).__name__})"
+            return entity, self._display(entity), None
+        if time.time() - self._directory_built > DIRECTORY_TTL:
+            await self._build_directory()
+        matches = self._directory.get(candidate.lower(), {})
+        if len(matches) == 1:
+            entity, display = next(iter(matches.values()))
+            info(f"TelegramFeed: resolved '{candidate}' → {display} ({entity.id})")
+            return entity, display, None
+        if len(matches) > 1:
+            options = sorted({d if d != candidate else f"{d} (@{getattr(e, 'username', None) or e.id})"
+                              for e, d in matches.values()})
+            return None, None, f"'{candidate}' is ambiguous — say the full name or @username: {', '.join(options)}"
+        return None, None, f"unknown recipient: {candidate} (not among the account's chats or contacts)"
+
+    def resolve_recipient(self, recipient: str):
+        """(entity, display name, error) for a contact's or chat's name, a @username or a number."""
+        if not (recipient or "").strip():
+            return None, None, "empty recipient"
+        if not self.check_health():
+            return None, None, f"Telegram Feed is not connected — {LOGIN_HINT}"
+        return self._call(self._lookup(recipient))
+
+    def send(self, recipient: str, body: str) -> str:
+        """Send *body* from the owner's account. "" on success, else why not. The outgoing
+        message comes back through the NewMessage handler, so the history gets it like any
+        message the owner sends from the phone."""
+        if not body or not body.strip():
+            info("TelegramFeed send skipped: empty body")
+            return "empty message body"
+        rate_err = self._rate_limiter.check()
+        if rate_err:
+            info(f"TelegramFeed send blocked: {rate_err}")
+            return rate_err
+        entity, display, err = self.resolve_recipient(recipient)
+        if err:
+            info(f"TelegramFeed send: could not resolve recipient '{recipient}': {err}")
+            return err
+        try:
+            self._call(self._client.send_message(entity, body))
+        except Exception as e:
+            error(f"TelegramFeed send to {display} failed: {type(e).__name__}: {e}")
+            return f"Telegram send failed: {e}"
+        self._rate_limiter.record()
+        info(f"TelegramFeed: sent to {display}: {body[:80]}")
+        return ""
 
     def _call(self, coroutine, timeout: Optional[float] = LOOP_CALL_TIMEOUT):
         """Run a coroutine on the client's loop from another thread and wait for it."""

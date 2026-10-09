@@ -77,3 +77,75 @@ class TestCmdTelegramLogin:
         with patch.object(Commands, "_integration_monitor", return_value=self._monitor(None)):
             assert commands_instance._owner("telegram_login")._run_telegram_login("+46701234567") == \
                 "Telegram Feed is not available — set telegram_feed.api_id and api_hash and enable it first."
+
+
+class TestCmdSendTelegram:
+    """`send_telegram(recipient, message)`: the body with the AI footer goes to the feed's `send`."""
+
+    @staticmethod
+    def _with_feed(feed):
+        monitor = Mock()
+        monitor.find.return_value = feed
+        return patch.object(Commands, "_integration_monitor", return_value=monitor)
+
+    def test_sends_with_the_ai_suffix(self, commands_instance):
+        feed = Mock()
+        feed.send.return_value = ""
+        with self._with_feed(feed):
+            assert commands_instance.run("send_telegram", ["Charlotte", "On my way home"]) == ""
+        recipient, body = feed.send.call_args.args
+        assert recipient == "Charlotte"
+        assert body.startswith("On my way home") and "AI" in body
+
+    def test_an_unquoted_body_is_rejoined_on_its_commas_and_escapes_become_newlines(self, commands_instance):
+        feed = Mock()
+        feed.send.return_value = ""
+        with self._with_feed(feed):
+            commands_instance.run("send_telegram", ["Bob", "late", "sorry\\nsee you"])
+        body = feed.send.call_args.args[1]
+        assert body.startswith("late, sorry\nsee you")
+
+    def test_the_feeds_refusal_is_the_reply(self, commands_instance):
+        feed = Mock()
+        feed.send.return_value = "unknown recipient: Zed (not among the account's chats or contacts)"
+        with self._with_feed(feed):
+            assert commands_instance.run("send_telegram", ["Zed", "hi"]) == feed.send.return_value
+
+    def test_missing_parts_send_nothing(self, commands_instance):
+        feed = Mock()
+        with self._with_feed(feed):
+            assert "send_telegram failed" in commands_instance.run("send_telegram", ["", "body"])
+            assert "send_telegram failed" in commands_instance.run("send_telegram", ["Bob", "  "])
+            assert "send_telegram failed" in commands_instance.run("send_telegram", ["Bob"])
+        feed.send.assert_not_called()
+
+    def test_a_disabled_or_missing_feed_names_its_state(self, commands_instance):
+        disabled = Mock(spec=["state"])
+        disabled.state = Mock(value="disabled")
+        with self._with_feed(disabled):
+            assert "Telegram Feed is disabled" in commands_instance.run("send_telegram", ["Bob", "hi"])
+        with self._with_feed(None):
+            assert "Telegram Feed is not available" in commands_instance.run("send_telegram", ["Bob", "hi"])
+
+    def test_the_approval_card_shows_the_resolved_chat(self, commands_instance):
+        owner = commands_instance._owner("send_telegram")
+        feed = Mock()
+        feed.resolve_recipient.return_value = (Mock(username="bobby"), "Bob Example", None)
+        with self._with_feed(feed):
+            assert owner.describe_send_telegram('"Bob", "hi"') == "Sending Telegram message to Bob Example (@bobby)"
+        feed.resolve_recipient.return_value = (Mock(username=None), "Family", None)
+        with self._with_feed(feed):
+            assert owner.describe_send_telegram("Family, hi") == "Sending Telegram message to Family"
+        feed.resolve_recipient.return_value = (None, None, "unknown recipient: Carol")
+        with self._with_feed(feed):
+            assert owner.describe_send_telegram("Carol, hi") == "Sending Telegram message to Carol — unknown recipient: Carol"
+
+    def test_the_card_survives_a_lookup_failure_and_an_absent_feed(self, commands_instance):
+        owner = commands_instance._owner("send_telegram")
+        feed = Mock()
+        feed.resolve_recipient.side_effect = RuntimeError("loop gone")
+        with self._with_feed(feed):
+            assert owner.describe_send_telegram("Bob, hi") == "Sending Telegram message to Bob"
+        with self._with_feed(None):
+            assert owner.describe_send_telegram("Bob, hi") == "Sending Telegram message to Bob"
+        assert owner.describe_send_telegram("") == "Sending Telegram message"

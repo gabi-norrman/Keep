@@ -821,3 +821,135 @@ class TestOwnBotChat:
         with patch(CONFIG) as cfg:
             cfg.get.side_effect = lambda key, default=None: token
             assert TelegramFeedIntegration._is_own_bot(Mock(id=4242)) is False
+
+
+# --- sending: the recipient directory and send() ------------------------------------------------
+
+class _Entity:
+    def __init__(self, id, first_name=None, last_name=None, username=None, title=None):
+        self.id, self.first_name, self.last_name, self.username, self.title = id, first_name, last_name, username, title
+
+
+class _Dialog:
+    def __init__(self, entity):
+        self.entity = entity
+
+
+class _SendClient:
+    """Dialogs and contacts to look up in, and the one send_message call."""
+
+    def __init__(self, dialogs=(), contacts=(), entities=None, fail=None):
+        self._dialogs, self._contacts, self._entities, self._fail = list(dialogs), list(contacts), entities or {}, fail
+        self.sent = []
+        self.directory_builds = 0
+
+    def is_connected(self):
+        return True
+
+    async def get_dialogs(self, limit):
+        self.directory_builds += 1
+        return [_Dialog(e) for e in self._dialogs]
+
+    async def __call__(self, request):
+        return Mock(users=list(self._contacts))
+
+    async def get_entity(self, key):
+        if key not in self._entities:
+            raise ValueError(f"no entity for {key}")
+        return self._entities[key]
+
+    async def send_message(self, entity, body):
+        if self._fail:
+            raise self._fail
+        self.sent.append((entity, body))
+
+
+def _wire(feed, client):
+    import asyncio
+    feed._client = client
+    feed._call = lambda coro, timeout=None: asyncio.run(coro)
+    return feed
+
+
+_BOB = _Entity(1, "Bob", "Example", "bobby")
+_BOB2 = _Entity(2, "Bob", "Other")
+_CAROL = _Entity(3, "Carol", username="carol_c")
+_FAMILY = _Entity(4, title="Family")
+
+
+@pytest.mark.unit
+class TestResolveRecipient:
+    def test_first_name_full_name_username_and_title_all_resolve(self, feed_no_blacklist):
+        f = _wire(feed_no_blacklist, _SendClient(dialogs=[_BOB, _FAMILY], contacts=[_CAROL]))
+        assert f.resolve_recipient("bob")[0] is _BOB
+        assert f.resolve_recipient("Bob Example")[1] == "Bob Example"
+        assert f.resolve_recipient("@Bobby")[0] is _BOB
+        assert f.resolve_recipient("family")[1] == "Family"
+        assert f.resolve_recipient("carol")[0] is _CAROL, "a contact without a dialog resolves too"
+
+    def test_an_ambiguous_first_name_lists_the_options(self, feed_no_blacklist):
+        f = _wire(feed_no_blacklist, _SendClient(dialogs=[_BOB, _BOB2]))
+        entity, _, err = f.resolve_recipient("Bob")
+        assert entity is None
+        assert "Bob Example" in err and "Bob Other" in err
+        assert f.resolve_recipient("Bob Other")[0] is _BOB2
+
+    def test_unknown_names_and_empty_input_fail(self, feed_no_blacklist):
+        f = _wire(feed_no_blacklist, _SendClient(dialogs=[_BOB]))
+        assert f.resolve_recipient("Zed")[2].startswith("unknown recipient: Zed")
+        assert f.resolve_recipient("  ")[2] == "empty recipient"
+
+    def test_a_phone_number_goes_through_get_entity(self, feed_no_blacklist):
+        f = _wire(feed_no_blacklist, _SendClient(entities={"+46701740605": _CAROL}))
+        assert f.resolve_recipient("+46 70 174 06 05")[1] == "Carol"
+        assert "+46701740699" in f.resolve_recipient("+46701740699")[2]
+
+    def test_the_directory_is_reused_within_its_ttl(self, feed_no_blacklist):
+        client = _SendClient(dialogs=[_BOB])
+        f = _wire(feed_no_blacklist, client)
+        f.resolve_recipient("Bob")
+        f.resolve_recipient("Bob")
+        assert client.directory_builds == 1
+        f._directory_built = 0.0
+        f.resolve_recipient("Bob")
+        assert client.directory_builds == 2
+
+    def test_the_own_bot_is_not_a_recipient(self, feed_no_blacklist):
+        bot = _Entity(777, "Keep", username="keep_bot")
+        with patch('integrations.telegram_feed.TelegramFeedIntegration.config') as cfg:
+            cfg.get.return_value = "777:secret"
+            f = _wire(feed_no_blacklist, _SendClient(dialogs=[bot, _BOB]))
+            assert f.resolve_recipient("Keep")[2].startswith("unknown recipient")
+
+    def test_disconnected_points_at_the_login(self, feed_no_blacklist):
+        assert "telegram_login" in feed_no_blacklist.resolve_recipient("Bob")[2]
+
+
+@pytest.mark.unit
+class TestSend:
+    def test_sends_to_the_resolved_entity(self, feed_no_blacklist):
+        client = _SendClient(dialogs=[_BOB])
+        f = _wire(feed_no_blacklist, client)
+        assert f.send("Bob", "hello") == ""
+        assert client.sent == [(_BOB, "hello")]
+
+    def test_an_unresolved_recipient_or_empty_body_sends_nothing(self, feed_no_blacklist):
+        client = _SendClient(dialogs=[_BOB])
+        f = _wire(feed_no_blacklist, client)
+        assert f.send("Zed", "hello").startswith("unknown recipient")
+        assert f.send("Bob", " ") == "empty message body"
+        assert client.sent == []
+
+    def test_a_failed_send_is_reported_and_not_counted(self, feed_no_blacklist):
+        f = _wire(feed_no_blacklist, _SendClient(dialogs=[_BOB], fail=RuntimeError("flood")))
+        assert "flood" in f.send("Bob", "hello")
+        assert f._rate_limiter.check() is None
+
+    def test_the_rate_limit_caps_a_burst(self, feed_no_blacklist):
+        from integrations.telegram_feed.TelegramFeedIntegration import SEND_RATE_LIMIT_MAX
+        client = _SendClient(dialogs=[_BOB])
+        f = _wire(feed_no_blacklist, client)
+        for _ in range(SEND_RATE_LIMIT_MAX):
+            assert f.send("Bob", "hello") == ""
+        assert f.send("Bob", "one more").startswith("rate limit")
+        assert len(client.sent) == SEND_RATE_LIMIT_MAX

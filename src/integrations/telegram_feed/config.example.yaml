@@ -1,6 +1,7 @@
 # The "Telegram Feed" integration: a Telethon client logged into the owner's own Telegram
-# account, feeding their chats into the history. Not the bot users talk to Keep through (section
-# telegram_bot); only set up when the user asks for their Telegram messages to be read. After these two keys the
+# account, feeding their chats into the history and sending messages from it (send_telegram). Not the
+# bot users talk to Keep through (section telegram_bot); only set up when the user asks for their
+# Telegram messages to be read or sent. After these two keys the
 # account itself must be signed in: telegram_login(phone) from the console chat (the code and the 2FA password go
 # through the masked prompt), or the console's Telegram tab.
 telegram_feed:

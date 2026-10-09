@@ -48,11 +48,11 @@ no server restart. Its switch is `interfaces.telegram.enabled` (`config_set`), n
 `list_integrations` shows, restarts it and reports its state, e.g. `enable_integration("IMAP Mail")`. Enabling one that
 is not configured yet is fine: it comes back "not configured" with the keys it still needs.
 
-`telegram_login(phone: str)` — signs the Telegram Feed (the user's own Telegram account, read into the history) in, e.g.
-`telegram_login("+46701234567")`. Only from the console chat: Telegram invalidates a login code that is sent as a
-Telegram message, so it cannot go through the bot. Ask the user for their phone number with country code in the chat
-first (it is not a secret), then run it once `telegram_feed.api_id` and `api_hash` are set and the integration is
-enabled and reports "needs 2FA". It sends the code to the user's Telegram app (by SMS when no other device is signed
+`telegram_login(phone: str)` — signs the Telegram Feed (the user's own Telegram account, read into the history and
+the sender of `send_telegram`) in, e.g. `telegram_login("+46701234567")`. Only from the console chat: Telegram
+invalidates a login code that is sent as a Telegram message, so it cannot go through the bot. Ask the user for their
+phone number with country code in the chat first (it is not a secret), then run it once `telegram_feed.api_id` and
+`api_hash` are set and the integration is enabled and reports "needs 2FA". It sends the code to the user's Telegram app (by SMS when no other device is signed
 in), opens the masked prompt for it, then for the account's two-step verification password when it has one, and
 starts the feed. A code that expired or a cancelled prompt comes back as text; run it again for a new code.
 
