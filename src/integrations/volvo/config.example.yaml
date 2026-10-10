@@ -17,7 +17,9 @@
 # cache/oauth/volvo.json; a refresh token unused for seven days lapses and the sign-in is asked for
 # again. The app has 10,000 calls a day: the state is read at most once a minute per car.
 # The VIN of each car is in the Volvo Cars app under the car's details; `name` is the vehicle_id the
-# assistant uses, `display_name` what it calls the car.
+# assistant uses, `display_name` what it calls the car. A VIN that is not among the Volvo ID's cars is
+# refused by Volvo with 401 "invalid VCC-API-KEY" — the same words as a wrong key — so the assistant
+# checks the account's car list before it says which of the two to fix.
 volvo:
   vcc_api_key: YOUR_VCC_API_KEY
   oauth:

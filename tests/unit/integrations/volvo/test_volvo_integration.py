@@ -16,7 +16,8 @@ from integrations.volvo.VolvoIntegration import (VolvoApiError, VolvoCommandErro
 from .volvo_fakes import (NOW_ISO, VIN, FakeVolvo, StubAuth, command_result, details, energy_value, location, value)
 
 CONFIG = "integrations.volvo.VolvoIntegration.ConfigManager.get_instance"
-CONNECTED = f"/connected-vehicle/v2/vehicles/{VIN}"
+CAR_LIST = "/connected-vehicle/v2/vehicles"
+CONNECTED = f"{CAR_LIST}/{VIN}"
 ENERGY_STATE = f"/energy/v2/vehicles/{VIN}/state"
 LOCATION = f"/location/v1/vehicles/{VIN}/location"
 VEHICLES = [{"name": "family_xc40", "display_name": "Family XC40", "vin": VIN, "default": True},
@@ -209,12 +210,76 @@ class TestVehicleState:
                 integration.vehicle_state(spec(integration))
         assert fake.api_calls() == []
 
-    def test_a_refused_token_names_the_scopes_and_the_sign_in(self):
+    def test_a_refused_call_for_a_car_the_volvo_id_owns_names_the_scopes_and_the_sign_in(self):
         fake = FakeVolvo()
         fake.route("GET", CONNECTED, {"error": {"message": "FORBIDDEN", "description": "scope missing"}}, status=403)
+        fake.route("GET", CAR_LIST, {"data": [{"vin": VIN}]})
         with _config():
             integration = build(fake)
-            with pytest.raises(VolvoApiError, match="scope"):
+            with pytest.raises(VolvoApiError, match="scope") as refused:
+                integration.vehicle_state(spec(integration))
+        assert "VIN" not in str(refused.value).split("—")[1] or "is the Volvo ID's" in str(refused.value)
+        assert "volvo_login" in str(refused.value)
+
+
+@pytest.mark.unit
+class TestWrongVin:
+    """Volvo answers a VIN that is not the Volvo ID's with 401 "invalid VCC-API-KEY" — the words of
+    a bad key — so the integration reads the account's car list once before it says what to fix."""
+    REFUSED = {"error": {"message": "invalid VCC-API-KEY", "description": ""}}
+
+    def test_a_vin_the_account_lacks_is_blamed_on_the_vin_with_the_cars_the_account_has(self):
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, self.REFUSED, status=401)
+        fake.route("GET", CAR_LIST, {"data": [{"vin": "YV1KEP47L00000007"}, {"vin": "YV1KEP47L00000008"}]})
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoApiError) as refused:
+                integration.vehicle_state(spec(integration))
+        text = str(refused.value)
+        assert "invalid VCC-API-KEY" in text and VIN in text and "volvo.vehicles" in text
+        assert "…000007" in text and "…000008" in text and "2 car" in text
+        assert "vcc_api_key" not in text, "the key is fine, the message must not send the user after it"
+
+    def test_a_car_list_refused_too_blames_the_key(self):
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, self.REFUSED, status=401)
+        fake.route("GET", CAR_LIST, self.REFUSED, status=401)
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoApiError) as refused:
+                integration.vehicle_state(spec(integration))
+        text = str(refused.value)
+        assert "volvo.vcc_api_key" in text and "volvo_login" in text
+        assert "volvo.vehicles" not in text
+
+    def test_the_car_list_is_read_once_for_the_process(self):
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, self.REFUSED, status=401)
+        fake.route("GET", CAR_LIST, {"data": [{"vin": "YV1KEP47L00000007"}]})
+        with _config():
+            integration = build(fake)
+            for _ in range(2):
+                with pytest.raises(VolvoApiError, match="volvo.vehicles"):
+                    integration.vehicle_state(spec(integration))
+        assert len(fake.sent("GET", CAR_LIST)) == 1
+
+    def test_the_health_check_carries_the_verdict(self):
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, self.REFUSED, status=401)
+        fake.route("GET", CAR_LIST, {"data": []})
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoApiError, match="volvo.vehicles"):
+                integration.check_health()
+
+    def test_a_rate_limit_while_diagnosing_is_reported_as_such(self):
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, self.REFUSED, status=401)
+        fake.route("GET", CAR_LIST, {"error": {"message": "TOO_MANY_REQUESTS"}}, status=429)
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoRateLimited):
                 integration.vehicle_state(spec(integration))
 
 

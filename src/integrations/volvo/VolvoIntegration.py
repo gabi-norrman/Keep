@@ -60,7 +60,10 @@ class VolvoIntegration(Integration, VehicleProvider):
     call carries the household's VCC API key (`volvo.vcc_api_key`) and a bearer token from
     `VolvoAuth`, the sign-in of the app whose client id and secret are `volvo.oauth.*`. A
     car's composed state is cached for STATE_TTL seconds and its details (fuel type) for the
-    process, since the app has 10,000 calls a day. Volvo offers no defrost, trunk or
+    process, since the app has 10,000 calls a day. Volvo answers a VIN that is not among the
+    Volvo ID's cars with 401 "invalid VCC-API-KEY", the same words as for a bad key, so a
+    refused per-car call is told apart by one read of the account's car list (cached for the
+    process) before the error names the VIN, the key or the scopes. Volvo offers no defrost, trunk or
     navigation command, so those three stay the contract's Unsupported. `needs_2fa` is "the
     owner has to sign in": the monitor shows NEEDS_2FA with the login hint until the paste
     flow completes. Config is read at call time."""
@@ -72,6 +75,7 @@ class VolvoIntegration(Integration, VehicleProvider):
         self.auth = VolvoAuth(self._client_settings)
         self._details: Dict[str, dict] = {}
         self._states: Dict[str, tuple[float, VehicleState]] = {}
+        self._account_vins: Optional[List[str]] = None
         self._lock = threading.RLock()
 
     @property
@@ -211,12 +215,55 @@ class VolvoIntegration(Integration, VehicleProvider):
         if response.status_code in (401, 403):
             reason = self._error_text(data) or response.text[:200]
             info(f"Volvo: {method} {path} refused ({response.status_code}): {reason}")
-            raise VolvoApiError(f"Volvo refused the call ({response.status_code}: {reason}) — the token or the app's scopes do not cover it; {sign_in_again_hint()} if it persists.")
+            raise VolvoApiError(self._refusal(path, response.status_code, reason))
         if response.status_code >= 400:
             reason = self._error_text(data) or response.text[:200]
             info(f"Volvo: {method} {path} failed ({response.status_code}): {reason}")
             raise VolvoApiError(f"Volvo {method} {path} failed: {response.status_code} {reason}")
         return data if isinstance(data, dict) else {}
+
+    def _refusal(self, path: str, status: int, reason: str) -> str:
+        """Why a 401/403 happened, for the LLM: a VIN the Volvo ID does not own (Volvo's answer
+        is the same "invalid VCC-API-KEY" as for a bad key), the key itself, or the scopes."""
+        refused = f"Volvo refused the call ({status}: {reason})"
+        vin = self._vin_in(path)
+        if not vin:
+            return f"{refused} — the token or the app's scopes do not cover it; {sign_in_again_hint()} if it persists."
+        owned = self._owned_vins()
+        if owned is None:
+            return (f"{refused}, and so is the Volvo ID's car list — check volvo.vcc_api_key (the VCC API key of the "
+                    f"app on developer.volvocars.com) and the app's scopes; {sign_in_again_hint()} if it persists.")
+        if vin not in owned:
+            listed = ", ".join(f"…{v[-6:]}" for v in owned) or "none"
+            return (f"{refused} — Volvo answers this for a VIN that is not among the Volvo ID's cars, and {vin} is not: "
+                    f"the account has {len(owned)} car(s) with VIN ending {listed}. Check the `vin` of that car in volvo.vehicles.")
+        return f"{refused} — the VIN is the Volvo ID's, so the app's scopes do not cover this call; {sign_in_again_hint()} if it persists."
+
+    def _vin_in(self, path: str) -> str:
+        """The VIN a per-car path carries, "" for the car list and the token endpoint."""
+        for prefix in (CONNECTED, ENERGY, LOCATION):
+            if path.startswith(prefix[len(API_URL):] + "/"):
+                return path[len(prefix) - len(API_URL) + 1:].split("/", 1)[0]
+        return ""
+
+    def _owned_vins(self) -> Optional[List[str]]:
+        """The VINs of the Volvo ID's cars (kept for the process), None when the list itself is refused."""
+        with self._lock:
+            if self._account_vins is not None:
+                return self._account_vins
+        try:
+            body = self._request("GET", CONNECTED)
+        except VolvoRateLimited:
+            raise
+        except VolvoApiError as e:
+            info(f"Volvo: the car list is refused too — the key or the token is at fault, not a VIN: {e}")
+            return None
+        rows = body.get("data") if isinstance(body.get("data"), list) else []
+        vins = [str(row.get("vin")) for row in rows if isinstance(row, dict) and row.get("vin")]
+        info(f"Volvo: the Volvo ID has {len(vins)} car(s): {', '.join('…' + v[-6:] for v in vins) or 'none'}")
+        with self._lock:
+            self._account_vins = vins
+        return vins
 
     @staticmethod
     def _error_text(data: dict) -> str:
