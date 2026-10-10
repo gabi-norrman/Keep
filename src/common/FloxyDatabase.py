@@ -711,7 +711,10 @@ class FloxyDatabase:
                 error(f"Error retrieving history: {e}")
                 return []
 
-    def get_history_range(self, from_ts: float, to_ts: float, limit: int = 200) -> List[dict]:
+    def get_history_range(self, from_ts: float, to_ts: float, limit: int = 200,
+                          skip_command_result: Callable[[str], bool] | None = None) -> List[dict]:
+        """The rows of a time window, oldest first, at most `limit` of them — minus the command
+        rows `skip_command_result` names (see `without_command_results`)."""
         with self.lock:
             try:
                 conn = sqlite3.connect(self.db_path)
@@ -727,7 +730,7 @@ class FloxyDatabase:
                 rows = cursor.fetchall()
                 conn.close()
                 info(f"History range query returned {len(rows)} results")
-                return [dict(row) for row in rows]
+                return self.without_command_results([dict(row) for row in rows], skip_command_result)
             except sqlite3.Error as e:
                 error(f"Error retrieving history range: {e}")
                 return []
@@ -738,7 +741,22 @@ class FloxyDatabase:
         "oldest": "h.timestamp ASC",
     }
 
-    def search_history(self, query: str, sort: str = "relevance", limit: int = 30) -> List[dict]:
+    @classmethod
+    def without_command_results(cls, rows: List[dict], skip: Callable[[str], bool] | None) -> List[dict]:
+        """`rows` minus the command rows whose result body `skip` names (None keeps them all):
+        the reference text — toolkits, procedures, log dumps — that search_history, show_history
+        and the memory curator leave out, each with its own predicate."""
+        if skip is None:
+            return rows
+        kept = [r for r in rows if not (r["role"] == ROLE_COMMAND and skip(cls.command_result_body(r["content"])))]
+        if len(kept) < len(rows):
+            trace(f"History: {len(rows) - len(kept)} command result row(s) left out as reference text")
+        return kept
+
+    def search_history(self, query: str, sort: str = "relevance", limit: int = 30,
+                       skip_command_result: Callable[[str], bool] | None = None) -> List[dict]:
+        """The best `limit` hits for `query`. The command rows `skip_command_result` names are
+        dropped before the cut, so a real hit takes each one's place."""
         with self.lock:
             try:
                 conn = sqlite3.connect(self.db_path)
@@ -748,7 +766,7 @@ class FloxyDatabase:
                 tokens = _tokenize_query(query)
                 fts_query = _build_fts_query(query)
                 info(f"Searching history: query='{query}', fts='{fts_query}', sort='{sort}', tokens={len(tokens)}")
-                results = self._run_history_fts(cursor, tokens, fts_query, sort, limit)
+                results = self._run_history_fts(cursor, tokens, fts_query, sort, limit, skip_command_result)
 
                 conn.close()
                 info(f"History search returned {len(results)} results")
@@ -757,8 +775,9 @@ class FloxyDatabase:
                 error(f"Error searching history: {e}")
                 return []
 
-    @staticmethod
-    def _run_history_fts(cursor, tokens: List[str], fts_query: str, sort: str, limit: int) -> List[dict]:
+    @classmethod
+    def _run_history_fts(cls, cursor, tokens: List[str], fts_query: str, sort: str, limit: int,
+                         skip_command_result: Callable[[str], bool] | None = None) -> List[dict]:
         # Overfetch generously so Python-side coverage re-ranking has the full candidate
         # set to work with. FTS5's PERCENT_RANK normalization throws away absolute quality,
         # so coverage * 1000 + bm25_score is what actually orders results.
@@ -773,7 +792,7 @@ class FloxyDatabase:
             ORDER BY rank
             LIMIT ?
         ''', (fts_query, overfetch))
-        rows = [dict(r) for r in cursor.fetchall()]
+        rows = cls.without_command_results([dict(r) for r in cursor.fetchall()], skip_command_result)
 
         for r in rows:
             r["coverage"] = _count_token_coverage(r["content"], tokens)

@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, date
 from pathlib import Path
 
 from .. import MemoryFile, Procedures, WatchList
-from ..commands import Toolkits, ToolkitPreloader
 from ..llm import create_llm, parse_llm_config
 from common.ConfigManager import ConfigManager
 from common.FloxyDatabase import FloxyDatabase, NO_INTERACTIONS
@@ -22,15 +21,6 @@ from common.vault.Redactor import redact_for_storage
 HISTORY_SOURCE = "memory_curation"   # the `source` of the system row a finished curation leaves
 
 
-def is_reference_result(body: str) -> bool:
-    """Whether a command result is reference text the curator learns nothing from: a toolkit or
-    procedure reference, the note a preload puts in front of one, a server log dump or a browse
-    network listing. Over a two-day period (2026-10-07..09) they were 433KB of the 683KB of command
-    results; what stays is what was read for the user — pages, mails, device status."""
-    from ..commands.Commands import SERVER_LOG_HEADER          # Commands hosts the curator's own commands
-    from ..tools.WebAccess import NETWORK_LOG_HEADER
-    return (body.startswith((Toolkits.HEADER_PREFIX, Procedures.HEADER_PREFIX, SERVER_LOG_HEADER, NETWORK_LOG_HEADER))
-            or ToolkitPreloader.is_preface(body))
 # A span longer than this is curated in chunks of this many days, one after another, each
 # reading the bank the previous one wrote (`run_span`).
 CURATION_CHUNK_DAYS = 4
@@ -482,6 +472,7 @@ class LongTermMemoryCurator:
 
         info(f"Rem: entering REM sleep — dreaming over {period_start:%Y-%m-%d %H:%M} .. {period_end:%Y-%m-%d %H:%M}...")
 
+        from ..commands.Commands import is_reference_result      # Commands hosts the curator's own commands
         interaction_history = self.floxy_db.get_interaction_history(period_start, period_end,
                                                                     skip_command_result=is_reference_result)
         trace(f"Loaded {len(interaction_history)} bytes of interaction history.")

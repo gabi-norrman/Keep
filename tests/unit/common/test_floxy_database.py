@@ -535,6 +535,42 @@ def test_search_history_respects_limit(floxy_db):
     assert len(results) == 3
 
 
+@pytest.mark.unit
+def test_search_history_drops_the_named_command_rows_before_the_limit(floxy_db):
+    """A toolkit reference loaded daily matches every broad query; with the predicate the
+    real hits fill the limit instead of the reference text."""
+    now = time.time()
+    for i in range(3):
+        floxy_db.add_history_entry("command", f"result:\n# Toolkit: beach {i}\nbeach commands: ...", now + i)
+    floxy_db.add_history_entry("command", "result:\nURL: https://example.com/beach\nThe beach opens at nine.", now + 10)
+    floxy_db.add_history_entry("user", "We went to the beach and had a wonderful time", now + 11)
+
+    kept = floxy_db.search_history("beach", limit=2, skip_command_result=lambda body: body.startswith("# Toolkit: "))
+
+    assert len(kept) == 2
+    assert all("# Toolkit" not in r["content"] for r in kept)
+    assert any("example.com/beach" in r["content"] for r in kept)
+
+
+@pytest.mark.unit
+def test_search_history_without_a_predicate_keeps_command_rows(floxy_db):
+    now = time.time()
+    floxy_db.add_history_entry("command", "result:\n# Toolkit: beach\nbeach commands: ...", now)
+    assert len(floxy_db.search_history("beach")) == 1
+
+
+@pytest.mark.unit
+def test_get_history_range_drops_the_named_command_rows(floxy_db):
+    floxy_db.add_history_entry("command", "result:\n# Toolkit: home\nhome commands...", 1100.0)
+    floxy_db.add_history_entry("user", "Turn on the lights in the hall please", 1200.0)
+    floxy_db.add_history_entry("command", "result:\nArlo — ok (checked 1 min ago) 6 cameras", 1300.0)
+
+    rows = floxy_db.get_history_range(1000.0, 2000.0, skip_command_result=lambda body: body.startswith("# Toolkit: "))
+
+    assert [r["role"] for r in rows] == ["user", "command"]
+    assert "Arlo" in rows[1]["content"]
+
+
 # ---------------------------------------------------------------------------
 # delete_todays_history
 # ---------------------------------------------------------------------------

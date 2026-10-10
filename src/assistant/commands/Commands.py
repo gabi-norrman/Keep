@@ -10,7 +10,7 @@ from assistant.integration.Accounts import render_accounts_status
 from assistant.integration.mail.MailAccess import MailAccess
 from assistant.integration.calendar.CalendarAccess import CalendarAccess
 from assistant.integration import HomeAutomation as home
-from assistant.tools.WebAccess import WebAccess
+from assistant.tools.WebAccess import WebAccess, NETWORK_LOG_HEADER
 from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import CommandSet, Toolkits, ToolkitPreloader
 from assistant import FirstRun, MemoryFile, Procedures, WatchList
@@ -44,9 +44,21 @@ NO_NOTIFICATION_CHANNEL = "failed: no notification channel configured (no chat i
 # What server_logs() hands the LLM: a window of the main log (cwd-relative, the server runs from the root) —
 # the last SERVER_LOG_TAIL_LINES lines, or the first that many from a given time.
 SERVER_LOG_PATH = "log/floxy.out"
-# Opens every server_logs result; the memory curator drops the dumps from its transcript by it.
+# Opens every server_logs result; is_reference_result knows the dumps by it.
 SERVER_LOG_HEADER = "# Keep AI Server Logs"
 SERVER_LOG_TAIL_LINES = 400
+
+
+def is_reference_result(body: str) -> bool:
+    """Whether a command result is reference text nobody learns anything from later: a toolkit
+    or procedure reference, the note a preload puts in front of one, a server log dump or a
+    browse network listing. The memory curator leaves them out of its transcript (over
+    2026-10-07..09 they were 433KB of the 683KB of command results), and search_history /
+    show_history leave them out of their hits: a toolkit loaded a dozen times a day matched
+    every broad query and filled the 30 hits with its own text. What stays is what was read
+    for the user — pages, mails, device status."""
+    return (body.startswith((Toolkits.HEADER_PREFIX, Procedures.HEADER_PREFIX, SERVER_LOG_HEADER, NETWORK_LOG_HEADER))
+            or ToolkitPreloader.is_preface(body))
 # A log line's timestamp; the ANSI colour codes around it never match this shape, so the raw line is searched.
 _LOG_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 # What server_logs(from) accepts: a full timestamp (space or T), a date (midnight) or a clock time (today).
@@ -445,7 +457,7 @@ class Commands:
         entries = []
         seen_content = set()
 
-        for r in db.search_history(query, sort=sort, limit=30):
+        for r in db.search_history(query, sort=sort, limit=30, skip_command_result=is_reference_result):
             content = r["content"]
             if content in seen_content:
                 continue
@@ -510,7 +522,7 @@ class Commands:
         to_ts = to_dt.timestamp()
 
         db = FloxyDatabase.get_instance()
-        results = db.get_history_range(from_ts, to_ts)
+        results = db.get_history_range(from_ts, to_ts, skip_command_result=is_reference_result)
 
         if not results:
             return f'No history entries found between {from_str} and {to_str}.'

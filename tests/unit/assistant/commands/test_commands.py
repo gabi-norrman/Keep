@@ -7,7 +7,9 @@ import pytest
 
 from assistant.ChannelProfile import profile_for
 from assistant.commands.CommandParser import CommandParser
-from assistant.commands.Commands import Commands
+from assistant import Procedures
+from assistant.commands import Toolkits, ToolkitPreloader
+from assistant.commands.Commands import Commands, is_reference_result
 from assistant.tools.WebAccess import WebAccess
 
 
@@ -1192,6 +1194,48 @@ class TestCmdShowHistory:
         assert "user:" in result
         assert "(None)" not in result
         assert "[None]" not in result
+
+
+class TestReferenceResults:
+    """What the memory curator and the history commands leave out: text the assistant loaded
+    for itself, not what it read for the user."""
+
+    @pytest.mark.parametrize("body", [
+        Toolkits.HEADER_PREFIX + "email\nYou have access to the user's email…",
+        Procedures.HEADER_PREFIX + "vklass-login\n# vklass-login\nWhen: …",
+        ToolkitPreloader.preface(Toolkits.Toolkit(name="home", summary="", commands=()), "voice"),
+        ToolkitPreloader.refresh_preface(Toolkits.Toolkit(name="home", summary="", commands=()), "Telegram"),
+        "# Keep AI Server Logs (last 400 lines)\n2026-10-08 23:18:50.614 [INFO] …",
+        "Network log — 40 of 53 matching entries (53 captured this session), oldest first…",
+    ])
+    def test_reference_text_is_dropped(self, body):
+        assert is_reference_result(body)
+
+    @pytest.mark.parametrize("body", [
+        "URL: https://example.com/order/4711\nYour radon kit shipped on 2026-10-06.",
+        "--- Gmail (m@mlab.test) --- [GM-A1] From: Alice <alice@example.com> …",
+        "Arlo — ok (checked 1 min ago) 6 cameras",
+        "Command execution report — some commands failed: …",
+    ])
+    def test_what_was_read_for_the_user_stays(self, body):
+        assert not is_reference_result(body)
+
+    def test_search_history_leaves_the_reference_rows_to_the_database(self):
+        """The toolkit a search term happens to match must not take a hit's place: the
+        predicate goes to the query, which drops the rows before its limit."""
+        with patch('assistant.commands.Commands.FloxyDatabase') as mock_db_cls:
+            db = mock_db_cls.get_instance.return_value
+            db.search_history.return_value = []
+            db.search_photos.return_value = []
+            Commands._run_search_history("beach")
+        assert db.search_history.call_args.kwargs["skip_command_result"] is is_reference_result
+
+    def test_show_history_leaves_the_reference_rows_to_the_database(self):
+        with patch('assistant.commands.Commands.FloxyDatabase') as mock_db_cls:
+            db = mock_db_cls.get_instance.return_value
+            db.get_history_range.return_value = []
+            Commands._run_show_history("2024-04-28 12:00", "2024-04-28 13:00")
+        assert db.get_history_range.call_args.kwargs["skip_command_result"] is is_reference_result
 
 
 @pytest.mark.unit

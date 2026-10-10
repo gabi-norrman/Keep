@@ -6,8 +6,8 @@ import pytest
 
 from assistant import MemoryFile
 from assistant import Procedures
-from assistant.agents.LongTermMemoryCurator import HISTORY_SOURCE, MEMORY_WORD_LIMIT, LongTermMemoryCurator, is_reference_result
-from assistant.commands import Toolkits, ToolkitPreloader
+from assistant.agents.LongTermMemoryCurator import HISTORY_SOURCE, MEMORY_WORD_LIMIT, LongTermMemoryCurator
+from assistant.commands.Commands import is_reference_result
 from common.FloxyDatabase import NO_INTERACTIONS
 
 
@@ -623,22 +623,3 @@ class TestReferenceResultsLeaveTheTranscript:
             curator.curate_memory(datetime(2026, 9, 10, 14, 3), datetime(2026, 9, 10, 16, 30))
         assert curator.floxy_db.get_interaction_history.call_args.kwargs["skip_command_result"] is is_reference_result
 
-    @pytest.mark.parametrize("body", [
-        Toolkits.HEADER_PREFIX + "email\nYou have access to the user's email…",
-        Procedures.HEADER_PREFIX + "vklass-login\n# vklass-login\nWhen: …",
-        ToolkitPreloader.preface(Toolkits.Toolkit(name="home", summary="", commands=()), "voice"),
-        ToolkitPreloader.refresh_preface(Toolkits.Toolkit(name="home", summary="", commands=()), "Telegram"),
-        "# Keep AI Server Logs (last 400 lines)\n2026-10-08 23:18:50.614 [INFO] …",
-        "Network log — 40 of 53 matching entries (53 captured this session), oldest first…",
-    ])
-    def test_reference_text_is_dropped(self, body):
-        assert is_reference_result(body)
-
-    @pytest.mark.parametrize("body", [
-        "URL: https://example.com/order/4711\nYour radon kit shipped on 2026-10-06.",
-        "--- Gmail (m@mlab.test) --- [GM-A1] From: Alice <alice@example.com> …",
-        "Arlo — ok (checked 1 min ago) 6 cameras",
-        "Command execution report — some commands failed: …",
-    ])
-    def test_what_was_read_for_the_user_stays(self, body):
-        assert not is_reference_result(body)
