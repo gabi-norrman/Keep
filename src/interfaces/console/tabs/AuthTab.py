@@ -14,7 +14,7 @@ from typing import Callable, List, Optional, Tuple
 
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
-from interfaces.console.framework.TextWidth import wrap
+from interfaces.console.framework.TextWidth import chunks, wrap
 from interfaces.console.tabs.IntegrationTab import IntegrationTab
 from interfaces.console.tabs.TabView import SUB_CONTENT_TOP
 from interfaces.console.widgets import Board, Tile
@@ -36,6 +36,7 @@ PENDING = "–"
 
 FORM_MAX_W = 100            # a tab without a table: its Sign-in tile stays readable on a wide screen
 MESSAGE_ROWS = 2            # the integration's message wraps to this many rows
+LINK_ROW_WIDTH = 72         # a sign-in link's rows before the first draw has measured the tile
 
 
 def code_display(code: str, length: int) -> str:
@@ -64,6 +65,7 @@ class AuthTab(IntegrationTab):
         self._checking = False
         self._cards: List[Tile.Card] = []
         self._top = 0
+        self._value_w = 0              # cells a field's value gets in the Sign-in tile, as last drawn
 
     # --- what a subclass provides ------------------------------------------------------------
 
@@ -167,6 +169,10 @@ class AuthTab(IntegrationTab):
         bottom = screen.height - 1                # the last row is the key hints'
         y = SUB_CONTENT_TOP
         table = self._table()
+        beside = table is not None and screen.width >= Board.SIDE_BY_SIDE_MIN
+        table_w, side_w = Board.split(available) if beside else (0, 0)
+        form_w = min(available, FORM_MAX_W) if table is None else side_w if beside else available
+        self._value_w = max(1, form_w - 4 - Board.LABEL_W)      # known before the fields are asked for
         fields = self._fields()
         form_h = Tile.CARD_CHROME + MESSAGE_ROWS + len(fields) + 2   # a blank row, then the outcome
 
@@ -176,13 +182,12 @@ class AuthTab(IntegrationTab):
         height = bottom - y
 
         if table is None:
-            self._draw_form(screen, Board.LEFT, y, min(available, FORM_MAX_W), min(form_h, height), fields)
-        elif screen.width >= Board.SIDE_BY_SIDE_MIN:
-            table_w, side_w = Board.split(available)
+            self._draw_form(screen, Board.LEFT, y, form_w, min(form_h, height), fields)
+        elif beside:
             self._top = Board.draw_table(screen, self._cards, Board.LEFT, y, table_w, height, table, self._top)
-            self._draw_form(screen, Board.LEFT + table_w + Board.GAP, y, side_w, min(form_h, height), fields)
+            self._draw_form(screen, Board.LEFT + table_w + Board.GAP, y, form_w, min(form_h, height), fields)
         else:
-            self._draw_form(screen, Board.LEFT, y, available, min(form_h, height), fields)
+            self._draw_form(screen, Board.LEFT, y, form_w, min(form_h, height), fields)
             y += form_h + 1
             self._top = Board.draw_table(screen, self._cards, Board.LEFT, y, available,
                                          min(max(1, len(table.rows)) + Tile.CARD_CHROME + 1, bottom - y), table, self._top)
@@ -219,6 +224,11 @@ class AuthTab(IntegrationTab):
         if hint:
             return [Fact("2FA code", hint[0], hint[1])]
         return [Fact("2FA code", "not asked for", Theme.COLOR_FAINT)]
+
+    def _link_rows(self, url: str) -> List[str]:
+        """A sign-in link over as many rows of the Sign-in tile as it needs, each as wide as
+        the tile gives a value: the rows have to be copied together, so none is cut short."""
+        return chunks(url, self._value_w or LINK_ROW_WIDTH)
 
     def _message_color(self) -> Color:
         if self.status == "error":

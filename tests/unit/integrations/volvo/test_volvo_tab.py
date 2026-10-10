@@ -1,8 +1,11 @@
 """The Volvo tab: the sign-in state, the link shown on Ctrl-L, the pasted address taken on
 Ctrl-E and handed to the integration, and the sign-out."""
+import time
 from unittest.mock import Mock
 
 import pytest
+
+from interfaces.console.framework.TUIScreen import TUIScreen
 
 from assistant.integration.OAuthPaste import SignIn
 from assistant.integration.VehicleProvider import VehicleSpec
@@ -28,6 +31,12 @@ def make_tab(signed_in=True, again=False, cars=("Family XC40",), finish=""):
     tab._check_health_now = lambda: None
     tab._check_auth_status()
     return tab, api
+
+
+def draw(tab, width, height=40):
+    screen = TUIScreen(width, height)
+    tab._last_check_time = time.time() + 1e6   # no background check during the test
+    tab.draw(screen, 0)
 
 
 def type_text(tab, text):
@@ -68,6 +77,18 @@ class TestSignIn:
         fields = tab._fields()
         assert "".join(f.value for f in fields[:-1]) == URL and fields[0].label == "Open"
         assert fields[-1].waiting and "Ctrl-E" in fields[-1].value
+
+    @pytest.mark.parametrize("width", [80, 140])
+    def test_the_link_wraps_to_the_width_the_tile_gives_a_value_so_no_row_is_cut(self, width):
+        tab, _ = make_tab(signed_in=False)
+        tab.handle_input('\x0c')
+
+        draw(tab, width)
+
+        rows = [f.value for f in tab._fields()[:-1]]
+        assert "".join(rows) == URL
+        assert all(len(row) <= tab._value_w for row in rows) and len(rows[0]) == tab._value_w
+        assert tab._value_w < 60 if width == 80 else tab._value_w > 80
 
     def test_ctrl_e_then_the_pasted_address_and_enter_finish_the_sign_in(self):
         tab, api = make_tab(signed_in=False)

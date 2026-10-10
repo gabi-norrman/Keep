@@ -8,8 +8,6 @@ from interfaces.console.widgets.Board import Fact, SummaryTile
 from common.logging import info, trace
 from integrations.volvo.VolvoIntegration import VolvoIntegration
 
-URL_ROW_WIDTH = 72          # the sign-in URL is long: it is shown wrapped over rows this wide
-URL_ROWS_MAX = 8
 ENTRY_TAIL = 60             # how much of the pasted address the entry row shows
 
 
@@ -64,19 +62,12 @@ class VolvoTab(AuthTab):
         tiles.append(("Cars", str(len(self._cars)), Theme.COLOR_GREEN if self._cars else Theme.COLOR_DIM, [(names, Theme.COLOR_LABEL)]))
         return tiles
 
-    @staticmethod
-    def _url_rows(url: str) -> List[str]:
-        rows = [url[i:i + URL_ROW_WIDTH] for i in range(0, len(url), URL_ROW_WIDTH)]
-        if len(rows) > URL_ROWS_MAX:
-            rows = rows[:URL_ROWS_MAX - 1] + [rows[URL_ROWS_MAX - 1][:URL_ROW_WIDTH - 1] + "…"]
-        return rows
-
     def _fields(self) -> List[Fact]:
         if self._input_mode:
             shown = self._input_text if len(self._input_text) <= ENTRY_TAIL else "…" + self._input_text[-ENTRY_TAIL:]
             return [Fact("Address", shown or "paste the address the browser landed on", Theme.COLOR_BRIGHT, waiting=True, bold=True)]
         if self._sign_in is not None:
-            rows = self._url_rows(self._sign_in.url)
+            rows = self._link_rows(self._sign_in.url)
             return ([Fact("Open" if i == 0 else "", row, Theme.COLOR_BRIGHT, bold=True) for i, row in enumerate(rows)]
                     + [Fact("Then", "Ctrl-E, paste the address the browser lands on, Enter", Theme.COLOR_YELLOW, waiting=True)])
         hint = self._entry_hint()

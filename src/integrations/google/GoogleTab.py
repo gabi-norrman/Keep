@@ -9,8 +9,6 @@ from common.logging import info, trace
 from integrations.google.GoogleIntegration import GoogleIntegration
 
 NAME_WIDTH, ADDRESS_WIDTH, GIVES_WIDTH, STATE_WIDTH = 16, 30, 16, 14
-URL_ROW_WIDTH = 72          # the sign-in URL is long: it is shown wrapped over rows this wide
-URL_ROWS_MAX = 8
 ENTRY_TAIL = 60             # how much of the pasted address the entry row shows
 
 
@@ -84,13 +82,6 @@ class GoogleTab(AuthTab):
         color = Theme.COLOR_GREEN if signed_in == len(self._accounts) else Theme.COLOR_YELLOW
         return [("Accounts", f"{signed_in}/{len(self._accounts)}", color, [("signed in", Theme.COLOR_LABEL)])]
 
-    @staticmethod
-    def _url_rows(url: str) -> List[str]:
-        rows = [url[i:i + URL_ROW_WIDTH] for i in range(0, len(url), URL_ROW_WIDTH)]
-        if len(rows) > URL_ROWS_MAX:
-            rows = rows[:URL_ROWS_MAX - 1] + [rows[URL_ROWS_MAX - 1][:URL_ROW_WIDTH - 1] + "…"]
-        return rows
-
     def _fields(self) -> List[Fact]:
         account = self._selected_account()
         name = account.name if account else PENDING
@@ -99,7 +90,7 @@ class GoogleTab(AuthTab):
             return [Fact("Account", self._sign_in_account or name, Theme.COLOR_TEXT),
                     Fact("Address", shown or "paste the address the browser landed on", Theme.COLOR_BRIGHT, waiting=True, bold=True)]
         if self._sign_in is not None:
-            rows = self._url_rows(self._sign_in.url)
+            rows = self._link_rows(self._sign_in.url)
             return ([Fact("Account", self._sign_in_account, Theme.COLOR_TEXT)]
                     + [Fact("Open" if i == 0 else "", row, Theme.COLOR_BRIGHT, bold=True) for i, row in enumerate(rows)]
                     + [Fact("Then", "Ctrl-E, paste the address the browser lands on, Enter", Theme.COLOR_YELLOW, waiting=True)])
