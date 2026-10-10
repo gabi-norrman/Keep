@@ -247,7 +247,7 @@ telemetry:
 #   android_location: Kitchen
 
 # Toolkits put in the LLM's window before every request from a channel, replacing the
-# channel's default (VoiceToVoice: [home, music, cars, weather]). Optional. A toolkit whose
+# channel's default (VoiceToVoice: [home, music, cars, weather, timers]). Optional. A toolkit whose
 # integration is off is skipped by itself. The `voice` toolkit (the spoken dialog style) is
 # always loaded for VoiceToVoice and is not part of this list.
 # preload_toolkits:

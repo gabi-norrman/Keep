@@ -232,13 +232,13 @@ class TestRequestProcessorHook:
         self._handler(RequestContext(source=SOURCE_VOICE, user_input="hi"))._preload_toolkits(pm)
         texts = [c.args[0] for c in pm.add_command_result.call_args_list]
         assert [Toolkits.loaded_name(line) for t in texts for line in t.split("\n") if Toolkits.loaded_name(line)] \
-            == ["voice", "home", "music", "cars", "weather"]
+            == ["voice", "home", "music", "cars", "weather", "timers"]
 
     @pytest.mark.unit
     def test_voice_request_with_home_and_cars_in_the_window_still_preloads_music(self):
         """The 2026-09-14 case: home was preloaded on an earlier turn, and "turn off the music"
         still spent a round on load_toolkit(music) — now music rides along with home."""
-        pm = _prompt_manager({"voice": 1000.0, "home": 1000.0, "cars": 1000.0, "weather": 1000.0})
+        pm = _prompt_manager({"voice": 1000.0, "home": 1000.0, "cars": 1000.0, "weather": 1000.0, "timers": 1000.0})
         self._handler(RequestContext(source=SOURCE_VOICE, user_input="turn off the music"))._preload_toolkits(pm)
         pm.add_command_result.assert_called_once()
         text = pm.add_command_result.call_args.args[0]
