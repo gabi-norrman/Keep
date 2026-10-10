@@ -20,6 +20,13 @@ from .volvo_fakes import FakeVolvo, token_file, token_grant
 POST = "integrations.volvo.VolvoAuth.requests.post"
 
 
+@pytest.fixture(autouse=True)
+def no_pending_flow():
+    auth_module._set_pending(None)
+    yield
+    auth_module._set_pending(None)
+
+
 @pytest.fixture
 def token_dir(tmp_path):
     with patch.object(auth_module, "TOKEN_DIR", tmp_path / "oauth"):
@@ -85,6 +92,40 @@ class TestBegin:
         with pytest.raises(RuntimeError, match="client_secret"):
             auth(client_secret="").begin()
         assert not auth().pending()
+
+
+@pytest.mark.unit
+class TestFinishAfterARestart:
+    """restart_integration rebuilds the integration and with it VolvoAuth: the link handed out
+    before the rebuild (a key set through config_request needs one) must still be answerable."""
+
+    def test_a_rebuilt_auth_finishes_the_flow_the_old_one_began(self, token_dir, volvo):
+        sign_in = auth().begin()
+        volvo.answer_token(token_grant())
+        rebuilt = auth()
+
+        assert rebuilt.pending()
+        assert rebuilt.finish(redirected(sign_in)) == ""
+        assert rebuilt.signed_in() and not rebuilt.pending()
+        exchange = volvo.calls[-1].data
+        assert exchange["code"] == "c0de" and exchange["code_verifier"]
+
+    def test_a_changed_client_id_refuses_the_old_link_and_asks_for_a_new_one(self, token_dir, volvo):
+        sign_in = auth(client_id="app-id").begin()
+        rebuilt = auth(client_id="other-app")
+
+        failure = rebuilt.finish(redirected(sign_in))
+
+        assert "client id" in failure and "volvo_login()" in failure
+        assert volvo.calls == [], "nothing was sent to the token endpoint"
+        assert not rebuilt.pending(), "the dead link is dropped so the next paste says no sign-in is in progress"
+
+    def test_a_changed_secret_alone_keeps_the_link_and_is_used_at_the_exchange(self, token_dir, volvo):
+        sign_in = auth(client_secret="old-secret").begin()
+        volvo.answer_token(token_grant())
+
+        assert auth(client_secret="new-secret").finish(redirected(sign_in)) == ""
+        assert basic_credentials(volvo.calls[-1]) == "app-id:new-secret"
 
 
 @pytest.mark.unit

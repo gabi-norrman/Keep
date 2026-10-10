@@ -17,7 +17,14 @@ every refresh answers with a new one and the old one dies, so the newest is writ
 refresh token lapsed: unused for seven days, or the grant ran out) deletes nothing: the
 sign-in is marked as needed again and every call says so until `finish()` succeeds. The
 client (`volvo.oauth.client_id` / `client_secret`) is read at call time so a key set through
-config_request works without a rebuild."""
+config_request works without a rebuild.
+
+A flow in progress is module state, not instance state: `restart_integration` rebuilds the
+integration — a key set through config_request needs it — and the link the owner was given
+a minute earlier must still be the one whose answer is pasted back, so a restart between
+`begin()` and `finish()` does not kill the sign-in. The flow remembers the client id the link
+was built with: a link made for one client id cannot be finished with another (Volvo ID would
+refuse the exchange), and `finish()` says to ask for a new link instead."""
 import base64
 import hashlib
 import json
@@ -25,6 +32,7 @@ import os
 import secrets
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -71,6 +79,31 @@ class NotSignedIn(VehicleError):
     """No usable token: never signed in, signed out, or the refresh was refused."""
 
 
+@dataclass(frozen=True)
+class PendingSignIn:
+    """A sign-in link handed out and not yet answered: what `finish()` needs to accept the answer."""
+    state: str
+    verifier: str
+    client_id: str
+    started_at: float
+
+
+# The flow in progress outlives the VolvoAuth instance (see the module docstring); one Volvo ID.
+_pending: Optional[PendingSignIn] = None
+_pending_lock = threading.RLock()
+
+
+def pending_sign_in() -> Optional[PendingSignIn]:
+    with _pending_lock:
+        return _pending
+
+
+def _set_pending(flow: Optional[PendingSignIn]) -> None:
+    global _pending
+    with _pending_lock:
+        _pending = flow
+
+
 def token_path() -> Path:
     return TOKEN_DIR / TOKEN_FILE
 
@@ -104,10 +137,11 @@ class VolvoAuth:
     def __init__(self, client: Callable[[], tuple[str, str]]):
         self._client = client
         self._tokens: Optional[dict] = None
-        self._state: Optional[str] = None
-        self._verifier: Optional[str] = None
         self.refresh_error = ""
         self._lock = threading.RLock()
+        flow = pending_sign_in()
+        if flow is not None:
+            info(f"Volvo: a sign-in started {int(time.time() - flow.started_at)} s ago is still in progress — its link stays valid")
 
     @property
     def path(self) -> Path:
@@ -211,28 +245,35 @@ class VolvoAuth:
         if not client_id or not client_secret:
             raise RuntimeError("volvo.oauth.client_id and volvo.oauth.client_secret are not both set")
         with self._lock:
-            self._state = secrets.token_urlsafe(16)
-            self._verifier = secrets.token_urlsafe(64)
-            challenge = base64.urlsafe_b64encode(hashlib.sha256(self._verifier.encode("ascii")).digest()).decode("ascii").rstrip("=")
+            flow = PendingSignIn(state=secrets.token_urlsafe(16), verifier=secrets.token_urlsafe(64),
+                                 client_id=client_id, started_at=time.time())
+            challenge = base64.urlsafe_b64encode(hashlib.sha256(flow.verifier.encode("ascii")).digest()).decode("ascii").rstrip("=")
             params = {"response_type": "code", "client_id": client_id, "redirect_uri": REDIRECT_URI,
-                      "scope": " ".join(SCOPES), "state": self._state,
+                      "scope": " ".join(SCOPES), "state": flow.state,
                       "code_challenge": challenge, "code_challenge_method": "S256"}
             url = f"{AUTHORIZE_URL}?{urlencode(params)}"
+            _set_pending(flow)
         info("Volvo: sign-in started")
-        return SignIn(url, self._state, REDIRECT_URI)
+        return SignIn(url, flow.state, REDIRECT_URI)
 
     def pending(self) -> bool:
-        return self._state is not None
+        """True while a link is out and unanswered — across a rebuild of the integration too."""
+        return pending_sign_in() is not None
 
     def finish(self, pasted: str) -> str:
         """Exchanges the code in the pasted address for the tokens and stores them; "" when
         signed in, else why not."""
         with self._lock:
-            code, problem = pasted_code(pasted, self._state, "Volvo", LOGIN_COMMAND)
+            flow = pending_sign_in()
+            code, problem = pasted_code(pasted, flow.state if flow else None, "Volvo", LOGIN_COMMAND)
             if problem:
                 return problem
+            if flow.client_id != self._client()[0]:
+                info("Volvo: volvo.oauth.client_id changed since the sign-in link was made — the link is dropped")
+                _set_pending(None)
+                return f"the app's client id changed since the link was made — run {LOGIN_COMMAND} for a new link"
             answer, status = self._token_request({"grant_type": "authorization_code", "code": code,
-                                                  "redirect_uri": REDIRECT_URI, "code_verifier": self._verifier})
+                                                  "redirect_uri": REDIRECT_URI, "code_verifier": flow.verifier})
             if "access_token" not in answer:
                 reason = str(answer.get("error") or "no token")
                 description = str(answer.get("error_description") or reason)
@@ -248,7 +289,7 @@ class VolvoAuth:
             self._save({"refresh_token": answer["refresh_token"], "access_token": answer["access_token"],
                         "expiry": time.time() + float(answer.get("expires_in") or DEFAULT_EXPIRES_IN),
                         "signed_in_at": time.time()})
-            self._state = self._verifier = None
+            _set_pending(None)
             self.refresh_error = ""
         info("Volvo: signed in")
         return ""
@@ -257,6 +298,6 @@ class VolvoAuth:
         """Forgets the sign-in: the token file is deleted."""
         with self._lock:
             self._tokens = None
-            self._state = self._verifier = None
+            _set_pending(None)
             self.refresh_error = ""
             delete_token_file()

@@ -18,6 +18,13 @@ from .google_fakes import FakeGoogle, token_file, token_grant
 POST = "integrations.google.GoogleAuth.requests.post"
 
 
+@pytest.fixture(autouse=True)
+def no_pending_flows():
+    auth_module._pending.clear()
+    yield
+    auth_module._pending.clear()
+
+
 @pytest.fixture
 def token_dir(tmp_path):
     with patch.object(auth_module, "TOKEN_DIR", tmp_path / "oauth"):
@@ -66,6 +73,39 @@ class TestBegin:
             auth(client_id="").begin()
         with pytest.raises(RuntimeError):
             auth(mail=False, calendar=False).begin()
+
+
+@pytest.mark.unit
+class TestFinishAfterARestart:
+    """restart_integration rebuilds the integration and its GoogleAuth instances: the link handed
+    out before the rebuild (a key set through config_request needs one) must still be answerable."""
+
+    def test_a_rebuilt_auth_finishes_the_flow_the_old_one_began(self, token_dir, google):
+        sign_in = auth().begin()
+        google.answer_token({"access_token": "at.1", "refresh_token": "rt.1", "expires_in": 3599, "scope": "email"})
+        rebuilt = auth()
+
+        assert rebuilt.pending() and rebuilt.matches(sign_in.state)
+        assert rebuilt.finish(redirected(sign_in)) == ""
+        assert rebuilt.signed_in() and not rebuilt.pending()
+
+    def test_the_flows_are_kept_per_account(self, token_dir):
+        personal = auth(name="Personal").begin()
+        auth(name="Work").begin()
+
+        assert auth(name="Work").matches(personal.state) is False
+        assert auth(name="Personal").matches(personal.state) and auth(name="Work").pending()
+        assert not auth(name="Shared").pending()
+
+    def test_a_changed_client_id_refuses_the_old_link_and_asks_for_a_new_one(self, token_dir, google):
+        sign_in = auth(client_id="cid.apps.googleusercontent.com").begin()
+        rebuilt = auth(client_id="other.apps.googleusercontent.com")
+
+        failure = rebuilt.finish(redirected(sign_in))
+
+        assert "client id" in failure and 'google_login("Personal")' in failure
+        assert google.token_posts() == [], "nothing was sent to the token endpoint"
+        assert not rebuilt.pending(), "the dead link is dropped so the next paste says no sign-in is in progress"
 
 
 @pytest.mark.unit

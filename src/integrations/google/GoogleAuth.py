@@ -13,7 +13,15 @@ A refresh Google answers with `invalid_grant` (consent revoked, or a refresh tok
 expired because the consent screen is still in Testing) deletes nothing: the account is
 marked as needing a new sign-in and every call says so until `finish()` succeeds again. The
 client (`google.oauth.client_id` / `client_secret`) is read at call time so a key set through
-config_request works without a rebuild."""
+config_request works without a rebuild.
+
+A flow in progress is module state keyed by the account's name, not instance state:
+`restart_integration` rebuilds the integration and its accounts — a key set through
+config_request needs it — and the link the user was given a minute earlier must still be the
+one whose answer is pasted back, so a restart between `begin()` and `finish()` does not kill
+the sign-in. The flow remembers the client id the link was built with: a code issued for one
+client cannot be exchanged by another, so `finish()` says to ask for a new link instead."""
+from dataclasses import dataclass
 import json
 import os
 import secrets
@@ -38,6 +46,32 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 # A loopback address nothing serves: the browser lands on it and the user copies it back.
 REDIRECT_PORT = 18722
 REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}/"
+
+
+@dataclass(frozen=True)
+class PendingSignIn:
+    """A sign-in link handed out and not yet answered: what `finish()` needs to accept the answer."""
+    state: str
+    client_id: str
+    started_at: float
+
+
+# The flows in progress, by account name — they outlive the GoogleAuth instances (see the module docstring).
+_pending: dict[str, PendingSignIn] = {}
+_pending_lock = threading.RLock()
+
+
+def pending_sign_in(name: str) -> Optional[PendingSignIn]:
+    with _pending_lock:
+        return _pending.get(name)
+
+
+def _set_pending(name: str, flow: Optional[PendingSignIn]) -> None:
+    with _pending_lock:
+        if flow is None:
+            _pending.pop(name, None)
+        else:
+            _pending[name] = flow
 SCOPE_MAIL = "https://mail.google.com/"          # IMAP XOAUTH2 accepts nothing narrower
 SCOPE_CALENDAR = "https://www.googleapis.com/auth/calendar"
 REFRESH_MARGIN = 60
@@ -86,9 +120,11 @@ class GoogleAuth:
         self._scopes = scopes
         self._address = address
         self._tokens: Optional[dict] = None
-        self._state: Optional[str] = None
         self.refresh_error = ""
         self._lock = threading.RLock()
+        flow = pending_sign_in(name)
+        if flow is not None:
+            info(f"Google: a sign-in of '{name}' started {int(time.time() - flow.started_at)} s ago is still in progress — its link stays valid")
 
     @property
     def path(self) -> Path:
@@ -195,29 +231,37 @@ class GoogleAuth:
             raise RuntimeError(f"account '{self.name}' asks for neither mail nor calendar")
         address = self._address()
         with self._lock:
-            self._state = secrets.token_urlsafe(16)
+            flow = PendingSignIn(state=secrets.token_urlsafe(16), client_id=client_id, started_at=time.time())
             params = {"client_id": client_id, "redirect_uri": REDIRECT_URI, "response_type": "code",
-                      "scope": " ".join(scopes), "access_type": "offline", "prompt": "consent", "state": self._state}
+                      "scope": " ".join(scopes), "access_type": "offline", "prompt": "consent", "state": flow.state}
             if address:
                 params["login_hint"] = address
             url = f"{AUTH_URL}?{urlencode(params)}"
+            _set_pending(self.name, flow)
         info(f"Google: sign-in of '{self.name}' started for {', '.join(scopes)}")
-        return SignIn(url, self._state, REDIRECT_URI, address)
+        return SignIn(url, flow.state, REDIRECT_URI, address)
 
     def pending(self) -> bool:
-        return self._state is not None
+        """True while a link is out and unanswered — across a rebuild of the integration too."""
+        return pending_sign_in(self.name) is not None
 
     def matches(self, state: str) -> bool:
-        return bool(state) and self._state == state
+        flow = pending_sign_in(self.name)
+        return bool(state) and flow is not None and flow.state == state
 
     def finish(self, pasted: str) -> str:
         """Exchanges the code in the pasted address for the tokens and stores them; "" when
         signed in, else why not."""
         with self._lock:
-            code, problem = pasted_code(pasted, self._state, "Google", f'google_login("{self.name}")')
+            flow = pending_sign_in(self.name)
+            code, problem = pasted_code(pasted, flow.state if flow else None, "Google", f'google_login("{self.name}")')
             if problem:
                 return problem
             client_id, client_secret = self._client()
+            if flow.client_id != client_id:
+                info(f"Google: google.oauth.client_id changed since the sign-in link of '{self.name}' was made — the link is dropped")
+                _set_pending(self.name, None)
+                return f'the app\'s client id changed since the link was made — run google_login("{self.name}") for a new link'
             answer = self._token_request({"code": code, "client_id": client_id, "client_secret": client_secret,
                                           "redirect_uri": REDIRECT_URI, "grant_type": "authorization_code"})
             if "access_token" not in answer:
@@ -234,7 +278,7 @@ class GoogleAuth:
             self._save({"refresh_token": answer["refresh_token"], "access_token": answer["access_token"],
                         "expiry": time.time() + float(answer.get("expires_in") or 3600),
                         "scope": str(answer.get("scope") or ""), "address": self._address()})
-            self._state = None
+            _set_pending(self.name, None)
             self.refresh_error = ""
         info(f"Google: '{self.name}' signed in" + (f" as {self.signed_in_as()}" if self.signed_in_as() else ""))
         return ""
@@ -243,7 +287,7 @@ class GoogleAuth:
         """Forgets the account: its token file is deleted."""
         with self._lock:
             self._tokens = None
-            self._state = None
+            _set_pending(self.name, None)
             self.refresh_error = ""
             if self.path.exists():
                 self.path.unlink()

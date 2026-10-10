@@ -79,7 +79,7 @@ still to sign in.
 chat, exactly like google_login: a link, a http://localhost:18723/... page that does not load, its whole address
 pasted back with `volvo_login_code(pasted: str)`, quoted. A sign-in left unused for a week lapses — run volvo_login
 again. Needs `volvo.vcc_api_key`, `volvo.oauth.client_id`, `client_secret` and `volvo.vehicles` set and the
-integration enabled.
+integration enabled. The link survives a `restart_integration("Volvo")`; only a changed `client_id` needs a new one.
 
 `spotify_login()` — signs the household's Spotify account in for the Sonos & Spotify integration, from any chat, so
 the newest 10 playlists of the user's own Spotify library (own and followed) are listed in MUSIC
