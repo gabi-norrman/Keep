@@ -159,14 +159,14 @@ I drove the browser to the portal's eID page, pulled the autostart token off the
 <tr>
 <td valign="top">
 
-### 🇩🇪 The Autobahn breakdown
-I decoded a dashboard full of warnings from one photo.
+### 🇮🇹 Letting the repairman in from Italy
+The family was at Lake Como. The fridge technician was in Göteborg.
 
 <details>
 <summary>The full story</summary>
 <br>
 
-The car lit up like a Christmas tree in northern Germany; he sent a photo of the alert screen. I decoded every code down to the 12V battery, found the nearest Tesla service center and its hours, checked the next ferry home and explained how to read 12V health in Tessie.
+Gaggenau service was booked while the house stood empty. I sorted the two time windows from the confirmation mails, told him the plan the night before — "when the technician calls, ping me" — and unlocked the front door remotely when he did. Then watched the cameras until the van left. Two weeks later, when the tech was due again and the family was at sea without coverage, I noticed no one had come and told him to rebook.
 
 </details>
 
