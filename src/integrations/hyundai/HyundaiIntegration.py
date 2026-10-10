@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 import requests
 from hyundai_kia_connect_api import ClimateRequestOptions, VehicleManager
 from hyundai_kia_connect_api.ApiImpl import POICoord, POIInfo
-from hyundai_kia_connect_api.const import OTP_NOTIFY_TYPE
+from hyundai_kia_connect_api.const import ENGINE_TYPES, OTP_NOTIFY_TYPE
 from hyundai_kia_connect_api.exceptions import (
     AuthenticationError,
     AuthenticationOTPRequired,
@@ -48,6 +48,7 @@ STATE_TTL = 120                     # seconds a cached-state pull serves every v
 DEFAULT_CLIMATE_C = 21.0
 DEFAULT_CLIMATE_MINUTES = 10
 MILES_TO_KM = 1.609344
+FAHRENHEIT_REGIONS = {"usa"}        # the backends whose climate set point is in °F (the rest take °C)
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 GEOCODE_TIMEOUT = 15
 OTP_HINT = "a one-time code is needed — send and enter it in the console's Hyundai tab"
@@ -89,6 +90,19 @@ def to_km(value: Optional[float], unit: Optional[str]) -> Optional[float]:
     return round(value * MILES_TO_KM, 1) if unit == "mi" else float(value)
 
 
+def to_fahrenheit(celsius: float) -> int:
+    return round(celsius * 9 / 5 + 32)
+
+
+def engine_kind(vehicle) -> str:
+    """The library's engine type as its word ("EV", "PHEV", "HEV", "ICE"): the backends set the
+    `ENGINE_TYPES` member, whose str() is "ENGINE_TYPES.EV" — so the value, not the member."""
+    engine = getattr(vehicle, "engine_type", None)
+    if isinstance(engine, ENGINE_TYPES):
+        return engine.value
+    return str(engine or "").upper()
+
+
 def parse_coordinates(text: str) -> Optional[tuple[float, float]]:
     """("59.33,18.07" → (59.33, 18.07)); None for anything that is not a latitude,longitude pair."""
     parts = [p.strip() for p in (text or "").split(",")]
@@ -114,7 +128,9 @@ class HyundaiIntegration(Integration, VehicleProvider):
     vehicle id after the sign-in. The `VehicleManager` is built on first use (so a mistyped
     password costs one failed login, not a crashed start) behind `_manager()`; `_ensure_login`
     runs the library's token check before every call and turns a one-time-code demand into a
-    pending `OTPRequest` the tab finishes (`send_otp`, `verify_otp`). The library raises
+    pending `OTPRequest` the tab finishes (`send_otp`, `verify_otp`); while one is pending no
+    call signs in again (that would replace the request the code was sent for) — only the
+    tab's Ctrl-R (`refresh_now`) starts over. The library raises
     `NotImplementedError` for a call the region's backend lacks and `UnsupportedControlError`
     for one the car refuses — both become `Unsupported`, so the LLM hears that instead of a
     stack trace. The commands come back with a tracking id; the state cache is dropped so the
@@ -220,13 +236,18 @@ class HyundaiIntegration(Integration, VehicleProvider):
 
     def _ensure_login(self) -> VehicleManager:
         """The manager with a valid token: the library refreshes or re-logs in as needed. A
-        one-time-code demand is kept as the pending request and raised as a login error."""
+        one-time-code demand is kept as the pending request and raised as a login error, and
+        while one is pending nothing signs in again (the request the code was sent for must
+        stay the one it is verified against)."""
         manager = self._manager()
         with self._lock:
+            if self._otp_request is not None:
+                trace("Hyundai: a one-time code is pending — not signing in again until it is entered or Ctrl-R")
+                raise HyundaiLoginError(f"Hyundai is not signed in: {OTP_HINT}.")
             try:
-                refreshed = manager.check_and_refresh_token()
+                refreshed = self._refresh_or_login(manager)
             except AuthenticationOTPRequired as e:
-                self._otp_request = getattr(manager, "otp_request", None) or self._otp_request
+                self._otp_request = getattr(manager, "otp_request", None)
                 self._login_error = None
                 info(f"Hyundai: the sign-in needs a one-time code ({e})")
                 raise HyundaiLoginError(f"Hyundai is not signed in: {OTP_HINT}.") from e
@@ -240,12 +261,36 @@ class HyundaiIntegration(Integration, VehicleProvider):
             except HyundaiKiaException as e:
                 info(f"Hyundai: sign-in failed: {e}")
                 raise HyundaiError(f"Hyundai sign-in failed: {e}") from e
-            self._otp_request = None
             self._login_error = None
             if refreshed:
                 info("Hyundai: token refreshed")
             self._persist_token(manager)
             return manager
+
+    def _refresh_or_login(self, manager: VehicleManager) -> bool:
+        """The library's token check. When the saved token cannot be refreshed without a
+        one-time code the library raises without keeping the request (it does so only on a
+        fresh login), so the dead token is dropped and a fresh sign-in made to capture it."""
+        try:
+            return manager.check_and_refresh_token()
+        except AuthenticationOTPRequired:
+            if getattr(manager, "otp_request", None) is not None:
+                raise
+            info("Hyundai: the saved token cannot be refreshed without a one-time code — signing in afresh")
+            self._drop_token(manager)
+            if manager.login() is True:
+                return True
+            raise
+
+    def _drop_token(self, manager: VehicleManager):
+        manager.token = None
+        self._persisted_token = None
+        path = token_path(self._config["username"])
+        try:
+            path.unlink(missing_ok=True)
+            trace(f"Hyundai: dead token {path} removed")
+        except OSError as e:
+            error(f"Hyundai: could not remove the dead token {path}: {e}")
 
     # --- the one-time code (the console tab) --------------------------------------------------
 
@@ -311,7 +356,12 @@ class HyundaiIntegration(Integration, VehicleProvider):
         return {"status": "authenticated", "message": f"Signed in as {self._config['username']}, {len(manager.vehicles)} car(s) on the account"}
 
     def refresh_now(self):
-        """Sign in (or refresh the token) and pull the cached state — the tab's Ctrl-R."""
+        """Sign in (or refresh the token) and pull the cached state — the tab's Ctrl-R, the one
+        call that starts a new sign-in over a one-time code still waiting to be entered."""
+        with self._lock:
+            if self._otp_request is not None:
+                info("Hyundai: Ctrl-R while a one-time code was pending — that request is dropped, signing in anew")
+                self._otp_request = None
         self._ensure_login()
         self._update_cached(force=True)
 
@@ -387,7 +437,7 @@ class HyundaiIntegration(Integration, VehicleProvider):
         electric car, the fuel level and range for a combustion one, both for a plug-in hybrid;
         the library has no measured cabin temperature (its `air_temperature` is the climate's
         set point), so that stays None."""
-        engine = str(getattr(vehicle, "engine_type", "") or "").upper()
+        engine = engine_kind(vehicle)
         electric = engine in ("EV", "PHEV")
         burns_fuel = engine in ("ICE", "HEV", "PHEV")
         battery = getattr(vehicle, "ev_battery_percentage", None) if electric else None
@@ -435,21 +485,30 @@ class HyundaiIntegration(Integration, VehicleProvider):
         info(f"Hyundai: {verb} sent to {spec.label} (tracking {tracking})")
         return str(tracking)
 
+    def _climate_temperature_c(self) -> float:
+        return float(self._config.get("climate_temperature_c") or DEFAULT_CLIMATE_C)
+
     def _climate_options(self, defrost: bool) -> ClimateRequestOptions:
-        temperature = float(self._config.get("climate_temperature_c") or DEFAULT_CLIMATE_C)
+        """The request for the configured set point and duration. The set point is in the unit the
+        region's backend takes — °F in the USA, °C elsewhere — and the backend may rewrite it
+        (Kia USA clamps to "LOW" / "HIGH"), so the message quotes the °C value, never this."""
+        celsius = self._climate_temperature_c()
+        fahrenheit = str(self._config.get("region") or "").strip().lower() in FAHRENHEIT_REGIONS
+        set_temp = to_fahrenheit(celsius) if fahrenheit else celsius
         minutes = int(self._config.get("climate_minutes") or DEFAULT_CLIMATE_MINUTES)
-        return ClimateRequestOptions(set_temp=temperature, duration=minutes, climate=True,
+        trace(f"Hyundai: climate set point {celsius:g} °C sent as {set_temp:g} °{'F' if fahrenheit else 'C'}")
+        return ClimateRequestOptions(set_temp=set_temp, duration=minutes, climate=True,
                                      defrost=defrost, heating=1 if defrost else 0)
 
     def max_defrost(self, spec: VehicleSpec) -> str:
         options = self._climate_options(defrost=True)
         self._command(spec, "max defrost", lambda m, vid: m.start_climate(vid, options))
-        return f"Max defrost started in {spec.label} ({options.set_temp:g} °C, {options.duration} min)."
+        return f"Max defrost started in {spec.label} ({self._climate_temperature_c():g} °C, {options.duration} min)."
 
     def climate_on(self, spec: VehicleSpec) -> str:
         options = self._climate_options(defrost=False)
         self._command(spec, "climate start", lambda m, vid: m.start_climate(vid, options))
-        return f"Climate started in {spec.label} at {options.set_temp:g} °C for {options.duration} min."
+        return f"Climate started in {spec.label} at {self._climate_temperature_c():g} °C for {options.duration} min."
 
     def climate_off(self, spec: VehicleSpec) -> str:
         self._command(spec, "climate stop", lambda m, vid: m.stop_climate(vid))

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from hyundai_kia_connect_api.ApiImpl import OTPRequest
-from hyundai_kia_connect_api.const import OTP_NOTIFY_TYPE
+from hyundai_kia_connect_api.const import ENGINE_TYPES, OTP_NOTIFY_TYPE
 from hyundai_kia_connect_api.exceptions import (
     APIError,
     AuthenticationError,
@@ -25,6 +25,7 @@ from integrations.hyundai.HyundaiIntegration import (
     HyundaiIntegration,
     HyundaiLoginError,
     brand_code,
+    engine_kind,
     parse_coordinates,
     region_code,
     to_km,
@@ -35,7 +36,7 @@ UPDATED = datetime(2026, 10, 9, 7, 30, tzinfo=timezone.utc)
 
 
 def ev_vehicle():
-    return SimpleNamespace(id="lib-ev", name="IONIQ 5", model="Ioniq 5", VIN=EV_VIN, engine_type="EV",
+    return SimpleNamespace(id="lib-ev", name="IONIQ 5", model="Ioniq 5", VIN=EV_VIN, engine_type=ENGINE_TYPES.EV,
                            ev_battery_percentage=64, ev_driving_range=210, ev_driving_range_unit="km",
                            fuel_level=None, fuel_driving_range=None, _fuel_driving_range_unit=None,
                            total_driving_range=210, total_driving_range_unit="km",
@@ -44,7 +45,7 @@ def ev_vehicle():
 
 
 def ice_vehicle():
-    return SimpleNamespace(id="lib-ice", name="Sportage", model="Sportage", VIN=ICE_VIN, engine_type="ICE",
+    return SimpleNamespace(id="lib-ice", name="Sportage", model="Sportage", VIN=ICE_VIN, engine_type=ENGINE_TYPES.ICE,
                            ev_battery_percentage=None, ev_driving_range=None, ev_driving_range_unit=None,
                            fuel_level=40.0, fuel_driving_range=250, _fuel_driving_range_unit="mi",
                            total_driving_range=250, total_driving_range_unit="mi",
@@ -56,12 +57,13 @@ class FakeManager:
     """What the integration asks of hyundai_kia_connect_api.VehicleManager, recorded."""
 
     def __init__(self, *, region, brand, username, password, pin, token=None, otp_on_login=False,
-                 login_error=None, refresh_error=None):
+                 otp_on_refresh=False, login_error=None, refresh_error=None):
         self.region, self.brand, self.username, self.password, self.pin = region, brand, username, password, pin
         self.token = token
         self.vehicles = {}
         self.otp_request = None
         self.otp_on_login = otp_on_login
+        self.otp_on_refresh = otp_on_refresh
         self.login_error = login_error
         self.refresh_error = refresh_error
         self.calls = []
@@ -71,17 +73,29 @@ class FakeManager:
         self.sent_otp = []
         self.verified_otp = []
 
-    def check_and_refresh_token(self):
-        self.calls.append("check_and_refresh_token")
+    def login(self):
+        """The library's fresh sign-in: keeps the OTPRequest it gets, hands back True on a token."""
+        self.calls.append("login")
         if self.login_error:
             raise self.login_error
+        if self.otp_on_login:
+            self.otp_request = OTPRequest(f"req-{self.calls.count('login')}", None, True, True, "m@mlab.test", "+46701740605")
+            return self.otp_request
+        self.token = Token(username=self.username, access_token="access-1", refresh_token="refresh-1",
+                           valid_until=datetime(2026, 10, 10, tzinfo=timezone.utc), device_id="dev-1")
+        return True
+
+    def check_and_refresh_token(self):
+        self.calls.append("check_and_refresh_token")
         if self.token is None:
-            if self.otp_on_login:
-                self.otp_request = OTPRequest("req-1", None, True, True, "m@mlab.test", "+46701740605")
-                raise AuthenticationOTPRequired("OTP required to refresh token")
-            self.token = Token(username=self.username, access_token="access-1", refresh_token="refresh-1",
-                               valid_until=datetime(2026, 10, 10, tzinfo=timezone.utc), device_id="dev-1")
-            return True
+            if self.login() is True:
+                return True
+            raise AuthenticationOTPRequired("OTP required to refresh token")
+        if self.login_error:
+            raise self.login_error
+        if self.otp_on_refresh:
+            # The library's refresh path raises without keeping the request
+            raise AuthenticationOTPRequired("OTP required to refresh token")
         if self.refresh_error:
             raise self.refresh_error
         return False
@@ -255,6 +269,22 @@ def test_to_km_leaves_kilometres_and_nothing_alone():
     assert to_km(None, "mi") is None and to_km(100, "km") == 100.0 and to_km(100, None) == 100.0
 
 
+def test_the_engine_kind_is_the_library_enum_member_s_word():
+    assert engine_kind(SimpleNamespace(engine_type=ENGINE_TYPES.PHEV)) == "PHEV"
+    assert engine_kind(SimpleNamespace(engine_type="hev")) == "HEV"
+    assert engine_kind(SimpleNamespace(engine_type=None)) == ""
+
+
+def test_a_plug_in_hybrid_reports_both_battery_and_fuel(build):
+    integration, manager = build()
+    integration.vehicle_state(integration.vehicles()[0])     # builds the manager
+    phev = manager().vehicles["lib-ev"]
+    phev.engine_type, phev.fuel_level = ENGINE_TYPES.PHEV, 55.0
+    integration.clock["now"] += module.STATE_TTL + 1
+    state = integration.vehicle_state(integration.vehicles()[0])
+    assert (state.battery_percent, state.fuel_percent) == (64, 55)
+
+
 def test_the_cached_state_is_pulled_once_per_ttl_for_every_car(build):
     integration, manager = build()
     specs = integration.vehicles()
@@ -282,6 +312,24 @@ def test_climate_on_asks_for_the_configured_temperature_without_defrost(build):
     assert (name, vehicle_id) == ("start_climate", "lib-ev")
     assert (options.set_temp, options.duration, options.climate, options.defrost) == (19.5, 15, True, False)
     assert "Family Ioniq" in line and "19.5" in line
+
+
+def test_the_usa_backend_gets_the_set_point_in_fahrenheit_and_the_message_keeps_celsius(build):
+    integration, manager = build(base_config(region="usa", brand="kia", climate_temperature_c=21))
+    line = integration.climate_on(integration.vehicles()[0])
+    _, _, options = manager().calls[-1]
+    assert options.set_temp == 70
+    assert "21 °C" in line and "70" not in line
+
+
+def test_the_message_survives_a_backend_rewriting_the_set_point(build):
+    class ClampingManager(FakeManager):
+        def start_climate(self, vehicle_id, options):
+            options.set_temp = "LOW"        # Kia USA's clamp below 62 °F
+            return super().start_climate(vehicle_id, options)
+
+    integration, _ = build(base_config(region="usa", brand="kia", climate_temperature_c=10), manager_cls=ClampingManager)
+    assert "10 °C" in integration.max_defrost(integration.vehicles()[0])
 
 
 def test_max_defrost_is_a_climate_start_with_defrost_and_heating(build):
@@ -412,6 +460,38 @@ def test_a_one_time_code_demand_is_a_login_error_and_the_integration_reports_nee
     manager().otp_on_login = False
     state = integration.vehicle_state(integration.vehicles()[0])
     assert state.battery_percent == 64
+
+
+def test_a_code_demanded_while_refreshing_a_saved_token_is_captured_by_a_fresh_sign_in(build, token_dir):
+    first, _ = build()
+    first.vehicle_state(first.vehicles()[0])
+    assert list(token_dir.glob("token-*.json")), "a token is saved"
+
+    integration, manager = build(otp_on_refresh=True, otp_on_login=True)
+    with pytest.raises(HyundaiLoginError, match="one-time code"):
+        integration.vehicle_state(integration.vehicles()[0])
+    assert integration.needs_2fa() is True, "the request of the fresh sign-in is the pending one"
+    assert manager().calls == ["check_and_refresh_token", "login"]
+    assert not list(token_dir.glob("token-*.json")), "the token that cannot be refreshed is gone"
+
+    manager().otp_on_refresh = False
+    integration.verify_otp("123456")
+    assert integration.get_auth_status()["status"] == "authenticated"
+
+
+def test_a_pending_code_is_not_replaced_by_the_next_call_only_by_ctrl_r(build):
+    integration, manager = build(otp_on_login=True)
+    with pytest.raises(HyundaiLoginError):
+        integration.vehicle_state(integration.vehicles()[0])
+    pending = integration._otp_request
+    with pytest.raises(HyundaiLoginError, match="one-time code"):
+        integration.check_health()                         # the monitor and the prompt keep asking
+    assert manager().calls.count("login") == 1 and integration._otp_request is pending
+
+    with pytest.raises(HyundaiLoginError):
+        integration.refresh_now()                          # the tab's Ctrl-R starts over
+    assert manager().calls.count("login") == 2 and integration._otp_request is not pending
+    assert integration.needs_2fa() is True
 
 
 def test_sending_a_code_without_a_pending_sign_in_does_nothing(build):
