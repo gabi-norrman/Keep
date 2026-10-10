@@ -43,8 +43,11 @@ class MessageHistory:
     # hit again. A plain per-render budget evicted the oldest entry on nearly
     # every turn, shifting the window head and invalidating the message-level KV
     # cache from the first history turn onward — the whole ~6K-token history was
-    # re-written on every request (see _hysteresis_trim).
-    TRIM_HIGH_BYTES = 25 * 1024
+    # re-written on every request (see _hysteresis_trim). Each trim still costs a
+    # rewrite of the window at the 1h cache-write rate (2x), while carrying a bigger
+    # window costs reads at 0.025x: at 25KB prod trimmed 19 times on 2026-10-09,
+    # $2.50 of rewrites, and 35KB halves that for a few cents of extra reads.
+    TRIM_HIGH_BYTES = 35 * 1024
     TRIM_LOW_BYTES = 15 * 1024
     # A trim at HIGH waits while the newest row it would drop is younger than
     # TRIM_FRESH_SECONDS: a burst (a checkout, a browsing session) fills the window with
