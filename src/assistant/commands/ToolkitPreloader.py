@@ -28,6 +28,7 @@ and two of them checking the window before either had persisted both loaded `hom
 killed while it waited for the lock persists nothing: the successor does its own preload
 and finds whatever is there.
 """
+import re
 import threading
 from typing import Callable
 
@@ -37,6 +38,15 @@ from common.ConfigManager import config
 from common.logging import info, trace
 
 _lock = threading.Lock()
+
+
+# The two notes below open with this; the memory curator drops them from its transcript by it.
+PREFACE_PATTERN = re.compile(r"The \S+ toolkit(?:'s reference is above| is loaded ahead)")
+
+
+def is_preface(text: str) -> bool:
+    """Whether `text` is one of the notes a preload puts in front of a toolkit's reference."""
+    return PREFACE_PATTERN.match(text) is not None
 
 
 def preface(toolkit: Toolkits.Toolkit, channel: str) -> str:

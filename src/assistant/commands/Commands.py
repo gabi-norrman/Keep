@@ -44,6 +44,8 @@ NO_NOTIFICATION_CHANNEL = "failed: no notification channel configured (no chat i
 # What server_logs() hands the LLM: a window of the main log (cwd-relative, the server runs from the root) —
 # the last SERVER_LOG_TAIL_LINES lines, or the first that many from a given time.
 SERVER_LOG_PATH = "log/floxy.out"
+# Opens every server_logs result; the memory curator drops the dumps from its transcript by it.
+SERVER_LOG_HEADER = "# Keep AI Server Logs"
 SERVER_LOG_TAIL_LINES = 400
 # A log line's timestamp; the ANSI colour codes around it never match this shape, so the raw line is searched.
 _LOG_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
@@ -214,7 +216,7 @@ class Commands:
                 lines = f.readlines()
         except FileNotFoundError:
             error(f"Server log {SERVER_LOG_PATH} not found")
-            return "# Keep AI Server Logs\nLog file not found."
+            return f"{SERVER_LOG_HEADER}\nLog file not found."
         if start is None:
             chunk = lines[-SERVER_LOG_TAIL_LINES:]
             window = f"last {len(chunk)} lines"
@@ -222,12 +224,12 @@ class Commands:
             first = Commands._first_log_line_at(lines, start)
             if first is None:
                 info(f"Server logs: nothing logged at or after {start} ({len(lines)} lines)")
-                return f"# Keep AI Server Logs\nNothing logged at or after {start}; the log has {len(lines)} lines."
+                return f"{SERVER_LOG_HEADER}\nNothing logged at or after {start}; the log has {len(lines)} lines."
             chunk = lines[first:first + SERVER_LOG_TAIL_LINES]
             window = f"{len(chunk)} lines from {start} (line {first + 1})"
         text = re.sub(r'\x1b\[[0-9;]*m', '', "".join(chunk))
         info(f"Server logs fetched: {window} of {len(lines)}, {len(text)} chars")
-        return f"# Keep AI Server Logs ({window})\n{text}"
+        return f"{SERVER_LOG_HEADER} ({window})\n{text}"
 
     @staticmethod
     def _parse_log_time(text: str):

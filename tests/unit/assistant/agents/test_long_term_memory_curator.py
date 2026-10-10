@@ -5,7 +5,9 @@ from unittest.mock import Mock, call, patch
 import pytest
 
 from assistant import MemoryFile
-from assistant.agents.LongTermMemoryCurator import HISTORY_SOURCE, MEMORY_WORD_LIMIT, LongTermMemoryCurator
+from assistant import Procedures
+from assistant.agents.LongTermMemoryCurator import HISTORY_SOURCE, MEMORY_WORD_LIMIT, LongTermMemoryCurator, is_reference_result
+from assistant.commands import Toolkits, ToolkitPreloader
 from common.FloxyDatabase import NO_INTERACTIONS
 
 
@@ -139,7 +141,7 @@ class TestCurationPeriod:
         start, end = datetime(2026, 9, 10, 14, 3), datetime(2026, 9, 10, 16, 30)
         with patch('assistant.agents.LongTermMemoryCurator.CalendarAccess.current', return_value=_no_events()):
             _, metadata = curator.curate_memory(start, end)
-        curator.floxy_db.get_interaction_history.assert_called_once_with(start, end)
+        assert curator.floxy_db.get_interaction_history.call_args.args == (start, end)
         assert metadata['period_start'] == "2026-09-10T14:03"
         assert metadata['period_end'] == "2026-09-10T16:30"
 
@@ -167,7 +169,7 @@ class TestCurationPeriod:
         curator = self._curator()
         with patch('assistant.agents.LongTermMemoryCurator.CalendarAccess.current', return_value=_no_events()):
             curator.curate_memory(date(2026, 9, 8), date(2026, 9, 10))
-        curator.floxy_db.get_interaction_history.assert_called_once_with(datetime(2026, 9, 8), datetime(2026, 9, 10))
+        assert curator.floxy_db.get_interaction_history.call_args.args == (datetime(2026, 9, 8), datetime(2026, 9, 10))
 
     def test_default_period_is_lookback_midnight_until_now(self):
         curator = self._curator()
@@ -606,3 +608,37 @@ class TestBatch:
              patch('assistant.agents.LongTermMemoryCurator.FloxyDatabase.get_instance'):
             LongTermMemoryCurator.run(batch=True)
         assert curate.call_args.args[0].batch is True
+
+
+class TestReferenceResultsLeaveTheTranscript:
+    """The curator reads the pages and mails the assistant fetched, not the reference text it
+    loaded on the way — the toolkit and procedure references, the preload notes in front of
+    them, the log dumps and the network listings."""
+
+    def test_the_curator_hands_the_filter_to_the_history_query(self):
+        curator = LongTermMemoryCurator(llm=Mock(), test_mode=True)
+        curator.floxy_db = Mock()
+        curator.floxy_db.get_interaction_history.return_value = NO_INTERACTIONS
+        with patch('assistant.agents.LongTermMemoryCurator.CalendarAccess.current', return_value=_no_events()):
+            curator.curate_memory(datetime(2026, 9, 10, 14, 3), datetime(2026, 9, 10, 16, 30))
+        assert curator.floxy_db.get_interaction_history.call_args.kwargs["skip_command_result"] is is_reference_result
+
+    @pytest.mark.parametrize("body", [
+        Toolkits.HEADER_PREFIX + "email\nYou have access to the user's email…",
+        Procedures.HEADER_PREFIX + "vklass-login\n# vklass-login\nWhen: …",
+        ToolkitPreloader.preface(Toolkits.Toolkit(name="home", summary="", commands=()), "voice"),
+        ToolkitPreloader.refresh_preface(Toolkits.Toolkit(name="home", summary="", commands=()), "Telegram"),
+        "# Keep AI Server Logs (last 400 lines)\n2026-10-08 23:18:50.614 [INFO] …",
+        "Network log — 40 of 53 matching entries (53 captured this session), oldest first…",
+    ])
+    def test_reference_text_is_dropped(self, body):
+        assert is_reference_result(body)
+
+    @pytest.mark.parametrize("body", [
+        "URL: https://example.com/order/4711\nYour radon kit shipped on 2026-10-06.",
+        "--- Gmail (m@mlab.test) --- [GM-A1] From: Alice <alice@example.com> …",
+        "Arlo — ok (checked 1 min ago) 6 cameras",
+        "Command execution report — some commands failed: …",
+    ])
+    def test_what_was_read_for_the_user_stays(self, body):
+        assert not is_reference_result(body)

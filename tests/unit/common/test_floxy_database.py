@@ -128,6 +128,25 @@ def test_get_interaction_history(floxy_db):
 
 
 @pytest.mark.unit
+def test_get_interaction_history_skips_the_command_results_the_caller_names(floxy_db):
+    # The predicate sees the result body without the "result:" header RequestProcessor adds;
+    # a command row it declines stays in, and without a predicate every command row stays in.
+    now = time.time()
+    floxy_db.add_history_entry("user", "what does the Fable launch post say?", now)
+    floxy_db.add_history_entry("command", "result: \n# Toolkit: web\nfetch_url(url) …", now + 1)
+    floxy_db.add_history_entry("command", "result: \nURL: https://example.com/fable\nFable 5.1 launched today…", now + 2)
+    floxy_db.add_history_entry("assistant", "Fable 5.1 launched today.", now + 3)
+    period = (date.today() - timedelta(days=1), date.today() + timedelta(days=1))
+
+    filtered = floxy_db.get_interaction_history(*period, skip_command_result=lambda body: body.startswith("# Toolkit:"))
+    assert "Toolkit: web" not in filtered
+    assert "launched today…" in filtered
+    assert "Fable 5.1 launched today." in filtered
+
+    assert "Toolkit: web" in floxy_db.get_interaction_history(*period)
+
+
+@pytest.mark.unit
 def test_get_interaction_history_accepts_datetimes(floxy_db):
     # The curator's first-run window is "since 14:03", not a whole day: a datetime bound
     # is used as is, so an entry a second before the start is left out.

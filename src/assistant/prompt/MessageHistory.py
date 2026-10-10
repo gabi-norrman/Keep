@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Callable
 
 from common.logging import info, trace
-from common.FloxyDatabase import FloxyDatabase
+from common.FloxyDatabase import FloxyDatabase, ROLE_COMMAND as DB_ROLE_COMMAND
 from ..tools.MessageFormatter import MessageFormatter
 from .HistoryCompressor import HistoryCompressor
 
@@ -33,7 +33,7 @@ class MessageHistory:
     # (a web page read or a log dump is far bigger) and rendered whole — MAX_RENDER_CHARS
     # would cut a list_integrations table in half. Once a later row supersedes it (a newer
     # browse snapshot) HistoryCompressor collapses it at render time, before the trim.
-    ROLE_COMMAND = "command"
+    ROLE_COMMAND = DB_ROLE_COMMAND
     COMMAND_RESULT_CHARS = 6000
     # The clock note a byte-prefix request put in front of its query (PromptManager.get_messages),
     # persisted as its own verbatim row so the next request renders the same bytes.

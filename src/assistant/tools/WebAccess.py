@@ -38,6 +38,9 @@ from common.Paths import CACHE_DIR, LOG_DIR
 # ConnectionClosed — it subclasses Exception directly, so without it here a rejected
 # websocket handshake (e.g. "HTTP 500") would fall through to generic handlers and
 # never trigger a reinit.
+# Opens every browse_network result; the memory curator drops the listings from its transcript by it.
+NETWORK_LOG_HEADER = "Network log — "
+
 _BROWSER_DEAD_EXC = (
     ProtocolException,
     ConnectionError,
@@ -1242,7 +1245,7 @@ class WebAccess(Integration):
         if len(out) > self._NETWORK_REPORT_MAX_CHARS:
             out = "… (older entries cut)\n" + out[-self._NETWORK_REPORT_MAX_CHARS:]
         info(f"browse_network: {len(shown)} of {len(entries)} matching entries ({total} captured)")
-        head = (f"Network log — {len(shown)} of {len(entries)} matching entries ({total} captured this "
+        head = (f"{NETWORK_LOG_HEADER}{len(shown)} of {len(entries)} matching entries ({total} captured this "
                 f"session), oldest first; `>` = request body, `<` = response body (excerpted):\n")
         return head + out
 

@@ -2,7 +2,7 @@ import sqlite3
 from contextlib import closing
 import threading
 import time
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Callable
 
 import re
 
@@ -16,6 +16,10 @@ SCHEMA_VERSION = 3
 # assets removes those rows by it.
 PHOTO_HISTORY_SOURCE = "iCloud Photos"
 NO_INTERACTIONS = "(No interactions in this period)"   # get_interaction_history with nothing in the period
+# `role` of the rows that hold a command round's result (MessageHistory.ROLE_COMMAND writes them).
+ROLE_COMMAND = "command"
+# What RequestProcessor puts in front of a command round's reply; the curation filter looks past it.
+COMMAND_RESULT_HEADER = "result:"
 
 
 def _tokenize_query(query: str) -> List[str]:
@@ -1026,14 +1030,27 @@ class FloxyDatabase:
                 error(f"Error getting paginated photos: {e}")
                 return []
 
-    def get_interaction_history(self, start_date, end_date) -> str:
+    @staticmethod
+    def command_result_body(content: str) -> str:
+        """A command row's text without the "result:" header line RequestProcessor puts first."""
+        if content.startswith(COMMAND_RESULT_HEADER):
+            return content[len(COMMAND_RESULT_HEADER):].lstrip()
+        return content
+
+    def get_interaction_history(self, start_date, end_date,
+                                skip_command_result: Callable[[str], bool] | None = None) -> str:
         """
         Get interaction history from the history table, formatted for memory curation.
-        Includes user/assistant messages and system events (photo descriptions, home automation, etc).
+        Includes user/assistant messages, system events (photo descriptions, home automation, etc)
+        and the results of the commands the assistant ran — except the command rows
+        `skip_command_result` names, given the result body (the "result:" header stripped): the
+        curator drops the reference text (toolkit and procedure references, log dumps) that was
+        two thirds of a nightly transcript and keeps the pages and mails that were read.
 
         Args:
             start_date: Start (inclusive) — a datetime, or a date meaning midnight at its start
             end_date: End (exclusive) — a datetime, or a date meaning midnight at its start
+            skip_command_result: True for a command result body to leave out of the transcript
 
         Returns:
             Formatted string with timestamps, roles, and content
@@ -1060,9 +1077,17 @@ class FloxyDatabase:
                     WHERE timestamp >= ? AND timestamp < ?
                     ORDER BY timestamp ASC
                 ''', (start_ts, end_ts))
-
                 rows = cursor.fetchall()
                 conn.close()
+
+                if skip_command_result is not None:
+                    skipped = [row for row in rows
+                               if row[1] == ROLE_COMMAND and skip_command_result(self.command_result_body(row[2]))]
+                    if skipped:
+                        info(f"Interaction history: {len(skipped)} of {sum(1 for r in rows if r[1] == ROLE_COMMAND)} "
+                             f"command result row(s) ({sum(len(r[2]) for r in skipped)} chars) left out of the "
+                             f"curation transcript as reference text")
+                        rows = [row for row in rows if row not in skipped]
 
                 if not rows:
                     return NO_INTERACTIONS
