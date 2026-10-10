@@ -30,6 +30,7 @@ def isolated_env(monkeypatch):
     test."""
     monkeypatch.delenv("FLOXY_PREPEND_USER_QUERY", raising=False)
     monkeypatch.delenv("FLOXY_CLAUDE_STATIC_CACHE_TTL", raising=False)
+    monkeypatch.delenv("FLOXY_CLAUDE_HISTORY_CACHE_TTL", raising=False)
     return monkeypatch
 
 
@@ -68,3 +69,17 @@ def test_claude_static_cache_ttl_env_override(isolated_env):
     isolated_env.setenv("FLOXY_CLAUDE_STATIC_CACHE_TTL", "5m")
     cfg = _reimport_development_config()
     assert cfg.CLAUDE_STATIC_CACHE_TTL == "5m"
+
+
+@pytest.mark.unit
+def test_history_cache_ttl_never_outlives_the_system_blocks(isolated_env):
+    """Anthropic's rule: a longer TTL must come first in the request, so the history breakpoint
+    (after the system blocks) may be as long as the static TTL, never longer — whatever the
+    defaults are set to, and with the history override alone."""
+    order = {"5m": 0, "1h": 1}
+    cfg = _reimport_development_config()
+    assert order[cfg.CLAUDE_HISTORY_CACHE_TTL] <= order[cfg.CLAUDE_STATIC_CACHE_TTL]
+    isolated_env.setenv("FLOXY_CLAUDE_HISTORY_CACHE_TTL", "1h")
+    cfg = _reimport_development_config()
+    assert cfg.CLAUDE_HISTORY_CACHE_TTL == "1h"
+    assert order[cfg.CLAUDE_HISTORY_CACHE_TTL] <= order[cfg.CLAUDE_STATIC_CACHE_TTL]

@@ -575,7 +575,7 @@ class TestClaudeLLM:
         params = llm._build_api_params(messages, thinking=False, stream=True)
         prev_msg = params['messages'][-2]
         assert isinstance(prev_msg['content'], list)
-        assert prev_msg["content"][-1].get("cache_control") == {"type": "ephemeral", "ttl": llm.static_cache_ttl}
+        assert prev_msg["content"][-1].get("cache_control") == {"type": "ephemeral", "ttl": llm.history_cache_ttl}
 
     _ROUNDS = [
         {"role": "system", "content": "sys"},
@@ -649,7 +649,25 @@ class TestClaudeLLM:
         prev_msg = params['messages'][-2]
         assert isinstance(prev_msg['content'], list)
         assert prev_msg['content'][0]['type'] == 'text'
-        assert prev_msg["content"][0].get("cache_control") == {"type": "ephemeral", "ttl": llm.static_cache_ttl}
+        assert prev_msg["content"][0].get("cache_control") == {"type": "ephemeral", "ttl": llm.history_cache_ttl}
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_history_breakpoint_takes_its_own_ttl_after_the_system_blocks(self, mock_config):
+        # The system blocks keep the static TTL and the history breakpoint its own, shorter one —
+        # the order Anthropic accepts (longer first); the reverse is rejected by the API.
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        llm = ClaudeLLM("claude-fable-5-1", static_cache_ttl="1h", history_cache_ttl="5m")
+        messages = [
+            {"role": "system", "content": f"stable{ClaudeLLM.CACHE_BREAKPOINT_MARKER}tail"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "follow up"},
+        ]
+        params = llm._build_api_params(messages, thinking=False, stream=True)
+        assert params['system'][0]['cache_control']['ttl'] == "1h"
+        history_breakpoint = params['messages'][llm._message_cache_index()]['content'][-1]['cache_control']
+        assert history_breakpoint['ttl'] == "5m"
 
     @patch('assistant.llm.ClaudeLLM.config')
     def test_build_api_params_skips_cache_on_empty_string_block(self, mock_config):

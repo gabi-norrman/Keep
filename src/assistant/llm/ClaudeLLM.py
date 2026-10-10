@@ -6,7 +6,7 @@ import httpx
 from .AbstractLLM import AbstractLLM, LLMRefusalError
 from anthropic import Anthropic, APIConnectionError, APIStatusError
 from common.ConfigManager import config
-from common.DevelopmentConfig import BYTE_PREFIX_TAIL, CLAUDE_STATIC_CACHE_TTL
+from common.DevelopmentConfig import BYTE_PREFIX_TAIL, CLAUDE_STATIC_CACHE_TTL, CLAUDE_HISTORY_CACHE_TTL
 from common.logging import trace, info
 
 
@@ -46,11 +46,12 @@ class ClaudeLLM(AbstractLLM):
     NON_STREAMING_TIMEOUT = httpx.Timeout(20 * 60, connect=5.0)
 
     def __init__(self, model: str = "claude-sonnet-4-5", speed: str | None = None, prompt_cache: bool = True,
-                 static_cache_ttl: str | None = None):
+                 static_cache_ttl: str | None = None, history_cache_ttl: str | None = None):
         self.model = model
         self.speed = speed
         self.prompt_cache = prompt_cache
         self.static_cache_ttl = static_cache_ttl or CLAUDE_STATIC_CACHE_TTL
+        self.history_cache_ttl = history_cache_ttl or CLAUDE_HISTORY_CACHE_TTL
         self.client = None
         self._last_stop_reason = None
 
@@ -209,11 +210,13 @@ class ClaudeLLM(AbstractLLM):
     def _with_cache_breakpoint(self, message: dict) -> dict | None:
         """Return a copy of `message` with a cache breakpoint on its last content block.
 
-        The breakpoint takes the same TTL as the system prompt (static_cache_ttl, 1h by
-        default): the hourly autonomous check and a chat resumed within the hour then read
-        the history window they share instead of re-writing it — on Fable a 1h write costs
-        2x and a read 0.025x, so one hit pays for the dearer write. The 5m tier only ever
-        served the follow-up rounds of the same request.
+        The breakpoint takes history_cache_ttl (5m by default, see DevelopmentConfig), the
+        system blocks static_cache_ttl (1h): Anthropic accepts a shorter TTL after a longer one.
+        The 1h tier on the history was meant for the hourly autonomous check and a chat resumed
+        within the hour, which then read the window instead of re-writing it (a 1h write costs
+        2x, a read 0.025x) — but the history is re-written on nearly every request anyway (each
+        round of a turn, and after every window trim), so the 2x write rarely got its read; see
+        CLAUDE_HISTORY_CACHE_TTL for the measurement.
 
         Returns None when the breakpoint would land on an empty text block: the
         Anthropic API rejects cache_control on empty text ("cache_control cannot be
@@ -229,13 +232,13 @@ class ClaudeLLM(AbstractLLM):
             last = blocks[-1]
             if isinstance(last, dict) and last.get("type", "text") == "text" and not (last.get("text") or "").strip():
                 return None
-            blocks[-1] = {**last, "cache_control": {"type": "ephemeral", "ttl": self.static_cache_ttl}}
+            blocks[-1] = {**last, "cache_control": {"type": "ephemeral", "ttl": self.history_cache_ttl}}
             return {'role': message['role'], 'content': blocks}
         if not content.strip():
             return None
         return {
             'role': message['role'],
-            'content': [{"type": "text", "text": content, "cache_control": {"type": "ephemeral", "ttl": self.static_cache_ttl}}],
+            'content': [{"type": "text", "text": content, "cache_control": {"type": "ephemeral", "ttl": self.history_cache_ttl}}],
         }
 
     def _build_api_params(self, messages: list[dict], thinking: bool, stream: bool) -> dict:

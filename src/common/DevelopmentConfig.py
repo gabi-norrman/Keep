@@ -47,10 +47,16 @@ PREPEND_USER_QUERY_OVERRIDE = _prepend_user_query_override()
 BYTE_PREFIX_TAIL = os.environ.get("FLOXY_BYTE_PREFIX_TAIL", "1") != "0"
 
 # TTL of the Anthropic prompt-cache system blocks (one per <<<CACHE_BREAKPOINT>>> marker,
-# ordered stable → volatile; see ClaudeLLM._build_cached_system) and the breakpoint on the
-# history's last turn — one TTL for the whole request.
+# ordered stable → volatile; see ClaudeLLM._build_cached_system).
 # A cache read refreshes the TTL, so a block only expires after an idle gap longer than its TTL.
 # "1h" (write costs 2x input) survives the 5–60 min gaps between real user voice queries where a
 # 5-min block would expire and need a fresh rewrite; "5m" (write costs 1.25x input) is cheaper and
 # plenty when requests are dense — e.g. the prompt test runner, which exports 5m to save money.
 CLAUDE_STATIC_CACHE_TTL = os.environ.get("FLOXY_CLAUDE_STATIC_CACHE_TTL", "1h")
+# TTL of the breakpoint on the history's last turn (ClaudeLLM._with_cache_breakpoint). Anthropic
+# allows a shorter TTL after a longer one, never the reverse, so this is at most the static TTL.
+# The history is written on nearly every request — each round of a turn, and again after every
+# window trim — and read back unchanged 5–60 min later only now and then: on prod on 2026-10-09
+# the 1h tier cost $2.39 more in writes than the 5m tier would have and saved $0.75 of rewrites
+# (8 of 71 requests). It goes back to "1h" when the trims are rare enough for the hits to win.
+CLAUDE_HISTORY_CACHE_TTL = os.environ.get("FLOXY_CLAUDE_HISTORY_CACHE_TTL", "5m")
