@@ -188,14 +188,15 @@ IMPORTANT: Your entire analysis must be in your final message. Do not ask follow
 """
 
 SELF_ANALYSIS_PROMPT = """
-I want you to analyze something about this code base for me. It may be a bug report, a question about how a
-feature works or why it behaved as it did, a request to review some part of the code, or a feasibility check
-for a change:
+I want you to analyze something for me. It may be about this code base (a bug report, how a feature works or
+why it behaved as it did, a review, a feasibility check) or about the machine the server runs on (the home
+network, a device on it, disk space, updates, a service):
 
 {request}
 
-You can look in log files in
-log/floxy.out (Floxy server logs, be mindful, it's huge, so tail)
+For the code: log/floxy.out has the server logs (huge — tail it or grep for the time in question).
+For the machine: use the shell, but only observe — change, install, restart or write nothing outside the repo.
+Never put config.yaml, vault or ~/.claude contents in the report.
 
 Do a thorough analysis and provide a report with what you found.
 

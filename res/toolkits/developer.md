@@ -7,12 +7,14 @@ The integration also has scheduled nightly runs (bug analysis, test generation, 
 unless `self_improvement.nightly_runs` is true; the commands below work either way.
 
 ### Self-analysis
-To have your own code base analyzed:
+To have your own code base, or the machine you run on, analyzed:
 
 `self_analysis(question: str)`
 
 The question can be a bug report, but also "how does X work", "why did Y happen at 21:22", "review Z", or "would it
-be feasible to add W". 
+be feasible to add W". It can also be about the server machine: "is the home network slow", "why does the NAS not
+answer", "is the disk filling up" — Claude Code has a shell there (ping, dig, traceroute, curl, df, log show…).
+Pass the symptom on in the user's words, with the time. It takes minutes; say the answer comes back in the chat.
 
 ### Self-improvement
 To have a change made to your own code, delivered as a pull request:
