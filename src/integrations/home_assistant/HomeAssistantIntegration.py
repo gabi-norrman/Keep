@@ -41,6 +41,7 @@ TURN_OFF = {"light": ("light", "turn_off"), "switch": ("switch", "turn_off"), "f
             "climate": ("climate", "turn_off")}
 DIM = {"light": ("light", "turn_on", "brightness_pct"), "fan": ("fan", "set_percentage", "percentage"),
        "cover": ("cover", "set_cover_position", "position")}
+STOP = {"cover": ("cover", "stop_cover")}
 EXECUTE = {"scene": ("scene", "turn_on"), "script": ("script", "turn_on"), "automation": ("automation", "trigger"),
            "button": ("button", "press"), "input_button": ("input_button", "press")}
 
@@ -268,6 +269,9 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
     def execute(self, name: str) -> str:
         return self._command(name, EXECUTE, "execute")
 
+    def stop(self, name: str) -> str:
+        return self._command(name, STOP, "stop")
+
     def _command(self, name: str, table: dict, verb: str) -> str:
         entity_id, display = self._resolve(name)
         if entity_id is None:
@@ -282,6 +286,8 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         domain = domain_of(entity_id)
         if domain in ACTION_DOMAINS:
             return f"{display} is a {domain}; use execute."
+        if verb == "stop":
+            return f"{display} is a {domain}, not a cover — only a cover can be stopped."
         if domain in LIGHT_DOMAINS or domain == "input_boolean":
             return f"{display} is a {domain}; use turn_on / turn_off."
         return f"{display} is a {domain} and cannot be controlled with {verb}."

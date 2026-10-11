@@ -268,6 +268,16 @@ class TestCommands:
         assert self.last_service(fake) == {"domain": "cover", "service": "set_cover_position",
                                            "target": {"entity_id": "cover.blinds"}, "service_data": {"position": 25}}
 
+    def test_stop_halts_a_cover_and_nothing_else(self, integration, fake):
+        """The home toolkit promises stop(name) for every cover in the house list, and Home
+        Assistant lists its covers there."""
+        assert integration.stop("Blinds") == ""
+        assert self.last_service(fake) == {"domain": "cover", "service": "stop_cover", "target": {"entity_id": "cover.blinds"}}
+        calls = len(fake.calls)
+        answer = integration.stop("Hall light")
+        assert "cover" in answer and "Hall light" in answer
+        assert len(fake.calls) == calls, "a light is not sent a stop"
+
     def test_dim_to_zero_turns_off(self, integration, fake):
         assert integration.dim("Hall light", 0) == ""
         assert self.last_service(fake)["service"] == "turn_off"
