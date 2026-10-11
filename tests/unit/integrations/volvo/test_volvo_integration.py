@@ -269,11 +269,46 @@ class TestWrongVin:
     def test_the_health_check_carries_the_verdict(self):
         fake = FakeVolvo()
         fake.route("GET", CONNECTED, self.REFUSED, status=401)
-        fake.route("GET", CAR_LIST, {"data": []})
+        fake.route("GET", CAR_LIST, {"data": [{"vin": "YV1KEP47L00000007"}]})
         with _config():
             integration = build(fake)
             with pytest.raises(VolvoApiError, match="volvo.vehicles"):
                 integration.check_health()
+
+    @pytest.mark.parametrize("car_list", [({"data": []}, 200), ({}, 404)])
+    def test_an_empty_or_missing_car_list_is_no_verdict_on_the_vin(self, car_list):
+        """A dead token or a bad key gets an empty list back as readily as a refusal: the
+        message sends the user after the key and the sign-in, not after the VIN, and the
+        empty list is not kept as the account's cars."""
+        body, status = car_list
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, self.REFUSED, status=401)
+        fake.route("GET", CAR_LIST, body, status=status)
+        with _config():
+            integration = build(fake)
+            for _ in range(2):
+                with pytest.raises(VolvoApiError) as refused:
+                    integration.vehicle_state(spec(integration))
+                text = str(refused.value)
+                assert "volvo.vcc_api_key" in text and "volvo_login" in text
+                assert "volvo.vehicles" not in text and "0 car" not in text
+        assert len(fake.sent("GET", CAR_LIST)) == 2, "an inconclusive list is read again next time"
+
+    def test_a_sign_out_forgets_the_car_list(self):
+        """A second Volvo ID in the same process is diagnosed against its own cars."""
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, self.REFUSED, status=401)
+        fake.route("GET", CAR_LIST, {"data": [{"vin": "YV1KEP47L00000007"}]})
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoApiError, match="000007"):
+                integration.vehicle_state(spec(integration))
+            integration.auth.sign_out = lambda: None
+            integration.sign_out()
+            fake.route("GET", CAR_LIST, {"data": [{"vin": "YV1KEP47L00000009"}]})
+            with pytest.raises(VolvoApiError, match="000009"):
+                integration.vehicle_state(spec(integration))
+        assert len(fake.sent("GET", CAR_LIST)) == 2
 
     def test_a_rate_limit_while_diagnosing_is_reported_as_such(self):
         fake = FakeVolvo()

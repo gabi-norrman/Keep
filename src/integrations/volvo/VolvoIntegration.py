@@ -135,14 +135,18 @@ class VolvoIntegration(Integration, VehicleProvider):
         """"" when the pasted answer signed the Volvo ID in, else why not."""
         failure = self.auth.finish(pasted)
         if not failure:
-            with self._lock:
-                self._states.clear()
+            self._forget_account()
         return failure
 
     def sign_out(self) -> None:
         self.auth.sign_out()
+        self._forget_account()
+
+    def _forget_account(self) -> None:
+        """A new Volvo ID (or none): its car list and the states are the old one's."""
         with self._lock:
             self._states.clear()
+            self._account_vins = None
 
     def needs_2fa(self) -> bool:
         """The owner has to sign in (never did, or the refresh was refused): local state only."""
@@ -247,7 +251,9 @@ class VolvoIntegration(Integration, VehicleProvider):
         return ""
 
     def _owned_vins(self) -> Optional[List[str]]:
-        """The VINs of the Volvo ID's cars (kept for the process), None when the list itself is refused."""
+        """The VINs of the Volvo ID's cars (kept for the process); None when the list is refused, a
+        404 or empty — a Volvo ID with cars answers at least one, so an empty list says nothing
+        about the VIN and the key / sign-in wording applies."""
         with self._lock:
             if self._account_vins is not None:
                 return self._account_vins
@@ -260,7 +266,10 @@ class VolvoIntegration(Integration, VehicleProvider):
             return None
         rows = body.get("data") if isinstance(body.get("data"), list) else []
         vins = [str(row.get("vin")) for row in rows if isinstance(row, dict) and row.get("vin")]
-        info(f"Volvo: the Volvo ID has {len(vins)} car(s): {', '.join('…' + v[-6:] for v in vins) or 'none'}")
+        if not vins:
+            info("Volvo: the car list came back empty or missing — inconclusive, not cached")
+            return None
+        info(f"Volvo: the Volvo ID has {len(vins)} car(s): {', '.join('…' + v[-6:] for v in vins)}")
         with self._lock:
             self._account_vins = vins
         return vins
