@@ -56,9 +56,14 @@ def is_reference_result(body: str) -> bool:
     2026-10-07..09 they were 433KB of the 683KB of command results), and search_history /
     show_history leave them out of their hits: a toolkit loaded a dozen times a day matched
     every broad query and filled the 30 hits with its own text. What stays is what was read
-    for the user — pages, mails, device status."""
+    for the user — pages, mails, device status. A round is judged by its opening: a batch
+    (`_publish_bg_results`) puts the reference results after the others, so a round that
+    loaded a toolkit beside a real read opens with the read and is kept; the toolkit text
+    itself has blank lines in it, so cutting the body into parts would not tell them apart."""
     return (body.startswith((Toolkits.HEADER_PREFIX, Procedures.HEADER_PREFIX, SERVER_LOG_HEADER, NETWORK_LOG_HEADER))
             or ToolkitPreloader.is_preface(body))
+
+
 # A log line's timestamp; the ANSI colour codes around it never match this shape, so the raw line is searched.
 _LOG_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 # What server_logs(from) accepts: a full timestamp (space or T), a date (midnight) or a clock time (today).
@@ -1394,7 +1399,11 @@ class Commands:
         contains_error = self.bg_results_contain_error
         results = self.accumulated_bg_results
         list_results = [r for r in results if isinstance(r, list)]
-        str_results = [r for r in results if isinstance(r, str) and r.strip()]
+        # The reference text (a toolkit loaded beside a read) goes last, so the round's opening
+        # says whether anything in it was read for the user — see is_reference_result.
+        str_results = sorted((r for r in results if isinstance(r, str) and r.strip()), key=is_reference_result)
+        if str_results and is_reference_result(str_results[-1]) and not is_reference_result(str_results[0]):
+            trace("Background results: the reference text is placed after the other results")
         if list_results:
             combined = []
             for lr in list_results:

@@ -1234,6 +1234,25 @@ class TestReferenceResults:
         assert len({a for a in answers}) == 4
         assert all(is_reference_result(a) for a in answers)
 
+    def test_a_round_that_loaded_a_toolkit_beside_a_read_opens_with_the_read(self, commands_instance):
+        """The toolkit text has blank lines of its own, so the round is judged by what it opens
+        with: the batch puts the reference text last, whatever order the LLM emitted the
+        commands in, and the mail read beside it stays in the history searches."""
+        toolkit = Toolkits.HEADER_PREFIX + "email\nYou have access to the user's email…\n\n`read_email(id)`\n"
+        mail = "--- Gmail (m@mlab.test) --- [GM-A1] From: Alice <alice@example.com> …"
+        commands_instance._bg_results = {0: toolkit, 1: mail}
+        commands_instance._publish_bg_results()
+        body = commands_instance.command_processor.set_command_reply.call_args[0][0]
+        assert body.startswith(mail) and body.endswith(toolkit)
+        assert not is_reference_result(body)
+
+    def test_a_round_of_reference_text_alone_stays_reference(self, commands_instance):
+        toolkit = Toolkits.HEADER_PREFIX + "email\nYou have access to the user's email…\n\n`read_email(id)`\n"
+        commands_instance._bg_results = {0: toolkit, 1: Procedures.HEADER_PREFIX + "vklass-login\n# vklass-login\n\nWhen: …"}
+        commands_instance._publish_bg_results()
+        body = commands_instance.command_processor.set_command_reply.call_args[0][0]
+        assert is_reference_result(body)
+
     def test_search_history_leaves_the_reference_rows_to_the_database(self):
         """The toolkit a search term happens to match must not take a hit's place: the
         predicate goes to the query, which drops the rows before its limit."""
