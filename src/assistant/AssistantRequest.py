@@ -25,6 +25,9 @@ class RequestContext:
     # Telegram group the bot is in, not on the allow list): every command is refused for
     # the turn (CommandProcessor), and the chat layer states the facts above the message.
     guest: bool = False
+    # Facts the chat layer states about the message (a guest, a group chat): sent in the
+    # note row in front of the query, as the system's words, never inside the person's text.
+    note: Optional[str] = None
     location: Optional[str] = None
     user: Optional[str] = None
     user_input: Optional[str] = None

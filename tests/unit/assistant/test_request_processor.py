@@ -594,6 +594,19 @@ class TestHandleBackgroundCommands:
         assert first.kwargs["timestamp"] == handler.turn_timestamp
         assert first.kwargs["time_note"] == handler.time_note
 
+    def test_the_chat_layers_facts_stand_in_the_note_under_the_clock(self, handler):
+        # A guest's or a group's facts are the system's words: they go in the note row, never
+        # inside the person's own text, and they ride along even when no clock note is sent.
+        prompt_manager = Mock()
+        prompt_manager.current_time_note.return_value = "(Current time: 14:40, Saturday, 2025-03-15)"
+        handler.request_context.note = "The next message is from Dave, who is not one of the household's owners."
+        note = handler._turn_note(prompt_manager, byte_prefix_tail=True)
+        assert note.split("\n") == ["(Current time: 14:40, Saturday, 2025-03-15)",
+                                    "The next message is from Dave, who is not one of the household's owners."]
+        assert handler._turn_note(prompt_manager, byte_prefix_tail=False).endswith("owners.")
+        handler.request_context.note = None
+        assert handler._turn_note(prompt_manager, byte_prefix_tail=False) is None
+
     def test_round_end_carries_the_rounds_raw_text(self, handler):
         """RoundEnd(raw) closes each follow-up round (the wire renderer turns it into \\x1e)"""
         handler.request_context.text_only = True

@@ -538,7 +538,8 @@ class RequestProcessor:
         self._check_killed()
         if byte_prefix_tail:
             self.turn_timestamp = time.time()
-            self.time_note = prompt_manager.current_time_note(self.turn_timestamp)
+        if byte_prefix_tail or self.ctx.note:
+            self.time_note = self._turn_note(prompt_manager, byte_prefix_tail)
         self.dialog_manager.messages = prompt_manager.get_messages(extended_thinking=use_prompt_hack,
                                                                    time_note=self.time_note).copy()
         self.dialog_manager.thinking = use_native_thinking
@@ -623,6 +624,18 @@ class RequestProcessor:
             self._check_killed()
             time.sleep(0.01)
         trace(done_message)
+
+    def _turn_note(self, prompt_manager, byte_prefix_tail: bool) -> str | None:
+        """The note row sent in front of the query: the clock on a byte-prefix request, and
+        under it the facts the chat layer states about the message (a guest, a group chat).
+        They stand in the note, not in the person's own text, so the LLM reads them as the
+        system's words and not as something the person wrote."""
+        clock = prompt_manager.current_time_note(self.turn_timestamp) if byte_prefix_tail else None
+        facts = self.ctx.note
+        if not facts:
+            return clock
+        trace(f"Turn note carries the chat layer's facts about the message ({len(facts)} chars)")
+        return f"{clock or prompt_manager.current_time_note()}\n{facts}"
 
     def _update_history(self, prompt_manager, already_reported: str | None) -> str:
         response_text = self._remove_thinking(self.dialog_manager.llm_response_raw)
