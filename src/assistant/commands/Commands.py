@@ -855,9 +855,13 @@ class Commands:
                      "unknown": "not checked yet"}
     @staticmethod
     def _setup_activity():
-        """A setup command ran: on a young install setup is in progress for
-        FTUE_SETUP_GRACE_HOURS more (FirstRun.in_ftue) — the setup toolkit stays preloaded and
-        the INTEGRATIONS section stays in the prompt."""
+        """A command that changes the setup ran — every command on the CONFIG_LANE (config_set,
+        config_request, enable / disable / restart_integration, the sign-ins and pairings of the
+        integration folders), see background_command: on a young install setup is in progress
+        for FTUE_SETUP_GRACE_HOURS more (FirstRun.in_ftue) — the setup toolkit stays preloaded
+        and the INTEGRATIONS section stays in the prompt. A read-only command (config_help,
+        list_integrations) is not setup activity: the assistant reading the schema a week in
+        kept the ~10 KB setup reference in every request for two more days."""
         FirstRun.note_setup_activity()
 
     # Integrations that are not Integration classes but follow the same switch, with their keys.
@@ -942,7 +946,6 @@ class Commands:
         self.background_command(self._run_config_help, parameter_string.strip().strip('"\''))
 
     def _run_config_help(self, section: str = "") -> str:
-        self._setup_activity()
         if not section:
             lines = []
             for name in ConfigSchema.sections():
@@ -979,7 +982,6 @@ class Commands:
         self.background_command(self._run_config_request, (key, source, conversation), lane=self.CONFIG_LANE)
 
     def _run_config_request(self, key: str, source=None, conversation=None) -> str:
-        self._setup_activity()
         outcome: dict = {}
         replaces = ConfigStore.is_set(key)
 
@@ -1063,7 +1065,6 @@ class Commands:
         self.background_command(self._run_config_set, [key, value], lane=self.CONFIG_LANE)
 
     def _run_config_set(self, key: str, value: str) -> str:
-        self._setup_activity()
         interface = ConfigStore.interface_flag(key)
         before = ConfigStore.interface_enabled(interface) if interface else None
         try:
@@ -1088,7 +1089,6 @@ class Commands:
         self.background_command(self._run_restart_integration, name, lane=self.CONFIG_LANE)
 
     def _run_restart_integration(self, name: str) -> str:
-        self._setup_activity()
         monitor = self._integration_monitor()
         result = monitor.restart(name)
         if result is None:
@@ -1119,7 +1119,6 @@ class Commands:
 
     def _switch_integration(self, name: str, enable: bool) -> str:
         """Edit enabled_integrations, then restart the integration so the list takes effect now."""
-        self._setup_activity()
         verb = "enable" if enable else "disable"
         canonical = self._canonical_integration_name(name)
         if canonical is None:
@@ -1293,6 +1292,8 @@ class Commands:
     # Runs on: command worker thread. Hands the work to a lane thread.
     def background_command(self, function, params, lane: str = IO_LANE):
         echo, self._current_echo = self._current_echo, None
+        if lane == self.CONFIG_LANE:
+            self._setup_activity()
         with self.bg_lock:
             seq = self._bg_seq
             self._bg_seq += 1

@@ -1822,11 +1822,27 @@ class TestCmdConfigHelp:
             commands_instance.run("config_help", ['"email"'])
         bg.assert_called_once_with(commands_instance._run_config_help, "email")
 
-    def test_a_setup_command_notes_setup_activity(self, commands_instance):
+    def test_reading_the_schema_is_not_setup_activity(self, commands_instance):
+        """config_help changes nothing: it must not keep the 48-hour setup grace (and with it
+        the ~10 KB setup reference in every request) alive on an install that is done."""
         with patch("assistant.commands.Commands.FirstRun.note_setup_activity") as noted, \
                 patch.object(ConfigStore, "summary", return_value=""):
             commands_instance._run_config_help("email")
+            commands_instance.run("config_help", ['"email"'])
+            commands_instance.wait_for_background(2)
+        noted.assert_not_called()
+
+    def test_a_command_on_the_config_lane_is_setup_activity(self, commands_instance):
+        """config_set, enable_integration, every sign-in: whatever changes the setup runs on
+        the config lane, and the lane is what stamps the activity — not each command."""
+        with patch("assistant.commands.Commands.FirstRun.note_setup_activity") as noted:
+            commands_instance.background_command(lambda _p: "ok", "x", lane=Commands.CONFIG_LANE)
+            commands_instance.wait_for_background(2)
         noted.assert_called_once()
+        with patch("assistant.commands.Commands.FirstRun.note_setup_activity") as noted:
+            commands_instance.background_command(lambda _p: "ok", "x")
+            commands_instance.wait_for_background(2)
+        noted.assert_not_called()
 
     def test_section_text_with_comments_and_the_set_flags(self, commands_instance):
         with patch.object(ConfigStore, "summary", return_value="email.address: not set, email.password: not set"):
