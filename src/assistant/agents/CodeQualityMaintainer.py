@@ -43,6 +43,20 @@ CREDENTIALS_HINT = (
 NOT_LOGGED_IN_MESSAGE = (
     "Claude Code has no credentials on the server, so this job could not run.\n\n" + CREDENTIALS_HINT
 )
+# Under every report of a run the API key paid for: the key is the costly way to run Claude
+# Code, and a login on the server machine stops it without a config change.
+API_KEY_COST_NOTE = (
+    "**You're not logged in on Claude Code and use API credits to run — this is expensive.**{cost}\n"
+    "Log into Claude Code on the server machine (locally, not over SSH: run `claude` in a terminal "
+    "there and complete /login) to stop using API credits for Claude Code."
+)
+
+
+def api_key_cost_note(cost_usd: Optional[float]) -> str:
+    """The paragraph appended to a report when api_keys.anthropic paid for the run: the
+    warning, this run's cost when the CLI reported one, and the way out."""
+    cost = f"\nThis run cost ${cost_usd:.2f}." if cost_usd else ""
+    return "\n\n" + API_KEY_COST_NOTE.format(cost=cost)
 NOT_INSTALLED_MESSAGE = (
     "Claude Code is not installed on the server, so this job could not run.\n\n"
     "To fix it, install the CLI on the server machine (`curl -fsSL https://claude.ai/install.sh | bash`). "
@@ -820,6 +834,7 @@ class CodeQualityMaintainer:
         result_is_error = False
         last_assistant_text = ""
         stderr = ""
+        cost_usd = None
         try:
             for line in process.stdout:
                 line = line.strip()
@@ -848,6 +863,7 @@ class CodeQualityMaintainer:
                     if obj.get("type") == "result":
                         result_text = obj.get("result", "")
                         result_is_error = bool(obj.get("is_error"))
+                        cost_usd = obj.get("total_cost_usd") or obj.get("cost_usd")
                 except json.JSONDecodeError:
                     trace(f"CodeQualityMaintainer [{label}] {line}")
             process.wait()
@@ -863,6 +879,10 @@ class CodeQualityMaintainer:
                 or CodeQualityMaintainer._is_not_logged_in(stderr):
             error(f"CodeQualityMaintainer [{label}] Claude Code is not logged in on this machine: {output.strip() or stderr.strip()}")
             raise ClaudeNotLoggedInError()
+        if output and status.api_key:
+            info(f"CodeQualityMaintainer [{label}] the run was billed to {API_KEY_CONFIG_KEY}"
+                 f"{f' (${cost_usd:.2f})' if cost_usd else ''}: the report says so")
+            output += api_key_cost_note(cost_usd)
         return output
 
     @staticmethod

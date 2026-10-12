@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeStatus, API_KEY_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeStatus, API_KEY_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -687,6 +687,45 @@ class TestRunClaude:
         assert env[API_KEY_ENV] == "sk-ant-test-key"
         assert "PATH" in env                                   # the server's own environment, plus the key
         assert "sk-ant-test-key" not in " ".join(mock_popen.call_args[0][0])   # never on the command line
+
+    @patch('assistant.agents.CodeQualityMaintainer.claude_api_key', return_value="sk-ant-test-key")
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_a_run_the_api_key_paid_for_says_so_in_its_report(self, mock_popen, _key):
+        lines = ['{"type": "result", "result": "Opened PR #12", "total_cost_usd": 3.14159}\n']
+        mock_popen.return_value = _mock_popen(lines)
+        with patch('assistant.agents.CodeQualityMaintainer.claude_status',
+                   return_value=ClaudeStatus(CLAUDE_PATH, True, "no login, using api_keys.anthropic", api_key=True)):
+            result = CodeQualityMaintainer._run_claude("prompt", "label")
+        assert result.startswith("Opened PR #12\n\n")           # the report itself comes first, untouched
+        note = result[len("Opened PR #12"):]
+        assert note == api_key_cost_note(3.14159)
+        assert "not logged in" in note and "API credits" in note and "expensive" in note
+        assert "$3.14" in note                                     # this run's cost, to the cent
+        assert "not over SSH" in note and "/login" in note         # the way out
+
+    @patch('assistant.agents.CodeQualityMaintainer.claude_api_key', return_value="sk-ant-test-key")
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_the_note_leaves_the_cost_out_when_the_cli_reported_none(self, mock_popen, _key):
+        lines = ['{"type": "assistant", "message": {"content": [{"type": "text", "text": "partial"}]}}\n']
+        mock_popen.return_value = _mock_popen(lines)
+        with patch('assistant.agents.CodeQualityMaintainer.claude_status',
+                   return_value=ClaudeStatus(CLAUDE_PATH, True, "no login, using api_keys.anthropic", api_key=True)):
+            result = CodeQualityMaintainer._run_claude("prompt", "label")
+        assert "API credits" in result and "cost $" not in result
+
+    @patch('assistant.agents.CodeQualityMaintainer.claude_api_key', return_value="sk-ant-test-key")
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_an_empty_run_stays_empty_on_the_api_key(self, mock_popen, _key):
+        mock_popen.return_value = _mock_popen(['{"type": "system", "data": "init"}\n'])
+        with patch('assistant.agents.CodeQualityMaintainer.claude_status',
+                   return_value=ClaudeStatus(CLAUDE_PATH, True, "no login, using api_keys.anthropic", api_key=True)):
+            assert CodeQualityMaintainer._run_claude("prompt", "label") == ""   # callers key "no output" off ""
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_a_login_gets_no_cost_note(self, mock_popen):
+        lines = ['{"type": "result", "result": "done", "total_cost_usd": 3.14159}\n']
+        mock_popen.return_value = _mock_popen(lines)
+        assert CodeQualityMaintainer._run_claude("prompt", "label") == "done"   # the figure is notional on a plan
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     def test_no_credentials_raises_before_starting_the_cli(self, mock_popen):
