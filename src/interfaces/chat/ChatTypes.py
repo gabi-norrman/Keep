@@ -37,6 +37,7 @@ class IncomingMessage:
     reaction: Optional[str] = None        # emoji(s) the user added
     reaction_target_text: Optional[str] = None
     group_id: Optional[str] = None        # album / media-group id: photos sharing it become one request
+    chat_name: Optional[str] = None       # a group's title → RequestContext.location; None in a private chat
 
 
 @dataclass(frozen=True)

@@ -366,6 +366,24 @@ class TestIntake:
         assert hub.transcript[0][3:] == ("user", "//help")
         assert hub.transcript[1][3] == "assistant" and hub.transcript[1][4].startswith("Debug commands:")
 
+    def test_group_title_is_the_request_location(self, session, hub, transport):
+        req, _ = self._submit_and_wait(session, hub, transport, msg(text="hello", chat_name="Family"))
+        assert req.location == "Family"
+
+    def test_private_chat_has_no_location(self, session, hub, transport):
+        req, _ = self._submit_and_wait(session, hub, transport, msg(text="hello"))
+        assert req.location is None
+
+    def test_group_title_outlives_the_message_that_brought_it(self, session, hub, transport):
+        # A reaction or an album is built in the session without the transport's update at hand,
+        # so the title learnt from an earlier message of the chat must still name the location.
+        self._submit_and_wait(session, hub, transport, msg(text="hello", chat_name="Family"))
+        assistant = FakeAssistant([Token("Ok"), RoundEnd(), None])
+        hub.assistant = assistant
+        session.submit(msg(kind=KIND_REACTION, text="", reaction="👍", reaction_target_text="Hello world"))
+        assert wait_until(lambda: assistant.requests and not session.busy)
+        assert assistant.requests[0][0].location == "Family"
+
     def test_reply_context_is_quoted(self, session, hub, transport):
         _, query = self._submit_and_wait(session, hub, transport, msg(text="my reply", reply_to_text="Previous message"))
         assert query == '[Replying to: "Previous message"]\nmy reply'

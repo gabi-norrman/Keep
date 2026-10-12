@@ -479,9 +479,17 @@ class TelegramTransport(Integration, ChatTransport):
 
     # --- inbound: updates → IncomingMessage ------------------------------------------------
 
+    @staticmethod
+    def _chat_name(update) -> Optional[str]:
+        """A group's title, carried into the turn header so the assistant knows which chat it is
+        in; a private chat has no title."""
+        title = getattr(getattr(update, 'effective_chat', None), 'title', None)
+        return title if isinstance(title, str) and title else None
+
     async def _handle_start(self, update, context):
         chat_id = update.effective_chat.id
-        info(f"Telegram /start from chat_id: {chat_id}")
+        name = self._chat_name(update)
+        info(f"Telegram /start from chat_id: {chat_id}" + (f" (group '{name}')" if name else ""))
         await update.message.reply_text(
             f"Hello! I'm Keep AI.\n\nYour chat ID is: {chat_id}\n\n"
             f"Send me a message and I'll respond."
@@ -531,7 +539,8 @@ class TelegramTransport(Integration, ChatTransport):
         info(f"Telegram [{chat_id}]: {user_text}")
         await self._receive(update, IncomingMessage(
             conversation=chat_id, sender=self._sender_name(update), message_id=update.message.message_id,
-            kind=KIND_TEXT, text=user_text, reply_to_text=self._reply_to_text(update)))
+            kind=KIND_TEXT, text=user_text, reply_to_text=self._reply_to_text(update),
+            chat_name=self._chat_name(update)))
 
     async def _take_secret_reply(self, update, chat_id: int):
         """The text is the answer to the open secret prompt: hand it to the hub (off the loop —
@@ -584,7 +593,7 @@ class TelegramTransport(Integration, ChatTransport):
         hub.receive(self, IncomingMessage(
             conversation=chat_id, sender=sender, message_id=update.message.message_id,
             kind=KIND_PHOTO, text=caption, attachments=[Attachment(photo_bytes, media_type, "photo")],
-            group_id=group_id))
+            group_id=group_id, chat_name=self._chat_name(update)))
 
     async def _handle_voice(self, update, context):
         chat_id = await self._admit(update)
@@ -603,7 +612,7 @@ class TelegramTransport(Integration, ChatTransport):
         await self._receive(update, IncomingMessage(
             conversation=chat_id, sender=self._sender_name(update), message_id=update.message.message_id,
             kind=KIND_VOICE, attachments=[Attachment(voice_bytes, mime_type, "voice")],
-            reply_to_text=self._reply_to_text(update)))
+            reply_to_text=self._reply_to_text(update), chat_name=self._chat_name(update)))
 
     async def _handle_video(self, update, context):
         """A video, round video note or GIF (mp4 animation). The chat layer has it described
@@ -639,7 +648,7 @@ class TelegramTransport(Integration, ChatTransport):
         await self._receive(update, IncomingMessage(
             conversation=chat_id, sender=self._sender_name(update), message_id=message.message_id,
             kind=KIND_VIDEO, text=caption, attachments=[Attachment(video_bytes, mime_type, kind)],
-            reply_to_text=self._reply_to_text(update)))
+            reply_to_text=self._reply_to_text(update), chat_name=self._chat_name(update)))
 
     async def _handle_reaction(self, update, context):
         reaction = update.message_reaction
@@ -665,7 +674,8 @@ class TelegramTransport(Integration, ChatTransport):
             return
         self._hub.receive(self, IncomingMessage(
             conversation=chat_id, sender=self._sender_name(update), message_id=reaction.message_id,
-            kind=KIND_REACTION, reaction=emoji_str, reaction_target_text=target_text))
+            kind=KIND_REACTION, reaction=emoji_str, reaction_target_text=target_text,
+            chat_name=self._chat_name(update)))
 
     # --- ChatTransport: the draft -------------------------------------------------------------
 

@@ -68,9 +68,10 @@ def hub(transport):
     return hub
 
 
-def _update(chat_id=123, message_id=10, text="hello", first_name="Anna", reply=None):
+def _update(chat_id=123, message_id=10, text="hello", first_name="Anna", reply=None, title=None):
     update = MagicMock()
     update.effective_chat.id = chat_id
+    update.effective_chat.title = title  # a group has one, a private chat has none
     update.message.message_id = message_id
     update.message.text = text
     update.message.reply_text = AsyncMock()
@@ -290,6 +291,19 @@ class TestInboundText:
         assert msg.conversation == 123 and msg.sender == "Anna" and msg.message_id == 10
         assert msg.kind == KIND_TEXT and msg.text == "hello" and msg.reply_to_text is None
         assert transport._message_texts[(123, 10)] == "hello"
+        assert msg.chat_name is None  # a private chat: nothing for the turn header's location
+
+    @pytest.mark.asyncio
+    async def test_a_group_message_carries_the_group_title(self, transport, hub):
+        await transport._handle_message(_update(chat_id=-5001, title="Family"), MagicMock())
+        msg = received(hub)
+        assert msg.conversation == -5001 and msg.chat_name == "Family"
+
+    @pytest.mark.asyncio
+    async def test_start_in_a_group_logs_its_title(self, transport):
+        with patch(f'{MODULE}.info') as log:
+            await transport._handle_start(_update(chat_id=-5001, title="Family"), MagicMock())
+        assert "-5001" in log.call_args[0][0] and "Family" in log.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_reply_target_text_or_caption_is_carried(self, transport, hub):

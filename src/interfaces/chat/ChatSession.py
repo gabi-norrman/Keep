@@ -92,6 +92,9 @@ class ChatSession:
         self._lock = threading.Lock()
         self._request: Optional[_Request] = None
         self._album: Optional[_Album] = None
+        # The group's title when the transport knows one: every request from here carries it
+        # as its location, so the turn header says which chat the assistant is in.
+        self._chat_name: Optional[str] = None
 
     @property
     def conversation(self):
@@ -108,6 +111,9 @@ class ChatSession:
 
     def submit(self, msg: IncomingMessage):
         """Hand the user's message to the assistant; never blocks the caller."""
+        if msg.chat_name and msg.chat_name != self._chat_name:
+            info(f"{self._log_prefix()}: the chat is the group '{msg.chat_name}'")
+            self._chat_name = msg.chat_name
         if msg.kind == KIND_PHOTO:
             self._add_to_album(msg)
             return
@@ -362,7 +368,8 @@ class ChatSession:
                 events.put(Notice("Sorry, the assistant is not available right now."))
                 return
             req = RequestContext(source=self._transport.source, conversation=self._conversation, user=sender,
-                                 lang=self._transport.lang, text_only=True, images=images or None)
+                                 location=self._chat_name, lang=self._transport.lang, text_only=True,
+                                 images=images or None)
             try:
                 stream = assistant.stream(req, query)
             except AssistantBusy as busy:
