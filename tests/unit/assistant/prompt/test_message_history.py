@@ -966,12 +966,10 @@ class TestAddContextMessages:
 
 
 # ===========================================================================
-# TestToolkitEvictionStubs — a trim that drops a toolkit row leaves a stub in its place
+# TestToolkitEvictionStubs — a trim that drops toolkit rows leaves one stub naming them
 # ===========================================================================
 
 class TestToolkitEvictionStubs:
-    STUB = 'load_toolkit("browser")'
-
     @staticmethod
     def _turns(n, start_ts, size=100):
         return [{"role": "Marcus", "content": f"m{i:03d}" + "x" * size, "timestamp": start_ts + i,
@@ -997,40 +995,45 @@ class TestToolkitEvictionStubs:
     def _joined(msgs):
         return "\n".join(m["content"] for m in msgs)
 
-    def test_the_stub_stands_where_the_evicted_row_was(self):
+    @staticmethod
+    def _stubs(section):
+        return [e for e in section.transient_entries if e["source"] == section.SOURCE_TOOLKIT_EVICTED]
+
+    def test_the_stub_stands_at_the_head_and_names_the_toolkit(self):
         section, msgs = self._section_after_eviction()
         joined = self._joined(msgs)
         assert "# Toolkit: browser" not in joined, "the reference itself is gone"
         assert msgs[0]["role"] == "user"
         assert msgs[0]["content"].startswith("System (")
-        assert "browser toolkit reference" in msgs[0]["content"] and self.STUB in msgs[0]["content"]
-        assert joined.count(self.STUB) == 1
+        assert "browser" in msgs[0]["content"].split("\n")[0]
+        assert [e["toolkits"] for e in self._stubs(section)] == [["browser"]]
         assert section._trim_cutoff > 1002.0, "the stub is exempt from the cutoff, not the cutoff"
 
     def test_the_stub_is_not_a_loaded_toolkit(self):
         section, _ = self._section_after_eviction()
         assert section.loaded_toolkits() == {}
 
-    def test_rendering_again_keeps_one_stub(self):
-        section, _ = self._section_after_eviction()
-        joined = self._joined(section.get_history_messages())
-        assert joined.count(self.STUB) == 1
-        assert len(section.transient_entries) == 1
+    def test_rendering_again_keeps_the_same_stub(self):
+        section, msgs = self._section_after_eviction()
+        stub = self._stubs(section)[0]
+        again = section.get_history_messages()
+        assert again == msgs, "the head must stay byte-stable between renders for the cache"
+        assert self._stubs(section) == [stub] and self._stubs(section)[0] is stub
 
     def test_the_stub_retires_when_the_toolkit_is_loaded_again(self):
         section, _ = self._section_after_eviction()
         section.history.append(self._toolkit_row("browser", 2000.0, size=10))
-        joined = self._joined(section.get_history_messages())
-        assert self.STUB not in joined
-        assert "# Toolkit: browser" in joined
-        assert section.transient_entries == []
+        msgs = section.get_history_messages()
+        assert not msgs[0]["content"].startswith("System (")
+        assert "# Toolkit: browser" in self._joined(msgs)
+        assert self._stubs(section) == []
 
     def test_the_stub_retires_at_the_next_trim(self):
         section, _ = self._section_after_eviction()
         section.history += self._turns(20, 1100.0)
-        joined = self._joined(section.get_history_messages())
-        assert self.STUB not in joined
-        assert section.transient_entries == []
+        msgs = section.get_history_messages()
+        assert not msgs[0]["content"].startswith("System (")
+        assert self._stubs(section) == []
 
     def test_no_stub_while_a_newer_row_of_the_toolkit_is_in_the_window(self):
         section = _make_history_section()
@@ -1038,31 +1041,47 @@ class TestToolkitEvictionStubs:
         section.trim_low_bytes = 1_000
         section.history = ([self._toolkit_row("browser", 1000.0)] + self._turns(20, 1010.0)
                            + [self._toolkit_row("browser", 1040.0, size=10)])
-        joined = self._joined(section.get_history_messages())
-        assert self.STUB not in joined
-        assert section.transient_entries == []
+        msgs = section.get_history_messages()
+        assert not msgs[0]["content"].startswith("System (")
+        assert self._stubs(section) == []
         assert section.loaded_toolkits() == {"browser": 1040.0}
 
-    def test_one_stub_per_evicted_toolkit(self):
+    def _section_after_evicting_two(self):
         section = _make_history_section()
         section.trim_high_bytes = 2_000
         section.trim_low_bytes = 1_000
         section.history = ([self._toolkit_row("web", 1000.0, size=300), self._toolkit_row("browser", 1002.0)]
                            + self._turns(20, 1010.0))
-        joined = self._joined(section.get_history_messages())
-        assert 'load_toolkit("web")' in joined and self.STUB in joined
-        assert [e["toolkit"] for e in section.transient_entries] == ["web", "browser"]
+        return section, section.get_history_messages()
+
+    def test_one_stub_names_every_evicted_toolkit(self):
+        section, msgs = self._section_after_evicting_two()
+        head = msgs[0]["content"].split("\n")[0]
+        assert "web" in head and "browser" in head
+        assert msgs[0]["content"].count("System (") == 1
+        assert [e["toolkits"] for e in self._stubs(section)] == [["browser", "web"]]
+        assert self._stubs(section)[0]["timestamp"] == 1002.0, "the newest evicted row's place"
+
+    def test_a_reloaded_toolkit_leaves_the_stub_and_the_other_stays(self):
+        section, _ = self._section_after_evicting_two()
+        section.history.append(self._toolkit_row("web", 2000.0, size=10))
+        msgs = section.get_history_messages()
+        head = msgs[0]["content"].split("\n")[0]
+        assert head.startswith("System (") and "browser" in head and "web" not in head
+        assert [e["toolkits"] for e in self._stubs(section)] == [["browser"]]
+        assert self._stubs(section)[0]["timestamp"] == 1002.0, "a retired name does not move the stub"
 
     def test_the_stub_survives_a_full_prompt_rebuild(self):
         section, _ = self._section_after_eviction()
         with patch.object(section, '_notify_changed'):
             section.clear_transient_entries()
-        assert len(section.transient_entries) == 1
-        assert self.STUB in self._joined(section.get_history_messages())
+        assert [e["toolkits"] for e in self._stubs(section)] == [["browser"]]
+        assert "browser" in section.get_history_messages()[0]["content"].split("\n")[0]
 
     def test_the_prompt_tab_shows_the_stub(self):
         section, _ = self._section_after_eviction()
-        assert self.STUB in section.render_for_display()
+        under_header = section.render_for_display().split("### System (", 1)[1].split("\n### ", 1)[0]
+        assert "browser" in under_header
 
 
 class TestRemoveFromUserTurns:

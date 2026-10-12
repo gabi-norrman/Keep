@@ -57,6 +57,9 @@ continue from there:
 `load_toolkit(name: str, ...)`
 
 Load several in one call when a task spans areas: `load_toolkit("email", "web")`.
+The conversation you see is trimmed over time, and a reference you loaded earlier can go with it. A System note
+then names the toolkits whose references are gone: their commands are no longer documented, so load one again
+before using it.
 
 The toolkits:
 {TOOLKITS}

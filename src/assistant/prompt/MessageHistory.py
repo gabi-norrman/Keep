@@ -58,11 +58,14 @@ class MessageHistory:
     # busy period, feed bursts included, so it is a size worth paying always.
     TRIM_CEILING_BYTES = 50 * 1024
     TRIM_FRESH_SECONDS = 15 * 60
-    # A trim that evicts a toolkit reference row leaves a one-line transient `system` stub
-    # at the row's timestamp, exempt from the cutoff, so the LLM knows the commands it saw
-    # there are gone and how to get them back — without it the model keeps using the toolkit
-    # from memory and guesses at names (a live run emitted browse_go for browse_open). The
-    # stub goes when the toolkit is loaded again, at the next trim, or with the day's wipe.
+    # A trim that evicts toolkit reference rows leaves one transient `system` stub naming the
+    # evicted toolkits, at the newest evicted row's timestamp and exempt from the cutoff, so
+    # the LLM knows the commands it saw there are gone — without it the model keeps using
+    # the toolkit from memory and guesses at names (a live run emitted browse_go for
+    # browse_open). The prompt's toolkit section explains the note; the stub is only the
+    # names, since a voice day evicts a dozen at once (12 one-line stubs, 2.2KB, 2026-10-12).
+    # A name leaves the stub when its toolkit is loaded again; the stub goes at the next
+    # trim, with the day's wipe, or when its last name leaves.
     SOURCE_TOOLKIT_EVICTED = "toolkit_evicted"
 
     def __init__(self):
@@ -269,12 +272,12 @@ class MessageHistory:
         drop is younger than trim_fresh_seconds (see TRIM_CEILING_BYTES); the age is
         checked after snapping, since the snap can move the cut and with it that row.
         """
-        stubs = [item for item in rendered if self._is_eviction_stub(item[0])]
+        stub = next((entry for entry, _, _ in rendered if self._is_eviction_stub(entry)), None)
         rendered = [item for item in rendered if not self._is_eviction_stub(item[0])]
         kept = [item for item in rendered if item[0]["timestamp"] >= self._trim_cutoff]
         total = sum(len(content.encode("utf-8")) for _, _, content in kept)
         if total <= self.trim_high_bytes:
-            return self._with_eviction_stubs(stubs, kept, dropped=[])
+            return self._with_eviction_stub(stub, kept, dropped=[])
 
         # Over the high watermark: walk newest→oldest to find the low-watermark cut.
         keep_from = len(kept)
@@ -288,7 +291,7 @@ class MessageHistory:
         keep_from = self._snap_to_boundary(kept, keep_from, self.trim_high_bytes)
         if keep_from == 0:
             trace("MessageHistory: window over high watermark but nothing trimmable — leaving it")
-            return self._with_eviction_stubs(stubs, kept, dropped=[])
+            return self._with_eviction_stub(stub, kept, dropped=[])
         newest_dropped_age = time.time() - kept[keep_from - 1][0]["timestamp"]
         fresh = newest_dropped_age < self.trim_fresh_seconds
         if fresh and total <= self.trim_ceiling_bytes:
@@ -298,7 +301,7 @@ class MessageHistory:
                       f"the newest row a trim would drop is {newest_dropped_age / 60:.1f}m old — waiting for it to "
                       f"age past {self.trim_fresh_seconds // 60}m or the window to hit the "
                       f"{self.trim_ceiling_bytes // 1024}KB ceiling")
-            return self._with_eviction_stubs(stubs, kept, dropped=[])
+            return self._with_eviction_stub(stub, kept, dropped=[])
         kept_bytes = sum(len(content.encode("utf-8")) for _, _, content in kept[keep_from:])
 
         dropped = kept[:keep_from]
@@ -316,7 +319,7 @@ class MessageHistory:
             self.dropped_delta_sections |= sections
             info(f"MessageHistory: trim dropped {len(dropped_notes)} prompt-delta note(s) of "
                  f"{sorted(sections)} — PromptManager restates those sections before the next send")
-        return self._with_eviction_stubs(stubs, kept, dropped)
+        return self._with_eviction_stub(stub, kept, dropped)
 
     # --- toolkit-eviction stubs (see SOURCE_TOOLKIT_EVICTED) ------------------------------
 
@@ -332,27 +335,22 @@ class MessageHistory:
             return []
         return [name for name in (loaded_name(line) for line in entry["content"].split("\n")) if name]
 
-    @classmethod
-    def _stub_text(cls, name: str) -> str:
-        return (f"The {name} toolkit reference loaded here was trimmed from the history window; "
-                f"its commands are no longer documented in it. load_toolkit(\"{name}\") sends it again.")
+    @staticmethod
+    def _stub_text(names: list[str]) -> str:
+        return f"Toolkit references trimmed from the window: {', '.join(names)}."
 
-    def _with_eviction_stubs(self, stubs: list[tuple[dict, str, str]], kept: list[tuple[dict, str, str]],
-                             dropped: list[tuple[dict, str, str]]) -> list[tuple[dict, str, str]]:
-        """The window with its toolkit-eviction stubs in front. A stub whose toolkit is back in
-        the window is retired; a trim (`dropped` non-empty) retires the earlier trim's stubs —
-        a toolkit not reloaded within one window's worth of conversation is not in use — and
-        leaves a fresh one for every toolkit row it evicted."""
+    def _with_eviction_stub(self, stub: dict | None, kept: list[tuple[dict, str, str]],
+                            dropped: list[tuple[dict, str, str]]) -> list[tuple[dict, str, str]]:
+        """The window with its one toolkit-eviction stub in front. A name whose toolkit is back
+        in the window leaves the stub; a trim (`dropped` non-empty) retires the earlier trim's
+        stub whole — a toolkit not reloaded within one window's worth of conversation is not
+        in use — and leaves a fresh one naming every toolkit row it evicted."""
         in_window = {name for entry, _, _ in kept for name in self._toolkit_names(entry)}
-        retired = [entry for entry, _, _ in stubs if entry["toolkit"] in in_window]
-        if dropped:
-            retired += [entry for entry, _, _ in stubs if entry["toolkit"] not in in_window]
-        if retired:
-            names = sorted({e["toolkit"] for e in retired})
-            trace(f"MessageHistory: retiring the eviction stub(s) of {', '.join(names)}"
+        names = [] if dropped or stub is None else [n for n in stub["toolkits"] if n not in in_window]
+        if stub is not None and names != stub["toolkits"]:
+            gone = sorted(set(stub["toolkits"]) - set(names))
+            trace(f"MessageHistory: the eviction stub drops {', '.join(gone)}"
                   + (" — loaded again" if not dropped else " — not loaded again before the next trim"))
-            self.transient_entries = [e for e in self.transient_entries if e not in retired]
-            stubs = [item for item in stubs if item[0] not in retired]
 
         evicted: dict[str, float] = {}
         for entry, _, _ in dropped:
@@ -361,16 +359,21 @@ class MessageHistory:
                     evicted[name] = max(evicted.get(name, 0.0), entry["timestamp"])
         if evicted:
             info(f"MessageHistory: trim evicted the toolkit reference(s) of {', '.join(sorted(evicted))} "
-                 f"— leaving a stub for each at its row's place")
-            new_stubs = [{"role": "system", "content": self._stub_text(name), "timestamp": timestamp,
-                          "source": self.SOURCE_TOOLKIT_EVICTED, "location": None, "section": None,
-                          "toolkit": name}
-                         for name, timestamp in sorted(evicted.items(), key=lambda item: item[1])]
-            self.transient_entries = self.transient_entries + new_stubs
-            stubs = stubs + [(entry, *self._render_entry(entry, self.max_render_chars)) for entry in new_stubs]
-        if not stubs:
+                 f"— one stub names them at the newest row's place")
+            names = sorted(set(names) | set(evicted))
+        timestamp = max(evicted.values()) if evicted else (stub["timestamp"] if stub else 0.0)
+
+        if stub is not None and (names != stub["toolkits"] or timestamp != stub["timestamp"]):
+            self.transient_entries = [e for e in self.transient_entries if e is not stub]
+            stub = None
+        if names and stub is None:
+            stub = {"role": "system", "content": self._stub_text(names), "timestamp": timestamp,
+                    "source": self.SOURCE_TOOLKIT_EVICTED, "location": None, "section": None,
+                    "toolkits": names}
+            self.transient_entries = self.transient_entries + [stub]
+        if stub is None:
             return kept
-        return stubs + kept
+        return [(stub, *self._render_entry(stub, self.max_render_chars))] + kept
 
     @staticmethod
     def _snap_to_boundary(kept: list[tuple[dict, str, str]], keep_from: int, high_bytes: int) -> int:
