@@ -41,6 +41,14 @@ class TestAssess:
     def test_an_item_gets_the_state_its_cadence_and_dates_put_it_in(self, entry, kind):
         assert assess(entry, NOW).kind is kind
 
+    def test_a_due_time_reached_without_a_look_is_past_due_the_same_day(self):
+        reached = WatchList.Item("water-meter", "read it", (NOW - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M"),
+                                 "2026-03-01", "2026-03-01", "", (NOW - timedelta(hours=5)).strftime("%Y-%m-%d %H:%M"))
+        assert assess(reached, NOW).kind is PAST_DUE and "2h" in assess(reached, NOW).reason
+        looked = WatchList.Item("water-meter", "read it", reached.due, "2026-03-01", "2026-03-01", "",
+                                (NOW - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M"))
+        assert assess(looked, NOW).kind is WAITING
+
     def test_the_next_check_is_one_cadence_after_the_last(self):
         entry = assess(item(every="6h", checked=timedelta(hours=2)), NOW)
         assert entry.next_check == NOW + timedelta(hours=4)

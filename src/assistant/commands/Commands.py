@@ -99,7 +99,7 @@ class Commands:
     MULTI_PARAM_COMMANDS = frozenset({
         "send_email", "dim", "search_history", "show_history",
         "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
-        "vault_request", "config_set", "load_toolkit", "schedule_wakeup",
+        "vault_request", "config_set", "load_toolkit",
         "load_watch", "save_watch", "delete_watch",
         "load_procedure", "save_procedure", "delete_procedure",
         "create_event", "load_calendar", "fetch_camera_images", "car_navigate",
@@ -415,17 +415,9 @@ class Commands:
         except Exception as e:
             return f"load_calendar failed: {e}"
 
-    def cmd_schedule_wakeup(self, *args: str):
-        """schedule_wakeup(in_minutes, reason): the reason travels with the wake-up so the check
-        it triggers knows what it is for even after the history window has moved on. Unquoted
-        reasons split on their commas; re-joining them keeps the whole sentence."""
-        if not args:
-            return "schedule_wakeup failed: expected 'in_minutes, reason' parameters"
-        minutes = float(args[0]) + 0.1  # just AFTER the wanted time, otherwise the AI may see it as not yet due
-        reason = ", ".join(a for a in args[1:]).strip()
-        if not reason:
-            info("schedule_wakeup: the LLM gave no reason — the wake-up will have to find its purpose in the history")
-        AutonomousActionManager.get_instance().schedule(minutes, reason)
+    def cmd_schedule_wakeup(self, parameter_string: str):
+        # Just AFTER the wanted time, otherwise the AI may see it as not yet due.
+        AutonomousActionManager.get_instance().schedule(float(parameter_string) + 0.1)
 
     def cmd_caffeinate(self, parameter_string: str):
         AutonomousActionManager.get_instance().caffeinate()
@@ -1658,9 +1650,7 @@ class Commands:
     def describe_create_event(self, p):
         title = p.split(",", 1)[0].strip()
         return f"Creating calendar event '{title}'" if title else "Creating calendar event"
-    def describe_schedule_wakeup(self, p):
-        minutes, _, reason = p.partition(",")
-        return f"Scheduling wakeup in {minutes.strip()} min" + (f": {reason.strip()}" if reason.strip() else "")
+    def describe_schedule_wakeup(self, p):     return f"Scheduling wakeup in {p.strip()} min"
     def describe_caffeinate(self, p):             return "Staying awake"
     def describe_send_email(self, p):
         recipient = p.split(",", 1)[0].strip() if p else ""

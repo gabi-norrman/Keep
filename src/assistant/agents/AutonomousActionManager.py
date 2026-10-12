@@ -3,7 +3,7 @@ import os
 import re
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Optional
 
 from .LongTermMemoryCurator import LongTermMemoryCurator
@@ -32,6 +32,9 @@ USER_INTERACTION_STALE_COUNTER_SECONDS = 10 * 60
 MISSED_WAKEUP_STARTUP_GRACE_SECONDS = 30
 # Past this, a firing wake-up tells the LLM how late it is (a restart's few seconds need no note).
 WAKEUP_LATE_NOTE_THRESHOLD_SECONDS = 5 * 60
+# How often the due watcher reads the watch list for a due time or a short cadence that has
+# arrived — the one minute a due time is given to.
+DUE_POLL_SECONDS = 60
 
 # How often the background thread performs an autonomous activity check. The LLM
 # is told about this cadence (see AUTONOMOUS_ACTION_PROMPT) so it can reason about
@@ -58,24 +61,29 @@ THINKING_TAG_INSTRUCTION = (
     'ALL reasoning must stay inside the <thinking> tag — once you close </thinking> you may only emit '
     'commands or the final Telegram message (or "NO").\n\n')
 
-# Appended after the autonomous instruction when the check is a scheduled wake-up: the
-# exchange that scheduled it may have been trimmed from the history window by then, so the
-# wake carries its own reason (the 30-minutes-before-launch reminder of 2026-09-28 fired twice
-# into a window that no longer mentioned the launch, and the model found nothing to do).
+# Appended after the autonomous instruction when the check is a scheduled wake-up. The note
+# states the fact and nothing more: a wake-up once carried an instruction to the model's future
+# self (2026-09-29 to 2026-10-12), and on 2026-10-11 the fired check obeyed it and reminded Erik
+# of a water-meter reading he had reported done — and whose watch item was gone — five hours
+# earlier. What a wake-up is for lives in the history or on the watch list, which the check reads
+# anyway.
 SCHEDULED_WAKEUP_NOTE = """
 ## SCHEDULED WAKE-UP
 
-This check is not the periodic one: you scheduled it yourself at {scheduled_at} with schedule_wakeup, for:
-> {reason}
+This check is not the periodic one: you scheduled it yourself at {scheduled_at} with schedule_wakeup."""
 
-The conversation that led to it may no longer be in the history above. Act on the reason now — it is why you are awake."""
+# Appended after the autonomous instruction when the check runs because a watch item reached
+# its due time or the next poll of a short cadence (`_run_due_watcher`). The items stand in full
+# among the due items of the instruction; the note says why the check runs now. A reached due
+# time stays among the due items of every check until the item is looked at (the facts line
+# says how long ago it was reached), so a reminder a check failed to deliver comes back.
+DUE_ITEMS_NOTE = """
+## DUE WATCH ITEMS
 
-SCHEDULED_WAKEUP_NOTE_NO_REASON = """
-## SCHEDULED WAKE-UP
+This check is not the periodic one: the moment of these watch items has come (they stand in full among the due items above):
+{lines}"""
 
-This check is not the periodic one: you scheduled it yourself at {scheduled_at} with schedule_wakeup, without recording why. Look for the pending timer, reminder or follow-up in the history above and act on it now."""
-
-# Appended to either note when the wake-up fires well past its time: the server was down at
+# Appended to the note when the wake-up fires well past its time: the server was down at
 # the moment (the 09:00 reminder of 2026-10-11 was dropped on the restart that evening), so
 # the LLM should weigh whether the action still makes sense rather than act as if on time.
 SCHEDULED_WAKEUP_LATE_NOTE = """
@@ -137,14 +145,7 @@ Now analyze the conversation and system state above and respond accordingly.
 
 def _describe_duration(seconds: float) -> str:
     """'3 min', '2 h 15 min' or '1 d 4 h' — how late a wake-up is, in the note and the log."""
-    minutes = int(seconds // 60)
-    days, minutes = divmod(minutes, 24 * 60)
-    hours, minutes = divmod(minutes, 60)
-    if days:
-        return f"{days} d {hours} h"
-    if hours:
-        return f"{hours} h {minutes} min"
-    return f"{minutes} min"
+    return WatchList.describe_duration(timedelta(seconds=seconds))
 
 
 class AutonomousActionManager:
@@ -190,8 +191,14 @@ class AutonomousActionManager:
         self._caffeine_interval_minutes: float = CAFFEINE_INTERVAL_MINUTES
         self._caffeine_thread: Optional[threading.Thread] = None
         self.thread = threading.Thread(target=self._run_periodic_check, daemon=True)
+        # The (item, moment) pairs the due watcher has fired for: once each, whatever the LLM
+        # then does with the item. In memory only — a restart fires a reached moment again.
+        self._fired_due: dict[str, datetime] = {}
+        self._next_due_logged: Optional[datetime] = None   # the watcher logs the next moment when it changes
+        self.due_thread = threading.Thread(target=self._run_due_watcher, daemon=True, name="DueWatcher")
         if not test_mode:
             self.thread.start()
+            self.due_thread.start()
             self._restore_scheduled_wakeups()
         self.test_mode = test_mode
 
@@ -281,7 +288,6 @@ class AutonomousActionManager:
             return (time.time() - self.last_user_interaction_at) < quiet_seconds
 
     def _run_periodic_check(self):
-        from datetime import datetime
         last_memory_curation_date = None
 
         next_check_at = time.time() + PERIODIC_CHECK_INTERVAL_SECONDS
@@ -322,25 +328,34 @@ class AutonomousActionManager:
                 error(f"Periodic activity check failed: {type(e).__name__}: {e}")
             trace(f"Next periodic activity check at {time.strftime('%H:%M', time.localtime(next_check_at))}")
 
-    def activity_check(self, prompt: str | None = None, wakeup: dict | None = None) -> str:
+    def activity_check(self, prompt: str | None = None, wakeup: dict | None = None,
+                       due: list[tuple[WatchList.Item, datetime]] | None = None) -> str:
         """One autonomous check. *wakeup* is the schedule-file entry when the check is a
-        scheduled wake-up: its reason is appended to the instruction (see SCHEDULED_WAKEUP_NOTE)."""
+        scheduled wake-up, *due* the watch items (with the moment each reached) when the due
+        watcher runs it: the instruction says so (SCHEDULED_WAKEUP_NOTE, DUE_ITEMS_NOTE)."""
         if not self.activity_check_lock.acquire(timeout=120):
             error("Could not acquire activity_check_lock — another check is stuck")
             return "NO"
         try:
-            return self._activity_check_inner(prompt, wakeup)
+            return self._activity_check_inner(prompt, wakeup, due)
         finally:
             self.activity_check_lock.release()
 
     @staticmethod
+    def _due_note(due: list[tuple[WatchList.Item, datetime]], now: datetime = None) -> str:
+        now = now or datetime.now()
+        lines = []
+        for item, moment in due:
+            if WatchList.due_moment(item) == moment:
+                lines.append(f"- `{item.name}` — due {item.due}, reached {WatchList.describe_duration(now - moment)} ago")
+            else:
+                lines.append(f"- `{item.name}` — due for its check (every {item.every})")
+        return DUE_ITEMS_NOTE.format(lines="\n".join(lines))
+
+    @staticmethod
     def _wakeup_note(wakeup: dict) -> str:
         scheduled_at = time.strftime("%H:%M", time.localtime(wakeup["scheduled_at"]))
-        reason = wakeup.get("reason", "")
-        if reason:
-            note = SCHEDULED_WAKEUP_NOTE.format(scheduled_at=scheduled_at, reason=reason)
-        else:
-            note = SCHEDULED_WAKEUP_NOTE_NO_REASON.format(scheduled_at=scheduled_at)
+        note = SCHEDULED_WAKEUP_NOTE.format(scheduled_at=scheduled_at)
         late_seconds = time.time() - wakeup["at"]
         if late_seconds > WAKEUP_LATE_NOTE_THRESHOLD_SECONDS:
             due_at = time.strftime("%Y-%m-%d %H:%M", time.localtime(wakeup["at"]))
@@ -349,9 +364,14 @@ class AutonomousActionManager:
             note += SCHEDULED_WAKEUP_LATE_NOTE.format(due_at=due_at, late=_describe_duration(late_seconds), cause=cause)
         return note
 
-    def _activity_check_inner(self, prompt: str | None, wakeup: dict | None = None) -> str:
+    def _activity_check_inner(self, prompt: str | None, wakeup: dict | None = None,
+                              due: list[tuple[WatchList.Item, datetime]] | None = None) -> str:
             if wakeup:
-                info(f"Check for autonomous action (scheduled wake-up for: {wakeup.get('reason') or 'no reason recorded'})...")
+                info(f"Check for autonomous action (wake-up scheduled at "
+                     f"{time.strftime('%H:%M', time.localtime(wakeup['scheduled_at']))})...")
+            elif due:
+                info("Check for autonomous action (watch items reached their moment: "
+                     + ", ".join(item.name for item, _ in due) + ")...")
             else:
                 info("Check for autonomous action...")
             is_real_run = prompt is None
@@ -381,6 +401,8 @@ class AutonomousActionManager:
             MessageHistory.append_user_turn(messages, self._action_prompt(self._llm_for(messages)))
             if wakeup:
                 MessageHistory.append_user_turn(messages, self._wakeup_note(wakeup))
+            if due:
+                MessageHistory.append_user_turn(messages, self._due_note(due))
 
             if is_real_run:
                 self.prompt_manager.save_prompt_to_file(messages)
@@ -562,13 +584,57 @@ class AutonomousActionManager:
         if parts:
             self.prompt_manager.update_history(None, None, "\n".join(parts))
 
-    def schedule(self, minutes: float, reason: str = "") -> None:
-        """Wake in *minutes*; *reason* is what the wake is for, carried into the check's prompt
-        because the conversation that scheduled it may be trimmed away by then."""
+    # --- the due watcher ------------------------------------------------------------------
+
+    def _run_due_watcher(self):
+        """Reads the watch list every DUE_POLL_SECONDS and runs a check when an item's due time
+        or the next poll of a cadence shorter than the periodic interval has arrived. The first
+        read waits the startup grace, so a moment reached while the server was down fires once
+        the interfaces are up — the item file is the schedule, nothing else persists."""
+        time.sleep(MISSED_WAKEUP_STARTUP_GRACE_SECONDS)
+        while self.running:
+            try:
+                self._poll_due()
+            except Exception as e:
+                error(f"Due watcher failed: {type(e).__name__}: {e}")
+            time.sleep(DUE_POLL_SECONDS)
+
+    def _poll_due(self, now: datetime = None) -> bool:
+        """One read of the watch list: fires a check for the reached moments not fired yet and
+        says so; False when it fired nothing. A moment is fired once (`_fired_due`) — an item
+        the LLM leaves unlooked-at after that is the periodic checks' business, which carry it
+        as a due item until a look. Night mode leaves the moment unfired, so it fires in the
+        morning; a user in flight leaves it for the next read a minute on."""
+        now = now or datetime.now()
+        pending = WatchList.pending(now, within=timedelta(seconds=PERIODIC_CHECK_INTERVAL_SECONDS))
+        reached = [(item, moment) for item, moment in pending
+                   if moment <= now and self._fired_due.get(item.name) != moment]
+        if not reached:
+            ahead = [moment for _, moment in pending if moment > now]
+            next_due = min(ahead) if ahead else None
+            if next_due != self._next_due_logged:
+                self._next_due_logged = next_due
+                trace("Due watcher: " + (f"next moment at {next_due:%Y-%m-%d %H:%M}" if next_due else "no moment ahead"))
+            return False
+        names = ", ".join(item.name for item, _ in reached)
+        if self.prompt_manager.is_night_mode_active():
+            info(f"Due watcher: {names} reached — left for the morning, Night mode is active")
+            return False
+        if self.is_user_interaction_active():
+            info(f"Due watcher: {names} reached — user interaction active or recent, trying again in a minute")
+            return False
+        for item, moment in reached:
+            self._fired_due[item.name] = moment
+        info(f"Due watcher: firing a check for {names}")
+        self.activity_check(due=reached)
+        return True
+
+    def schedule(self, minutes: float) -> None:
+        """Wake in *minutes*. What the wake is for stays in the history or on the watch list —
+        a wake-up carries no instruction of its own (see SCHEDULED_WAKEUP_NOTE)."""
         wake_at = time.time() + minutes * 60
-        info(f"Scheduling Autonomous Action Manager to wake in {minutes} minutes"
-             + (f" for: {reason}" if reason else " (no reason given)") + "...")
-        wakeup = {"at": wake_at, "scheduled_at": time.time(), "reason": reason}
+        info(f"Scheduling Autonomous Action Manager to wake in {minutes} minutes...")
+        wakeup = {"at": wake_at, "scheduled_at": time.time()}
         self._save_wakeup(wakeup)
         self._start_wakeup_thread(wakeup)
 
@@ -609,8 +675,8 @@ class AutonomousActionManager:
 
     @staticmethod
     def _load_wakeups() -> list[dict]:
-        """The pending wake-ups on disk. A bare timestamp (the file's shape before wake-ups
-        carried a reason) is read as a wake-up with no reason, scheduled at an unknown time."""
+        """The pending wake-ups on disk. A bare timestamp (the file's oldest shape) is read as
+        a wake-up scheduled at an unknown time; the `reason` an older version wrote is dropped."""
         try:
             with open(SCHEDULE_FILE, "r") as f:
                 raw = json.load(f)
@@ -619,10 +685,9 @@ class AutonomousActionManager:
         wakeups = []
         for entry in raw:
             if isinstance(entry, dict):
-                wakeups.append({"at": entry["at"], "scheduled_at": entry.get("scheduled_at", entry["at"]),
-                                "reason": entry.get("reason", "")})
+                wakeups.append({"at": entry["at"], "scheduled_at": entry.get("scheduled_at", entry["at"])})
             else:
-                wakeups.append({"at": float(entry), "scheduled_at": float(entry), "reason": ""})
+                wakeups.append({"at": float(entry), "scheduled_at": float(entry)})
         return wakeups
 
     def _restore_scheduled_wakeups(self):
@@ -637,8 +702,7 @@ class AutonomousActionManager:
             trace("No scheduled wake-ups to restore")
         for wakeup in active:
             remaining = (wakeup["at"] - now) / 60
-            info(f"Restoring scheduled wakeup in {remaining:.1f} minutes"
-                 + (f" for: {wakeup['reason']}" if wakeup["reason"] else ""))
+            info(f"Restoring scheduled wakeup in {remaining:.1f} minutes")
             self._start_wakeup_thread(wakeup)
         if missed:
             oldest = time.strftime("%Y-%m-%d %H:%M", time.localtime(missed[0]["at"]))
@@ -663,8 +727,7 @@ class AutonomousActionManager:
             while self.running and self.is_user_interaction_active():
                 info("Missed wakeup deferred — user interaction active or recent. Retrying shortly.")
                 time.sleep(USER_INTERACTION_QUIET_PERIOD_SECONDS)
-            info(f"Firing missed wakeup {late} late"
-                 + (f" for: {wakeup['reason']}" if wakeup["reason"] else ""))
+            info(f"Firing missed wakeup {late} late")
             try:
                 self.activity_check(wakeup={**wakeup, "missed": True})
             except Exception as e:
@@ -736,5 +799,6 @@ class AutonomousActionManager:
 
     def stop(self):
         self.running = False
-        if self.thread.is_alive():
-            self.thread.join(timeout=1)
+        for thread in (self.thread, self.due_thread):
+            if thread.is_alive():
+                thread.join(timeout=1)

@@ -7,6 +7,10 @@ an item lives in one place instead of as a trail of remembered sentences. Deleti
 removes its file; every replaced or deleted version is copied to `log/memory/watchlist/`
 first, which is a debugging trail the LLM never reads.
 
+An item may carry a due date, which may name a time (`due`: "2026-11-08" or "2026-11-08 17:00");
+a due *time* is a moment the assistant acts at — `due_moment` reads it, and the item is due for a poll
+from then until it is looked at again (checked, re-dated or deleted), so a reminder the check
+failed to deliver comes back on the next one instead of being lost; a bare date fires nothing.
 An item may carry a check cadence (`every`: "1d", "6h", "weekly" — free text the LLM reads)
 and always carries when it was last looked at (`checked`, with the time of day): `updated`
 moves when the state changes, `checked` whenever someone looks (the assistant's `save_watch` is a
@@ -15,7 +19,8 @@ stamps `checked` with `checked_watch` and leaves the note alone, so the note nev
 a trail again. `interval` and `stamp` read the cadence and the stamp: `due_for_poll` is the
 code's arithmetic on the two (the autonomous check gets only the items it names in full, which
 keeps that prompt small; it passes half its own interval as the tolerance, so an item is polled
-by the check that falls nearest its cadence), and the TUI draws when the next check falls from them.
+by the check that falls nearest its cadence), `pending` the moments the manager's due watcher wakes
+for, and the TUI draws when the next check falls from them.
 
 The `save_watch`, `checked_watch` and `delete_watch` commands and the memory curator's command
 block all go through `run`. The prompt's watch-list section is only an index (`render_index`: a
@@ -238,6 +243,20 @@ def stamp(text: str) -> datetime | None:
         return None
 
 
+def describe_duration(delta: timedelta) -> str:
+    """'just now', '3 min', '2 h 15 min' or '1 d 4 h' — how long a moment has been reached."""
+    minutes = int(delta.total_seconds() // 60)
+    if minutes < 1:
+        return "just now"
+    days, minutes = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(minutes, 60)
+    if days:
+        return f"{days} d {hours} h"
+    if hours:
+        return f"{hours} h {minutes} min"
+    return f"{minutes} min"
+
+
 def staleness(item: Item, today: date = None) -> str:
     """Why the item needs a look, or '' when it does not."""
     today = today or date.today()
@@ -250,9 +269,14 @@ def staleness(item: Item, today: date = None) -> str:
     return ""
 
 
-def _block(item: Item, today: date = None) -> str:
-    """One item in full: its name and facts on a line, the note under it."""
+def _block(item: Item, today: date = None, now: datetime = None) -> str:
+    """One item in full: its name and facts on a line, the note under it. A due time the item
+    has reached without a look since is said so, with how long ago — the check then knows a
+    reminder is a repeat and that the item comes back until it is looked at."""
+    now = now or datetime.now()
     facts = ([f"due {item.due}"] if item.due else []) + [f"updated {item.updated}"]
+    if (reached := fell_due(item, now)) is not None:
+        facts[0] += f" — reached {describe_duration(now - reached)} ago, not looked at since"
     if item.every:
         facts.append(f"check every {item.every}")
     if item.checked:
@@ -267,19 +291,59 @@ def render(directory: Path = None, today: date = None) -> str:
     return "\n\n".join(_block(item, today) for item in items(directory)) or EMPTY
 
 
+def due_moment(item: Item) -> datetime | None:
+    """The moment a due *time* names — None for a bare date or free text, which fire nothing."""
+    text = item.due.strip()
+    return stamp(text) if re.match(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}", text) else None
+
+
+def fell_due(item: Item, now: datetime = None) -> datetime | None:
+    """The due moment the item has reached without a look since: the moment, or None when the
+    item has none, it is still ahead, or the item was checked, saved or re-dated after it."""
+    moment = due_moment(item)
+    if moment is None or moment > (now or datetime.now()):
+        return None
+    checked = stamp(item.checked)
+    return moment if checked is None or checked < moment else None
+
+
 def due_for_poll(item: Item, now: datetime = None, tolerance: timedelta = timedelta(0)) -> bool:
-    """Whether the item's check cadence has elapsed since it was last checked. An item without
-    a cadence is never polled; one never checked, or whose cadence or stamp cannot be read, is
-    due — the LLM is the one to make sense of it. `tolerance` is how much short of the cadence
-    still counts (never more than half the cadence): a caller that looks every 55 minutes and
-    stamps `checked` a few minutes into the look would otherwise find an hourly item not yet
-    due and poll it every other time."""
+    """Whether the item has reached its due time without a look since (`fell_due`), or its check
+    cadence has elapsed since it was last checked. An item without a cadence is otherwise never
+    polled; one never checked, or whose cadence or stamp cannot be read, is due — the LLM is the
+    one to make sense of it. `tolerance` is how much short of the cadence still counts (never
+    more than half the cadence): a caller that looks every 55 minutes and stamps `checked` a few
+    minutes into the look would otherwise find an hourly item not yet due and poll it every
+    other time. The due time takes no tolerance — the watcher wakes for it on the minute."""
+    now = now or datetime.now()
+    if fell_due(item, now) is not None:
+        return True
     if not item.every.strip():
         return False
     every, checked = interval(item.every), stamp(item.checked)
     if every is None or checked is None:
         return True
-    return (now or datetime.now()) - checked >= every - min(tolerance, every / 2)
+    return now - checked >= every - min(tolerance, every / 2)
+
+
+def pending(now: datetime = None, within: timedelta = None, directory: Path = None) -> list[tuple[Item, datetime]]:
+    """The moments the due watcher wakes for, soonest first: every due time not yet looked at
+    since (ahead or already reached), and the next poll of every item whose cadence is shorter
+    than `within` — the periodic check serves the longer ones. A cadence item never checked
+    polls at its creation. Each moment names the one wake it earns: the watcher fires once per
+    (item, moment) and the periodic checks carry an item left unlooked-at after that."""
+    now = now or datetime.now()
+    found = []
+    for item in items(directory):
+        moment = due_moment(item)
+        checked = stamp(item.checked)
+        if moment is not None and (checked is None or checked < moment):
+            found.append((item, moment))
+        every = interval(item.every)
+        if every is not None and within is not None and every < within:
+            found.append((item, (checked + every) if checked else (stamp(item.created) or now)))
+    found.sort(key=lambda pair: pair[1])
+    return found
 
 
 def render_due(directory: Path = None, now: datetime = None, tolerance: timedelta = timedelta(0)) -> str:
@@ -292,8 +356,8 @@ def render_due(directory: Path = None, now: datetime = None, tolerance: timedelt
         return NOTHING_DUE
     info(f"Watch list: {len(due)} of {len(open_items)} open items due for a poll: "
          + ", ".join(item.name for item in due))
-    today = (now or datetime.now()).date()
-    return "\n\n".join(_block(item, today) for item in due)
+    now = now or datetime.now()
+    return "\n\n".join(_block(item, now.date(), now) for item in due)
 
 
 def _note_start(note: str) -> str:

@@ -111,7 +111,9 @@ def assess(item: WatchList.Item, now: datetime) -> Entry:
         fraction = (now - checked) / every if checked else 1.0
     stale = WatchList.staleness(item, now.date())
 
-    if due_days is not None and due_days < 0:
+    if (reached := WatchList.fell_due(item, now)) is not None:
+        kind, reason = PAST_DUE, f"due time reached {span(now - reached)} ago, not looked at since"
+    elif due_days is not None and due_days < 0:
         kind, reason = PAST_DUE, f"due date passed {days(-due_days)} ago"
     elif every and checked is None:
         kind, reason = CHECK_DUE, "never checked"
@@ -369,6 +371,10 @@ class WatchListTab(TabView):
             return item.due, Theme.COLOR_LABEL
         offset = entry.due_days
         distance = {0: "today", 1: "tomorrow"}.get(offset) or (f"in {offset}d" if offset > 0 else f"{-offset}d ago")
+        if (moment := WatchList.due_moment(item)) is not None:
+            if offset == 0:
+                distance = f"in {span(moment - now)}" if moment > now else f"{span(now - moment)} ago"
+            return f"{moment:%b %-d %H:%M} · {distance}", cls._due_color(entry)
         return f"{WatchList.stamp(item.due):%b %-d} · {distance}", cls._due_color(entry)
 
     # --- The selected item ---

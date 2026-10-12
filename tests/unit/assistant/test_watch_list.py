@@ -449,3 +449,81 @@ class TestDue:
         path = wl / "tickets.md"
         path.write_text("\n".join(l for l in path.read_text().splitlines() if not l.startswith("Checked:")) + "\n")
         assert "tickets" in WatchList.render_due(wl)
+
+
+@pytest.mark.unit
+class TestDueTime:
+    """A due *time* is a moment the assistant acts at: the item is due for a poll from then
+    until it is looked at again, so a reminder a check failed to deliver comes back rather than
+    being lost; a bare date is a fact in the index and fires nothing."""
+
+    def test_a_due_time_is_read_and_a_bare_date_or_free_text_is_not(self):
+        assert WatchList.due_moment(WatchList.Item("x", due="2026-10-11 17:00")) == datetime(2026, 10, 11, 17, 0)
+        assert WatchList.due_moment(WatchList.Item("x", due="2026-10-11")) is None
+        assert WatchList.due_moment(WatchList.Item("x", due="when the tour is announced")) is None
+
+    def test_an_item_is_due_from_its_moment_until_it_is_looked_at(self, wl, log):
+        WatchList.save("Water meter", "read it", "2026-10-11 17:00", wl, log)
+        backdate(wl, "water-meter", "Checked", date(2026, 10, 11))
+        assert WatchList.render_due(wl, datetime(2026, 10, 11, 16, 59)) == WatchList.NOTHING_DUE
+        assert "water-meter" in WatchList.render_due(wl, datetime(2026, 10, 11, 17, 0))
+        assert "water-meter" in WatchList.render_due(wl, datetime(2026, 10, 12, 9, 0)), "left alone, it comes back"
+        WatchList.check("water-meter", wl)
+        assert WatchList.render_due(wl, datetime.now() + timedelta(hours=1)) == WatchList.NOTHING_DUE
+
+    def test_re_dating_the_item_ahead_settles_the_reached_moment(self, wl, log):
+        WatchList.save("Water meter", "read it", "2026-10-11 17:00", wl, log)
+        backdate(wl, "water-meter", "Checked", date(2026, 10, 11))
+        WatchList.save("Water meter", "snoozed", "2026-10-11 19:00", wl, log)
+        assert WatchList.render_due(wl, datetime(2026, 10, 11, 18, 0)) == WatchList.NOTHING_DUE
+
+    def test_a_bare_due_date_never_makes_an_item_due_for_a_poll(self, wl, log):
+        WatchList.save("Sofa", "on its way", "2026-10-11", wl, log)
+        backdate(wl, "sofa", "Checked", date(2026, 10, 1))
+        assert WatchList.render_due(wl, datetime(2026, 10, 13, 9, 0)) == WatchList.NOTHING_DUE
+
+    def test_the_due_item_says_how_long_ago_its_moment_was_reached(self, wl, log):
+        WatchList.save("Water meter", "read it", "2026-10-11 17:00", wl, log)
+        backdate(wl, "water-meter", "Checked", date(2026, 10, 11))
+        text = WatchList.render_due(wl, datetime(2026, 10, 11, 19, 10))
+        assert "reached 2 h 10 min ago" in text and "not looked at since" in text
+
+    @pytest.mark.parametrize("delta, text", [(timedelta(seconds=20), "just now"), (timedelta(minutes=3), "3 min"),
+                                             (timedelta(hours=2, minutes=15), "2 h 15 min"), (timedelta(days=1, hours=4), "1 d 4 h")])
+    def test_a_duration_reads_in_its_largest_fitting_unit(self, delta, text):
+        assert WatchList.describe_duration(delta) == text
+
+
+@pytest.mark.unit
+class TestPending:
+    """The moments the due watcher wakes for."""
+
+    def test_due_times_ahead_and_reached_are_listed_soonest_first(self, wl, log):
+        WatchList.save("Later", "x", "2026-10-11 19:00", wl, log)
+        WatchList.save("Sooner", "x", "2026-10-11 17:00", wl, log)
+        WatchList.save("Dated", "x", "2026-10-11", wl, log)
+        for name in ("later", "sooner", "dated"):
+            backdate(wl, name, "Checked", date(2026, 10, 11))
+        pending = WatchList.pending(datetime(2026, 10, 11, 18, 0), directory=wl)
+        assert [(item.name, moment) for item, moment in pending] == [
+            ("sooner", datetime(2026, 10, 11, 17, 0)), ("later", datetime(2026, 10, 11, 19, 0))]
+
+    def test_a_due_time_looked_at_since_is_not_pending(self, wl, log):
+        WatchList.save("Done", "x", "2026-10-11 17:00", wl, log)   # the save is the look, after the moment
+        assert WatchList.pending(datetime(2026, 10, 11, 18, 0), directory=wl) == []
+
+    def test_a_cadence_shorter_than_the_window_polls_at_its_next_check(self, wl, log):
+        WatchList.save("Car", "x", None, wl, log, every="3m")
+        WatchList.save("Tickets", "x", None, wl, log, every="1d")
+        checked = WatchList.stamp(WatchList.get("car", wl).checked)
+        pending = WatchList.pending(checked, within=timedelta(minutes=55), directory=wl)
+        assert [(item.name, moment) for item, moment in pending] == [("car", checked + timedelta(minutes=3))]
+
+    def test_without_a_window_no_cadence_is_pending(self, wl, log):
+        WatchList.save("Car", "x", None, wl, log, every="3m")
+        assert WatchList.pending(datetime.now(), directory=wl) == []
+
+    def test_a_cadence_item_never_checked_polls_at_its_creation(self, wl, log):
+        WatchList.save("Car", "x", None, wl, log, every="3m", looked=False)
+        pending = WatchList.pending(datetime.now(), within=timedelta(minutes=55), directory=wl)
+        assert [(item.name, moment) for item, moment in pending] == [("car", WatchList.stamp(WatchList.get("car", wl).created))]
