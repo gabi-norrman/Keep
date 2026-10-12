@@ -511,6 +511,9 @@ class LongTermMemoryCurator:
             excess = word_count - MEMORY_WORD_LIMIT
             note += (f" It is OVER the limit by {excess} words: the updated bank you output must be at least "
                      f"{excess} words shorter than the current one, on top of any additions you make.")
+            if excess > MEMORY_WORD_LIMIT * 0.1:
+                note += (" Condensing the bank is a REQUIRED part of this run, not optional: you MUST condense "
+                         "to meet the limit. Removing the least important information is acceptable.")
         else:
             note += f" You have {MEMORY_WORD_LIMIT - word_count} words of headroom for additions."
         return note

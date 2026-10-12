@@ -623,3 +623,10 @@ class TestReferenceResultsLeaveTheTranscript:
             curator.curate_memory(datetime(2026, 9, 10, 14, 3), datetime(2026, 9, 10, 16, 30))
         assert curator.floxy_db.get_interaction_history.call_args.kwargs["skip_command_result"] is is_reference_result
 
+
+
+def test_size_note_demands_condensing_only_when_over_the_limit_by_a_tenth():
+    mild = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT + MEMORY_WORD_LIMIT // 10)
+    severe = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT + MEMORY_WORD_LIMIT // 10 + 1)
+    assert "words shorter" in mild and "REQUIRED" not in mild
+    assert "REQUIRED" in severe
