@@ -2284,3 +2284,74 @@ class TestCmdReportIssue:
         sent, row = self._run(commands_instance, "Too vague to investigate: no time and no symptom.")
         assert "live here" not in sent and "Too vague" in sent
         assert row.startswith("[Issue report complete]") and "no issue was filed" in row
+
+
+# ---------------------------------------------------------------------------
+# TestPullRequestTrialCommands
+# ---------------------------------------------------------------------------
+
+class TestPullRequestTrialCommands:
+    """try_pull_request vets at once and switches in the background; pr_feedback posts the
+    user's words on the PR, the tried one when no number is given."""
+
+    def test_trying_a_pr_is_approved_like_a_restart(self, commands_instance):
+        assert commands_instance.is_sensitive("try_pull_request")
+        assert "trial" in commands_instance.approval_note("try_pull_request").lower()
+
+    def test_a_request_without_a_number_is_refused_before_anything_runs(self, commands_instance):
+        with patch("assistant.agents.PullRequestTrial.PullRequestTrial.vet") as vet, \
+             patch.object(commands_instance, "fire_and_forget") as fire:
+            assert "number" in commands_instance.cmd_try_pull_request("the trunk one")
+        vet.assert_not_called()
+        fire.assert_not_called()
+
+    def test_a_refused_pr_is_the_command_result_and_nothing_restarts(self, commands_instance):
+        from assistant.agents.PullRequestTrial import TrialRefused
+        with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
+             patch("assistant.agents.PullRequestTrial.PullRequestTrial.vet", side_effect=TrialRefused("PR #204 is merged")), \
+             patch.object(commands_instance, "fire_and_forget") as fire:
+            mock_cqm.unavailable_reason.return_value = None
+            result = commands_instance.cmd_try_pull_request("#204")
+        assert "Cannot try PR #204" in result and "merged" in result
+        fire.assert_not_called()
+
+    def test_a_vetted_pr_is_started_in_the_background_and_noted(self, commands_instance):
+        with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
+             patch("assistant.agents.PullRequestTrial.PullRequestTrial.vet", return_value={"title": "Tesla: trunk"}), \
+             patch("assistant.agents.PullRequestTrial.PullRequestTrial.start", return_value="Switched to PR #204") as start, \
+             patch("assistant.commands.Commands.system_note") as note, \
+             patch.object(commands_instance, "fire_and_forget", side_effect=lambda fn, p: fn(p)):
+            mock_cqm.unavailable_reason.return_value = None
+            result = commands_instance.cmd_try_pull_request("204")
+        assert "PR #204" in result and "Tesla: trunk" in result
+        start.assert_called_once_with(204)
+        assert note.call_args.args[0] == "server" and "Switched to PR #204" in note.call_args.args[1]
+
+    def test_the_disabled_integration_answers_at_once(self, commands_instance):
+        with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
+             patch("assistant.agents.PullRequestTrial.PullRequestTrial.vet") as vet:
+            mock_cqm.unavailable_reason.return_value = "disabled"
+            assert commands_instance.cmd_try_pull_request("204") == "disabled"
+        vet.assert_not_called()
+
+    def test_feedback_takes_the_number_and_the_rest_as_the_words(self, commands_instance):
+        from assistant.agents.PullRequestTrial import PullRequestTrial
+        assert commands_instance.is_multi_param("pr_feedback")
+        with patch.object(commands_instance, "background_command") as bg:
+            commands_instance.cmd_pr_feedback("204", "tested", "the trunk closes once now")
+        bg.assert_called_once_with(PullRequestTrial.feedback, (204, "tested, the trunk closes once now"))
+
+    def test_feedback_without_a_number_goes_to_the_tried_pr(self, commands_instance):
+        from assistant.agents.PullRequestTrial import PullRequestTrial, Trial
+        trial = Trial(number=204, title="t", head_ref="feat/trunk", since="14:02", return_branch="release")
+        with patch.object(PullRequestTrial, "current", return_value=trial), \
+             patch.object(commands_instance, "background_command") as bg:
+            commands_instance.cmd_pr_feedback("works for me")
+        bg.assert_called_once_with(PullRequestTrial.feedback, (204, "works for me"))
+
+    def test_feedback_without_a_number_and_no_trial_is_refused(self, commands_instance):
+        from assistant.agents.PullRequestTrial import PullRequestTrial
+        with patch.object(PullRequestTrial, "current", return_value=None), \
+             patch.object(commands_instance, "background_command") as bg:
+            assert "number" in commands_instance.cmd_pr_feedback("works for me")
+        bg.assert_not_called()

@@ -117,18 +117,21 @@ def _announce_startup(server: "Server"):
     from assistant.Notifier import notifier
     if not server.startup_announcement:
         trace("No startup announcement to send.")
-        migration_note = ConfigMigrations.take_note()
-        if migration_note:
-            SystemNote.system_note("Config", migration_note)
-        return
-    sent = notifier().send_message(server.startup_announcement, disable_notification=True, in_history=True)
-    info(f"Startup announcement {'sent to the chats' if sent else 'not sent, no chat took it'}: "
-         f"{server.startup_announcement!r}")
+    else:
+        sent = notifier().send_message(server.startup_announcement, disable_notification=True, in_history=True)
+        info(f"Startup announcement {'sent to the chats' if sent else 'not sent, no chat took it'}: "
+             f"{server.startup_announcement!r}")
     migration_note = ConfigMigrations.take_note()
     if migration_note:
         # What the config load moved, told once — here and not at build time, when no chat is up
         # yet to take it (2026-10-07: the note reached the history but the Telegram push was dropped).
         SystemNote.system_note("Config", migration_note)
+    from assistant.agents.PullRequestTrial import PullRequestTrial
+    rollback_note = PullRequestTrial.take_rollback_note()
+    if rollback_note:
+        # start.sh gave up on a PR trial's server and relaunched the previous branch: the user
+        # asked for that trial and must hear it is over, and why.
+        SystemNote.system_note("server", rollback_note)
 
 
 def _open_first_conversation(server: "Server | None" = None):

@@ -82,13 +82,16 @@ class Commands:
     derived from the `cmd_` method names of all of them; SENSITIVE_COMMANDS go through the
     notifier's approval gate before running.
     """
-    SENSITIVE_COMMANDS = frozenset({"send_email", "restart_server"})
+    SENSITIVE_COMMANDS = frozenset({"send_email", "restart_server", "try_pull_request"})
     # What the approval prompt shows under the title when the command has no parameters
     # to preview — the user should know what saying yes does before the screen goes blank.
     APPROVAL_NOTES = {
         "restart_server": "Pulls the latest code from git (the release branch, or master when "
-                          "developer_release is true) and relaunches the server. "
+                          "developer_release is true; a PR trial ends here) and relaunches the server. "
                           "The console goes blank for a moment and reconnects by itself.",
+        "try_pull_request": "Fetches the pull request's code, checks it out and relaunches the server on it "
+                            "as a trial. restart_server (or the nightly update at 03:00) goes back to the "
+                            "normal code. The console goes blank for a moment and reconnects by itself.",
     }
     # Commands whose handler accepts multiple positional arguments. The dispatcher
     # splats the parsed parameter list (`f(*params)`); the handler decides how to
@@ -99,7 +102,7 @@ class Commands:
     MULTI_PARAM_COMMANDS = frozenset({
         "send_email", "dim", "search_history", "show_history",
         "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
-        "vault_request", "config_set", "load_toolkit",
+        "vault_request", "config_set", "load_toolkit", "pr_feedback",
         "load_watch", "save_watch", "delete_watch",
         "load_procedure", "save_procedure", "delete_procedure",
         "create_event", "load_calendar", "fetch_camera_images", "car_navigate",
@@ -817,6 +820,53 @@ class Commands:
                 error(f"Restart server failed: {e}")
 
         self.fire_and_forget(_run, parameter_string)
+
+    def cmd_try_pull_request(self, parameter_string: str):
+        """`try_pull_request(number)`: run one of the install's own open PRs as a trial. The
+        vetting answers at once (a refusal is the command result); the fetch, the pip sync and
+        the restart follow in the background and report through a system note, as a restart does."""
+        from assistant.agents.PullRequestTrial import PullRequestTrial, TrialRefused, parse_number
+        number = parse_number(parameter_string)
+        if number is None:
+            return "try_pull_request failed: expected the pull request's number"
+        reason = CodeQualityMaintainer.unavailable_reason()
+        if reason:
+            info(f"try_pull_request not started: {reason}")
+            return reason
+        try:
+            pr = PullRequestTrial.vet(number)
+        except TrialRefused as e:
+            info(f"try_pull_request: PR #{number} refused — {e}")
+            return f"Cannot try PR #{number}: {e}."
+
+        def _run(_params):
+            try:
+                result = PullRequestTrial.start(number)
+                info(f"try_pull_request result: {result}")
+                system_note("server", f"PR trial: {result}")
+            except Exception as e:
+                error(f"try_pull_request failed: {e}")
+                system_note("server", f"PR trial of #{number} failed: {e}")
+
+        self.fire_and_forget(_run, parameter_string)
+        return f"PR #{number} ({pr.get('title', '')}) checked out for a trial, the server is switching to it and restarting."
+
+    def cmd_pr_feedback(self, *args: str) -> str:
+        """`pr_feedback(number, text)`: post the user's verdict on a PR as a comment. Without a
+        number the tried PR is meant; the text may carry commas, so the rest of the arguments
+        are the text."""
+        from assistant.agents.PullRequestTrial import PullRequestTrial, parse_number
+        args = [a for a in args if a is not None]
+        number = parse_number(args[0]) if args else None
+        text = ", ".join(a.strip() for a in (args[1:] if number is not None else args))
+        if number is None:
+            trial = PullRequestTrial.current()
+            if trial is None:
+                return "pr_feedback failed: expected 'number, text' — no PR is being tried, so the number is needed"
+            number = trial.number
+        if not text.strip():
+            return "pr_feedback failed: nothing to post"
+        self.background_command(PullRequestTrial.feedback, (number, text))
 
     def cmd_execute(self, parameter_string: str) -> str:
         return home.active().execute(self._home_name(parameter_string))
@@ -1754,6 +1804,8 @@ class Commands:
     def describe_improve_integration(self, p):    return f"Working on the {self._first_argument(p)} integration"
     def describe_report_issue(self, p):           return "Reporting an issue to the developers"
     def describe_restart_server(self, p):         return "Restarting server"
+    def describe_try_pull_request(self, p):       return f"Trying PR #{p.strip().lstrip('#').strip() or '?'}"
+    def describe_pr_feedback(self, p):            return f"Posting feedback on PR #{self._first_argument(p).lstrip('#') or '?'}"
     def describe_execute(self, p):                return f"Running action {p.strip()}"
     def describe_vault_add(self, p):
         # Never the value: the notification is exactly where a secret must not be echoed.

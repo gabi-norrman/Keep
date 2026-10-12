@@ -10,7 +10,9 @@ To have a change made anywhere in your own code, delivered as a pull request:
 
 A bug fix is the usual case, but an easy new feature, an improvement or a new integration works too. Be specific
 about what should change and why; if a self-analysis ran first, feed its report into the request. For a change
-confined to one integration `improve_integration` (developer toolkit) does the same with the scope checked.
+confined to one integration `improve_integration` (developer toolkit) does the same with the scope checked. While
+the server runs a PR as a trial (`try_pull_request`, developer toolkit) the change is pushed to that PR instead of
+a new one.
 
 Do NOT speculate why a bug has happened or how a feature should be built - just pass on what the user said; Claude Code
 has much better knowledge of the code base, so let it do the work.

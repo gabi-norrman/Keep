@@ -472,10 +472,21 @@ class CodeQualityMaintainer:
             return NIGHTLY_OFF_MESSAGE
         return None
 
+    @staticmethod
+    def trial_skip_reason() -> Optional[str]:
+        """Why no nightly code-quality run happens while a PR is tried, //nightly included: the
+        checkout holds the PR's code, so the run would analyse that and branch its PRs off it.
+        The nightly update is not held back — it is what ends the trial."""
+        from assistant.agents.PullRequestTrial import PullRequestTrial
+        trial = PullRequestTrial.current()
+        if trial is None:
+            return None
+        return f"the server is trying PR #{trial.number}, the nightly run waits until the trial is over"
+
     def _execute_nightly_run(self, force=False, only=None):
         """The whole night, or with `only` (one of NIGHTLY_STEPS) that step alone. `force` is
         //nightly: it runs with `self_improvement.nightly_runs` off, never with the integration off."""
-        reason = self.unavailable_reason() if force else self.nightly_skip_reason()
+        reason = (self.unavailable_reason() if force else self.nightly_skip_reason()) or self.trial_skip_reason()
         if reason:
             info(f"CodeQualityMaintainer: skipping nightly run — {reason}")
             return
@@ -950,7 +961,7 @@ class CodeQualityMaintainer:
             return reason
         prompt = SELF_IMPROVEMENT_PROMPT.format(request=request, label=SELF_IMPROVEMENT_LABEL,
                                                 version=CodeQualityMaintainer._version())
-        return CodeQualityMaintainer._pr_job(prompt, "self-improvement")
+        return CodeQualityMaintainer._pr_job(prompt + CodeQualityMaintainer._trial_instructions(), "self-improvement")
 
     @staticmethod
     def improve_integration(name: str, folder: Optional[str], request: str) -> str:
@@ -973,7 +984,8 @@ class CodeQualityMaintainer:
             scope = INTEGRATION_SCOPE.format(folder=folder, registry="")
             prompt = IMPROVE_INTEGRATION_PROMPT.format(name=name, request=request, scope=scope,
                                                        label=INTEGRATION_PR_LABEL, version=version)
-        report = CodeQualityMaintainer._pr_job(prompt, f"improve-integration {name}")
+        report = CodeQualityMaintainer._pr_job(prompt + CodeQualityMaintainer._trial_instructions(),
+                                               f"improve-integration {name}")
         number, _ = CodeQualityMaintainer.pull_request_in(report)
         if number is None:
             return report
@@ -992,6 +1004,13 @@ class CodeQualityMaintainer:
         return (f"PR #{number} was closed again: {reason}.\n\nThe change needs more than the "
                 f"{name} integration — the user can file it for the developers with report_issue.\n\n"
                 f"Claude Code's report:\n{report}")
+
+    @staticmethod
+    def _trial_instructions() -> str:
+        """During a PR trial a PR job is feedback on the tried PR, and pushes to it (the
+        paragraph PullRequestTrial adds to the prompt); "" on a normal branch."""
+        from assistant.agents.PullRequestTrial import PullRequestTrial
+        return PullRequestTrial.pr_job_instructions()
 
     @staticmethod
     def _pr_job(prompt: str, label: str) -> str:
@@ -1205,19 +1224,21 @@ class CodeQualityMaintainer:
         return f"Update initiated ({changes_msg}). Server is restarting..."
 
     @staticmethod
-    def restart(reason: str = "") -> str:
+    def restart(reason: str = "", fallback_branch: str = "") -> str:
         """Relaunch the server in place via start.sh (graceful kill + fresh start) WITHOUT
         pulling new code. Used by pull_and_restart() after the pull, and by automatic
         recovery paths (e.g. AudioRecovery) that just need a clean process to clear an
-        in-process wedge while running the same code."""
+        in-process wedge while running the same code. A PR trial names the branch to fall
+        back to: start.sh then checks it out and relaunches if the new server never comes up."""
         info(f"CodeQualityMaintainer: spawning start.sh as detached process"
-             f"{f' ({reason})' if reason else ''} (our pid {os.getpid()})...")
+             f"{f' ({reason})' if reason else ''} (our pid {os.getpid()}"
+             f"{f', fallback {fallback_branch}' if fallback_branch else ''})...")
         # Pass our own pid so start.sh can kill exactly this process. pgrep -f
         # inside start.sh has proven unreliable when start.sh is spawned from
         # within the server itself — every historical auto-restart missed the
         # old process and the replacement died on a port collision.
         subprocess.Popen(
-            ['bash', 'start.sh', str(os.getpid())],
+            ['bash', 'start.sh', str(os.getpid())] + ([fallback_branch] if fallback_branch else []),
             cwd=AISERVER_DIR,
             start_new_session=True,
             stdout=subprocess.DEVNULL,

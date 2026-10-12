@@ -1496,3 +1496,47 @@ class TestIssueIn:
     def test_a_pull_request_link_is_not_an_issue(self):
         assert CodeQualityMaintainer.issue_in("https://github.com/example/keep/pull/7") == (None, None)
         assert CodeQualityMaintainer.issue_in("") == (None, None)
+
+
+class TestPullRequestTrialHooks:
+    """What the maintainer does differently while the server runs a PR as a trial."""
+
+    def test_the_nightly_run_waits_while_a_pr_is_tried(self, maintainer):
+        with patch.object(CodeQualityMaintainer, "trial_skip_reason", return_value="the server is trying PR #204"), \
+                patch.object(maintainer, "_nightly_run") as run:
+            maintainer._execute_nightly_run(force=True)
+        run.assert_not_called()
+
+    def test_the_nightly_run_goes_ahead_on_a_normal_branch(self, maintainer):
+        with patch.object(CodeQualityMaintainer, "trial_skip_reason", return_value=None), \
+                patch.object(maintainer, "_nightly_run") as run:
+            maintainer._execute_nightly_run()
+        run.assert_called_once()
+
+    def test_the_skip_reason_names_the_tried_pr_and_is_none_otherwise(self):
+        from assistant.agents.PullRequestTrial import PullRequestTrial, Trial
+        trial = Trial(number=204, title="t", head_ref="feat/trunk", since="14:02", return_branch="release")
+        with patch.object(PullRequestTrial, "current", return_value=trial):
+            assert "PR #204" in CodeQualityMaintainer.trial_skip_reason()
+        with patch.object(PullRequestTrial, "current", return_value=None):
+            assert CodeQualityMaintainer.trial_skip_reason() is None
+
+    @pytest.mark.parametrize("job", ["improve_code", "improve_integration"])
+    def test_a_pr_job_during_a_trial_is_told_to_push_to_the_pr(self, job):
+        with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
+                patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
+                patch.object(CodeQualityMaintainer, "_trial_instructions", return_value="\nPUSH TO PR #204\n"), \
+                patch.object(CodeQualityMaintainer, "_pr_job", return_value="no PR") as run:
+            if job == "improve_code":
+                CodeQualityMaintainer.improve_code("fix the trunk")
+            else:
+                CodeQualityMaintainer.improve_integration("Tesla", "tesla", "fix the trunk")
+        prompt = run.call_args.args[0]
+        assert prompt.endswith("PUSH TO PR #204\n") and "fix the trunk" in prompt
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_a_trial_restart_hands_start_sh_the_branch_to_fall_back_to(self, mock_popen):
+        CodeQualityMaintainer.restart("trying PR #204", fallback_branch="release")
+        assert mock_popen.call_args[0][0] == ['bash', 'start.sh', str(os.getpid()), 'release']
+        CodeQualityMaintainer.restart("audio recovery")
+        assert mock_popen.call_args[0][0] == ['bash', 'start.sh', str(os.getpid())]

@@ -222,3 +222,58 @@ class TestCliStartSh:
         assert sid != str(os.getsid(0))
         assert tty_seen_at_start == 'True', "the tty was reported after the server started"
         assert (tmp_path / 'log' / 'cli_start.tty').read_text().strip()
+
+
+class TestTrialFallback:
+    """start.sh <pid> <branch> guards a PR trial (PullRequestTrial): the branch is checked out
+    again and the server relaunched when the trial's server never listens, and left alone when it
+    does. `git` is a recording stub; the launch window's `open` marks the server as up when the
+    test says the PR boots."""
+
+    def _arm(self, harness, boots: bool):
+        up = harness.dir / 'up'
+        extra = (f'git() {{ echo "$@" >> "{harness.dir}/git_calls"; }}\n'
+                 f'lsof() {{ [ -f "{up}" ] && echo 4242; cat "{harness.dir}/lsof_out" 2>/dev/null; return 0; }}\n')
+        if boots:
+            extra += f'open() {{ echo "$@" >> "{harness.open_calls}"; touch "{up}"; }}\n'
+        with harness.env_file.open('a') as env:
+            env.write(extra)
+
+    def _git_calls(self, harness) -> list[str]:
+        path = harness.dir / 'git_calls'
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_a_pr_whose_server_never_comes_up_is_rolled_back_and_the_branch_relaunched(self, harness):
+        self._arm(harness, boots=False)
+        result = harness.run(DEAD_PID, 'release')
+        assert result.returncode == 0, result.stderr
+        assert self._git_calls(harness) == ['checkout release']
+        assert len(harness.open_calls.read_text().splitlines()) == 2, "the previous branch is launched again"
+        note = (harness.dir / 'log' / 'trial_rollback.txt').read_text()
+        assert 'back on release' in note
+        assert 'going back to release' in harness.restart_log
+
+    def test_a_pr_whose_server_listens_is_left_running(self, harness):
+        self._arm(harness, boots=True)
+        result = harness.run(DEAD_PID, 'release')
+        assert result.returncode == 0, result.stderr
+        assert self._git_calls(harness) == []
+        assert len(harness.open_calls.read_text().splitlines()) == 1
+        assert not (harness.dir / 'log' / 'trial_rollback.txt').exists()
+        assert 'the server is up' in harness.restart_log
+
+    def test_a_failed_checkout_leaves_the_server_down_and_says_so(self, harness):
+        self._arm(harness, boots=False)
+        with harness.env_file.open('a') as env:
+            env.write('git() { echo "error: pathspec did not match" >&2; return 1; }\n')
+        result = harness.run(DEAD_PID, 'release')
+        assert result.returncode == 1
+        assert len(harness.open_calls.read_text().splitlines()) == 1
+        assert 'git checkout release failed' in harness.restart_log
+
+    def test_an_ordinary_restart_waits_for_nothing(self, harness):
+        self._arm(harness, boots=False)
+        result = harness.run(DEAD_PID)
+        assert result.returncode == 0
+        assert 'PR trial' not in harness.restart_log
+        assert self._git_calls(harness) == []

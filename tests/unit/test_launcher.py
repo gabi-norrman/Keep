@@ -424,3 +424,24 @@ def test_the_config_migration_note_goes_out_even_without_a_startup_announcement(
         chats.send_message.assert_not_called()
     finally:
         set_notifier(None)
+
+
+def test_a_rolled_back_pr_trial_is_told_with_the_startup_announcement():
+    """start.sh gave up on a PR trial's server and relaunched the previous branch: the user who
+    asked for the trial hears that it is over once a chat is up to take it."""
+    import floxy_ai_server
+    from assistant.Notifier import set_notifier
+    set_notifier(Mock())
+    try:
+        with patch("common.ConfigMigrations.take_note", return_value=None), \
+                patch("assistant.agents.PullRequestTrial.PullRequestTrial.take_rollback_note",
+                      side_effect=["PR trial rolled back. The server did not come up", None]), \
+                patch("assistant.SystemNote.system_note") as system_note:
+            server = floxy_ai_server.Server(Mock(), [], [], None, running_as_testsuite=False)
+            server.startup_announcement = "Server is up again"
+            floxy_ai_server._announce_startup(server)
+            system_note.assert_called_once_with("server", "PR trial rolled back. The server did not come up")
+            floxy_ai_server._announce_startup(server)
+            system_note.assert_called_once()
+    finally:
+        set_notifier(None)
