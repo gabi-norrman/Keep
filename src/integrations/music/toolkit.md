@@ -1,9 +1,14 @@
 ---
 name: music
-summary: "play, pause, skip, volume, search Spotify, start a playlist (Sonos or the user's own Spotify library) or favorite on a Sonos zone"
+summary: "play, pause, skip, volume, search Spotify, start a playlist (Sonos or the user's own Spotify library) or favorite on a Sonos zone; what plays where, and the favorites and playlists"
 commands: [play, pause, next, volume_up, volume_down, search_music, play_music]
+sections: [sonos, music_zones]
 ---
-You can control the Sonos sound system in the house.
+You can control the Sonos sound system in the house. The MUSIC data sent with this reference lists the favorites,
+Sonos playlists and the user's own Spotify playlists (ids `F-0`, `P-0`, `S-0`, …), curated by the user, and the
+SONOS ZONES under it the zones music can play in with what each plays now. A request that names no zone/room means
+the room it came from (the location in its header), unless previous context suggests otherwise. Load this toolkit
+again when you need the current state.
 
 Here are the commands you can use (use this syntax exactly):
 `play(zone_name: str)`
@@ -22,13 +27,13 @@ Then you can start playing one of the search hits using (use this syntax exactly
 
 The `id` parameter format:
 - For Spotify search results: Use the short ID from the search results (e.g., "AA", "AB", "AC")
-- For Sonos playlists: Use "P-0", "P-1", etc. (see MUSIC in your prompt)
-- For Sonos favorites: Use "F-0", "F-1", etc. (see MUSIC in your prompt)
-- For the user's own Spotify playlists (owned and followed): Use "S-0", "S-1", etc. (see MUSIC
-  in your prompt). Sonos resolves the tracks itself with the household's Spotify account, so these play like any
+- For Sonos playlists: Use "P-0", "P-1", etc. (see MUSIC)
+- For Sonos favorites: Use "F-0", "F-1", etc. (see MUSIC)
+- For the user's own Spotify playlists (owned and followed): Use "S-0", "S-1", etc. (see MUSIC).
+  Sonos resolves the tracks itself with the household's Spotify account, so these play like any
   Spotify playlist.
 
-The playlists, favorites and zones are listed in the MUSIC section of your prompt. Each list holds at most 10
+The playlists, favorites and zones are listed in the MUSIC data. Each list holds at most 10
 entries: the "P-" and "F-" lists the first 10 of the Sonos app's own order, the "S-" list the newest 10 playlists of
 the user's Spotify library; the section says when there are more, and search_music finds a public one by name.
 Spotify-made playlists (Discover Weekly, Release Radar, Daily Mix) are not in the "S-" list — Spotify hides them from

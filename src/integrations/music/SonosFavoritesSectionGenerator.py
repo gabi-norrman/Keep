@@ -6,19 +6,16 @@ from integrations.music.MusicIntegration import MusicManager
 
 
 class SonosFavoritesSectionGenerator(PromptSectionGenerator):
-    """Keeps the Sonos favorites, Sonos playlists and the user's Spotify playlists section of the prompt fresh.
+    """Keeps the Sonos favorites, Sonos playlists and the user's Spotify playlists data the music toolkit carries fresh.
 
     It reads the lists the integration caches (reloaded every 30 minutes, and the Spotify
     library again right after a sign-in) and never fetches itself: checking them once a minute
-    costs nothing, and the base loop skips the prompt rebuild when nothing changed. A reload
+    costs nothing, and the base loop skips the update when nothing changed. A reload
     of the Spotify library wakes the check at once (the integration's library listener), so a
-    fresh sign-in's playlists are in the prompt for the next request rather than a minute
+    fresh sign-in's playlists reach the LLM with the next request rather than a minute
     later. It reads the integration the IntegrationMonitor built and never builds one; it runs
     only while Sonos & Spotify is on, so a house without it never looks for a speaker."""
     key = "sonos"
-    heading = "# MUSIC"
-    intro = ("Favorites, Sonos playlists and the user's own Spotify playlists the `music` toolkit can start "
-             "(ids `F-0`, `P-0`, `S-0`, …), curated by the user:")
     CHECK_INTERVAL = 60
 
     def __init__(self, prompt_manager):

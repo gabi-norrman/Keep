@@ -51,7 +51,7 @@ def is_preface(text: str) -> bool:
 
 def preface(toolkit: Toolkits.Toolkit, channel: str) -> str:
     return (f"The {toolkit.name} toolkit is loaded ahead of this {channel} request, no load_toolkit needed "
-            f"— its reference{' and the current home data' if toolkit.sections else ''} follow.")
+            f"— its reference{' and its current data' if toolkit.sections else ''} follow.")
 
 
 def refresh_preface(toolkit: Toolkits.Toolkit, channel: str) -> str:

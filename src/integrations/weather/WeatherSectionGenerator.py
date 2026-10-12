@@ -3,10 +3,8 @@ from integrations.weather.WeatherIntegration import WeatherIntegration
 
 
 class WeatherSectionGenerator(PromptSectionGenerator):
-    """Refreshes the weather forecast section every 15 minutes."""
+    """Refreshes the weather forecast the weather toolkit carries every 15 minutes."""
     key = "weather"
-    heading = "# WEATHER FORECAST"
-    intro = "The short term weather forecast for the house; the `weather` toolkit has the days beyond it:"
 
     UPDATE_INTERVAL = 15 * 60
 

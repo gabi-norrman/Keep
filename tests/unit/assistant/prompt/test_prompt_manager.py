@@ -27,13 +27,13 @@ def prompt_test_environment(tmp_path, monkeypatch):
     """Create an isolated working directory with the files PromptManager expects."""
     prompt_template = (
         "Header\n"
-        "{WEATHER}\n"
-        "{PRECIPITATION}\n"
+        "{PROCEDURES}\n"
+        "{WATCHLIST}\n"
         "{HOME}\n"
         "{MEMORY}\n"
         "{VAULT}\n"
         "{CALENDAR}\n"
-        "{SONOS}\n"
+        "{INTEGRATIONS}\n"
         "{WHISPER}\n"
         "{CAR_INFO}\n"
     )
@@ -129,20 +129,20 @@ def test_section_update_reassembles_prompt(prompt_test_environment):
     manager = PromptManager(test_suite=True)
 
     section_content = {
-        "weather": "Weather details section",
-        "precipitation": "Precipitation section",
+        "procedures": "Procedures section",
+        "watchlist": "Watch list section",
         "home": "Home automation section",
         "memory": "Memory section content",
         "vault": "Vault section content",
         "calendar": "Calendar entries section",
-        "sonos": "Sonos favorites section",
+        "integrations": "Integrations section",
         "whisper": "Whisper instructions section",
         "car_info": "Tesla car information section",
     }
     manager.sections = {key: DummySection(value) for key, value in section_content.items()}
 
     previous_assembly_time = manager._last_assembly_time
-    manager.on_section_updated("weather")
+    manager.on_section_updated("procedures")
 
     expected_prompt = prompt_test_environment["template"]
     for key, value in section_content.items():
@@ -153,7 +153,7 @@ def test_section_update_reassembles_prompt(prompt_test_environment):
     assert manager._messages == [{"role": "system", "content": expected_prompt}]
     assert manager._last_assembly_time >= previous_assembly_time
 
-    for placeholder in ("{WEATHER}", "{PRECIPITATION}", "{MEMORY}", "{VAULT}", "{CALENDAR}", "{SONOS}", "{WHISPER}", "{CAR_INFO}"):
+    for placeholder in ("{PROCEDURES}", "{WATCHLIST}", "{MEMORY}", "{VAULT}", "{CALENDAR}", "{INTEGRATIONS}", "{WHISPER}", "{CAR_INFO}"):
         assert placeholder not in manager.prompt
     assert "{HOME}" in manager.prompt, "the fixture template's {HOME} stays: res/prompt.md has none"
 
@@ -224,18 +224,18 @@ def _assemble_with_sections(manager, whisper_content="Whisper instructions secti
     on_prompt_assembled callbacks.
     """
     section_content = {
-        "weather": "Weather details section",
-        "precipitation": "Precipitation section",
+        "procedures": "Procedures section",
+        "watchlist": "Watch list section",
         "home": "Home automation section",
         "memory": "Memory section content",
         "vault": "Vault section content",
         "calendar": "Calendar entries section",
-        "sonos": "Sonos favorites section",
+        "integrations": "Integrations section",
         "whisper": whisper_content,
         "car_info": "Tesla car information section",
     }
     manager.sections = {key: DummySection(value) for key, value in section_content.items()}
-    manager.on_section_updated("weather")
+    manager.on_section_updated("procedures")
 
 
 @pytest.mark.unit
@@ -250,7 +250,7 @@ def test_on_prompt_assembled_invokes_callback_with_assembled_messages(prompt_tes
     assert len(received) == 1
     callback_messages = received[0]
     assert callback_messages[0]["role"] == "system"
-    assert "Weather details section" in callback_messages[0]["content"]
+    assert "Procedures section" in callback_messages[0]["content"]
 
 
 @pytest.mark.unit
@@ -291,7 +291,7 @@ def test_on_prompt_assembled_swallows_callback_exception(prompt_test_environment
 
     _assemble_with_sections(manager)
 
-    assert "Weather details section" in manager.prompt
+    assert "Procedures section" in manager.prompt
     assert len(survivor) == 1
 
 
@@ -669,7 +669,7 @@ def test_current_time_note_format(prompt_test_environment, monkeypatch):
 
 @pytest.mark.unit
 def test_get_section_stats_ordered_by_template_position(tmp_path, monkeypatch):
-    template = "{CALENDAR}\n{WEATHER}\n{HOME}\n"
+    template = "{CALENDAR}\n{PROCEDURES}\n{HOME}\n"
     testsuite = template
     res_dir = tmp_path / "res"
     res_dir.mkdir()
@@ -679,7 +679,7 @@ def test_get_section_stats_ordered_by_template_position(tmp_path, monkeypatch):
 
     manager = PromptManager(test_suite=True)
     manager.sections = {
-        'weather': DummySection("w"),
+        'procedures': DummySection("w"),
         'home': DummySection("i"),
         'calendar': DummySection("c"),
     }
@@ -689,7 +689,7 @@ def test_get_section_stats_ordered_by_template_position(tmp_path, monkeypatch):
     stats = manager.get_section_stats()
     names = [s[0] for s in stats if s[0] not in ('static', 'history')]
 
-    assert names == ['calendar', 'weather', 'home']
+    assert names == ['calendar', 'procedures', 'home']
 
 
 @pytest.mark.unit
@@ -697,7 +697,7 @@ def test_get_section_stats_leaves_out_a_section_without_a_placeholder(tmp_path, 
     """The Indigo data is carried by the home toolkit and never in the prompt: no bar for
     it, and its bytes must not be subtracted from the static size (the dashboard's static
     bar went negative and the Indigo bar set the scale after {HOME} left prompt.md)."""
-    template = "{WEATHER}\n"
+    template = "{PROCEDURES}\n"
     res_dir = tmp_path / "res"
     res_dir.mkdir()
     (res_dir / "prompt.md").write_text(template)
@@ -707,7 +707,7 @@ def test_get_section_stats_leaves_out_a_section_without_a_placeholder(tmp_path, 
     manager = PromptManager(test_suite=True)
     manager.sections = {
         'home': DummySection("x" * 30_000),
-        'weather': DummySection("w"),
+        'procedures': DummySection("w"),
     }
     manager._section_positions = manager._compute_section_positions()
     manager.prompt = "static w"
@@ -715,7 +715,7 @@ def test_get_section_stats_leaves_out_a_section_without_a_placeholder(tmp_path, 
     stats = {name: size for name, size, _ in manager.get_section_stats()}
 
     assert 'home' not in stats
-    assert stats['weather'] == 1 and stats['static'] == len("static ")
+    assert stats['procedures'] == 1 and stats['static'] == len("static ")
 
 
 @pytest.mark.unit
@@ -762,7 +762,7 @@ def test_compute_section_positions_returns_empty_on_missing_file(tmp_path, monke
 
     manager = PromptManager.__new__(PromptManager)
     manager.test_suite = True
-    manager.sections = {'weather': DummySection("w")}
+    manager.sections = {'procedures': DummySection("w")}
 
     positions = manager._compute_section_positions()
 
@@ -868,11 +868,11 @@ def _seed_full_rebuild(prompt_test_environment):
     full-rebuild path, which is what we want as the setup."""
     manager = PromptManager(test_suite=True)
     sections = {key: DummySection(f"{key}_content") for key in
-                ["weather", "precipitation", "home", "memory",
-                 "calendar", "sonos", "whisper", "car_info"]}
+                ["procedures", "watchlist", "home", "memory",
+                 "calendar", "integrations", "whisper", "car_info"]}
     manager.sections = sections
     manager._last_assembly_time = 0
-    manager.on_section_updated("weather")  # cold start → full rebuild snapshots baselines
+    manager.on_section_updated("procedures")  # cold start → full rebuild snapshots baselines
     return manager, sections
 
 
@@ -885,16 +885,16 @@ def test_small_change_emits_transient_and_skips_rebuild(prompt_test_environment)
     prompt_before = manager.prompt
     baselines_before = dict(manager._section_baselines)
 
-    sections["weather"] = DummySection("weather_content_x")  # ~1-char addition
+    sections["procedures"] = DummySection("procedures_content_x")  # ~1-char addition
     manager.sections = sections
-    manager.on_section_updated("weather")
+    manager.on_section_updated("procedures")
 
     assert manager.prompt == prompt_before, "small change must not rebuild the prompt"
     assert manager._section_baselines == baselines_before, "baselines must not be re-snapshotted on delta"
     assert len(received) == 1, "pre-heat callback must fire on a delta note too — it extends the request prefix"
     assert len(manager.message_history.transient_entries) == 1
     note = manager.message_history.transient_entries[0]
-    assert note["content"].startswith("Prompt section `weather` updated:")
+    assert note["content"].startswith("Prompt section `procedures` updated:")
     assert note["source"] == "prompt_delta"
 
 
@@ -967,15 +967,15 @@ def test_delta_pre_heat_messages_include_the_transient_note(prompt_test_environm
     received = []
     manager.on_prompt_assembled(lambda msgs: received.append(msgs))
 
-    sections["weather"] = DummySection("weather_content_x")
+    sections["procedures"] = DummySection("procedures_content_x")
     manager.sections = sections
-    manager.on_section_updated("weather")
+    manager.on_section_updated("procedures")
 
     assert len(received) == 1
     messages = received[0]
     assert messages[0]["role"] == "system"
     rendered_tail = "".join(m["content"] for m in messages[1:])
-    assert "weather" in rendered_tail, "pre-heat payload must contain the delta note"
+    assert "procedures" in rendered_tail, "pre-heat payload must contain the delta note"
 
 
 def _trim_away_the_notes(manager):
@@ -1006,20 +1006,20 @@ def test_a_trim_that_evicts_the_delta_notes_leaves_one_note_restating_the_sectio
     intermediate notes, and not nothing."""
     manager, sections = _seed_full_rebuild(prompt_test_environment)
     manager.test_suite = False
-    for state in ("weather_rain", "weather_sun"):
-        sections["weather"] = DummySection(state)
+    for state in ("procedures_rain", "procedures_sun"):
+        sections["procedures"] = DummySection(state)
         manager.sections = sections
-        manager.on_section_updated("weather")
+        manager.on_section_updated("procedures")
     assert len(manager.message_history.transient_entries) == 2
 
     messages = _trim_away_the_notes(manager)
 
-    notes = [e for e in manager.message_history.transient_entries if e.get("section") == "weather"]
+    notes = [e for e in manager.message_history.transient_entries if e.get("section") == "procedures"]
     assert len(notes) == 1
-    assert "-weather_content" in notes[0]["content"] and "+weather_sun" in notes[0]["content"]
-    assert "weather_rain" not in notes[0]["content"], "the intermediate state is history, not current"
+    assert "-procedures_content" in notes[0]["content"] and "+procedures_sun" in notes[0]["content"]
+    assert "procedures_rain" not in notes[0]["content"], "the intermediate state is history, not current"
     rendered = "".join(m["content"] for m in messages[1:])
-    assert "+weather_sun" in rendered, "the fresh note must be inside the window the request sends"
+    assert "+procedures_sun" in rendered, "the fresh note must be inside the window the request sends"
     assert manager.message_history.dropped_delta_sections == set()
 
 
@@ -1029,15 +1029,15 @@ def test_a_section_back_at_its_baseline_gets_no_note_after_a_trim(prompt_test_en
     tell the LLM about a change that is not there."""
     manager, sections = _seed_full_rebuild(prompt_test_environment)
     manager.test_suite = False
-    for state in ("weather_rain", "weather_content"):
-        sections["weather"] = DummySection(state)
+    for state in ("procedures_rain", "procedures_content"):
+        sections["procedures"] = DummySection(state)
         manager.sections = sections
-        manager.on_section_updated("weather")
+        manager.on_section_updated("procedures")
 
     messages = _trim_away_the_notes(manager)
 
-    assert not [e for e in manager.message_history.transient_entries if e.get("section") == "weather"]
-    assert "weather_rain" not in "".join(m["content"] for m in messages[1:])
+    assert not [e for e in manager.message_history.transient_entries if e.get("section") == "procedures"]
+    assert "procedures_rain" not in "".join(m["content"] for m in messages[1:])
 
 
 @pytest.mark.unit
@@ -1071,11 +1071,11 @@ def test_expired_rebuild_window_forces_full_rebuild_even_for_small_change(prompt
     # Pretend we are well past the rebuild window since baselines were snapshotted.
     manager._last_assembly_time = time.time() - (PromptManager._FULL_REBUILD_INTERVAL_S + 10)
 
-    sections["weather"] = DummySection("weather_content_x")  # would otherwise be a tiny delta
+    sections["procedures"] = DummySection("procedures_content_x")  # would otherwise be a tiny delta
     manager.sections = sections
-    manager.on_section_updated("weather")
+    manager.on_section_updated("procedures")
 
-    assert "weather_content_x" in manager.prompt, "expired window must trigger full rebuild"
+    assert "procedures_content_x" in manager.prompt, "expired window must trigger full rebuild"
     assert len(received) == 1
     assert manager.message_history.transient_entries == []
 
@@ -1086,8 +1086,8 @@ def test_missing_baseline_forces_full_rebuild(prompt_test_environment):
     init), we can't safely diff — fall back to full rebuild."""
     manager = PromptManager(test_suite=True)
     sections = {key: DummySection(f"{key}_content") for key in
-                ["weather", "precipitation", "home", "memory",
-                 "calendar", "sonos", "whisper", "car_info"]}
+                ["procedures", "watchlist", "home", "memory",
+                 "calendar", "integrations", "whisper", "car_info"]}
     manager.sections = sections
     received = []
     manager.on_prompt_assembled(lambda msgs: received.append(msgs))
@@ -1095,10 +1095,10 @@ def test_missing_baseline_forces_full_rebuild(prompt_test_environment):
     assert manager._section_baselines == {}
     manager._last_assembly_time = time.time()  # recent — so it's NOT the expiry path that triggers
 
-    manager.on_section_updated("weather")
+    manager.on_section_updated("procedures")
 
-    assert "weather_content" in manager.prompt
-    assert manager._section_baselines["weather"] == "weather_content"
+    assert "procedures_content" in manager.prompt
+    assert manager._section_baselines["procedures"] == "procedures_content"
     assert len(received) == 1
 
 
@@ -1110,7 +1110,7 @@ def test_system_prompt_bytes_stable_across_many_small_updates(prompt_test_enviro
     manager, sections = _seed_full_rebuild(prompt_test_environment)
     prompt_after_assembly = manager.prompt
 
-    for i, key in enumerate(["weather", "calendar", "memory", "sonos", "car_info"]):
+    for i, key in enumerate(["procedures", "calendar", "memory", "integrations", "car_info"]):
         sections[key] = DummySection(f"{key}_content_v{i}")
         manager.sections = sections
         manager.on_section_updated(key)
@@ -1131,21 +1131,21 @@ def test_repeated_small_change_same_section_appends_incremental_notes(prompt_tes
     manager, sections = _seed_full_rebuild(prompt_test_environment)
 
     for i in range(3):
-        sections["weather"] = DummySection(f"weather_content_v{i}")
+        sections["procedures"] = DummySection(f"procedures_content_v{i}")
         manager.sections = sections
-        manager.on_section_updated("weather")
+        manager.on_section_updated("procedures")
 
     entries = manager.message_history.transient_entries
     assert len(entries) == 3, "each change appends its own incremental note"
-    assert all(e["section"] == "weather" for e in entries)
+    assert all(e["section"] == "procedures" for e in entries)
     # First note diffs against the baseline; each later note diffs against the prev state.
-    assert "+weather_content_v0" in entries[0]["content"]
-    assert "-weather_content_v0" in entries[1]["content"]
-    assert "+weather_content_v1" in entries[1]["content"]
-    assert "-weather_content_v1" in entries[2]["content"]
-    assert "+weather_content_v2" in entries[2]["content"]
+    assert "+procedures_content_v0" in entries[0]["content"]
+    assert "-procedures_content_v0" in entries[1]["content"]
+    assert "+procedures_content_v1" in entries[1]["content"]
+    assert "-procedures_content_v1" in entries[2]["content"]
+    assert "+procedures_content_v2" in entries[2]["content"]
     # Last-seen state advanced to the latest content for the next diff.
-    assert manager._section_current["weather"] == "weather_content_v2"
+    assert manager._section_current["procedures"] == "procedures_content_v2"
 
 
 @pytest.mark.unit
@@ -1158,39 +1158,39 @@ def test_section_revert_to_baseline_emits_honest_incremental_delta(prompt_test_e
     note's +side (back to baseline)."""
     manager, sections = _seed_full_rebuild(prompt_test_environment)
 
-    sections["weather"] = DummySection("weather_content_changed")
+    sections["procedures"] = DummySection("procedures_content_changed")
     manager.sections = sections
-    manager.on_section_updated("weather")
+    manager.on_section_updated("procedures")
     assert len(manager.message_history.transient_entries) == 1, "precondition: one delta emitted"
 
     # Revert to the exact baseline content.
-    sections["weather"] = DummySection("weather_content")
+    sections["procedures"] = DummySection("procedures_content")
     manager.sections = sections
-    manager.on_section_updated("weather")
+    manager.on_section_updated("procedures")
 
     entries = manager.message_history.transient_entries
     assert len(entries) == 2, "the revert appends its own delta; the earlier note is kept"
-    assert "+weather_content_changed" in entries[0]["content"]
-    assert "-weather_content_changed" in entries[1]["content"]
-    assert "+weather_content" in entries[1]["content"]
+    assert "+procedures_content_changed" in entries[0]["content"]
+    assert "-procedures_content_changed" in entries[1]["content"]
+    assert "+procedures_content" in entries[1]["content"]
     # Last-seen state is back to the baseline content.
-    assert manager._section_current["weather"] == "weather_content"
+    assert manager._section_current["procedures"] == "procedures_content"
 
 
 @pytest.mark.unit
 def test_distinct_sections_keep_independent_incremental_notes(prompt_test_environment):
-    """Updates to different sections stay independent: weather's two changes append
-    two weather notes (each diffing against the prior weather state) while calendar's
+    """Updates to different sections stay independent: procedures's two changes append
+    two procedures notes (each diffing against the prior procedures state) while calendar's
     single change appends its own note — three notes total, none clobbering another."""
     manager, sections = _seed_full_rebuild(prompt_test_environment)
 
-    sections["weather"] = DummySection("weather_content_a")
+    sections["procedures"] = DummySection("procedures_content_a")
     manager.sections = sections
-    manager.on_section_updated("weather")
+    manager.on_section_updated("procedures")
 
-    sections["weather"] = DummySection("weather_content_b")
+    sections["procedures"] = DummySection("procedures_content_b")
     manager.sections = sections
-    manager.on_section_updated("weather")
+    manager.on_section_updated("procedures")
 
     sections["calendar"] = DummySection("calendar_content_x")
     manager.sections = sections
@@ -1198,13 +1198,13 @@ def test_distinct_sections_keep_independent_incremental_notes(prompt_test_enviro
 
     entries = manager.message_history.transient_entries
     assert len(entries) == 3
-    weather_notes = [e for e in entries if e["section"] == "weather"]
+    procedures_notes = [e for e in entries if e["section"] == "procedures"]
     calendar_notes = [e for e in entries if e["section"] == "calendar"]
-    assert len(weather_notes) == 2 and len(calendar_notes) == 1
-    # weather: first note baseline→a, second note a→b.
-    assert "+weather_content_a" in weather_notes[0]["content"]
-    assert "-weather_content_a" in weather_notes[1]["content"]
-    assert "+weather_content_b" in weather_notes[1]["content"]
+    assert len(procedures_notes) == 2 and len(calendar_notes) == 1
+    # procedures: first note baseline→a, second note a→b.
+    assert "+procedures_content_a" in procedures_notes[0]["content"]
+    assert "-procedures_content_a" in procedures_notes[1]["content"]
+    assert "+procedures_content_b" in procedures_notes[1]["content"]
     assert "+calendar_content_x" in calendar_notes[0]["content"]
 
 
@@ -1281,36 +1281,36 @@ def test_compute_section_delta_preserves_content_lines_starting_with_dashes(prom
 @pytest.mark.unit
 def test_on_section_updated_resolves_display_name_to_placeholder_key(prompt_test_environment):
     """Generators call notify_update(self.section_name) with display names like
-    "Weather" or "CalendarData" (see PromptSectionGenerator.__init__), but self.sections
+    "Procedures" or "CalendarData" (see PromptSectionGenerator.__init__), but self.sections
     is keyed by the lowercase placeholder slug. on_section_updated must translate."""
     manager = PromptManager(test_suite=True)
-    # Mimic production: dict key is "weather", generator's section_name is "Weather".
-    weather = DummySection("v1", section_name="Weather")
+    # Mimic production: dict key is "procedures", generator's section_name is "Procedures".
+    procedures = DummySection("v1", section_name="Procedures")
     manager.sections = {
-        "weather": weather,
-        "precipitation": DummySection("p", section_name="Precipitation"),
+        "procedures": procedures,
+        "watchlist": DummySection("p", section_name="WatchList"),
         "home": DummySection("i", section_name="HomeData"),
         "memory": DummySection("m", section_name="Memory"),
         "calendar": DummySection("c", section_name="CalendarData"),
-        "sonos": DummySection("s", section_name="Sonos"),
+        "integrations": DummySection("s", section_name="Integrations"),
         "whisper": DummySection("w", section_name="Whisper"),
         "car_info": DummySection("car", section_name="TeslaInfo"),
     }
     manager._last_assembly_time = 0
     # Cold start with display name — must trigger full rebuild (no baseline yet).
-    manager.on_section_updated("Weather")
+    manager.on_section_updated("Procedures")
     assert "v1" in manager.prompt
-    assert manager._section_baselines["weather"] == "v1"
+    assert manager._section_baselines["procedures"] == "v1"
 
     # Now a small change with the display name — must hit the delta path.
-    weather._content = "v1_extra"
-    manager.on_section_updated("Weather")
+    procedures._content = "v1_extra"
+    manager.on_section_updated("Procedures")
     assert "v1_extra" not in manager.prompt, "delta path must keep prompt stable"
     assert len(manager.message_history.transient_entries) == 1
     note = manager.message_history.transient_entries[0]
     # Note text carries the display name (what was passed to on_section_updated),
     # not the dict key.
-    assert "`Weather`" in note["content"]
+    assert "`Procedures`" in note["content"]
 
 
 @pytest.mark.unit
@@ -1327,48 +1327,48 @@ def test_diff_threshold_inclusive_boundary(prompt_test_environment, monkeypatch)
         staticmethod(lambda old, new: "X" * threshold),
     )
 
-    sections["weather"] = DummySection("weather_content_v2")
+    sections["procedures"] = DummySection("procedures_content_v2")
     manager.sections = sections
-    manager.on_section_updated("weather")
+    manager.on_section_updated("procedures")
 
     assert manager.prompt == prompt_before, "diff length == threshold must still hit the delta path"
     assert len(manager.message_history.transient_entries) == 1
 
 
 @pytest.mark.unit
-def test_distinct_sonos_and_music_zones_route_to_their_own_baselines(prompt_test_environment):
-    """Regression: the sonos and music_zones sections used to share the display name
-    "SonosFavorites" (pre-existing copy-paste bug). PromptManager routes deltas by
-    that display name, so a duplicate would silently mis-attribute one section's
-    updates to the other's baseline. Both must now be addressable independently."""
+def test_sections_whose_display_names_share_a_prefix_route_to_their_own_baselines(prompt_test_environment):
+    """Regression: two sections once shared a display name (a copy-paste bug). PromptManager
+    routes deltas by that display name, so a duplicate would silently mis-attribute one
+    section's updates to the other's baseline. Names that merely share a prefix must be
+    addressable independently."""
     manager = PromptManager(test_suite=True)
-    sonos = DummySection("sonos_v1", section_name="SonosFavorites")
-    music = DummySection("music_v1", section_name="MusicZones")
+    memory = DummySection("memory_v1", section_name="Memory")
+    recent = DummySection("recent_v1", section_name="MemoryRecent")
     manager.sections = {
-        "weather": DummySection("w", section_name="Weather"),
-        "precipitation": DummySection("p", section_name="Precipitation"),
+        "procedures": DummySection("w", section_name="Procedures"),
+        "watchlist": DummySection("p", section_name="WatchList"),
         "home": DummySection("i", section_name="HomeData"),
-        "memory": DummySection("m", section_name="Memory"),
+        "memory": memory,
+        "memory_recent": recent,
         "calendar": DummySection("c", section_name="CalendarData"),
-        "sonos": sonos,
-        "music_zones": music,
+        "integrations": DummySection("s", section_name="Integrations"),
         "whisper": DummySection("h", section_name="Whisper"),
         "car_info": DummySection("car", section_name="TeslaInfo"),
     }
     manager._last_assembly_time = 0
     # Cold-start full rebuild snapshots BOTH baselines.
-    manager.on_section_updated("SonosFavorites")
-    assert manager._section_baselines["sonos"] == "sonos_v1"
-    assert manager._section_baselines["music_zones"] == "music_v1"
+    manager.on_section_updated("Memory")
+    assert manager._section_baselines["memory"] == "memory_v1"
+    assert manager._section_baselines["memory_recent"] == "recent_v1"
 
-    # A music-zones update must diff against music_zones' baseline, not sonos'.
-    music._content = "music_v1_extra"
-    manager.on_section_updated("MusicZones")
+    # A memory_recent update must diff against memory_recent's baseline, not memory's.
+    recent._content = "recent_v1_extra"
+    manager.on_section_updated("MemoryRecent")
     assert len(manager.message_history.transient_entries) == 1
     note = manager.message_history.transient_entries[0]
-    assert "`MusicZones`" in note["content"]
-    # And the sonos baseline must still match the unchanged sonos content.
-    assert manager._section_baselines["sonos"] == "sonos_v1"
+    assert "`MemoryRecent`" in note["content"]
+    # And the memory baseline must still match the unchanged memory content.
+    assert manager._section_baselines["memory"] == "memory_v1"
 
 
 @pytest.mark.unit
@@ -1377,11 +1377,11 @@ def test_assert_unique_section_names_raises_on_duplicates(prompt_test_environmen
     duplicate-detection check must raise — silently routing one section's updates
     to the other's baseline would be much harder to diagnose in production."""
     sections = {
-        "sonos": DummySection("a", section_name="SonosFavorites"),
-        "music_zones": DummySection("b", section_name="SonosFavorites"),  # collision
-        "weather": DummySection("c", section_name="Weather"),
+        "memory": DummySection("a", section_name="Memory"),
+        "memory_recent": DummySection("b", section_name="Memory"),  # collision
+        "procedures": DummySection("c", section_name="Procedures"),
     }
-    with pytest.raises(RuntimeError, match="Duplicate section_name.*SonosFavorites"):
+    with pytest.raises(RuntimeError, match="Duplicate section_name.*Memory"):
         PromptManager._assert_unique_section_names(sections)
 
 
@@ -1399,9 +1399,9 @@ def test_diff_threshold_one_over_forces_rebuild(prompt_test_environment, monkeyp
         staticmethod(lambda old, new: "X" * (threshold + 1)),
     )
 
-    sections["weather"] = DummySection("weather_content_v2")
+    sections["procedures"] = DummySection("procedures_content_v2")
     manager.sections = sections
-    manager.on_section_updated("weather")
+    manager.on_section_updated("procedures")
 
     assert len(received) == 1, "diff length == threshold + 1 must force a full rebuild"
     assert manager.message_history.transient_entries == []
@@ -1462,8 +1462,8 @@ def test_live_assembly_wake_word_placeholder_substituted_from_config(tmp_path, m
     """The live _assemble_prompt path replaces {WAKE_WORD} the same way."""
     template = (
         "You are {WAKE_WORD}.\n"
-        "{WEATHER}\n{PRECIPITATION}\n{HOME}\n{MEMORY}\n"
-        "{CALENDAR}\n{SONOS}\n{WHISPER}\n{CAR_INFO}\n"
+        "{PROCEDURES}\n{WATCHLIST}\n{HOME}\n{MEMORY}\n"
+        "{CALENDAR}\n{INTEGRATIONS}\n{WHISPER}\n{CAR_INFO}\n"
     )
     res_dir = tmp_path / "res"
     res_dir.mkdir()
@@ -1475,11 +1475,11 @@ def test_live_assembly_wake_word_placeholder_substituted_from_config(tmp_path, m
 
     manager = PromptManager(test_suite=True)
     sections = {key: DummySection(f"{key}_content") for key in
-                ["weather", "precipitation", "home", "memory",
-                 "calendar", "sonos", "whisper", "car_info"]}
+                ["procedures", "watchlist", "home", "memory",
+                 "calendar", "integrations", "whisper", "car_info"]}
     manager.sections = sections
     # Drive a real assembly through the section-update path.
-    manager.on_section_updated("weather")
+    manager.on_section_updated("procedures")
 
     assert "You are Aria." in manager.prompt
     assert "{WAKE_WORD}" not in manager.prompt
@@ -1524,11 +1524,11 @@ def test_photo_count_rendered_approximate_and_fetched_once(prompt_test_environme
     cached count instead of re-reading the DB — re-fetching on every rebuild is
     what used to change the prompt bytes and invalidate the Anthropic cache."""
     root = prompt_test_environment["root"]
-    (root / "res" / "prompt.md").write_text("Photos: {PHOTO_COUNT}\n{WEATHER}\n")
+    (root / "res" / "prompt.md").write_text("Photos: {PHOTO_COUNT}\n{PROCEDURES}\n")
     mock_db = _patch_photo_db(monkeypatch, count=12345)
 
     manager = PromptManager(test_suite=True)
-    manager.sections = {"weather": DummySection("Weather details")}
+    manager.sections = {"procedures": DummySection("Procedures details")}
     manager._assemble_prompt(force=True)
     assert "Photos: ~12345" in manager.prompt
 
@@ -1583,7 +1583,7 @@ def test_toolkit_placeholders_filled_in_both_prompt_paths(tmp_path, monkeypatch)
     from assistant.commands import Toolkits
     res_dir = tmp_path / "res"
     res_dir.mkdir()
-    template = "Head\n{TOOLKITS}\n--\n{WEATHER}\n"
+    template = "Head\n{TOOLKITS}\n--\n{PROCEDURES}\n"
     (res_dir / "prompt.md").write_text(template)
     (tmp_path / "testsuite_prompt.md").write_text(template)
     monkeypatch.chdir(tmp_path)
@@ -1601,8 +1601,8 @@ def test_toolkit_placeholders_filled_in_both_prompt_paths(tmp_path, monkeypatch)
 @pytest.mark.unit
 def test_render_template_fills_sections_and_config_values(prompt_test_environment):
     manager = PromptManager(test_suite=True)
-    manager.sections = {"weather": DummySection("sunny")}
-    rendered = manager.render_template("a {WEATHER} b {WAKE_INTERVAL_MINUTES} c {WAKE_WORD}")
+    manager.sections = {"procedures": DummySection("sunny")}
+    rendered = manager.render_template("a {PROCEDURES} b {WAKE_INTERVAL_MINUTES} c {WAKE_WORD}")
     assert rendered.startswith("a sunny b ")
     assert "{" not in rendered
 
@@ -1629,18 +1629,18 @@ def test_section_without_a_placeholder_emits_no_delta_note(tmp_path, monkeypatch
     against, so a change to it must not produce a 'section updated' note."""
     res_dir = tmp_path / "res"
     res_dir.mkdir()
-    (res_dir / "prompt.md").write_text("Head\n{WEATHER}\n")
-    (tmp_path / "testsuite_prompt.md").write_text("Head\n{WEATHER}\n")
+    (res_dir / "prompt.md").write_text("Head\n{PROCEDURES}\n")
+    (tmp_path / "testsuite_prompt.md").write_text("Head\n{PROCEDURES}\n")
     monkeypatch.chdir(tmp_path)
     manager = PromptManager(test_suite=True)
-    manager.sections = {"weather": DummySection("w1"), "phones": DummySection("p1")}
+    manager.sections = {"procedures": DummySection("w1"), "phones": DummySection("p1")}
     manager._last_assembly_time = 0
-    manager.on_section_updated("weather")          # cold start: full rebuild, baselines set
+    manager.on_section_updated("procedures")          # cold start: full rebuild, baselines set
     manager.sections["phones"] = DummySection("p2")
     manager.on_section_updated("phones")
     assert manager.message_history.transient_entries == []
-    manager.sections["weather"] = DummySection("w2")
-    manager.on_section_updated("weather")
+    manager.sections["procedures"] = DummySection("w2")
+    manager.on_section_updated("procedures")
     assert len(manager.message_history.transient_entries) == 1
 
 
@@ -1650,11 +1650,11 @@ def test_section_without_a_placeholder_emits_no_delta_note(tmp_path, monkeypatch
 
 def _carried_manager(prompt_test_environment, in_window=("home",)):
     """A live-mode manager whose template has no {HOME}: indigo is carried by home."""
-    (prompt_test_environment["root"] / "res" / "prompt.md").write_text("Head\n{WEATHER}\n")
+    (prompt_test_environment["root"] / "res" / "prompt.md").write_text("Head\n{PROCEDURES}\n")
     manager = PromptManager(test_suite=True)
     manager.test_suite = False
     manager.sections = {"home": DummySection('## LIGHTS\n"Lamp [Kök]": off', section_name="HomeData"),
-                        "weather": DummySection("Sunny", section_name="Weather")}
+                        "procedures": DummySection("Sunny", section_name="Procedures")}
     manager._section_positions = manager._compute_section_positions()
     manager.message_history.loaded_toolkits = lambda: {name: 1.0 for name in in_window}
     manager._assemble_prompt()
@@ -1725,12 +1725,12 @@ def test_carried_notes_survive_a_full_rebuild_and_a_new_send_replaces_them(promp
     manager.carried_data(Toolkits.by_name("home"))
     manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": on'
     manager.on_section_updated("HomeData")
-    manager.sections["weather"]._content = "Rain"
-    manager.on_section_updated("Weather")
+    manager.sections["procedures"]._content = "Rain"
+    manager.on_section_updated("Procedures")
     assert len(manager.message_history.transient_entries) == 2
 
     manager._assemble_prompt()
-    assert _notes(manager, "weather") == [] and len(_notes(manager)) == 1, "the rebuild bakes weather, not indigo"
+    assert _notes(manager, "procedures") == [] and len(_notes(manager)) == 1, "the rebuild bakes procedures, not indigo"
     assert manager._section_current["home"] == '## LIGHTS\n"Lamp [Kök]": on', "the last-sent state survives"
 
     manager.carried_data(Toolkits.by_name("home"))

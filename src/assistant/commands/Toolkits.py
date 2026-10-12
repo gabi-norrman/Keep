@@ -11,7 +11,8 @@ a front-matter block (`name`, `summary`, `commands`, and `sections` / `hidden` w
 the reference, found by globbing the folders — no Python of the folder is imported to read
 it. `TOOLKITS` is the two together, in `INDEX_ORDER`.
 
-A toolkit can carry prompt sections (`Toolkit.sections`; home carries the house's state): their
+A toolkit can carry prompt sections (`Toolkit.sections`; home carries the house's state, weather
+the forecasts, music the zones and playlists): their
 placeholder is not in the prompt template, so the prompt never holds the data — `load_toolkit`
 sends them, current, after the reference, and again on a pointer-back, since the reference is
 static but the data is not. While the toolkit is in the LLM's window, later changes follow as
@@ -241,7 +242,8 @@ _BY_NAME = {t.name: t for t in TOOLKITS}
 # Section key → the toolkit that carries it.
 CARRIED_SECTIONS: dict[str, str] = {key: t.name for t in TOOLKITS for key in t.sections}
 # The heading a carried section is sent under; the prompt's own heading for it, once.
-SECTION_HEADINGS = {"home": "HOME AUTOMATION DATA", "web": "WEB BROWSER"}
+SECTION_HEADINGS = {"home": "HOME AUTOMATION DATA", "web": "WEB BROWSER", "weather": "WEATHER FORECAST",
+                    "precipitation": "SHORT TERM PRECIPITATION", "sonos": "MUSIC", "music_zones": "SONOS ZONES"}
 
 
 def offered(monitor=None) -> list[Toolkit]:
