@@ -67,6 +67,27 @@ RELEASE_BRANCH = "release"
 DEVELOPER_BRANCH = "master"
 NIGHTLY_OFF_MESSAGE = f"{NIGHTLY_RUNS_KEY} is off"
 NIGHTLY_STEPS = ("bugs", "tests", "health", "merge")   # what //nightly takes to run one step alone
+GH_NOT_LOGGED_IN_MESSAGE = (
+    "GitHub CLI is not logged in on the server, so nothing can be filed on the repository. "
+    "Run `gh auth login` in a terminal on the server machine with an account that has write access "
+    "to the repository, then try again."
+)
+# The labels the filed PRs and issues carry, for triage on GitHub (created once in the repository).
+INTEGRATION_PR_LABEL = "integration-pr"
+SELF_IMPROVEMENT_LABEL = "self-improvement"
+ISSUE_LABEL = "reported-by-keep"
+# What a new integration adds outside its own folder: the registry lines "Adding an integration" in
+# CLAUDE.md names. A PR from improve_integration may add to these files, never remove from them.
+INTEGRATION_FOLDERS = "src/integrations/"
+INTEGRATION_TESTS = "tests/unit/integrations/"
+REGISTRY_FILES = frozenset({
+    "docs/atlas/descriptions.py",            # the GROUPS blurb
+    "src/assistant/commands/Toolkits.py",    # INDEX_ORDER
+    "src/assistant/prompt/PromptManager.py", # SECTION_ORDER
+    "requirements.txt",                      # the -r line
+    "config.example.yaml",                   # the `# >> section:` pointer line
+    "readme.md",                             # the integration's row
+})
 _nightly_lock = threading.Lock()   # the scheduled run and //nightly work in the same checkout
 
 
@@ -252,7 +273,8 @@ Steps:
 2. Implement the change.
 3. If applicable create new unit tests.
 4. Run all unit tests to make sure nothing is broken.
-5. Commit (check rules for commits in the /commit skill) and create a PR and push it. 
+5. Commit (check rules for commits in the /commit skill) and create a PR and push it. Give the PR the label
+   `{label}` and end its description with the line `Opened by Keep {version} (self_improvement)`.
 
 Log files from running system are available at:
 log/floxy.out (Floxy server logs, be mindful, it's huge, so tail)
@@ -260,6 +282,102 @@ log/floxy.out (Floxy server logs, be mindful, it's huge, so tail)
 NOTE: If the request is too vague to act on or the change is too complex/risky for an automated PR, decline and explain why.
 
 IMPORTANT: Your entire response to the user must be in your final message. Keep the report concise — it will be read over a chat on a phone.
+"""
+
+# The paragraph both improve_integration prompts share: what the PR may touch, since this is a
+# user's install and the developers review what comes in.
+INTEGRATION_SCOPE = """
+This request comes from a user's install, not a developer's: the pull request is reviewed by the developers, so it
+must stay inside its own integration. It may change only `src/integrations/{folder}/` and
+`tests/unit/integrations/{folder}/`{registry}. The scope is checked after your run against the files the PR
+touches, and a PR that strays is closed unseen — so if the change needs anything else (the core, another
+integration, a contract), make NO change: say so in your report and describe exactly what is needed, so the user
+can file it with report_issue instead.
+"""
+
+IMPROVE_INTEGRATION_PROMPT = """
+This is a request for an automated change to the "{name}" integration of this code base, delivered as a pull
+request. It is usually a bug fix, but it can also be a small feature or improvement of that integration.
+
+{request}
+{scope}
+Steps:
+1. Prepare for PR: create a branch.
+2. Implement the change.
+3. If applicable create new unit tests.
+4. Run all unit tests to make sure nothing is broken.
+5. Commit (check rules for commits in the /commit skill) and create a PR and push it. Title it `{name}: ...`,
+   give it the label `{label}` and end its description with the line
+   `Opened by Keep {version} (improve_integration, {name})`.
+
+Log files from running system are available at:
+log/floxy.out (Floxy server logs, be mindful, it's huge, so tail)
+
+NOTE: If the request is too vague to act on or the change is too complex/risky for an automated PR, decline and explain why.
+
+IMPORTANT: Your entire response to the user must be in your final message. Keep the report concise — it will be read over a chat on a phone.
+"""
+
+NEW_INTEGRATION_PROMPT = """
+This is a request for a new integration of this code base, "{name}", delivered as a pull request. No integration
+of that name exists; if one for the same service already does under src/integrations/ (under another name),
+build nothing and say which it is.
+
+{request}
+{scope}
+Steps:
+1. Prepare for PR: create a branch.
+2. Build the integration as "Adding an integration" in CLAUDE.md describes: a new folder under src/integrations/
+   with its Integration class, commands, prompt section, toolkit.md, config.example.yaml and requirements.txt
+   as it needs them, and the registry lines the recipe names, each added without removing anything.
+3. Create its unit tests under tests/unit/integrations/<folder>/ (fictional test data, see CLAUDE.md).
+4. Run all unit tests to make sure nothing is broken.
+5. Commit (check rules for commits in the /commit skill) and create a PR and push it. Title it `{name}: ...`,
+   give it the label `{label}` and end its description with the line
+   `Opened by Keep {version} (improve_integration, {name})`.
+
+NOTE: If the request is too vague to act on (which service, which API, what it should do) or the integration is too
+complex/risky for an automated PR, decline and explain why.
+
+IMPORTANT: Your entire response to the user must be in your final message. Keep the report concise — it will be read over a chat on a phone.
+"""
+
+REPORT_ISSUE_PROMPT = """
+A user of this system wants to report an issue to its developers. Investigate it thoroughly and file it as a GitHub
+issue on this repository with `gh issue create`, written so the developers understand it at once and can fix it
+without asking back:
+
+{request}
+
+Investigate first. log/floxy.out has the server logs (huge — grep for the time in question, then read around it);
+the code is in src/. Reconstruct what happened before writing a word.
+
+Then search the open issues (`gh issue list --state open --search "..."`, a few keyword variants) for one about the
+same thing. If there is one, add what you found as a comment on it (`gh issue comment`) instead of opening a
+duplicate, and say so in your report.
+
+The issue (markdown):
+- Title: precise, one line, the symptom not the guess.
+- What happened, in the user's words, and when (date and time).
+- Timeline: what the system did, step by step, from the log — short quoted excerpts with their timestamps,
+  trimmed to the lines that matter. Include the commands that ran and the replies around the problem.
+- Suspected cause, with file and line references, and what is a fact versus a guess. A fix proposal when it is
+  obvious.
+- How to reproduce, when you can tell.
+- Environment: Keep {version}, the OS and its version, the integrations enabled, the channel the user spoke
+  through (Telegram, voice, console, HTTP), the LLM model in use (its name only).
+- Last line: `Reported by Keep {version} (report_issue)`.
+Give it the label `{label}`.
+
+Privacy — the issue leaves this machine: never put in it a value from config.yaml, the vault, ~/.claude, an API
+key, a token, a password, a phone number, an email address, a street address, a person's full name or anything
+else personal about the household. Quote log lines only after replacing such values with a placeholder like
+<phone> or <name>.
+
+Your final message: the issue's URL on its own line, then one line on what it says — or, when you filed nothing
+(the report was too vague to investigate, or filing failed), why.
+
+IMPORTANT: Your entire response must be in your final message. Do not ask follow-up questions. Keep it concise — it will be read over a chat on a phone.
 """
 
 
@@ -548,11 +666,12 @@ class CodeQualityMaintainer:
         return sorted(candidates)
 
     @staticmethod
-    def _pr_title_and_files(number: int) -> tuple[str, list[str]]:
-        """A PR's title and every path it touches — for a renamed file both the new and the previous
-        path, so moving src/x.py under tests/ still shows as a change outside tests/ (`gh pr view`
-        only knows the new one, hence the REST file list). Raises when gh fails or hands back fewer
-        files than the PR changes, since an unseen path cannot be vouched for."""
+    def _pr_files(number: int) -> tuple[str, list[dict]]:
+        """A PR's title and every file it touches as the REST file list gives them: `filename`,
+        `previous_filename` for a renamed one (`gh pr view` only knows the new path, hence the
+        REST list), `status` (added, modified, removed, renamed) and `deletions`. Raises when gh
+        fails or hands back fewer files than the PR changes, since an unseen path cannot be
+        vouched for."""
         def gh(*args: str) -> str:
             result = subprocess.run(["gh", *args], cwd=WORKING_DIR, capture_output=True, text=True,
                                     timeout=GIT_TIMEOUT)
@@ -563,16 +682,25 @@ class CodeQualityMaintainer:
         pr = json.loads(gh("pr", "view", str(number), "--json", "title,changedFiles"))
         files = [json.loads(line) for line in
                  gh("api", f"repos/{{owner}}/{{repo}}/pulls/{number}/files", "--paginate",
-                    "--jq", ".[] | {filename, previous_filename}").splitlines() if line.strip()]
+                    "--jq", ".[] | {filename, previous_filename, status, deletions}").splitlines() if line.strip()]
         if len(files) != pr.get("changedFiles"):
             raise RuntimeError(f"gh listed {len(files)} of {pr.get('changedFiles')} changed files")
+        for f in files:
+            if f.get("previous_filename"):
+                trace(f"CodeQualityMaintainer: PR #{number} moves {f['previous_filename']} to {f['filename']}")
+        return pr.get("title", ""), files
+
+    @staticmethod
+    def _pr_title_and_files(number: int) -> tuple[str, list[str]]:
+        """A PR's title and every path it touches — for a renamed file both the new and the
+        previous path, so moving src/x.py under tests/ still shows as a change outside tests/."""
+        title, files = CodeQualityMaintainer._pr_files(number)
         paths = []
         for f in files:
             paths.append(f["filename"])
             if f.get("previous_filename"):
-                trace(f"CodeQualityMaintainer: PR #{number} moves {f['previous_filename']} to {f['filename']}")
                 paths.append(f["previous_filename"])
-        return pr.get("title", ""), paths
+        return title, paths
 
     def _step_auto_merge(self) -> str:
         """Last step of the night, so the test-only PRs the earlier steps opened are merged with it.
@@ -794,25 +922,186 @@ class CodeQualityMaintainer:
         return result if result else "Self-analysis produced no output."
 
     @staticmethod
+    def _github_unavailable() -> Optional[str]:
+        """Why nothing can be filed on the repository right now — `gh` is not logged in on
+        this machine — or None. Checked before a run that ends in a PR or an issue, so the
+        user hears it at once instead of after an hour of Claude Code."""
+        try:
+            result = subprocess.run(["gh", "auth", "status"], cwd=WORKING_DIR, capture_output=True, text=True,
+                                    timeout=GIT_TIMEOUT, stdin=subprocess.DEVNULL)
+        except Exception as e:
+            error(f"CodeQualityMaintainer: gh auth status failed: {e}")
+            return GH_NOT_LOGGED_IN_MESSAGE
+        if result.returncode != 0:
+            error(f"CodeQualityMaintainer: gh is not logged in: {(result.stderr or result.stdout).strip()}")
+            return GH_NOT_LOGGED_IN_MESSAGE
+        trace("CodeQualityMaintainer: gh is logged in")
+        return None
+
+    @staticmethod
+    def _version() -> str:
+        from common import Version
+        return Version.version()
+
+    @staticmethod
     def improve_code(request: str) -> str:
+        reason = CodeQualityMaintainer._github_unavailable()
+        if reason:
+            return reason
+        prompt = SELF_IMPROVEMENT_PROMPT.format(request=request, label=SELF_IMPROVEMENT_LABEL,
+                                                version=CodeQualityMaintainer._version())
+        return CodeQualityMaintainer._pr_job(prompt, "self-improvement")
+
+    @staticmethod
+    def improve_integration(name: str, folder: Optional[str], request: str) -> str:
+        """A PR confined to one integration: a change to the integration *name* in *folder*,
+        or — *folder* None, no integration of that name — a new one. After the run the PR's
+        files are checked against that scope (`scope_violations`) and a PR that strays is
+        closed, with the reason in the report, so a user's install can only ever open PRs
+        the developers can review as one integration's."""
+        reason = CodeQualityMaintainer._github_unavailable()
+        if reason:
+            return reason
+        version = CodeQualityMaintainer._version()
+        if folder is None:
+            scope = INTEGRATION_SCOPE.format(folder="<folder>",
+                                             registry=", plus the registry lines a new folder needs (" +
+                                                      ", ".join(sorted(REGISTRY_FILES)) + " — additions only)")
+            prompt = NEW_INTEGRATION_PROMPT.format(name=name, request=request, scope=scope,
+                                                   label=INTEGRATION_PR_LABEL, version=version)
+        else:
+            scope = INTEGRATION_SCOPE.format(folder=folder, registry="")
+            prompt = IMPROVE_INTEGRATION_PROMPT.format(name=name, request=request, scope=scope,
+                                                       label=INTEGRATION_PR_LABEL, version=version)
+        report = CodeQualityMaintainer._pr_job(prompt, f"improve-integration {name}")
+        number, _ = CodeQualityMaintainer.pull_request_in(report)
+        if number is None:
+            return report
+        try:
+            title, files = CodeQualityMaintainer._pr_files(number)
+            violations = CodeQualityMaintainer.scope_violations(files, folder)
+        except Exception as e:
+            error(f"CodeQualityMaintainer: PR #{number} could not be checked against the integration scope: {e}")
+            violations = [f"its files could not be read ({e})"]
+        if not violations:
+            info(f"CodeQualityMaintainer: PR #{number} stays inside the {folder or 'new'} integration")
+            return report
+        reason = f"a PR from improve_integration must stay inside one integration, and this one {'; '.join(violations)}"
+        info(f"CodeQualityMaintainer: closing PR #{number} — {reason}")
+        CodeQualityMaintainer._close_pr(number, reason)
+        return (f"PR #{number} was closed again: {reason}.\n\nThe change needs more than the "
+                f"{name} integration — the user can file it for the developers with report_issue.\n\n"
+                f"Claude Code's report:\n{report}")
+
+    @staticmethod
+    def _pr_job(prompt: str, label: str) -> str:
+        """One Claude Code run that ends in a pull request: on the pulled current branch,
+        back on it afterwards whatever happened."""
         branch = CodeQualityMaintainer._current_branch()
         try:
-            info("CodeQualityMaintainer: starting self-improvement...")
+            info(f"CodeQualityMaintainer: starting {label}...")
             CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
-            prompt = SELF_IMPROVEMENT_PROMPT.format(request=request)
             trace(f"prompt: {prompt}")
-            result = CodeQualityMaintainer._run_claude(prompt, "self-improvement")
-            return result if result else "Self-improvement produced no output."
+            result = CodeQualityMaintainer._run_claude(prompt, label)
+            return result if result else f"{label.capitalize()} produced no output."
         except ClaudeUnavailableError as e:
             return str(e)
         except Exception as e:
-            error(f"CodeQualityMaintainer: self-improvement failed: {e}")
-            return f"Self-improvement failed: {e}"
+            error(f"CodeQualityMaintainer: {label} failed: {e}")
+            return f"{label.capitalize()} failed: {e}"
         finally:
             CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
 
+    @staticmethod
+    def _folder_of_path(path: str) -> Optional[str]:
+        """The integration folder a path belongs to (its code or its tests), None otherwise."""
+        for root in (INTEGRATION_FOLDERS, INTEGRATION_TESTS):
+            if path.startswith(root):
+                rest = path[len(root):]
+                return rest.split("/", 1)[0] if "/" in rest else None
+        return None
+
+    @staticmethod
+    def scope_violations(files: list[dict], folder: Optional[str]) -> list[str]:
+        """Why a PR from improve_integration is not one integration's — empty when it is.
+        *files* as `_pr_files` lists them. The rule: every path is in one integration folder
+        or its tests; for a change to *folder* it is that folder and nothing else; for a new
+        integration (*folder* None) that folder is new (every file in it added) and the
+        REGISTRY_FILES may be touched with additions only. A renamed file counts under its
+        previous path too, so nothing can be moved in from outside."""
+        violations, folders, outside, not_new, removals = [], set(), [], [], []
+        for f in files:
+            paths = [f["filename"]] + ([f["previous_filename"]] if f.get("previous_filename") else [])
+            for path in paths:
+                owner = CodeQualityMaintainer._folder_of_path(path)
+                if owner is not None:
+                    folders.add(owner)
+                    if folder is None and f.get("status") != "added":
+                        not_new.append(path)
+                elif folder is None and path in REGISTRY_FILES:
+                    if f.get("deletions", 0):
+                        removals.append(path)
+                else:
+                    outside.append(path)
+        if not files:
+            violations.append("changes no files")
+        if outside:
+            violations.append(f"changes files outside an integration folder: {', '.join(sorted(set(outside))[:5])}")
+        if len(folders) > 1:
+            violations.append(f"touches several integrations: {', '.join(sorted(folders))}")
+        if folder is not None and folders - {folder}:
+            violations.append(f"touches the {', '.join(sorted(folders - {folder}))} folder instead of {folder}")
+        if not_new:
+            violations.append(f"changes an existing integration instead of adding one: {', '.join(sorted(set(not_new))[:5])}")
+        if removals:
+            violations.append(f"removes lines from a registry file: {', '.join(sorted(set(removals)))}")
+        trace(f"CodeQualityMaintainer: scope check of {len(files)} file(s) for {folder or 'a new integration'}: "
+              f"{violations or 'inside the scope'}")
+        return violations
+
+    @staticmethod
+    def _close_pr(number: int, reason: str):
+        comment = (f"Closed by Keep: {reason}. A change beyond one integration goes to the developers "
+                   f"as an issue (report_issue).")
+        result = CodeQualityMaintainer._run_subprocess(
+            ["gh", "pr", "close", str(number), "--comment", comment, "--delete-branch"],
+            f"gh pr close {number}", GIT_TIMEOUT)
+        if result.returncode != 0:
+            error(f"CodeQualityMaintainer: could not close PR #{number}: {result.stderr.strip()}")
+
+    @staticmethod
+    def report_issue(request: str) -> str:
+        """One Claude Code run that investigates and files a GitHub issue; the report names
+        the issue's URL (`issue_in`), or says why none was filed."""
+        reason = CodeQualityMaintainer._github_unavailable()
+        if reason:
+            return reason
+        info("CodeQualityMaintainer: starting the issue report...")
+        prompt = REPORT_ISSUE_PROMPT.format(request=request, label=ISSUE_LABEL,
+                                            version=CodeQualityMaintainer._version())
+        trace(f"prompt: {prompt}")
+        try:
+            result = CodeQualityMaintainer._run_claude(prompt, "report-issue")
+        except ClaudeUnavailableError as e:
+            return str(e)
+        except Exception as e:
+            error(f"CodeQualityMaintainer: the issue report failed: {e}")
+            return f"The issue report failed: {e}"
+        return result if result else "The issue report produced no output."
+
     _PR_URL = re.compile(r"https?://github\.com/[\w.-]+/[\w.-]+/pull/(\d+)")
     _PR_NUMBER = re.compile(r"\bPR\s*#(\d+)|\bpull request\s*#(\d+)", re.IGNORECASE)
+    _ISSUE_URL = re.compile(r"https?://github\.com/[\w.-]+/[\w.-]+/issues/(\d+)(?:#issuecomment-\d+)?")
+
+    @classmethod
+    def issue_in(cls, report: str) -> tuple[int | None, str | None]:
+        """(number, URL) of the issue a report_issue report names — a new issue's, or the
+        one it commented on; (None, None) when it filed nothing."""
+        match = cls._ISSUE_URL.search(report or "")
+        if match:
+            return int(match.group(1)), match.group(0)
+        trace("CodeQualityMaintainer: the report names no issue")
+        return None, None
 
     @classmethod
     def pull_request_in(cls, report: str) -> tuple[int | None, str | None]:

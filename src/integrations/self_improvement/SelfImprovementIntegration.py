@@ -8,10 +8,15 @@ from common.logging import trace
 class SelfImprovementIntegration(Integration):
     """Keep improving its own code with Claude Code, nightly and on request.
 
-    Lets Keep analyse and improve its own code through the Claude Code CLI: the nightly
-    code-quality runs and the self_analysis / self_improvement commands. It needs only the CLI
-    installed on the server machine; the runs use api_keys.anthropic unless a claude.ai login
-    is there.
+    Lets Keep analyse its own code, fix or build an integration as a pull request and report
+    anything else to the developers as a GitHub issue, all through the Claude Code CLI on the
+    server machine, with the GitHub CLI logged in for the PRs and the issues.
+
+    The commands: self_analysis, improve_integration (a PR confined to one integration folder,
+    or a new one), report_issue (an investigated GitHub issue) and, with the root config key
+    is_developer true, self_improvement (a PR on any part of the code); the nightly
+    code-quality runs are the integration's too. The runs use api_keys.anthropic unless a
+    claude.ai login is there.
 
     The switch and the health check: the runs (CodeQualityMaintainer) happen only while this
     integration is enabled, the nightly ones also only while `self_improvement.nightly_runs` is

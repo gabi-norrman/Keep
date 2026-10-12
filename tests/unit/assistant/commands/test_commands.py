@@ -14,6 +14,14 @@ from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from assistant.tools.WebAccess import WebAccess
 
 
+def developer_install(on: bool = True):
+    """The self_improvement toolkit is offered only on a developer's install: is_developer in
+    config.yaml, which the toolkit reads at each verdict."""
+    from types import SimpleNamespace
+    return patch.object(Toolkits, "config",
+                        SimpleNamespace(get=lambda key, default=None: on if key == "is_developer" else default))
+
+
 @pytest.fixture(autouse=True)
 def mock_email_provider():
     with patch.object(Commands, '_mail_access', return_value=Mock()) as mock:
@@ -863,11 +871,23 @@ class TestCmdSelfAnalysis:
         parser = CommandParser(["self_improvement"])
         (name, params), _ = parser.extract_command_and_params(f"self_improvement({request})")
         with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
-             patch.object(commands_instance, "fire_and_forget") as fire:
+             patch.object(commands_instance, "fire_and_forget") as fire, \
+             developer_install():
             mock_cqm.unavailable_reason.return_value = ""
             commands_instance.run(name, params)
-        fire.assert_called_once()
-        assert fire.call_args.args[1] == request
+            fire.assert_called_once()
+            fire.call_args.args[0](None)
+        mock_cqm.improve_code.assert_called_once_with(request)
+
+    def test_self_improvement_is_refused_on_a_users_install(self, commands_instance):
+        """Without is_developer the command is nowhere in the prompt, and a run of it is
+        refused by the toolkit gate before Claude Code is reached."""
+        with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
+             patch.object(commands_instance, "fire_and_forget") as fire, developer_install(False):
+            refusal = commands_instance.run("self_improvement", ["fix the timers"])
+        assert refusal.startswith("self_improvement failed") and "is_developer" in refusal
+        fire.assert_not_called()
+        mock_cqm.improve_code.assert_not_called()
 
     """The self-analysis command is fire-and-forget (background thread). We
     run the inner callable synchronously by intercepting fire_and_forget
@@ -901,15 +921,16 @@ class TestCmdSelfAnalysis:
             self._run_sync(commands_instance, "params describing the bug")
 
             mock_cqm.analyze_code.assert_called_once_with("params describing the bug")
-            update_calls = mock_aam_instance.prompt_manager.update_history.call_args_list
-            assert len(update_calls) == 1
-            args, _ = update_calls[0]
-            history_content = args[2]
-            # The full report body must land in history — not just a status note.
+            rows = mock_aam_instance.prompt_manager.add_command_result.call_args_list
+            assert len(rows) == 1
+            history_content = rows[0].args[0]
+            # The full report body must land in history — not just a status note — and as a
+            # command row: an assistant row is cut to 2000 characters at render time.
             assert report in history_content, \
                 f"AAM history must include full report, got: {history_content!r}"
             assert history_content.startswith("[Self-analysis complete]"), \
                 "prefix tag is what the LLM keys off to recognize the entry"
+            mock_aam_instance.prompt_manager.update_history.assert_not_called()
 
     def test_telegram_delivery_still_happens_alongside_history(self, commands_instance):
         # The fix kept the Telegram delivery — both paths must fire. If a future
@@ -930,9 +951,10 @@ class TestCmdSelfAnalysis:
             assert "Self-analysis report" in sent
             assert "<p>Report body</p>" in sent
 
-    def test_history_row_holds_the_report_in_the_chat_dialect(self, commands_instance):
-        # The Home tab draws the history row, so it carries the converted report, not the
-        # markdown, and the push is marked as a history row so the console gets no second copy.
+    def test_the_history_row_holds_the_markdown_and_the_console_gets_the_push(self, commands_instance):
+        # The LLM reads the row, so it carries the markdown Claude Code wrote, not the chat
+        # dialect; and since the Home tab hides command rows, the push must not be marked as
+        # already in the history, or the console would show nothing.
         chat = Mock()
         chat.markdown_to_html.side_effect = lambda md: f"<converted>{md}</converted>"
         with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
@@ -945,9 +967,10 @@ class TestCmdSelfAnalysis:
 
             self._run_sync(commands_instance, "params")
 
-            assert chat.send_message.call_args.kwargs == {"in_history": True}
-            args, _ = prompt_manager.update_history.call_args
-            assert args[2] == "[Self-analysis complete] <converted>## Findings</converted>"
+            assert not chat.send_message.call_args.kwargs.get("in_history")
+            assert "<converted>## Findings</converted>" in chat.send_message.call_args.args[0]
+            row = prompt_manager.add_command_result.call_args.args[0]
+            assert "## Findings" in row and "<converted>" not in row
 
 # ---------------------------------------------------------------------------
 # TestCmdFindPhone
@@ -1997,6 +2020,13 @@ class TestCmdConfigSet:
             reply = commands_instance._run_config_set("api_keys.serper", "x")
         assert reply == "api_keys.serper saved. " + Commands.RESTART_HINT
 
+    def test_is_developer_needs_no_restart(self, commands_instance):
+        """The toolkit index is rendered at each prompt build, so the hint must not send the
+        user to restart_server."""
+        with patch.object(ConfigStore, "set_value", return_value="is_developer saved"):
+            reply = commands_instance._run_config_set("is_developer", "true")
+        assert "no restart" in reply and "restart_server" not in reply
+
     def test_developer_release_points_at_the_server_restart_that_switches_branch(self, commands_instance):
         with patch.object(ConfigStore, "set_value", return_value="developer_release saved"):
             reply = commands_instance._run_config_set("developer_release", "true")
@@ -2175,3 +2205,82 @@ class TestWithAiFooter:
         import common.ConfigManager as config_module
         with patch.object(config_module.config, "get", side_effect=lambda key, default=None: default):
             assert commands_instance.with_ai_footer("On my way").endswith(commands_instance.AI_MESSAGE_SUFFIX)
+
+
+@pytest.mark.unit
+class TestCmdImproveIntegration:
+    """improve_integration(name, request): the name is split off the verbatim payload, resolved
+    to its folder through the monitor (None for a new integration) and the rest reaches Claude
+    Code whole."""
+
+    @staticmethod
+    def _run(commands_instance, payload, folder):
+        monitor = Mock()
+        monitor.folder_named.return_value = folder
+        with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
+             patch.object(commands_instance, "fire_and_forget") as fire, \
+             patch.object(Commands, "_integration_monitor", staticmethod(lambda: monitor)):
+            mock_cqm.unavailable_reason.return_value = ""
+            mock_cqm.improve_integration.return_value = "no PR"
+            reply = commands_instance.cmd_improve_integration(payload)
+            if fire.called:
+                fire.call_args.args[0](None)
+        return reply, monitor, mock_cqm.improve_integration
+
+    def test_a_known_integration_is_worked_on_in_its_folder(self, commands_instance):
+        request = "the trunk opens, then closes again after 2 s, see 10:46 on Oct 8"
+        reply, monitor, job = self._run(commands_instance, f'"Tesla", "{request}"', "tesla")
+        assert reply is None
+        monitor.folder_named.assert_called_once_with("Tesla")
+        job.assert_called_once_with("Tesla", "tesla", request)
+
+    def test_an_unknown_name_is_a_new_integration(self, commands_instance):
+        _, _, job = self._run(commands_instance, "Ring, build an integration for the Ring doorbell", None)
+        assert job.call_args.args[:2] == ("Ring", None)
+
+    def test_a_missing_name_or_request_is_refused_before_claude_code(self, commands_instance):
+        for payload in ("", "Tesla", "Tesla,   ", ", fix it"):
+            reply, _, job = self._run(commands_instance, payload, "tesla")
+            assert reply.startswith("improve_integration failed"), payload
+            job.assert_not_called()
+
+    def test_the_outcome_row_names_the_pr_under_the_jobs_own_tag(self):
+        report = "Opened https://github.com/example/keep/pull/12\n\nTesla: close the trunk once"
+        row = Commands._pr_outcome("Integration improvement", report, sent=True)
+        assert row.startswith("[Integration improvement complete]") and "PR #12" in row
+        assert "https://github.com/example/keep/pull/12" in row
+
+
+@pytest.mark.unit
+class TestCmdReportIssue:
+    @staticmethod
+    def _run(commands_instance, report):
+        with patch("assistant.commands.Commands.CodeQualityMaintainer", wraps=CodeQualityMaintainer) as mock_cqm, \
+             patch.object(commands_instance, "fire_and_forget") as fire, \
+             patch("assistant.commands.Commands.notifier") as notifier, \
+             patch("assistant.commands.Commands.AutonomousActionManager") as aam:
+            mock_cqm.unavailable_reason.return_value = ""
+            mock_cqm.report_issue.return_value = report
+            notifier.return_value.send_message.return_value = True
+            notifier.return_value.markdown_to_html.side_effect = lambda text: text
+            commands_instance.cmd_report_issue("the lights stayed on at 23:10")
+            fire.call_args.args[0](fire.call_args.args[1])
+        sent = notifier.return_value.send_message.call_args.args[0]
+        row = aam.get_instance.return_value.prompt_manager.update_history.call_args.args[2]
+        return sent, row
+
+    def test_a_filed_issue_sends_the_user_its_link(self, commands_instance):
+        url = "https://github.com/example/keep/issues/7"
+        sent, row = self._run(commands_instance, f"{url}\nThe lights stay on after the scene ends.")
+        assert sent == f"Your issue is now live here: {url}"
+        assert row.startswith("[Issue reported]") and "#7" in row and url in row
+
+    def test_a_comment_on_an_open_issue_counts_as_filed(self, commands_instance):
+        url = "https://github.com/example/keep/issues/7#issuecomment-99"
+        sent, row = self._run(commands_instance, f"Commented on {url} — the same bug, new log excerpts.")
+        assert url in sent and "#7" in row
+
+    def test_nothing_filed_sends_the_report_and_says_so(self, commands_instance):
+        sent, row = self._run(commands_instance, "Too vague to investigate: no time and no symptom.")
+        assert "live here" not in sent and "Too vague" in sent
+        assert row.startswith("[Issue report complete]") and "no issue was filed" in row

@@ -1,10 +1,19 @@
-You can explore and create PRs on your own code, in production. Both commands hand the job to Claude Code, which works on
-your source in the background; when it is done the system sends its report to the user over the chat (and you'll be
-notified about this). Both need the "Self Improvement" integration enabled (`list_integrations` shows its state; the
-Claude Code CLI must be installed on the server machine; with `api_keys.anthropic` set nothing else is needed, a claude.ai
-login is the alternative — `config_help("self_improvement")` has the steps).
+You can study your own code and the machine you run on, fix or build an integration as a pull request, and report an
+issue to your developers. Every one of these hands the job to Claude Code, which works on your source in the
+background; when it is done the system sends its report to the user over the chat (and you'll be notified about
+this). They need the "Self Improvement" integration enabled (`list_integrations` shows its state; the Claude Code CLI
+must be installed on the server machine; with `api_keys.anthropic` set nothing else is needed, a claude.ai login is
+the alternative — `config_help("self_improvement")` has the steps). Filing a PR or an issue also needs the GitHub
+CLI (`gh`) logged in on the server machine; if it is not, the job says so at once.
 The integration also has scheduled nightly runs (bug analysis, test generation, fixing flaky and slow tests, auto-merge of test-only PRs), off
 unless `self_improvement.nightly_runs` is true; the commands below work either way.
+
+### Which command
+- Something is wrong or unclear and nobody knows why yet → `self_analysis` first; its report says where the problem is.
+- The problem (or the wish) is inside ONE integration — Tesla, Hue, the weather —
+  or a new integration is wanted → `improve_integration`.
+- The problem is anywhere else (the core, the voice pipeline, the prompt, the chats, the server itself), or the
+  integration fix came back saying the change needs more than its folder → `report_issue`.
 
 ### Self-analysis
 To have your own code base, or the machine you run on, analyzed:
@@ -16,13 +25,27 @@ be feasible to add W". It can also be about the server machine: "is the home net
 answer", "is the disk filling up" — Claude Code has a shell there (ping, dig, traceroute, curl, df, log show…).
 Pass the symptom on in the user's words, with the time. It takes minutes; say the answer comes back in the chat.
 
-### Self-improvement
-To have a change made to your own code, delivered as a pull request:
+### Improve an integration
+To have one integration fixed or improved, or a new one built, delivered as a pull request:
 
-`self_improvement(request: str)`
+`improve_integration(integration: str, request: str)`
 
-A bug fix is the usual case, but an easy new feature, an improvement or a new integration works too. Be specific
-about what should change and why; if a self-analysis ran first, feed its report into the request. 
+The first argument is the integration's name as `list_integrations` shows it ("Tesla", "Hue", "Weather"); a name
+no integration has means a new one is to be built, so name a new one after its service. The rest is the request:
+be specific about what should change and why; if a self-analysis ran first, feed its report into the request.
+The PR may touch only that integration's own folder and tests (a new one also adds its registry lines). When the
+change needs more than that, Claude Code makes no change and says what is needed — then offer `report_issue`.
+
+### Report an issue
+To report a bug or a problem to the developers, as a GitHub issue on your own repository:
+
+`report_issue(report: str)`
+
+Claude Code investigates first (the logs, the code, what happened when), then writes the issue for the developers
+with the timeline, log excerpts and the suspected cause, and files it; a matching open issue gets a comment instead
+of a duplicate. It knows to leave out secrets and the household's personal data. Pass on what the user saw, in
+their words, with the time it happened; if a self-analysis ran first, feed its report in. When it is done the user
+is sent the link; tell them the issue is live there.
 
 Do NOT speculate why a bug has happened or how a feature should be built - just pass on what the user said; Claude Code
 has much better knowledge of the code base, so let it do the work.

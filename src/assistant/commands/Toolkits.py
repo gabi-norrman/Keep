@@ -40,6 +40,7 @@ from assistant.integration.HomeAutomation import HomeAutomation
 from assistant.integration.VehicleProvider import VehicleProvider
 from assistant.integration.calendar.CalendarSource import CalendarSource
 from assistant.integration.mail.MailSource import MailSource
+from common.ConfigManager import config
 from common.Paths import INTEGRATIONS_DIR, RES_DIR
 from common.logging import error, trace
 
@@ -68,6 +69,9 @@ class Toolkit:
     file: Optional[Path] = None
     # A core toolkit that fronts a contract: offered while an enabled integration implements it.
     needs: Optional[type] = None
+    # A config.yaml key that must be true for the toolkit to be offered (`is_developer` for the
+    # self_improvement toolkit): read at each verdict, so a flip is in force at the next prompt build.
+    requires: Optional[str] = None
 
     @property
     def path(self) -> Path:
@@ -80,9 +84,11 @@ class Toolkit:
 
     def offered_by(self, monitor) -> bool:
         """Whether the LLM is offered the toolkit: not while the IntegrationMonitor knows the
-        integration behind it to be off (`folder_enabled` / `contract_enabled` False). None
-        from the monitor — nothing registered for it yet — leaves it offered; without a
-        monitor everything is."""
+        integration behind it to be off (`folder_enabled` / `contract_enabled` False), and not
+        while the config key it `requires` is off. None from the monitor — nothing registered
+        for it yet — leaves it offered; without a monitor everything the config allows is."""
+        if self.requires is not None and not config.get(self.requires, False):
+            return False
         if monitor is None:
             return True
         if self.folder is not None:
@@ -204,8 +210,12 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
             ("list_integrations", "config_help", "config_request", "config_set", "restart_integration",
              "enable_integration", "disable_integration", "telegram_login", "microsoft_login", "google_login",
              "google_login_code", "volvo_login", "volvo_login_code", "spotify_login", "spotify_login_code", "hue_pair")),
-    Toolkit("developer", "study or change your own code, or check the machine you run on (network, disk, updates): analyse a bug or a question, build a fix or a small feature as a PR; read your own log, restart the server",
-            ("self_analysis", "self_improvement", "server_logs", "restart_server")),
+    Toolkit("developer", "study your own code or the machine you run on (network, disk, updates): analyse a bug or a "
+                         "question, fix or build an integration as a PR, report an issue to the developers; read "
+                         "your own log, restart the server",
+            ("self_analysis", "improve_integration", "report_issue", "server_logs", "restart_server")),
+    Toolkit("self_improvement", "change any part of your own code base as a PR — a developer's install only",
+            ("self_improvement",), requires="is_developer"),
     Toolkit("voice", "how to reply when the user is speaking: spoken style, emotion tags, false positives",
             ("false_positive",), hidden=True),
 )
@@ -213,7 +223,8 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
 # The order of the index, which is part of the prompt: a toolkit keeps its place wherever its
 # file lives. A toolkit not named here (a new folder's) comes after these, by name.
 INDEX_ORDER = ("home", "cameras", "web", "browser", "x", "email", "imessage", "whatsapp", "telegram", "music", "photos", "location", "calendar",
-               "shopping_list", "weather", "timers", "cars", "husdata", "history", "vault", "setup", "developer", "voice")
+               "shopping_list", "weather", "timers", "cars", "husdata", "history", "vault", "setup", "developer",
+               "self_improvement", "voice")
 
 TOOLKITS: tuple[Toolkit, ...] = assemble(CORE_TOOLKITS, discover(), INDEX_ORDER)
 trace(f"Toolkits: {len(CORE_TOOLKITS)} core, {len(TOOLKITS) - len(CORE_TOOLKITS)} from integration folders")
@@ -266,7 +277,7 @@ def render_index(monitor=None) -> str:
     lines = [f"- `{t.name}` — {t.summary}" for t in offered(monitor) if not t.hidden]
     left_out = [t.name for t in TOOLKITS if not t.hidden and not t.offered_by(monitor)]
     trace(f"Toolkit index: {len(lines)} toolkit(s) offered"
-          + (f", {', '.join(left_out)} left out (integration off)" if left_out else ""))
+          + (f", {', '.join(left_out)} left out (integration or config key off)" if left_out else ""))
     return "\n".join(lines)
 
 

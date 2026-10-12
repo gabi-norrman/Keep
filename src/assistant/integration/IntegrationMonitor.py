@@ -216,6 +216,15 @@ class IntegrationMonitor:
                 return integration
         return None
 
+    def folder_named(self, name: str) -> Optional[str]:
+        """The integration folder (`src/integrations/<folder>/`) of the integration called
+        *name*, enabled or not; None when none is registered under that name."""
+        integration = self.find(name)
+        if integration is None:
+            trace(f"IntegrationMonitor: no integration named '{name}'")
+            return None
+        return folder_of(self._class_of(integration))
+
     def restart(self, name: str) -> Optional[dict]:
         """Rebuild the integration behind *name*: drop the singleton (`_on_reset` stops its
         threads), construct it again, re-run the config check, then a health check. Returns

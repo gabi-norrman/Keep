@@ -113,3 +113,45 @@ def test_the_preload_skips_a_toolkit_whose_integration_is_off():
             patch.object(ToolkitPreloader, "config") as config:
         config.get.side_effect = lambda key, default=None: default
         assert ToolkitPreloader.preload(pm, profile) == ["web"]
+
+
+def _config(**values):
+    return patch.object(Toolkits, "config", SimpleNamespace(get=lambda key, default=None: values.get(key, default)))
+
+
+@pytest.mark.unit
+def test_a_config_gated_toolkit_follows_its_key_not_the_monitor():
+    gated = [t for t in Toolkits.TOOLKITS if t.requires]
+    assert gated, "the self_improvement toolkit is gated by is_developer"
+    toolkit = gated[0]
+    with _config(**{toolkit.requires: False}):
+        assert not toolkit.offered_by(None) and not toolkit.offered_by(FakeMonitor())
+        assert toolkit.name not in Toolkits.names() and f"`{toolkit.name}`" not in Toolkits.render_index()
+    with _config(**{toolkit.requires: True}):
+        assert toolkit.offered_by(None) and toolkit.offered_by(FakeMonitor())
+        assert toolkit.name in Toolkits.names(FakeMonitor())
+
+
+@pytest.mark.unit
+def test_load_toolkit_of_a_config_gated_toolkit_names_the_key(commands):
+    toolkit = next(t for t in Toolkits.TOOLKITS if t.requires)
+    pm = Mock()
+    pm.message_history.loaded_toolkits.return_value = {}
+    with _config(**{toolkit.requires: False}), \
+            patch.object(Commands, "_integration_monitor", staticmethod(lambda: FakeMonitor())), \
+            patch.object(Commands, "_prompt_manager", staticmethod(lambda: pm)):
+        answer = commands._run_load_toolkit(toolkit.name)
+    assert f"# Toolkit: {toolkit.name}" not in answer
+    assert toolkit.requires in answer and "enable_integration" not in answer
+
+
+@pytest.mark.unit
+def test_a_command_of_a_config_gated_toolkit_is_refused_while_the_key_is_off(commands):
+    toolkit = next(t for t in Toolkits.TOOLKITS if t.requires)
+    command = toolkit.commands[0]
+    with _config(**{toolkit.requires: False}), \
+            patch.object(Commands, "_integration_monitor", staticmethod(lambda: FakeMonitor())):
+        assert commands.refused(command).startswith(f"{command} failed")
+    with _config(**{toolkit.requires: True}), \
+            patch.object(Commands, "_integration_monitor", staticmethod(lambda: FakeMonitor())):
+        assert commands.refused(command) is None

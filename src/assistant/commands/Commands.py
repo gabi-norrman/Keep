@@ -668,18 +668,18 @@ class Commands:
                 report = CodeQualityMaintainer.analyze_code(params)
                 trace("Received self-analysis report from Code Quality Maintainer")
                 fine(f"Report: {report}")
-                # The report is markdown; the history row holds it in the chat dialect like any
-                # reply, so the Home tab draws it formatted. Since the console draws the history
-                # row, the push is marked as one and reaches only the chats without a history view.
-                html_report = notifier().markdown_to_html(report)
+                # The chats get the report in their dialect, the console included; the LLM
+                # gets the markdown whole as a `command` row — never cut at render time, unlike
+                # an assistant row, which keeps 2000 characters of a report the toolkit tells
+                # the LLM to feed into a fix or an issue — and the console's Home tab, which
+                # hides command rows, draws the pushed copy instead.
+                sent = notifier().send_message(f"Self-analysis report:\n\n{notifier().markdown_to_html(report)}")
                 aam = AutonomousActionManager.get_instance()
                 prompt_manager = aam.prompt_manager if aam else None
-                sent = notifier().send_message(f"Self-analysis report:\n\n{html_report}",
-                                               in_history=prompt_manager is not None)
                 # "[Self-analysis complete]" is the tag the LLM keys off; keep it first.
                 delivery = "" if sent else f" ({NO_NOTIFICATION_CHANNEL})"
                 if prompt_manager is not None:
-                    prompt_manager.update_history(None, None, f"[Self-analysis complete]{delivery} {html_report}")
+                    prompt_manager.add_command_result(f"[Self-analysis complete]{delivery}\n{report}")
                 else:
                     info("Self-analysis: no AutonomousActionManager yet, the report is not in the history")
             except Exception as e:
@@ -692,41 +692,117 @@ class Commands:
         if reason:
             info(f"self_improvement not started: {reason}")
             return reason
+        self._run_pr_job("Self-improvement", lambda: CodeQualityMaintainer.improve_code(parameter_string))
 
-        def _run_and_deliver(params):
+    def cmd_improve_integration(self, parameter_string: str):
+        """`improve_integration(name, request)`: a PR confined to one integration — a fix to
+        the named one, or a new one when no integration has that name. The parser hands the
+        payload over verbatim (a free-text command), so the name is split off here."""
+        reason = CodeQualityMaintainer.unavailable_reason()
+        if reason:
+            info(f"improve_integration not started: {reason}")
+            return reason
+        name, _, request = normalize_llm_escapes(parameter_string or "").partition(",")
+        name, request = name.strip().strip("\"'`"), request.strip().strip("\"'`")
+        if not name or not request:
+            return "improve_integration failed: expected 'integration name, request' parameters"
+        folder = self._integration_folder(name)
+        if folder is None:
+            info(f"improve_integration: no integration named '{name}' — a new one")
+        else:
+            info(f"improve_integration: '{name}' is the {folder} folder")
+        self._run_pr_job("Integration improvement",
+                         lambda: CodeQualityMaintainer.improve_integration(name, folder, request))
+
+    def _integration_folder(self, name: str) -> Optional[str]:
+        """The integration folder behind *name* (`src/integrations/<folder>/`), enabled or
+        not; None when no registered integration has that name."""
+        monitor = self._integration_monitor()
+        return monitor.folder_named(name) if monitor else None
+
+    def _run_pr_job(self, label: str, job: Callable[[], str]):
+        """Run a Claude Code job that ends in a pull request in the background and deliver its
+        report: pushed to the chats, and summed up in the history (`_pr_outcome`)."""
+        def _run_and_deliver(_params):
             try:
-                report = CodeQualityMaintainer.improve_code(params)
-                trace("Received self-improvement report from Code Quality Maintainer")
+                report = job()
+                trace(f"Received {label.lower()} report from Code Quality Maintainer")
                 fine(f"Report: {report}")
                 html_report = notifier().markdown_to_html(report)
-                sent = notifier().send_message(f"Self-improvement report:\n\n{html_report}")
+                sent = notifier().send_message(f"{label} report:\n\n{html_report}")
                 aam = AutonomousActionManager.get_instance()
                 if aam and aam.prompt_manager:
-                    aam.prompt_manager.update_history(None, None, self._improvement_outcome(report, sent))
+                    aam.prompt_manager.update_history(None, None, self._pr_outcome(label, report, sent))
                 else:
-                    info("Self-improvement: no AutonomousActionManager yet, the outcome is not in the history")
+                    info(f"{label}: no AutonomousActionManager yet, the outcome is not in the history")
             except Exception as e:
-                error(f"Self-improvement failed: {e}")
+                error(f"{label} failed: {e}")
 
-        self.fire_and_forget(_run_and_deliver, parameter_string)
+        self.fire_and_forget(_run_and_deliver, None)
 
     @staticmethod
-    def _improvement_outcome(report: str, sent: bool) -> str:
-        """The history row a finished self-improvement job leaves — the PR it opened (number,
-        title line, URL) or that none was, so the LLM knows the outcome without the report:
-        the "report sent" marker it left before told it nothing, and on 2026-10-11 it took a
-        job for still running two hours after the PR was open. Without a chat to deliver
-        to, the row carries the whole report. "[Self-improvement complete]" is the tag the
-        LLM keys off; keep it first."""
+    def _pr_outcome(label: str, report: str, sent: bool) -> str:
+        """The history row a finished PR job leaves — the PR it opened (number, title line,
+        URL) or that none was, so the LLM knows the outcome without the report: the "report
+        sent" marker it left before told it nothing, and on 2026-10-11 it took a job for
+        still running two hours after the PR was open. Without a chat to deliver to, the
+        row carries the whole report. "[<label> complete]" is the tag the LLM keys off;
+        keep it first."""
         number, url = CodeQualityMaintainer.pull_request_in(report)
         title = CodeQualityMaintainer.first_line(report)
         delivery = "" if sent else f" ({NO_NOTIFICATION_CHANNEL})"
         if number is not None:
-            text = f"[Self-improvement complete]{delivery} PR #{number} open: {title}"
+            text = f"[{label} complete]{delivery} PR #{number} open: {title}"
             if url:
                 text += f"\n{url}"
         else:
-            text = f"[Self-improvement complete]{delivery} no PR was created: {title}"
+            text = f"[{label} complete]{delivery} no PR was created: {title}"
+        if not sent:
+            text += f"\n\nReport:\n{report}"
+        return text
+
+    def cmd_report_issue(self, parameter_string: str):
+        """`report_issue(report)`: Claude Code investigates and files a GitHub issue on the
+        repository (or comments on an open one about the same thing); the user gets the link."""
+        reason = CodeQualityMaintainer.unavailable_reason()
+        if reason:
+            info(f"report_issue not started: {reason}")
+            return reason
+
+        def _run_and_deliver(params):
+            try:
+                report = CodeQualityMaintainer.report_issue(params)
+                trace("Received the issue report from Code Quality Maintainer")
+                fine(f"Report: {report}")
+                number, url = CodeQualityMaintainer.issue_in(report)
+                if url:
+                    message = f"Your issue is now live here: {url}"
+                else:
+                    message = f"Issue report:\n\n{notifier().markdown_to_html(report)}"
+                sent = notifier().send_message(message)
+                aam = AutonomousActionManager.get_instance()
+                if aam and aam.prompt_manager:
+                    aam.prompt_manager.update_history(None, None, self._issue_outcome(report, number, url, sent))
+                else:
+                    info("report_issue: no AutonomousActionManager yet, the outcome is not in the history")
+            except Exception as e:
+                error(f"report_issue failed: {e}")
+
+        self.fire_and_forget(_run_and_deliver, parameter_string)
+
+    @staticmethod
+    def _issue_outcome(report: str, number, url, sent: bool) -> str:
+        """The history row a finished report_issue job leaves: the issue's number and link
+        (the user was sent the link), or that none was filed and why — the report's title
+        line, and the whole report when no chat could show it. "[Issue reported]" /
+        "[Issue report complete]" is the tag the LLM keys off; keep it first."""
+        delivery = "" if sent else f" ({NO_NOTIFICATION_CHANNEL})"
+        if number is not None:
+            text = f"[Issue reported]{delivery} issue #{number} is live: {CodeQualityMaintainer.first_line(report)}"
+            if url:
+                text += f"\n{url}"
+        else:
+            text = f"[Issue report complete]{delivery} no issue was filed: {CodeQualityMaintainer.first_line(report)}"
         if not sent:
             text += f"\n\nReport:\n{report}"
         return text
@@ -1024,10 +1100,15 @@ class Commands:
                       "no restart needed. Switching telemetry.enabled back to true takes a restart_server.")
     AI_FOOTER_HINT = "Read at each send: in force from the next message on, no restart needed."
 
+    IS_DEVELOPER_HINT = ("Read at each prompt build: the self_improvement toolkit is offered (true) or "
+                         "withdrawn (false) from the next turn on, no restart needed.")
+
     @classmethod
     def _restart_hint(cls, key: str) -> str:
         if key == "developer_release":
             return cls.DEVELOPER_RELEASE_HINT
+        if key == "is_developer":
+            return cls.IS_DEVELOPER_HINT
         if key == cls.AI_FOOTER_KEY:
             return cls.AI_FOOTER_HINT
         if key.startswith("telemetry."):
@@ -1512,7 +1593,11 @@ class Commands:
     @staticmethod
     def _toolkit_off(toolkit, monitor) -> str:
         """The answer to a toolkit, or a command of one, whose integration is off: which
-        integration it is and how the setup toolkit turns it on."""
+        integration it is and how the setup toolkit turns it on — or, for a toolkit a config
+        key gates, which key."""
+        if toolkit.requires is not None and not Toolkits.config.get(toolkit.requires, False):
+            return (f"The {toolkit.name} toolkit is for a developer's install only: it needs "
+                    f"`{toolkit.requires}: true` in config.yaml. Users work through the developer toolkit.")
         behind = toolkit.behind(monitor)
         if len(behind) == 1:
             return (f"The {toolkit.name} toolkit belongs to the {behind[0].name} integration, which is off — "
@@ -1530,7 +1615,7 @@ class Commands:
         monitor = self._integration_monitor()
         if toolkit.offered_by(monitor):
             return None
-        info(f"Command {command} refused: the {toolkit.name} toolkit's integration is off")
+        info(f"Command {command} refused: the {toolkit.name} toolkit's integration or config key is off")
         return f"{command} failed: " + self._toolkit_off(toolkit, monitor)
 
     @staticmethod
@@ -1666,6 +1751,8 @@ class Commands:
         return f"Sending the car's navigation to {destination}" if destination else "Sending the car a navigation destination"
     def describe_self_analysis(self, p):          return "Running self-analysis"
     def describe_self_improvement(self, p):       return "Running self-improvement"
+    def describe_improve_integration(self, p):    return f"Working on the {self._first_argument(p)} integration"
+    def describe_report_issue(self, p):           return "Reporting an issue to the developers"
     def describe_restart_server(self, p):         return "Restarting server"
     def describe_execute(self, p):                return f"Running action {p.strip()}"
     def describe_vault_add(self, p):

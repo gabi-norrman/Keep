@@ -1,6 +1,8 @@
-# The "Self Improvement" integration: Keep analysing and changing its own code — the
-# self_analysis / self_improvement commands and the nightly code-quality runs — through the
-# Claude Code CLI on the server machine. Enable with `enabled_integrations: [Self Improvement]`.
+# The "Self Improvement" integration: Keep analysing and changing its own code through the
+# Claude Code CLI on the server machine — self_analysis, improve_integration (a PR confined to one
+# integration, or a new one), report_issue (a GitHub issue for the developers), self_improvement
+# (a PR on any part of the code, developer installs only: the root key is_developer) and the
+# nightly code-quality runs. Enable with `enabled_integrations: [Self Improvement]`.
 # The setup is on the server machine itself, by hand:
 #   1. Install Claude Code: `curl -fsSL https://claude.ai/install.sh | bash` (puts `claude` in
 #      ~/.local/bin, which the server also looks in when it is not on the PATH). Nothing else is
@@ -11,7 +13,10 @@
 #   2. Optional: a claude.ai subscription (Pro/Max) instead of the key — open a terminal ON the
 #      server machine, run `claude` and complete /login. Do not log in over SSH — a login made
 #      in an SSH session is not seen by the server process. A login takes precedence over the key.
-#   3. Optional: a mail account (imap.accounts): the nightly report is mailed from the account send_email uses to its own address.
+#   3. For the PRs and the issues: the GitHub CLI logged in with an account that has write access
+#      to the repository — `gh auth login` in a terminal on the server machine. self_analysis
+#      works without it.
+#   4. Optional: a mail account (imap.accounts): the nightly report is mailed from the account send_email uses to its own address.
 # The health check runs `claude auth status` (a free local call) every 15 minutes, first ~10 s
 # after start; a missing CLI, or one with neither a login nor the key, shows as the error in
 # list_integrations. The model the runs use is ai.code_quality.model.

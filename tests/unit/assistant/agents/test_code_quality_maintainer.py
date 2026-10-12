@@ -433,6 +433,15 @@ class TestPrTitleAndFiles:
         return run
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_pr_files_asks_for_the_status_and_the_deletions(self, mock_run):
+        """The scope check reads them, so the jq filter must request them."""
+        mock_run.side_effect = self._gh([("src/integrations/ring/RingIntegration.py", None)], 1)
+        _, files = CodeQualityMaintainer._pr_files(7)
+        assert files[0]["filename"] == "src/integrations/ring/RingIntegration.py"
+        jq = [a for a in mock_run.call_args.args[0] if "filename" in a][0]
+        assert "status" in jq and "deletions" in jq
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
     def test_returns_the_title_and_every_changed_path(self, mock_run):
         mock_run.side_effect = self._gh([("tests/unit/a.py", None), ("tests/unit/b.py", None)], 2)
         assert CodeQualityMaintainer._pr_title_and_files(7) == \
@@ -1351,3 +1360,139 @@ class TestReportOutcome:
         assert CodeQualityMaintainer.first_line("\n\n## **Timers keep their reason**\nbody") == "Timers keep their reason"
         assert CodeQualityMaintainer.first_line("- *done*: fixed `it`\n") == "done: fixed it"
         assert CodeQualityMaintainer.first_line("   \n") == "(empty report)"
+
+
+def _file(name, status="modified", deletions=0, previous=None):
+    return {"filename": name, "previous_filename": previous, "status": status, "deletions": deletions}
+
+
+@pytest.mark.unit
+class TestScopeViolations:
+    """What improve_integration may deliver: one integration folder's files, or a new folder
+    plus additions to the registry files — checked on the PR after the run."""
+
+    def test_a_change_inside_the_named_folder_and_its_tests_passes(self):
+        files = [_file("src/integrations/tesla/TeslaCommands.py", deletions=4),
+                 _file("tests/unit/integrations/tesla/test_tesla_commands.py", "added")]
+        assert CodeQualityMaintainer.scope_violations(files, "tesla") == []
+
+    def test_a_core_file_fails_even_beside_a_folder_change(self):
+        files = [_file("src/integrations/tesla/TeslaCommands.py"), _file("src/assistant/Assistant.py")]
+        violations = CodeQualityMaintainer.scope_violations(files, "tesla")
+        assert len(violations) == 1 and "src/assistant/Assistant.py" in violations[0]
+
+    def test_another_folder_fails_for_a_fix(self):
+        violations = CodeQualityMaintainer.scope_violations([_file("src/integrations/hue/HueCommands.py")], "tesla")
+        assert any("hue" in v and "tesla" in v for v in violations)
+
+    def test_a_file_moved_in_from_outside_counts_under_its_old_path(self):
+        files = [_file("src/integrations/tesla/Parser.py", "renamed", previous="src/common/Parser.py")]
+        assert any("src/common/Parser.py" in v for v in CodeQualityMaintainer.scope_violations(files, "tesla"))
+
+    def test_a_registry_file_fails_for_a_fix(self):
+        files = [_file("src/integrations/tesla/TeslaCommands.py"), _file("readme.md")]
+        assert any("readme.md" in v for v in CodeQualityMaintainer.scope_violations(files, "tesla"))
+
+    def test_a_new_folder_with_registry_additions_passes(self):
+        files = [_file("src/integrations/ring/RingIntegration.py", "added"),
+                 _file("src/integrations/ring/toolkit.md", "added"),
+                 _file("tests/unit/integrations/ring/test_ring.py", "added"),
+                 _file("docs/atlas/descriptions.py"), _file("requirements.txt"), _file("readme.md")]
+        assert CodeQualityMaintainer.scope_violations(files, None) == []
+
+    def test_a_new_integration_may_not_change_an_existing_folder_or_remove_registry_lines(self):
+        files = [_file("src/integrations/hue/HueCommands.py"), _file("config.example.yaml", deletions=2)]
+        violations = CodeQualityMaintainer.scope_violations(files, None)
+        assert any("existing integration" in v for v in violations)
+        assert any("config.example.yaml" in v for v in violations)
+
+    def test_two_folders_fail_for_a_new_integration(self):
+        files = [_file("src/integrations/ring/RingIntegration.py", "added"),
+                 _file("src/integrations/arlo/ArloIntegration.py", "added")]
+        assert any("several" in v for v in CodeQualityMaintainer.scope_violations(files, None))
+
+    def test_an_empty_pr_fails(self):
+        assert CodeQualityMaintainer.scope_violations([], "tesla")
+
+
+@pytest.mark.unit
+class TestImproveIntegration:
+    REPORT = "Done: https://github.com/example/keep/pull/31\n\nTesla: close the trunk once"
+
+    @staticmethod
+    def _run(folder, files, report=None):
+        with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
+                patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
+                patch.object(CodeQualityMaintainer, "_pr_job", return_value=report or TestImproveIntegration.REPORT) as job, \
+                patch.object(CodeQualityMaintainer, "_pr_files", return_value=("Tesla: trunk", files)), \
+                patch.object(CodeQualityMaintainer, "_close_pr") as close:
+            result = CodeQualityMaintainer.improve_integration("Tesla", folder, "close the trunk once")
+        return result, job, close
+
+    def test_a_pr_inside_the_folder_is_left_open_and_reported_as_is(self):
+        result, job, close = self._run("tesla", [_file("src/integrations/tesla/TeslaCommands.py")])
+        assert result == self.REPORT
+        close.assert_not_called()
+        prompt = job.call_args.args[0]
+        assert "src/integrations/tesla/" in prompt and "close the trunk once" in prompt
+
+    def test_a_straying_pr_is_closed_and_the_user_sent_to_report_issue(self):
+        result, _, close = self._run("tesla", [_file("src/assistant/Assistant.py")])
+        close.assert_called_once()
+        assert close.call_args.args[0] == 31 and "src/assistant/Assistant.py" in close.call_args.args[1]
+        assert "closed" in result and "report_issue" in result and self.REPORT in result
+
+    def test_a_pr_whose_files_cannot_be_read_is_closed_too(self):
+        with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
+                patch.object(CodeQualityMaintainer, "_pr_job", return_value=self.REPORT), \
+                patch.object(CodeQualityMaintainer, "_pr_files", side_effect=RuntimeError("gh: rate limited")), \
+                patch.object(CodeQualityMaintainer, "_close_pr") as close:
+            result = CodeQualityMaintainer.improve_integration("Tesla", "tesla", "close the trunk once")
+        close.assert_called_once()
+        assert "rate limited" in result
+
+    def test_a_declined_request_opens_nothing_to_check(self):
+        result, _, close = self._run("tesla", [], report="Declined: the request names no symptom.")
+        assert result.startswith("Declined") and not close.called
+
+    def test_a_new_integration_gets_the_recipe_and_the_registry_files(self):
+        _, job, _ = self._run(None, [_file("src/integrations/ring/RingIntegration.py", "added")])
+        prompt = job.call_args.args[0]
+        assert "Adding an integration" in prompt and "docs/atlas/descriptions.py" in prompt
+
+    def test_without_gh_nothing_runs(self):
+        with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value="gh is out"), \
+                patch.object(CodeQualityMaintainer, "_pr_job") as job:
+            assert CodeQualityMaintainer.improve_integration("Tesla", "tesla", "x") == "gh is out"
+            assert CodeQualityMaintainer.report_issue("x") == "gh is out"
+            assert CodeQualityMaintainer.improve_code("x") == "gh is out"
+        job.assert_not_called()
+
+
+@pytest.mark.unit
+class TestGithubUnavailable:
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_a_logged_in_gh_is_no_reason(self, mock_run):
+        mock_run.return_value = Mock(returncode=0, stdout="Logged in to github.com", stderr="")
+        assert CodeQualityMaintainer._github_unavailable() is None
+        assert mock_run.call_args.args[0][:3] == ["gh", "auth", "status"]
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_a_logged_out_or_missing_gh_names_the_login(self, mock_run):
+        mock_run.return_value = Mock(returncode=1, stdout="", stderr="You are not logged into any GitHub hosts")
+        assert "gh auth login" in CodeQualityMaintainer._github_unavailable()
+        mock_run.side_effect = FileNotFoundError("gh")
+        assert "gh auth login" in CodeQualityMaintainer._github_unavailable()
+
+
+@pytest.mark.unit
+class TestIssueIn:
+    def test_a_new_issue_and_a_comment_both_name_the_issue(self):
+        assert CodeQualityMaintainer.issue_in("Filed https://github.com/example/keep/issues/7\nsummary") == \
+            (7, "https://github.com/example/keep/issues/7")
+        number, url = CodeQualityMaintainer.issue_in("Commented on https://github.com/example/keep/issues/7#issuecomment-5")
+        assert number == 7 and url.endswith("#issuecomment-5")
+
+    def test_a_pull_request_link_is_not_an_issue(self):
+        assert CodeQualityMaintainer.issue_in("https://github.com/example/keep/pull/7") == (None, None)
+        assert CodeQualityMaintainer.issue_in("") == (None, None)

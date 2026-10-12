@@ -207,6 +207,13 @@ ai_message_footer: true
 # install; the assistant may set it itself (config_set).
 developer_release: false
 
+# Whether this is a developer's install. true: the assistant is offered the self_improvement toolkit — a
+# pull request on any part of the code base. false: it works through the developer toolkit alone —
+# a PR confined to one integration (improve_integration) and GitHub issues for everything else
+# (report_issue) — so the developers get issues and reviewable PRs instead of changes to the core.
+# Read at each prompt build, no restart needed.
+is_developer: false
+
 # The nightly update: at 03:00 — after the nightly code-quality run when self_improvement.nightly_runs
 # is on — the server checks out the branch developer_release names, pulls it and restarts if that
 # left it on other code than it is running. No new commits, no restart. false: the code only

@@ -73,8 +73,9 @@ def test_by_name_is_tolerant():
 def test_index_lists_every_offered_toolkit_once():
     index = Toolkits.render_index()
     for toolkit in TOOLKITS:
-        assert index.count(f"`{toolkit.name}`") == (0 if toolkit.hidden else 1), toolkit.name
-        assert (toolkit.summary in index) != toolkit.hidden
+        listed = not toolkit.hidden and toolkit.offered_by(None)
+        assert index.count(f"`{toolkit.name}`") == (1 if listed else 0), toolkit.name
+        assert (toolkit.summary in index) == listed
 
 
 @pytest.mark.unit
