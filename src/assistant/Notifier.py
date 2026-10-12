@@ -85,6 +85,16 @@ class Notifier(Protocol):
         """Render markdown into the notifier's rich-text dialect (Telegram HTML, plain text, …)."""
         ...
 
+    def receive_chat_message(self, source: str, conversation: Any, sender: str, text: str, *,
+                             guest: bool = False, sender_is_bot: bool = False,
+                             chat_name: Optional[str] = None) -> bool:
+        """A message a feed saw in a chat the chat layer serves (the owner's own Telegram
+        account reading a group the bot is in): start a turn in *conversation* as if the
+        transport with *source* had received it, so the reply goes out through that transport.
+        *guest*: the sender is not one of the household's owners; *sender_is_bot*: the sender
+        is another assistant. Never blocks. False when no transport carries *source*."""
+        ...
+
 
 class NullNotifier:
     """Installed when no chat interface is running: logs and drops everything; the send
@@ -128,6 +138,12 @@ class NullNotifier:
                        source: Optional[str] = None, conversation: Any = None) -> str:
         info(f"no notifier configured — secret request for {title!r} dropped, answering 'unavailable'")
         return "unavailable"
+
+    def receive_chat_message(self, source: str, conversation: Any, sender: str, text: str, *,
+                             guest: bool = False, sender_is_bot: bool = False,
+                             chat_name: Optional[str] = None) -> bool:
+        info(f"no notifier configured — chat message from {sender} in {source} [{conversation}] dropped")
+        return False
 
     def markdown_to_html(self, md: str) -> str:
         return md

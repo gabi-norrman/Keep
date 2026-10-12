@@ -68,10 +68,13 @@ def hub(transport):
     return hub
 
 
-def _update(chat_id=123, message_id=10, text="hello", first_name="Anna", reply=None, title=None):
+def _update(chat_id=123, message_id=10, text="hello", first_name="Anna", reply=None, title=None, user_id=7,
+            is_bot=False):
     update = MagicMock()
     update.effective_chat.id = chat_id
     update.effective_chat.title = title  # a group has one, a private chat has none
+    update.effective_user.id = user_id
+    update.effective_user.is_bot = is_bot
     update.message.message_id = message_id
     update.message.text = text
     update.message.reply_text = AsyncMock()
@@ -93,6 +96,22 @@ def _file_context(data=b'\xff\xd8\xff\xe0test'):
 def received(hub):
     hub.receive.assert_called_once()
     return hub.receive.call_args[0][1]
+
+
+def _bot_in_group(allowed=(42, -5001)):
+    """A bot (user id 777) that was added to group -5001; 42 is the owner's private chat."""
+    transport = _make_transport(allowed=allowed, token='777:secret')
+    hub = MagicMock()
+    transport._hub = hub
+    return transport, hub
+
+
+def _bubble_of(user_id, text="earlier"):
+    replied = MagicMock()
+    replied.text = text
+    replied.caption = None
+    replied.from_user.id = user_id
+    return replied
 
 
 @pytest.mark.unit
@@ -294,8 +313,9 @@ class TestInboundText:
         assert msg.chat_name is None  # a private chat: nothing for the turn header's location
 
     @pytest.mark.asyncio
-    async def test_a_group_message_carries_the_group_title(self, transport, hub):
-        await transport._handle_message(_update(chat_id=-5001, title="Family"), MagicMock())
+    async def test_a_group_message_carries_the_group_title(self):
+        transport, hub = _bot_in_group()
+        await transport._handle_message(_update(chat_id=-5001, title="Family", reply=_bubble_of(777)), MagicMock())
         msg = received(hub)
         assert msg.conversation == -5001 and msg.chat_name == "Family"
 
@@ -1374,3 +1394,88 @@ class TestConfigured:
         with patch.object(t, 'stop') as stop:
             t._on_reset()
         stop.assert_called_once()
+
+
+@pytest.mark.unit
+class TestGroupsAndGuests:
+    """In a group the bot answers replies to its own bubbles only (her name said there reaches her
+    through the Telegram Feed); the positive ids of the allow list are the owners, anyone else is
+    a guest whose turn is marked as such."""
+
+    @pytest.mark.asyncio
+    async def test_a_group_message_not_replying_to_the_bot_is_ignored(self):
+        transport, hub = _bot_in_group()
+        update = _update(chat_id=-5001, title="Family", text="what's for dinner?")
+        await transport._handle_message(update, MagicMock())
+        hub.receive.assert_not_called()
+        update.message.reply_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_reply_to_someone_else_in_the_group_is_ignored(self):
+        transport, hub = _bot_in_group()
+        await transport._handle_message(_update(chat_id=-5001, reply=_bubble_of(8)), MagicMock())
+        hub.receive.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_reply_to_the_bot_in_the_group_is_answered_with_the_quote(self):
+        transport, hub = _bot_in_group()
+        await transport._handle_message(_update(chat_id=-5001, reply=_bubble_of(777, "the forecast")), MagicMock())
+        msg = received(hub)
+        assert msg.reply_to_text == "the forecast" and msg.conversation == -5001
+
+    @pytest.mark.asyncio
+    async def test_a_photo_in_the_group_follows_the_same_rule(self):
+        transport, hub = _bot_in_group()
+        update = _update(chat_id=-5001)
+        update.message.photo = [MagicMock(file_id="f1")]
+        await transport._handle_photo(update, _file_context())
+        hub.receive.assert_not_called()
+        hub.expect_photo.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_owner_and_a_guest_are_told_apart_by_user_id(self):
+        transport, hub = _bot_in_group()
+        await transport._handle_message(_update(chat_id=-5001, reply=_bubble_of(777), user_id=42), MagicMock())
+        assert received(hub).guest is False
+        hub.receive.reset_mock()
+        await transport._handle_message(_update(chat_id=-5001, reply=_bubble_of(777), user_id=8), MagicMock())
+        msg = received(hub)
+        assert msg.guest is True and msg.sender_is_bot is False
+
+    @pytest.mark.asyncio
+    async def test_another_bot_is_marked_as_one(self):
+        transport, hub = _bot_in_group()
+        update = _update(chat_id=-5001, reply=_bubble_of(777), user_id=888, is_bot=True, first_name="Erik's Keep")
+        await transport._handle_message(update, MagicMock())
+        msg = received(hub)
+        assert msg.sender_is_bot is True and msg.guest is True and msg.sender == "Erik's Keep"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_allow_list_makes_everyone_an_owner(self, transport, hub):
+        await transport._handle_message(_update(user_id=8), MagicMock())
+        assert received(hub).guest is False
+
+    @staticmethod
+    def _tap(chat_id, user_id):
+        update = MagicMock()
+        update.callback_query.data = "approval:approve:abc123"
+        update.callback_query.message.chat.id = chat_id
+        update.callback_query.from_user = MagicMock(username="erik", first_name="Erik", id=user_id)
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_reply_markup = AsyncMock()
+        return update
+
+    @pytest.mark.asyncio
+    async def test_an_approval_tap_by_a_guest_is_refused(self):
+        transport, hub = _bot_in_group()
+        update = self._tap(-5001, user_id=8)
+        await transport._handle_callback_query(update, MagicMock())
+        hub.resolve_approval.assert_not_called()
+        assert update.callback_query.answer.await_args.kwargs.get("show_alert") is True
+
+    @pytest.mark.asyncio
+    async def test_an_approval_tap_by_the_owner_in_the_group_counts(self):
+        transport, hub = _bot_in_group()
+        hub.resolve_approval.return_value = True
+        await transport._handle_callback_query(self._tap(-5001, user_id=42), MagicMock())
+        hub.resolve_approval.assert_called_once_with("abc123", "approve", "erik")

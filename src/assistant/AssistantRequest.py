@@ -21,6 +21,10 @@ class RequestContext:
     # The chat the request came from, in the interface's own id space (a Telegram chat id,
     # the TUI pane): command echoes are routed back to it. None outside the chat interfaces.
     conversation: Any = None
+    # The request is from someone who is not one of the household's owners (a member of a
+    # Telegram group the bot is in, not on the allow list): every command is refused for
+    # the turn (CommandProcessor), and the chat layer states the facts above the message.
+    guest: bool = False
     location: Optional[str] = None
     user: Optional[str] = None
     user_input: Optional[str] = None

@@ -38,6 +38,8 @@ class IncomingMessage:
     reaction_target_text: Optional[str] = None
     group_id: Optional[str] = None        # album / media-group id: photos sharing it become one request
     chat_name: Optional[str] = None       # a group's title → RequestContext.location; None in a private chat
+    guest: bool = False                   # the sender is not one of the household's owners
+    sender_is_bot: bool = False           # the sender is another assistant (a Telegram bot)
 
 
 @dataclass(frozen=True)

@@ -384,6 +384,44 @@ class TestIntake:
         assert wait_until(lambda: assistant.requests and not session.busy)
         assert assistant.requests[0][0].location == "Family"
 
+    def test_a_guest_turn_states_the_facts_above_the_message(self, session, hub, transport):
+        req, query = self._submit_and_wait(session, hub, transport,
+                                           msg(text="what's the wifi password?", chat_name="Family", guest=True))
+        assert req.guest is True
+        note, _, text = query.partition("\n\n")
+        assert text == "what's the wifi password?"
+        assert note.startswith("This message is from Anna, who is not one of the household's owners")
+        assert 'group chat "Family"' in note and "every command is disabled" in note
+        assert "ask Marcus in this chat" in note  # the owner is in the group
+        assert note.endswith('reply with "NO" if there is nothing to say.')
+
+    def test_a_guest_in_a_private_chat_gets_no_group_sentence(self, session, hub, transport):
+        _, query = self._submit_and_wait(session, hub, transport, msg(text="hi", guest=True))
+        note = query.partition("\n\n")[0]
+        assert "group chat" not in note and "ask Marcus" not in note and "do not share it" in note
+
+    def test_another_assistant_is_warned_about_the_loop(self, session, hub, transport):
+        _, query = self._submit_and_wait(session, hub, transport,
+                                         msg(text="Michelle, hi", chat_name="Family", guest=True, sender_is_bot=True))
+        note = query.partition("\n\n")[0]
+        assert note.startswith("This message is from Anna, a bot") and "go on forever" in note
+
+    def test_an_owner_in_a_group_is_told_who_reads_the_reply(self, session, hub, transport):
+        req, query = self._submit_and_wait(session, hub, transport, msg(text="Michelle, hi", chat_name="Family"))
+        note = query.partition("\n\n")[0]
+        assert req.guest is False
+        assert 'group chat "Family"' in note and "everyone in the group can read your reply" in note
+        assert "not for sharing with the group" in note  # the privacy caution, as for a guest
+        assert "disabled" not in note and note.endswith('Reply with "NO" if there is nothing to say.')
+
+    def test_a_group_turn_may_stay_silent_with_no(self, session, hub, transport):
+        session.submit(msg(text="hello", chat_name="Family"))  # learn the group
+        _, suppress = session._frame(msg(text="hello", chat_name="Family"), "hello", False)
+        assert suppress is True
+        private = hub.session_for(transport, 999)  # a session never forgets its group, so a fresh one
+        query, suppress = private._frame(msg(text="hello"), "hello", False)
+        assert (query, suppress) == ("hello", False)  # a private chat: nothing added
+
     def test_reply_context_is_quoted(self, session, hub, transport):
         _, query = self._submit_and_wait(session, hub, transport, msg(text="my reply", reply_to_text="Previous message"))
         assert query == '[Replying to: "Previous message"]\nmy reply'

@@ -419,6 +419,96 @@ class TestFeed:
         assert batch.cursor == repr(400.0)
         assert m.fetch(batch.cursor, backfill=False).entries == []
 
+@pytest.mark.unit
+class TestWakeAssistant:
+    """Her name said in a group the bot is in (a negative id on the bot's allow list) wakes her
+    through the owner's account: the message becomes a turn of that group, not a context row."""
+
+    CONFIG = {
+        'telegram_feed.api_id': 12345, 'telegram_feed.api_hash': 'abc', 'telegram_feed.blacklist': [],
+        'telegram_bot.allowed_chat_ids': [42, '-5001'], 'wake_word': 'Michelle', 'wake_word_aliases': ['michel'],
+    }
+
+    @pytest.fixture
+    def wake(self, feed_no_blacklist):
+        from telethon.tl.types import Chat
+        m = feed_no_blacklist
+        m._me = _make_me(999)
+        fake = Mock()
+        fake.receive_chat_message = Mock(return_value=True)
+        chats = {
+            "Family": Chat(id=5001, title="Family", photo=None, participants_count=3, date=None, version=1),
+            "Chess club": Chat(id=6001, title="Chess club", photo=None, participants_count=9, date=None, version=1),
+        }
+
+        async def say(text, sender_id=123, group="Family", bot=False, name="Alice"):
+            event = Mock()
+            event.message = _dated(_make_msg(sender_id, text, get_sender_name=name), 400.0)
+            if bot:
+                (await event.message.get_sender()).bot = True
+
+            async def get_chat():
+                return chats[group]
+            event.get_chat = get_chat
+            await m._handle_message(event)
+            return m.fetch(repr(300.0), backfill=False).entries
+
+        with patch('integrations.telegram_feed.TelegramFeedIntegration.config') as cfg, \
+                patch('assistant.Notifier._notifier', fake):
+            cfg.get.side_effect = lambda key, default=None: self.CONFIG.get(key, default)
+            cfg.get_owner_name.return_value = "Marcus"
+            yield m, say, fake
+
+    @pytest.mark.asyncio
+    async def test_her_name_in_the_bots_group_wakes_her_as_a_guest_turn(self, wake):
+        m, say, fake = wake
+        rows = await say("Michelle, what's for dinner?")
+        fake.receive_chat_message.assert_called_once_with(
+            "Telegram", -5001, "Alice", "Michelle, what's for dinner?", guest=True, sender_is_bot=False,
+            chat_name="Family")
+        assert rows == []  # a turn of the dialog now, not a context row as well
+
+    @pytest.mark.asyncio
+    async def test_a_group_the_bot_is_not_in_stays_a_context_row(self, wake):
+        m, say, fake = wake
+        rows = await say("Michelle, are you there?", group="Chess club")
+        fake.receive_chat_message.assert_not_called()
+        assert len(rows) == 1 and "Chess club" in rows[0].content
+
+    @pytest.mark.asyncio
+    async def test_a_message_without_her_name_is_not_a_wake(self, wake):
+        m, say, fake = wake
+        rows = await say("what's for dinner?")
+        fake.receive_chat_message.assert_not_called()
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_owner_wakes_her_as_an_owner(self, wake):
+        m, say, fake = wake
+        await say("michel, lights", sender_id=42)   # an alias, by the owner's private-chat id
+        assert fake.receive_chat_message.call_args.kwargs["guest"] is False
+        await say("Michelle?", sender_id=999)       # the account itself
+        assert fake.receive_chat_message.call_args.args[2] == "Marcus"
+        assert fake.receive_chat_message.call_args.kwargs["guest"] is False
+
+    @pytest.mark.asyncio
+    async def test_another_bot_wakes_her_until_the_hourly_cap(self, wake, monkeypatch):
+        monkeypatch.setattr('integrations.telegram_feed.TelegramFeedIntegration.BOT_WAKE_CAP', 2)
+        m, say, fake = wake
+        for _ in range(3):
+            await say("Michelle, your move", sender_id=888, bot=True, name="Erik's Keep")
+        assert fake.receive_chat_message.call_count == 2
+        assert fake.receive_chat_message.call_args.kwargs["sender_is_bot"] is True
+        await say("Michelle, ping", sender_id=123)  # a human is not capped
+        assert fake.receive_chat_message.call_count == 3
+
+    def test_name_matching_is_a_whole_word_in_any_case(self, wake):
+        m, _, _ = wake
+        assert m._names_assistant("MICHELLE come here") and m._names_assistant("ask michel") \
+            and m._names_assistant("Michelle's turn")
+        assert not m._names_assistant("Michelles") and not m._names_assistant("hello")
+
+
 def _coro(value):
     async def inner():
         return value

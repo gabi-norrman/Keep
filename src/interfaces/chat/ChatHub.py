@@ -118,6 +118,23 @@ class ChatHub(SingletonMixin):
         """A user action from a transport. Never blocks: the session works on its own thread."""
         self.session_for(transport, msg.conversation).submit(msg)
 
+    def receive_chat_message(self, source: str, conversation: Any, sender: str, text: str, *,
+                             guest: bool = False, sender_is_bot: bool = False,
+                             chat_name: Optional[str] = None) -> bool:
+        """Notifier: a feed saw *text* in *conversation* of the transport whose source is
+        *source* (the owner's Telegram account reading a group the bot is in — the bot itself
+        never receives a plain message there). The turn runs as if that transport had received
+        the message, so the reply goes out through it."""
+        transport = next((t for t in self.transports if t.source == source), None)
+        if transport is None:
+            info(f"No {source} transport is running, a chat message from {sender} in [{conversation}] is dropped")
+            return False
+        info(f"{transport.name} [{conversation}]: message from {sender} handed over by a feed"
+             f"{' (guest)' if guest else ''}{' (bot)' if sender_is_bot else ''}")
+        self.receive(transport, IncomingMessage(conversation=conversation, sender=sender, text=text,
+                                                chat_name=chat_name, guest=guest, sender_is_bot=sender_is_bot))
+        return True
+
     def open_conversation(self, query: str) -> bool:
         """A turn the server starts (the first-run brief): *query* goes to the assistant as a
         system turn in the first owner conversation — one turn, not one per chat, so the

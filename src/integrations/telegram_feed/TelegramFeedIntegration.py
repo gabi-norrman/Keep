@@ -1,14 +1,17 @@
 import asyncio
 import os
 import queue
+import re
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Callable, List, Optional
 
 from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
 from assistant.integration.Integration import Integration
-from assistant.Notifier import SecretRejected
+from assistant.ChannelProfile import SOURCE_TELEGRAM
+from assistant.Notifier import SecretRejected, notifier
 from common.logging import info, trace, error, fine
 from assistant.PromptInjectionDetector import is_prompt_injection
 from common.ConfigManager import config
@@ -29,6 +32,8 @@ LOGOUT_TIMEOUT = 30         # seconds for //wipe's log-out, connect included
 LOGIN_HINT = "sign the account in with telegram_login(phone) from the console chat, or in the console's Telegram tab"
 CODE_REUSE_NOTE = ("Asked again within a few minutes, Telegram repeats the same code without sending a new message — "
                    "wait for that one before requesting another.")
+BOT_WAKE_CAP = 6            # wakes by another bot per group per hour: the brake if two assistants loop
+BOT_WAKE_WINDOW = 3600.0
 
 
 class TelegramFeedIntegration(Integration, Feed):
@@ -70,6 +75,7 @@ class TelegramFeedIntegration(Integration, Feed):
         self._rate_limiter = RateLimiter(SEND_RATE_LIMIT_MAX, SEND_RATE_LIMIT_WINDOW)
         self._directory: dict[str, dict[int, tuple]] = {}   # lowercase name → {entity id: (entity, display)}
         self._directory_built: float = 0.0
+        self._bot_wakes: dict[int, deque] = {}   # group chat id → times another bot woke the assistant
 
     def _on_reset(self):
         self.shut_down()
@@ -271,6 +277,8 @@ class TelegramFeedIntegration(Integration, Feed):
                     self.name = getattr(c, 'title', None) or ''
 
             dialog = DialogProxy(chat)
+            if await self._wake_assistant(msg, chat):
+                return   # a turn of the dialog now, not a context row as well
             content = await self._format_message(msg, self._me, dialog)
 
             if content:
@@ -278,6 +286,71 @@ class TelegramFeedIntegration(Integration, Feed):
                 self._live.put(FeedEntry(msg.date.timestamp(), content))
         except Exception as e:
             trace(f"TelegramFeed: error handling message: {e}")
+
+    # --- waking the assistant from a group ----------------------------------------------------
+
+    @staticmethod
+    def _bot_chat_ids() -> list[int]:
+        ids = []
+        for item in config.get('telegram_bot.allowed_chat_ids', []) or []:
+            try:
+                ids.append(int(str(item).strip()))
+            except ValueError:
+                pass
+        return ids
+
+    @staticmethod
+    def _names_assistant(text: str) -> bool:
+        names = [config.get('wake_word', 'Michelle'), *(config.get('wake_word_aliases', []) or [])]
+        pattern = r"\b(" + "|".join(re.escape(n) for n in names if n) + r")\b"
+        return re.search(pattern, text, re.IGNORECASE) is not None
+
+    def _bot_wake_allowed(self, chat_id: int) -> bool:
+        recent = self._bot_wakes.setdefault(chat_id, deque())
+        now = time.time()
+        while recent and now - recent[0] > BOT_WAKE_WINDOW:
+            recent.popleft()
+        if len(recent) >= BOT_WAKE_CAP:
+            return False
+        recent.append(now)
+        return True
+
+    async def _wake_assistant(self, msg, chat) -> bool:
+        """A live message in a group the bot is in (a negative id on telegram_bot.allowed_chat_ids)
+        that names the assistant: handed to the chat layer as a turn of that group, so the
+        reply goes out as the bot. The bot never receives such a message itself — in privacy
+        mode Telegram delivers it only replies to its own bubbles — but the owner's account sees
+        the whole group, other bots included. True when handed over."""
+        text = msg.text or ""
+        if not text or not self._names_assistant(text):
+            return False
+        from telethon import utils
+        chat_id = utils.get_peer_id(chat)   # the Bot API id: -<id> for a group, -100<id> for a supergroup
+        ids = self._bot_chat_ids()
+        if chat_id >= 0 or chat_id not in ids:
+            trace(f"TelegramFeed: '{getattr(chat, 'title', chat_id)}' names the assistant but the bot is not in it")
+            return False
+        is_from_me = msg.sender_id == self._me.id
+        if is_from_me:
+            sender_name, is_bot, guest = config.get_owner_name(), False, False
+        else:
+            sender = await msg.get_sender()
+            sender_name = (getattr(sender, 'first_name', None) or getattr(sender, 'username', None)
+                           or str(msg.sender_id))
+            is_bot = getattr(sender, 'bot', False) is True
+            guest = msg.sender_id not in ids
+            if is_prompt_injection(text):
+                info(f"TelegramFeed: {sender_name} named the assistant in a group, but the message looks "
+                     f"like a prompt injection — not woken")
+                return False
+        if is_bot and not self._bot_wake_allowed(chat_id):
+            info(f"TelegramFeed: {sender_name} (a bot) named the assistant, but bots woke her {BOT_WAKE_CAP} "
+                 f"times this hour in [{chat_id}] — not woken (loop brake)")
+            return False
+        info(f"TelegramFeed: {sender_name}{' (bot)' if is_bot else ''}{' (guest)' if guest else ''} named the "
+             f"assistant in '{getattr(chat, 'title', None)}' [{chat_id}], waking her")
+        return notifier().receive_chat_message(SOURCE_TELEGRAM, chat_id, sender_name, text, guest=guest,
+                                               sender_is_bot=is_bot, chat_name=getattr(chat, 'title', None))
 
     # --- sending ------------------------------------------------------------------------------
 

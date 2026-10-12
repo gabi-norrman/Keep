@@ -1672,6 +1672,26 @@ class TestCommandProcessorSensitiveGate:
         assert run_calls == [("turn_on", ["kitchen"])]
         processor.kill()
 
+    def test_a_guest_request_runs_no_command(self, monkeypatch):
+        # A group member who is not an owner: nothing runs, not even a harmless command, and no
+        # approval card is shown (it would appear in the group).
+        monkeypatch.setattr('assistant.commands.CommandProcessor.LOCAL_DEVELOPMENT_MODE', False)
+        processor = CommandProcessor(test_suite_mode=False)
+        run_calls = []
+        processor.commands.run = lambda command, params: (run_calls.append((command, params)) or "")
+        fake_bot = MagicMock()
+        fake_bot.request_approval = MagicMock(return_value="approve")
+        dm = self._dialog_manager()
+        dm.web_request_handler.ctx = Mock(source="TextChat", conversation=-5001, guest=True)
+        with patch('assistant.Notifier._notifier', fake_bot):
+            processor.invoke_command("turn_on", ["kitchen"], dm)
+            processor.invoke_command("send_imessage", ["Anna, hi"], dm)
+            processor.command_queue.join()
+        processor.kill()
+        assert run_calls == []
+        fake_bot.request_approval.assert_not_called()
+        assert "disabled for this turn" in processor.command_reply
+
     def test_test_mode_bypasses_approval(self, monkeypatch):
         """In test_suite_mode, sensitive commands should not call request_approval."""
         monkeypatch.setattr('assistant.commands.CommandProcessor.LOCAL_DEVELOPMENT_MODE', False)

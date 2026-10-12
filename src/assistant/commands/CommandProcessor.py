@@ -117,12 +117,19 @@ class CommandProcessor:
                 self.debug(f"Cleaned parameters: {params_display}")
                 self.last_dispatched_display = f"{command_name}({params_display})"
 
-                approval_blocked = False
-                if (not self.test_mode_dont_actually_execute_commands
+                blocked = False
+                if getattr(self._context_for(dialog_manager), 'guest', False) is True:
+                    info(f"Command {command_name} refused: the request is from a guest, every command is "
+                         f"disabled for the turn")
+                    self.append_command_reply(
+                        f"Command '{command_name}({params_display})' refused: the request is not from one of "
+                        f"the household's owners, so every command is disabled for this turn.")
+                    blocked = True
+                elif (not self.test_mode_dont_actually_execute_commands
                         and self.commands.is_sensitive(command_name)):
-                    approval_blocked = self._gate_sensitive_command(command_name, params, dialog_manager)
+                    blocked = self._gate_sensitive_command(command_name, params, dialog_manager)
 
-                if approval_blocked:
+                if blocked:
                     pass  # error already appended; skip execution and the echo
                 elif command_name == "false_positive" and LOCAL_DEVELOPMENT_MODE:
                     trace(f"Do run FP commands in LOCAL_DEVELOPMENT_MODE mode.")

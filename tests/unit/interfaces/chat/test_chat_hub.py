@@ -793,3 +793,22 @@ class TestTelemetry:
         monkeypatch.setattr(Telemetry, "get_instance", classmethod(lambda cls: sink))
         assert ChatHub().send_message("Nobody to tell.") is False
         sink.assistant_turn.assert_not_called()
+
+
+@pytest.mark.unit
+class TestReceiveChatMessage:
+    """A feed hands a message to the transport whose source it names (the owner's Telegram
+    account saw her name in a group the bot is in)."""
+
+    def test_the_message_becomes_a_turn_of_that_transport(self, hub, transport):
+        seen = []
+        hub.receive = lambda t, m: seen.append((t, m))
+        assert hub.receive_chat_message("TextChat", -5001, "Erik", "Michelle, hi", guest=True,
+                                        sender_is_bot=False, chat_name="Family") is True
+        (t, m), = seen
+        assert t is transport and m.conversation == -5001 and m.sender == "Erik" and m.text == "Michelle, hi"
+        assert m.guest is True and m.chat_name == "Family"
+
+    def test_no_transport_for_the_source_drops_it(self, hub):
+        hub.receive = lambda t, m: pytest.fail("nothing should be received")
+        assert hub.receive_chat_message("Carrier Pigeon", 1, "Erik", "hi") is False
