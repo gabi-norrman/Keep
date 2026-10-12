@@ -17,10 +17,13 @@ from typing import Optional
 from assistant.Assistant import AssistantBusy
 from assistant.AssistantEvents import Done, Notice, RoundEnd, Thinking, ThinkingDone, Token
 from assistant.AssistantRequest import SYSTEM_USER, RequestContext
+from assistant.PromptInjectionDetector import is_prompt_injection
 from assistant.commands.DebugCommands import DebugCommands
 from assistant.llm.OllamaLLM import OllamaLLM
 from common.ConfigManager import config
 from common.logging import error, info, note, trace
+from common.vault.Redactor import Redactor
+from common.vault.Vault import Vault
 from interfaces.chat import MediaIntake, RichText
 from interfaces.chat.ChatTypes import (KIND_PHOTO, KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE,
                                        PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING, PHASE_WAITING, IncomingMessage,
@@ -100,6 +103,8 @@ class ChatSession:
         # The group's title when the transport knows one: every request from here carries it
         # as its location, so the turn header says which chat the assistant is in.
         self._chat_name: Optional[str] = None
+        # Over the Vault singleton, resolved the first time a reply must be shielded.
+        self._redactor: Optional[Redactor] = None
 
     @property
     def conversation(self):
@@ -301,7 +306,7 @@ class ChatSession:
 
     def _prepare(self, msg: IncomingMessage, images: Optional[list]):
         """The assistant query for a message: (query, images, suppress_no), or None when
-        the user was told why nothing could be asked."""
+        nothing is asked — the user was told why, or a guest's text was screened out."""
         prefix = self._log_prefix()
         if msg.kind == KIND_REACTION:
             query = self._reaction_query(msg)
@@ -330,6 +335,13 @@ class ChatSession:
                 user_text += f"\nCaption: {msg.text}"
         else:
             user_text = msg.text
+
+        if msg.guest and is_prompt_injection(user_text):
+            # The feed screens what it hands over; a guest's reply to the bot's own bubble
+            # comes straight from the transport and is screened here, once the text is final
+            # (a transcript, a caption). Dropped without a word, like the feed does.
+            info(f"{prefix}: message from {msg.sender}, a guest, looks like a prompt injection — dropped")
+            return None
 
         query = self._with_reply_context(msg.reply_to_text, user_text)
         info(f"{prefix}: {user_text}")
@@ -438,6 +450,18 @@ class ChatSession:
         finally:
             events.put(None)
 
+    def _shield(self, buffer: str, masked_count: int, guest: bool) -> tuple[str, int]:
+        """*buffer* with every vault value swapped for its masked form, and how many masks it
+        holds now — logged when a new one appeared."""
+        if self._redactor is None:
+            self._redactor = Redactor(Vault.get_instance())
+        masked = self._redactor.mask(buffer)
+        count = len(self._redactor.masked_spans(masked))
+        if count > masked_count:
+            info(f"{self._log_prefix()}: a vault value in the reply is masked — "
+                 f"{'a guest' if guest else 'a group'} never gets one in the clear")
+        return masked, count
+
     def _reply(self, request: _Request, query: str, sender: str, images: Optional[list], suppress_no: bool,
                guest: bool = False, facts: Optional[str] = None):
         """Consumer: render the assistant's events into chat messages through the transport.
@@ -450,6 +474,12 @@ class ChatSession:
                          name=f"{transport.name}Request", daemon=True).start()
 
         max_len = transport.max_message_length
+        # A vault value is restored into the LLM's text at the LLM boundary, so it would reach
+        # the chat in the clear. A guest or a group never gets one: the reply shows the masked
+        # form instead (`•••• 1234`). The whole buffer is masked after every chunk, so a value
+        # split across chunks is caught once it is complete.
+        shield = guest or bool(self._chat_name)
+        masked_count = 0
         buffer = ""
         draft = transport.begin_draft(conversation)
         all_responses: list[str] = []
@@ -547,6 +577,8 @@ class ChatSession:
                     transport.set_status_line(conversation, None)
 
                 buffer += chunk
+                if shield:
+                    buffer, masked_count = self._shield(buffer, masked_count, guest)
                 if suppress_no and self._is_no_prefix(buffer):
                     continue
                 repaired = RichText.repair_markdown(buffer)
