@@ -1,6 +1,6 @@
 # Plan: `post_message` and destinations — the autonomous check emits commands only
 
-Written 2026-10-12. Status: proposed.
+Written 2026-10-12. Status: agreed, not started.
 
 ## What we want
 
@@ -82,7 +82,8 @@ class Destination:
 - Lookup is case-insensitive over names and aliases.
 - Three registrations to begin with:
   - **`owner`** — the chat hub: what `notifier().send_message` reaches today
-    (`notification_conversations()` of every transport). Always present while a chat interface runs.
+    (`notification_conversations()` of every transport — on a Telegram bot `notify_chat_ids`, the
+    proactive route the owner tuned, not every owner chat). Always present while a chat interface runs.
   - **one per Telegram group** on `allowed_chat_ids` (the negative ids) — registered by
     `TelegramTransport` at start, named by the group's title from one `get_chat(chat_id)` call per
     group, alias the id as text. A title change is picked up at the next start; the id always works.
@@ -104,8 +105,11 @@ linked). Semantics:
 - `Destinations.send` delivers; the command result is `posted to <name>` or `post_message failed:
   unknown destination 'x' — available: ...` so the model can correct itself in the same turn.
 - Not in `SENSITIVE_COMMANDS`: an approval card would defeat the nightly run. The ordinary command
-  notification in the owner's chat is the audit trail (`send_command_notification` already shows
-  every command the autonomous check runs), and a post to `owner` is its own evidence.
+  notification in the owner's chat is the whole audit trail (`send_command_notification` already
+  shows every command the autonomous check runs, arguments included) — a post to a group or a room
+  leaves no extra copy of the text in the owner's chat.
+- No caps per destination or hour: the command notification makes a chatty check visible, and
+  `BOT_WAKE_CAP` already brakes the one loop two assistants can get into.
 - Logging: `info` with destination, kind and length; `trace` of the redaction count when non-zero.
 - `send_telegram` (the owner's personal account, to any contact) stays a separate thing: that is
   the owner speaking, this is the assistant.
@@ -147,8 +151,8 @@ that a request made by voice, about something happening in the room, is answered
 4. Mute/unmute the outposts around it as a reply does (`ensure_outposts_muted` /
    `restore_outposts_if_muted`), so the kitchen mic does not hear her and wake her.
 
-No daytime or presence gate in code: that is the model's call per message, and the prompt says so.
-A cap of a handful of spoken posts per hour is cheap insurance against a looping check.
+No daytime or presence gate in code, and no cap: that is the model's call per message, and the
+prompt says so.
 
 ### The board, once the above exists
 
@@ -190,7 +194,7 @@ group's messages arrive as `telegramfeedloop` rows.
   CLAUDE.md's Request Flow gets one line on destinations.
 
 **Phase 2 — the voice destination.**
-- `VoiceInterface.announce`, its registration, the outpost mute, the gate wait, the hourly cap.
+- `VoiceInterface.announce`, its registration, the outpost mute, the gate wait.
 - The prompt rule that a voice request about the room is answered by voice.
 - Tests with the stubbed synthesizer and playback (`tests/unit/interfaces/voice/`); a real listen
   on the development machine before release — "let me know when the pasta is done" from the
@@ -203,11 +207,3 @@ group's messages arrive as `telegramfeedloop` rows.
   group, the curator's judgement and the history as the inbox.
 - `scheduled_prompts` in config (a cron for prompts with a destination) — the watch list already
   is that scheduler; revisit only if items prove too easy to erode.
-
-## Open questions
-
-- Should a post to a group leave more than the command notification in the owner's chat — a copy
-  of the text? The command notification shows the arguments, so probably not.
-- Hourly caps per kind (voice: 5, group: 10, owner: none)?
-- Should `owner` mean `notify_chat_ids` (the proactive route) or every owner chat? Proposed: the
-  proactive route, since that is what the owner tuned for pushes.
