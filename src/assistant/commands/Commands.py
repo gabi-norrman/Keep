@@ -1,3 +1,4 @@
+import inspect
 import queue
 import re
 import threading
@@ -1772,7 +1773,12 @@ class Commands:
             return None
         joined = ", ".join(params) if isinstance(params, list) else (params or "")
         try:
-            text = f(joined)
+            # A hook taking a second parameter gets the parsed arguments too — the joined text
+            # cannot tell a comma inside one argument ("Alice, Bob", a group) from the separator.
+            if len(inspect.signature(f).parameters) >= 2:
+                text = f(joined, params if isinstance(params, list) else None)
+            else:
+                text = f(joined)
             return text if text else None
         except Exception as e:
             error(f"describe_{command} raised: {e}")

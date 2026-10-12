@@ -24,10 +24,10 @@ class IMessageCommands(CommandSet):
         from integrations.imessage.IMessageIntegration import IMessageIntegration
         return IMessageIntegration.get_instance().send(recipient, body)
 
-    # The approval card names the handle the message goes to, or why there is none — the user
-    # approves a number, never a bare name.
-    def describe_send_imessage(self, p):
-        recipient = p.split(",", 1)[0].strip() if p else ""
+    # The approval card names the handle the message goes to — or the group and its members — or
+    # why there is none: the user approves a number, never a bare name.
+    def describe_send_imessage(self, p, args=None):
+        recipient = (args[0] if args else self.commands.first_argument(p or "")).strip()
         if not recipient:
             return "Sending iMessage"
         try:
@@ -36,6 +36,9 @@ class IMessageCommands(CommandSet):
             handle, err = imessage.resolve_recipient(recipient)
             if err:
                 return f"Sending iMessage to {recipient} — {err}"
+            if imessage.is_group_guid(handle):
+                group = imessage.group_for_handle(handle)
+                return f"Sending iMessage to the group {group.describe() if group else recipient}"
             if handle.lower() != recipient.lower():
                 display = imessage.display_name_for_handle(handle) or recipient
                 return f"Sending iMessage to {display} ({handle})"

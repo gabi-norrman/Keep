@@ -3,6 +3,7 @@ import re
 import sqlite3
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 from assistant.SystemNote import system_note
@@ -37,6 +38,11 @@ SEND_RATE_LIMIT_MAX = 5
 APPLESCRIPT_TIMEOUT = 15
 APPLESCRIPT_RESULT_IMESSAGE = "sent:imessage"
 APPLESCRIPT_RESULT_SMS = "sent:sms"
+APPLESCRIPT_RESULT_GROUP = "sent:group"
+GROUP_CHAT_STYLE = 43           # chat.style of a group conversation; 45 is a 1:1 chat
+# how a recipient lists the members of an unnamed group: "Alice, Bob", "Alice & Bob", "Alice and Bob"
+GROUP_MEMBER_SEPARATOR = re.compile(r"\s*(?:,|&|\+|\band\b|\boch\b)\s*", re.IGNORECASE)
+GROUP_HINT_LIMIT = 3            # near-miss groups named in the error for a member list no group has
 
 # chat.db send-later columns: schedule_type=2 marks a scheduled row (Apple resets it to 0
 # on the actual send); schedule_state 3 = completed, 4 = failed (error set, never sent)
@@ -57,6 +63,23 @@ MOBILE_LABEL_PATTERN = re.compile(r"iphone|mobil|cell", re.IGNORECASE)     # "Mo
 FAX_LABEL_PATTERN = re.compile(r"fax|pager", re.IGNORECASE)
 SWEDISH_MOBILE_PATTERN = re.compile(r"^(?:\+46|0046)7\d{8}$|^07\d{8}$")
 CHAT_ACTIVITY_CHUNK = 500      # handle rowids per chat.db query, well under SQLite's parameter limit
+
+
+@dataclass(frozen=True)
+class GroupChat:
+    """A group conversation of chat.db, named the way the feed names it."""
+    guid: str                   # chat.guid — also the chat's AppleScript id, what a group send addresses
+    name: Optional[str]         # the display name, None for an unnamed group
+    members: tuple[str, ...]    # contact names, sorted — the "Alice, Bob" the feed shows for an unnamed group
+    last_active: int            # Apple date of its latest message; the tiebreak between look-alike groups
+
+    @property
+    def label(self) -> str:
+        return self.name or ", ".join(self.members)
+
+    def describe(self) -> str:
+        members = ", ".join(self.members)
+        return f"{self.name} ({members})" if self.name else members
 
 
 class IMessageIntegration(Integration, Feed):
@@ -88,6 +111,7 @@ class IMessageIntegration(Integration, Feed):
         self._name_to_handle: dict[str, str] = {}
         self._handle_reasons: dict[str, str] = {}     # name key → why its handle won (for the log)
         self._handle_to_full_name: dict[str, str] = {}
+        self._groups_by_guid: dict[str, GroupChat] = {}   # the groups resolve_recipient handed out
         self._contact_cache_time = 0.0
         self._rate_limiter = RateLimiter(SEND_RATE_LIMIT_MAX, SEND_RATE_LIMIT_WINDOW)
         self._notified_cache_empty = False
@@ -784,9 +808,10 @@ class IMessageIntegration(Integration, Feed):
         return len(digits) >= 7
 
     def resolve_recipient(self, recipient: str) -> Tuple[Optional[str], Optional[str]]:
-        """Resolve a recipient string (contact name or raw handle) to a sendable handle.
-        Returns (handle, error). On success error is None; on failure handle is None
-        and error is a short human-readable string."""
+        """Resolve a recipient string (contact name, raw handle, group name or member list) to a
+        sendable handle — for a group chat its guid, see `is_group_guid`. Returns (handle, error).
+        On success error is None; on failure handle is None and error is a short human-readable
+        string."""
         if not recipient or not recipient.strip():
             return None, "empty recipient"
         candidate = recipient.strip()
@@ -809,6 +834,12 @@ class IMessageIntegration(Integration, Feed):
             info(f"iMessage: resolved '{candidate}' via forward-cache fallback → {fallback}")
             return fallback, None
 
+        group, group_err = self._resolve_group(candidate)
+        if group:
+            return group.guid, None
+        if group_err:
+            return None, group_err
+
         if not self._contact_cache and not self._name_to_handle:
             self._notify_contact_cache_empty()
             return None, (
@@ -816,6 +847,101 @@ class IMessageIntegration(Integration, Feed):
                 f"Reading the AddressBook likely {FULL_DISK_ACCESS_HINT}."
             )
         return None, f"unknown contact: {candidate} (cache has {len(self._name_to_handle)} names)"
+
+    @staticmethod
+    def is_group_guid(handle: str) -> bool:
+        """Whether a resolved handle is a group chat's guid (`any;+;chat…`) rather than a buddy —
+        Messages marks a group with `;+;` and a 1:1 chat with `;-;`."""
+        return ";+;" in (handle or "")
+
+    def group_for_handle(self, handle: str) -> Optional[GroupChat]:
+        """The group chat behind a guid `resolve_recipient` handed out, for the approval card and
+        the history echo."""
+        return self._groups_by_guid.get(handle)
+
+    def _load_group_chats(self) -> list[GroupChat]:
+        """Every group chat of chat.db with its members named like the feed names them. Read per
+        lookup — a few dozen rows — so a group created a minute ago is already sendable. Empty when
+        chat.db cannot be read."""
+        try:
+            with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
+                member_rows = conn.execute("""
+                    SELECT c.ROWID, c.guid, c.display_name, h.id
+                    FROM chat c
+                    JOIN chat_handle_join chj ON chj.chat_id = c.ROWID
+                    JOIN handle h ON h.ROWID = chj.handle_id
+                    WHERE c.style = ?
+                """, (GROUP_CHAT_STYLE,)).fetchall()
+                activity = dict(conn.execute("""
+                    SELECT cmj.chat_id, MAX(m.date)
+                    FROM chat c
+                    JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
+                    JOIN message m ON m.ROWID = cmj.message_id
+                    WHERE c.style = ?
+                    GROUP BY cmj.chat_id
+                """, (GROUP_CHAT_STYLE,)).fetchall())
+        except Exception as e:
+            info(f"iMessage: chat.db group chat query failed, no group can be addressed: {e}")
+            return []
+        chats: dict[int, tuple[str, Optional[str], set[str]]] = {}
+        for rowid, guid, name, handle in member_rows:
+            if not guid:
+                continue
+            _, _, members = chats.setdefault(rowid, (guid, (name or "").strip() or None, set()))
+            if handle:
+                members.add(self._resolve_contact(handle))
+        groups = [GroupChat(guid, name, tuple(sorted(members)), activity.get(rowid) or 0)
+                  for rowid, (guid, name, members) in chats.items()]
+        trace(f"iMessage: chat.db holds {len(groups)} group chats, {sum(1 for g in groups if g.name)} named")
+        return groups
+
+    @staticmethod
+    def _member_matches(member: str, part: str) -> bool:
+        """A listed member matches a contact by full name or first name ("Alice" → "Alice Smith")."""
+        name = member.lower()
+        return name == part or name.split()[0] == part
+
+    @classmethod
+    def _has_members(cls, group: GroupChat, wanted: set[str]) -> bool:
+        return all(any(cls._member_matches(m, p) for m in group.members) for p in wanted)
+
+    @classmethod
+    def _has_exactly_members(cls, group: GroupChat, wanted: set[str]) -> bool:
+        return cls._has_members(group, wanted) and \
+            all(any(cls._member_matches(m, p) for p in wanted) for m in group.members)
+
+    def _resolve_group(self, recipient: str) -> Tuple[Optional[GroupChat], Optional[str]]:
+        """The group chat a recipient names — by its display name, or for an unnamed group by its
+        members the way the feed lists them ("Alice, Bob", "Alice & Bob", "Alice and Bob"; the
+        owner's own name may be in the list). Several chats with the same name or members (an
+        iMessage and an SMS incarnation, a recreated group): the most recently active one wins.
+        Returns (group, error): an error only for a member list no group has exactly, naming the
+        groups that contain those people; (None, None) when the recipient is not a group's name."""
+        groups = self._load_group_chats()
+        if not groups:
+            return None, None
+        key = " ".join(recipient.split()).lower()
+        owner = (config.get_owner_name() or "").strip().lower()
+        wanted = {part.strip().lower() for part in GROUP_MEMBER_SEPARATOR.split(recipient)} - {"", owner}
+        matches = [g for g in groups if g.name and g.name.lower() == key]
+        how = "by name"
+        if not matches and len(wanted) >= 2:
+            matches = [g for g in groups if self._has_exactly_members(g, wanted)]
+            how = "by members"
+        if matches:
+            group = max(matches, key=lambda g: g.last_active)
+            self._groups_by_guid[group.guid] = group
+            info(f"iMessage: resolved '{recipient}' {how} → group {group.describe()} ({group.guid}, "
+                 f"{len(matches)} candidate(s))")
+            return group, None
+        if len(wanted) < 2:
+            trace(f"iMessage: '{recipient}' names no group chat")
+            return None, None
+        near = sorted((g for g in groups if self._has_members(g, wanted)),
+                      key=lambda g: g.last_active, reverse=True)[:GROUP_HINT_LIMIT]
+        info(f"iMessage: no group chat with exactly {sorted(wanted)}; {len(near)} group(s) contain them")
+        hint = f"; groups with them: {'; '.join(g.describe() for g in near)}" if near else ""
+        return None, f"no group chat with exactly these members: {', '.join(sorted(wanted))}{hint}"
 
     def _fallback_lookup(self, name_lower: str) -> Optional[str]:
         """Last-resort: scan the forward (handle → name) cache for any handle whose name matches
@@ -871,8 +997,20 @@ class IMessageIntegration(Integration, Feed):
             end tell
         '''
 
+    @classmethod
+    def _build_group_send_applescript(cls, guid: str, body: str) -> str:
+        """Build AppleScript that posts to a group chat. The chat is addressed by its id — the guid
+        chat.db stores is the id Messages exposes — and already knows its service, so there is no
+        SMS fallback to try."""
+        return f'''
+            tell application "Messages"
+                send {cls._applescript_quote(body)} to chat id {cls._applescript_quote(guid)}
+                return "{APPLESCRIPT_RESULT_GROUP}"
+            end tell
+        '''
+
     def send(self, recipient: str, body: str) -> str:
-        """Send an iMessage/SMS via Messages.app AppleScript.
+        """Send an iMessage/SMS via Messages.app AppleScript, to a contact or a group chat.
         Returns "" on success or a short error string on failure."""
         if not body or not body.strip():
             info("iMessage send skipped: empty body")
@@ -888,7 +1026,10 @@ class IMessageIntegration(Integration, Feed):
             info(f"iMessage send: could not resolve recipient '{recipient}': {err}")
             return err
 
-        script = self._build_send_applescript(handle, body)
+        if self.is_group_guid(handle):
+            script = self._build_group_send_applescript(handle, body)
+        else:
+            script = self._build_send_applescript(handle, body)
         try:
             result = subprocess.run(
                 ["osascript", "-e", script],
@@ -912,8 +1053,10 @@ class IMessageIntegration(Integration, Feed):
             return stderr or f"osascript exit {result.returncode}"
 
         self._rate_limiter.record()
-        service = stdout if stdout in (APPLESCRIPT_RESULT_IMESSAGE, APPLESCRIPT_RESULT_SMS) else "sent"
-        info(f"iMessage {service} to {handle}: {body!r}")
+        service = stdout if stdout in (APPLESCRIPT_RESULT_IMESSAGE, APPLESCRIPT_RESULT_SMS,
+                                       APPLESCRIPT_RESULT_GROUP) else "sent"
+        group = self.group_for_handle(handle)
+        info(f"iMessage {service} to {group.describe() if group else handle}: {body!r}")
         self._log_sent_to_history(recipient, handle, body)
         return ""
 
@@ -936,10 +1079,15 @@ class IMessageIntegration(Integration, Feed):
 
     def _log_sent_to_history(self, recipient: str, handle: str, body: str):
         """Mirror the read-path's `iMessage sent:` shape so the LLM sees its own outbound
-        message; the entry rides along with the feed's next batch."""
-        target_name = self._resolve_contact(handle) if handle != recipient else recipient
-        if not target_name or target_name == handle:
-            target_name = recipient
+        message; the entry rides along with the feed's next batch. A group is named the way the
+        feed names it: its display name, or its members."""
+        group = self.group_for_handle(handle)
+        if group:
+            target_name = group.label
+        else:
+            target_name = self._resolve_contact(handle) if handle != recipient else recipient
+            if not target_name or target_name == handle:
+                target_name = recipient
         content = f"iMessage sent:\n{config.get_owner_name()} to {target_name}: {body}"
         self._pending_entries.append(FeedEntry(time.time(), content))
 
