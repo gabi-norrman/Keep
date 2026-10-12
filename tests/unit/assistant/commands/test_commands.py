@@ -10,6 +10,7 @@ from assistant.commands.CommandParser import CommandParser
 from assistant import Procedures
 from assistant.commands import Toolkits, ToolkitPreloader
 from assistant.commands.Commands import Commands, is_reference_result
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from assistant.tools.WebAccess import WebAccess
 
 
@@ -798,6 +799,61 @@ class TestCmdScheduleAndCaffeinate:
     def test_describe_schedule_wakeup_shows_the_reason(self, commands_instance):
         text = commands_instance.describe("schedule_wakeup", ["20", "turn off the TV"])
         assert "20" in text and "turn off the TV" in text
+
+# ---------------------------------------------------------------------------
+# TestCmdSelfImprovement
+# ---------------------------------------------------------------------------
+
+class TestCmdSelfImprovement:
+    """A finished job leaves a row the LLM can act on — the PR it opened. Before, the row said
+    only that a report was sent, and on 2026-10-11 the assistant took the job for still
+    running two hours after its PR was up."""
+
+    REPORT = ("## Timers keep their reason across a restart\n\n"
+              "Changed `AutonomousActionManager.py` and its test.\n\n"
+              "PR: https://github.com/example/keep/pull/49")
+
+    def _run(self, commands_instance, report, sent=True):
+        chat = Mock()
+        chat.markdown_to_html.side_effect = lambda md: md
+        chat.send_message.return_value = sent
+        prompt_manager = Mock()
+        with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
+             patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam, \
+             patch("assistant.Notifier._notifier", chat), \
+             patch.object(commands_instance, "fire_and_forget", side_effect=lambda fn, p: fn(p)):
+            mock_cqm.unavailable_reason.return_value = None
+            mock_cqm.improve_code.return_value = report
+            mock_cqm.pull_request_in.side_effect = CodeQualityMaintainer.pull_request_in
+            mock_cqm.first_line.side_effect = CodeQualityMaintainer.first_line
+            mock_aam.get_instance.return_value = Mock(prompt_manager=prompt_manager)
+            commands_instance.cmd_self_improvement("fix the timers")
+        prompt_manager.update_history.assert_called_once()
+        user, query, text = prompt_manager.update_history.call_args.args
+        assert user is None and query is None, "an assistant-side row, no user turn"
+        return text, chat
+
+    def test_the_row_names_the_pr_its_title_and_its_url(self, commands_instance):
+        text, chat = self._run(commands_instance, self.REPORT)
+        assert text.startswith("[Self-improvement complete] PR #49 open: Timers keep their reason across a restart")
+        assert "https://github.com/example/keep/pull/49" in text
+        assert "Changed" not in text, "the row is the outcome, not the report"
+        chat.send_message.assert_called_once()
+
+    def test_a_pr_number_without_a_url_is_still_the_outcome(self, commands_instance):
+        text, _ = self._run(commands_instance, "Opened PR #12 with the fix.\n\nDetails follow.")
+        assert "PR #12 open: Opened PR #12 with the fix." in text
+
+    def test_no_pr_says_so_with_the_reports_first_line(self, commands_instance):
+        text, _ = self._run(commands_instance, "**Declined**: the request is too vague to act on.\nAsk for the file.")
+        assert text.startswith("[Self-improvement complete] no PR was created: Declined: the request is too vague to act on.")
+        assert "PR #" not in text
+
+    def test_without_a_chat_the_row_carries_the_report(self, commands_instance):
+        text, _ = self._run(commands_instance, self.REPORT, sent=False)
+        assert text.startswith("[Self-improvement complete] (failed: no notification channel")
+        assert "PR #49 open" in text and "Changed `AutonomousActionManager.py`" in text
+
 
 # ---------------------------------------------------------------------------
 # TestCmdSelfAnalysis

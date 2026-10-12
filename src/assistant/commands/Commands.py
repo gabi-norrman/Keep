@@ -708,15 +708,36 @@ class Commands:
                 fine(f"Report: {report}")
                 html_report = notifier().markdown_to_html(report)
                 sent = notifier().send_message(f"Self-improvement report:\n\n{html_report}")
-                outcome = "report sent to user" if sent else f"{NO_NOTIFICATION_CHANNEL}; report: {report}"
-
                 aam = AutonomousActionManager.get_instance()
                 if aam and aam.prompt_manager:
-                    aam.prompt_manager.update_history(None, None, f"[Self-improvement complete — {outcome}]")
+                    aam.prompt_manager.update_history(None, None, self._improvement_outcome(report, sent))
+                else:
+                    info("Self-improvement: no AutonomousActionManager yet, the outcome is not in the history")
             except Exception as e:
                 error(f"Self-improvement failed: {e}")
 
         self.fire_and_forget(_run_and_deliver, parameter_string)
+
+    @staticmethod
+    def _improvement_outcome(report: str, sent: bool) -> str:
+        """The history row a finished self-improvement job leaves — the PR it opened (number,
+        title line, URL) or that none was, so the LLM knows the outcome without the report:
+        the "report sent" marker it left before told it nothing, and on 2026-10-11 it took a
+        job for still running two hours after the PR was open. Without a chat to deliver
+        to, the row carries the whole report. "[Self-improvement complete]" is the tag the
+        LLM keys off; keep it first."""
+        number, url = CodeQualityMaintainer.pull_request_in(report)
+        title = CodeQualityMaintainer.first_line(report)
+        delivery = "" if sent else f" ({NO_NOTIFICATION_CHANNEL})"
+        if number is not None:
+            text = f"[Self-improvement complete]{delivery} PR #{number} open: {title}"
+            if url:
+                text += f"\n{url}"
+        else:
+            text = f"[Self-improvement complete]{delivery} no PR was created: {title}"
+        if not sent:
+            text += f"\n\nReport:\n{report}"
+        return text
 
     def cmd_restart_server(self, parameter_string: str):
         def _run(_params):
