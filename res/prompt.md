@@ -187,8 +187,8 @@ And remember, never say that you've preformed some command/action without actual
 command.
 
 # RECENT MESSAGES
-Recent conversation and system events follow below as the message history.
-Use `show_history(...)` to fetch older messages.
+Recent conversation and system events follow below. It is a window: when the day grows long, the oldest entries of
+today are trimmed. Use `show_history(...)` to fetch anything older than the window, from today or earlier days.
 
 This short-term memory does NOT survive to next day. Each day starts fresh. To remember tasks for tomorrow+, you must put them on the watch list
 
