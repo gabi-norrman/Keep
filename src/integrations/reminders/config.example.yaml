@@ -1,2 +1,4 @@
 reminders:
+  # The Reminders list `add_shopping_list_item` writes to, and the one the health check looks for.
+  # `list_reminders`, `add_reminder` and `complete_reminder` reach every list by name.
   shopping_list_name: Shoppinglista
