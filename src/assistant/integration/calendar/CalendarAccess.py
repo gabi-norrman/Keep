@@ -6,8 +6,11 @@ calendars it shows and the ones left out, then one chronological list of the sho
 events across accounts, each line tagged with its calendar when more than one is shown; an
 account that fails is named as such while the others still show, and the whole week is
 EVENTS_UNAVAILABLE only when none could be read (never NO_EVENTS, which would read as an empty
-week). `load` is the `load_calendar` command, `create` the `create_event` one; both name a
-calendar across accounts, `Account/Name` when two accounts have one by that name."""
+week). `load` is the `load_calendar` command, `create` the `create_event` one, `delete` and
+`move` the `delete_event` / `move_event` ones; all name a calendar across accounts,
+`Account/Name` when two accounts have one by that name. An existing event is named the way the
+user names it, by title and date — `_find` reads that day and insists on one match — and goes
+back to the account that read it, whose handle its `id` is."""
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -17,7 +20,7 @@ from common.ConfigManager import config
 from common.logging import info, error, trace
 from .CalendarAccount import CalendarAccount, CalendarInfo
 from .CalendarSource import CalendarSource
-from .Event import Event, render
+from .Event import Event, covers, render, when
 
 # How far ahead the prompt's calendar section and `load_calendar` look.
 CALENDAR_DAYS_AHEAD = 8
@@ -180,6 +183,88 @@ class CalendarAccess:
             parts.append(f"Calendar '{label}', {start_date} to {end_date}:\n"
                          + render(account.events([calendar.name], start_date, end_date), start_date, end_date))
         return "\n\n".join(parts)
+
+    def _candidates(self, day: date, calendar_name: str) -> list[tuple[CalendarAccount, Event]]:
+        """The events on `day` of the named calendar, or of every shown calendar of every account
+        when none is named (the ones the prompt lists, so what the user sees is what is found);
+        read with a day of margin each side since the backends search in UTC."""
+        local_tz = pytz.timezone(config.get_home_timezone())
+        start, end = day - timedelta(days=1), day + timedelta(days=2)
+        read: list[tuple[CalendarAccount, Event]] = []
+        if calendar_name.strip():
+            found, reason = self._resolve(calendar_name)
+            if found is None:
+                raise ValueError(reason)
+            account, calendar = found
+            read.extend((account, e) for e in account.events([calendar.name], start, end))
+        else:
+            for account in self._accounts:
+                _, shown = self._header(account)
+                read.extend((account, e) for e in account.events([c.name for c in shown], start, end))
+        return [(account, e) for account, e in read if covers(e, day, local_tz)]
+
+    def _find(self, title: str, date_str: str, calendar_name: str = "") -> tuple[CalendarAccount, Event]:
+        """The one event titled `title` on the date: the title whatever its case, else the one
+        event whose title contains it. Raises ValueError naming the day's events when none or
+        several match."""
+        if not self._accounts:
+            raise ValueError(NO_ACCOUNT_HINT)
+        day = date.fromisoformat(date_str.strip())
+        local_tz = pytz.timezone(config.get_home_timezone())
+        wanted = title.strip().strip("'\"").lower()
+        candidates = self._candidates(day, calendar_name)
+        matches = [(a, e) for a, e in candidates if e.title.strip().lower() == wanted]
+        if not matches:
+            matches = [(a, e) for a, e in candidates if wanted and wanted in e.title.lower()]
+        listed = "; ".join(f"'{e.title}' ({when(e, local_tz)}, {a.name}/{e.calendar})" for a, e in matches or candidates)
+        where = f" in {calendar_name.strip()}" if calendar_name.strip() else ""
+        if not matches:
+            info(f"Calendar: no event titled '{title}' on {day}{where} among {len(candidates)} candidate(s)")
+            raise ValueError(f"no event titled '{title}' on {day}{where}. That day holds: {listed or 'nothing'}")
+        if len(matches) > 1:
+            info(f"Calendar: '{title}' on {day}{where} is ambiguous: {listed}")
+            raise ValueError(f"'{title}' on {day}{where} matches several events — name one exactly: {listed}")
+        account, event = matches[0]
+        trace(f"Calendar: '{title}' on {day}{where} is '{event.title}' ({when(event, local_tz)}) of {account.name}/{event.calendar}")
+        return account, event
+
+    def delete(self, title: str, date_str: str, calendar_name: str = "") -> str:
+        """Deletes the one event titled `title` on the date (the `delete_event` command) and
+        says which one went; raises ValueError when it is not one event or the account refuses."""
+        account, event = self._find(title, date_str, calendar_name)
+        local_tz = pytz.timezone(config.get_home_timezone())
+        account.delete_event(event.calendar, event)
+        info(f"Deleted calendar event '{event.title}' ({when(event, local_tz)}) from {account.name}/{event.calendar}")
+        return f"Deleted '{event.title}' ({when(event, local_tz)}) from {account.name}/{event.calendar}"
+
+    def move(self, title: str, date_str: str, new_date: str, start_time: str = "", end_time: str = "",
+             calendar_name: str = "") -> str:
+        """Moves the one event titled `title` on the date to `new_date` (the `move_event`
+        command): at the given times, or without them at its own time of day and length
+        (an all-day event stays all-day). Says what moved where; raises ValueError when it is
+        not one event or the account refuses."""
+        account, event = self._find(title, date_str, calendar_name)
+        local_tz = pytz.timezone(config.get_home_timezone())
+        day = date.fromisoformat(new_date.strip())
+        if start_time.strip() or end_time.strip():
+            if not (start_time.strip() and end_time.strip()):
+                raise ValueError("a move with times needs both the start and the end time")
+            start = local_tz.localize(datetime.strptime(f"{day} {start_time.strip()}", "%Y-%m-%d %H:%M"))
+            end = local_tz.localize(datetime.strptime(f"{day} {end_time.strip()}", "%Y-%m-%d %H:%M"))
+            all_day = False
+        elif event.all_day:
+            days = max((event.end - event.start).days, 1)
+            start = datetime.combine(day, datetime.min.time()).replace(tzinfo=pytz.UTC)
+            end, all_day = start + timedelta(days=days), True
+        else:
+            local_start = event.start.astimezone(local_tz)
+            start = local_tz.localize(datetime.combine(day, local_start.time()))
+            end, all_day = start + (event.end - event.start), False
+        moved = Event(start, end, event.title, event.calendar, event.account, all_day, event.id, event.recurring)
+        account.move_event(event.calendar, event, start, end, all_day)
+        info(f"Moved calendar event '{event.title}' from {when(event, local_tz)} to {when(moved, local_tz)} "
+             f"in {account.name}/{event.calendar}")
+        return f"Moved '{event.title}' from {when(event, local_tz)} to {when(moved, local_tz)} in {account.name}/{event.calendar}"
 
     def create(self, title: str, date_str: str, start_time: str, end_time: str, calendar_name: str = "") -> str:
         """An event in the named calendar, else the first account's default calendar (matched

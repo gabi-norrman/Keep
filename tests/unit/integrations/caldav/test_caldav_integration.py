@@ -1,11 +1,12 @@
 """The CalDAV folder: the account that turns the library's calendars and vobject events into
-CalendarInfo and Event, the integration that builds one per `caldav.accounts` entry, and the
-icalendar pins the library needs."""
+CalendarInfo and Event and deletes or moves one by its UID, the integration that builds one per
+`caldav.accounts` entry, and the icalendar pins the library needs."""
 from datetime import date, datetime, timedelta
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 import pytz
+import vobject
 
 from assistant.integration.calendar.CalendarSource import CalendarSource
 from assistant.integration.calendar.Event import Event
@@ -33,13 +34,32 @@ def _calendar(name, *events, components=("VEVENT",), day=date(2025, 6, 15)):
         else:
             start, end = start
         vevent = Mock()
-        vevent.contents = {'dtstart': [Mock(value=start)], 'dtend': [Mock(value=end)]}
+        vevent.contents = {'dtstart': [Mock(value=start)], 'uid': [Mock(value=f"uid-{title}")]}
+        if end is not None:
+            vevent.contents['dtend'] = [Mock(value=end)]
         vevent.summary = Mock(value=title)
         event = Mock()
         event.vobject_instance.vevent = vevent
         found.append(event)
     calendar.date_search.return_value = found
     return calendar
+
+
+ICS = ("BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:uid-1\nSUMMARY:Dentist\n{bounds}\nSEQUENCE:0\n"
+       "END:VEVENT\nEND:VCALENDAR\n")
+
+
+def _resource(bounds="DTSTART;TZID=Europe/Stockholm:20250615T110000\nDTEND;TZID=Europe/Stockholm:20250615T120000"):
+    """A library event object over a real vobject, the way `event_by_uid` answers."""
+    resource = Mock()
+    resource.vobject_instance = vobject.readOne(ICS.format(bounds=bounds))
+    return resource
+
+
+def _stored(resource) -> dict:
+    """The DTSTART / DTEND lines the resource would PUT."""
+    lines = resource.vobject_instance.serialize().splitlines()
+    return {line.split(";")[0].split(":")[0]: line for line in lines if line.startswith(("DTSTART", "DTEND", "DURATION"))}
 
 
 def _serve(mock_caldav, *calendars):
@@ -118,6 +138,29 @@ class TestEvents:
 
         assert event.start.tzinfo is not None and event.start.utcoffset() == timedelta(0)
 
+    @patch(CALDAV)
+    def test_the_uid_is_the_events_id_and_a_series_or_an_occurrence_of_one_is_recurring(self, mock_caldav):
+        home = _calendar("Home", ("Single", 9), ("Weekly", 10), ("Occurrence", 11))
+        home.date_search.return_value[1].vobject_instance.vevent.contents['rrule'] = [Mock(value="FREQ=WEEKLY")]
+        home.date_search.return_value[2].vobject_instance.vevent.contents['recurrence-id'] = [Mock(value=datetime(2025, 6, 15, 11))]
+        _serve(mock_caldav, home)
+
+        single, weekly, occurrence = _account().events(["Home"], date(2025, 6, 15), date(2025, 6, 20))
+
+        assert single.id == "uid-Single" and not single.recurring
+        assert weekly.recurring and occurrence.recurring
+
+    @patch(CALDAV)
+    def test_a_duration_instead_of_an_end_gives_the_end_and_neither_makes_an_instant(self, mock_caldav):
+        home = _calendar("Home", ("Timed", (datetime(2025, 6, 15, 10, 0, tzinfo=UTC), None)),
+                         ("Bare", (datetime(2025, 6, 15, 12, 0, tzinfo=UTC), None)))
+        home.date_search.return_value[0].vobject_instance.vevent.contents['duration'] = [Mock(value=timedelta(minutes=90))]
+        _serve(mock_caldav, home)
+
+        timed, bare = _account().events(["Home"], date(2025, 6, 15), date(2025, 6, 20))
+
+        assert timed.end == datetime(2025, 6, 15, 11, 30, tzinfo=UTC) and bare.end == bare.start
+
 
 @pytest.mark.unit
 class TestCreateEvent:
@@ -143,6 +186,106 @@ class TestCreateEvent:
         with pytest.raises(ValueError, match="Calendar 'Home' not found") as raised:
             _account().create_event("Home", self._event())
         assert "Work" in str(raised.value)
+
+
+def _read(title="Dentist", recurring=False, uid="uid-1"):
+    tz = pytz.timezone("Europe/Stockholm")
+    return Event(tz.localize(datetime(2025, 6, 15, 11, 0)), tz.localize(datetime(2025, 6, 15, 12, 0)), title,
+                 calendar="Home", account="iCloud", id=uid, recurring=recurring)
+
+
+@pytest.mark.unit
+class TestDeleteEvent:
+    @patch(CALDAV)
+    def test_the_resource_found_by_the_uid_in_the_named_calendar_is_deleted(self, mock_caldav):
+        home, family = _calendar("Home"), _calendar("Family")
+        _serve(mock_caldav, home, family)
+        resource = _resource()
+        home.event_by_uid.return_value = resource
+
+        _account().delete_event("Home", _read())
+
+        home.event_by_uid.assert_called_once_with("uid-1")
+        resource.delete.assert_called_once_with()
+        family.event_by_uid.assert_not_called()
+
+    @patch(CALDAV)
+    def test_a_recurring_event_is_refused_before_the_lookup_and_a_series_master_after_it(self, mock_caldav):
+        home = _calendar("Home")
+        _serve(mock_caldav, home)
+        home.event_by_uid.return_value = _resource(bounds="DTSTART:20250615T090000Z\nDTEND:20250615T100000Z\nRRULE:FREQ=WEEKLY")
+
+        with pytest.raises(ValueError, match="recurring"):
+            _account().delete_event("Home", _read(recurring=True))
+        home.event_by_uid.assert_not_called()
+        with pytest.raises(ValueError, match="recurring"):
+            _account().delete_event("Home", _read())
+        home.event_by_uid.return_value.delete.assert_not_called()
+
+    @patch(CALDAV)
+    def test_an_event_without_a_uid_an_unknown_calendar_or_a_gone_event_raises(self, mock_caldav):
+        home = _calendar("Home")
+        _serve(mock_caldav, home)
+        with pytest.raises(ValueError, match="no UID"):
+            _account().delete_event("Home", _read(uid=""))
+        with pytest.raises(ValueError, match="Calendar 'Work' not found"):
+            _account().delete_event("Work", _read())
+        home.event_by_uid.side_effect = RuntimeError("404 Not Found")
+        with pytest.raises(ValueError, match="no longer"):
+            _account().delete_event("Home", _read())
+
+
+@pytest.mark.unit
+class TestMoveEvent:
+    UTC_BOUNDS = (datetime(2025, 6, 18, 8, 0, tzinfo=UTC), datetime(2025, 6, 18, 9, 30, tzinfo=UTC))
+
+    @patch(CALDAV)
+    def test_timed_bounds_are_written_in_utc_without_the_old_tzid_and_the_resource_saved(self, mock_caldav):
+        home = _calendar("Home")
+        _serve(mock_caldav, home)
+        resource = _resource()
+        home.event_by_uid.return_value = resource
+
+        _account().move_event("Home", _read(), *self.UTC_BOUNDS, all_day=False)
+
+        resource.save.assert_called_once_with()
+        assert _stored(resource) == {"DTSTART": "DTSTART:20250618T080000Z", "DTEND": "DTEND:20250618T093000Z"}
+
+    @patch(CALDAV)
+    def test_all_day_bounds_are_written_as_dates(self, mock_caldav):
+        home = _calendar("Home")
+        _serve(mock_caldav, home)
+        resource = _resource()
+        home.event_by_uid.return_value = resource
+
+        _account().move_event("Home", _read(), datetime(2025, 6, 18, tzinfo=UTC), datetime(2025, 6, 19, tzinfo=UTC), all_day=True)
+
+        assert _stored(resource) == {"DTSTART": "DTSTART;VALUE=DATE:20250618", "DTEND": "DTEND;VALUE=DATE:20250619"}
+
+    @patch(CALDAV)
+    def test_a_duration_gives_way_to_an_end_and_an_all_day_event_can_become_a_timed_one(self, mock_caldav):
+        home = _calendar("Home")
+        _serve(mock_caldav, home)
+        with_duration = _resource(bounds="DTSTART:20250615T090000Z\nDURATION:PT1H")
+        all_day = _resource(bounds="DTSTART;VALUE=DATE:20250615\nDTEND;VALUE=DATE:20250616")
+        home.event_by_uid.side_effect = [with_duration, all_day]
+
+        _account().move_event("Home", _read(), *self.UTC_BOUNDS, all_day=False)
+        _account().move_event("Home", _read(), *self.UTC_BOUNDS, all_day=False)
+
+        assert _stored(with_duration) == {"DTSTART": "DTSTART:20250618T080000Z", "DTEND": "DTEND:20250618T093000Z"}
+        assert _stored(all_day) == {"DTSTART": "DTSTART:20250618T080000Z", "DTEND": "DTEND:20250618T093000Z"}
+
+    @patch(CALDAV)
+    def test_a_recurring_event_is_refused_unsaved(self, mock_caldav):
+        home = _calendar("Home")
+        _serve(mock_caldav, home)
+        resource = _resource(bounds="DTSTART:20250615T090000Z\nDTEND:20250615T100000Z\nRRULE:FREQ=WEEKLY")
+        home.event_by_uid.return_value = resource
+
+        with pytest.raises(ValueError, match="recurring"):
+            _account().move_event("Home", _read(), *self.UTC_BOUNDS, all_day=False)
+        resource.save.assert_not_called()
 
 
 @pytest.mark.unit

@@ -51,6 +51,74 @@ class TestCreateEvent:
 
 
 @pytest.mark.unit
+class TestDeleteEvent:
+    def test_the_title_is_everything_before_the_date_and_a_third_token_names_the_calendar(self, commands):
+        with patch(CURRENT) as current:
+            current.return_value.delete.return_value = "Deleted 'Dinner with Bob, Carol' (...) from iCloud/Home"
+            result = commands._run_delete_event("Dinner with Bob", "Carol", "2025-10-28", '"Kids"')
+        current.return_value.delete.assert_called_once_with("Dinner with Bob, Carol", "2025-10-28", "Kids")
+        assert result.startswith("Deleted")
+
+    def test_without_a_calendar_the_composite_searches_the_shown_ones(self, commands):
+        with patch(CURRENT) as current:
+            commands._run_delete_event("Dentist", "2025-10-28")
+        current.return_value.delete.assert_called_once_with("Dentist", "2025-10-28", "")
+
+    def test_a_missing_title_or_date_too_many_tokens_or_a_refusing_composite_is_a_failure_message(self, commands):
+        with patch(CURRENT) as current:
+            assert "delete_event failed" in commands._run_delete_event("2025-10-28")
+            assert "delete_event failed" in commands._run_delete_event("Dentist", "tomorrow")
+            assert "delete_event failed" in commands._run_delete_event("Dentist", "2025-10-28", "Kids", "extra")
+            current.return_value.delete.assert_not_called()
+            current.return_value.delete.side_effect = ValueError("matches several events")
+            result = commands._run_delete_event("Dentist", "2025-10-28")
+        assert "delete_event failed" in result and "several" in result
+
+    def test_runs_in_the_background_and_takes_several_parameters(self, commands):
+        commands.background_command = Mock()
+        commands.cmd_delete_event("Dentist", "2025-10-28")
+        function, params = commands.background_command.call_args.args[:2]
+        assert params == ["Dentist", "2025-10-28"] and function == commands._run_delete_event
+        assert commands.is_multi_param("delete_event")
+        assert commands.describe("delete_event", '"Dentist", 2025-10-28') == "Deleting calendar event 'Dentist'"
+
+
+@pytest.mark.unit
+class TestMoveEvent:
+    def test_two_dates_then_both_times_then_the_calendar(self, commands):
+        with patch(CURRENT) as current:
+            current.return_value.move.return_value = "Moved ..."
+            result = commands._run_move_event("Dinner with Bob", "Carol", "2025-10-28", "2025-10-30", "18:00", "19:30", "Kids")
+        current.return_value.move.assert_called_once_with("Dinner with Bob, Carol", "2025-10-28", "2025-10-30", "18:00", "19:30", "Kids")
+        assert result == "Moved ..."
+
+    def test_without_times_the_event_keeps_its_own_and_the_third_token_is_the_calendar(self, commands):
+        with patch(CURRENT) as current:
+            commands._run_move_event("Dentist", "2025-10-28", "2025-10-30")
+            commands._run_move_event("Dentist", "2025-10-28", "2025-10-30", '"Work/Calendar"')
+        assert [c.args for c in current.return_value.move.call_args_list] == [
+            ("Dentist", "2025-10-28", "2025-10-30", "", "", ""),
+            ("Dentist", "2025-10-28", "2025-10-30", "", "", "Work/Calendar")]
+
+    def test_one_time_alone_a_missing_new_date_or_a_refusing_composite_is_a_failure_message(self, commands):
+        with patch(CURRENT) as current:
+            assert "move_event failed" in commands._run_move_event("Dentist", "2025-10-28")
+            assert "move_event failed" in commands._run_move_event("Dentist", "2025-10-28", "2025-10-30", "10:00")
+            assert "move_event failed" in commands._run_move_event("Dentist", "2025-10-28", "2025-10-30", "10:00", "11:00", "Kids", "x")
+            current.return_value.move.assert_not_called()
+            current.return_value.move.side_effect = ValueError("no event titled")
+            assert "no event titled" in commands._run_move_event("Dentist", "2025-10-28", "2025-10-30")
+
+    def test_runs_in_the_background_and_takes_several_parameters(self, commands):
+        commands.background_command = Mock()
+        commands.cmd_move_event("Dentist", "2025-10-28", "2025-10-30")
+        function, params = commands.background_command.call_args.args[:2]
+        assert params == ["Dentist", "2025-10-28", "2025-10-30"] and function == commands._run_move_event
+        assert commands.is_multi_param("move_event")
+        assert commands.describe("move_event", "Dentist, 2025-10-28, 2025-10-30") == "Moving calendar event 'Dentist'"
+
+
+@pytest.mark.unit
 class TestLoadCalendar:
     def test_loads_the_named_calendars_through_the_composite(self, commands):
         with patch(CURRENT) as current:

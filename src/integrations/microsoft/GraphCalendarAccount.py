@@ -12,9 +12,11 @@ import pytz
 from assistant.integration.calendar.CalendarAccount import CalendarAccount, CalendarInfo
 from assistant.integration.calendar.Event import Event
 from common.logging import info, trace
-from integrations.microsoft.GraphClient import GraphClient
+from integrations.microsoft.GraphClient import GraphClient, GraphError
 
-EVENT_SELECT = "subject,start,end,isAllDay"
+EVENT_SELECT = "id,subject,start,end,isAllDay,type"
+# The Graph event types that belong to a series: the master, an occurrence, a changed occurrence.
+RECURRING_TYPES = ("seriesMaster", "occurrence", "exception")
 PAGE_SIZE = 250
 
 
@@ -87,25 +89,63 @@ class GraphCalendarAccount(CalendarAccount):
                 all_day = bool(item.get("isAllDay"))
                 found.append(Event(self._as_datetime(item.get("start") or {}, all_day),
                                    self._as_datetime(item.get("end") or {}, all_day),
-                                   str(item.get("subject") or ""), calendar=name, account=self.name, all_day=all_day))
+                                   str(item.get("subject") or ""), calendar=name, account=self.name, all_day=all_day,
+                                   id=str(item.get("id") or ""), recurring=str(item.get("type") or "") in RECURRING_TYPES))
         trace(f"{self.name}: {len(found)} event(s) in {sorted(wanted)} between {start} and {end}")
         return found
+
+    def _event_path(self, calendar_name: str, event: Event) -> str:
+        """The path of an event read earlier; an id names the event whatever calendar holds it,
+        the calendar is checked so a stale name is refused the way create_event refuses it."""
+        if calendar_name not in self._ids():
+            raise ValueError(f"Calendar '{calendar_name}' not found. Available: {list(self._ids())}")
+        if not event.id:
+            raise ValueError(f"'{event.title}' has no event id")
+        return f"/me/events/{event.id}"
+
+    def _bounds(self, start: datetime, end: datetime, all_day: bool) -> dict:
+        """The `start`, `end` and `isAllDay` of an event payload in the home timezone; an
+        all-day event runs from midnight to the midnight after its last day."""
+        zone_name = self._timezone()
+        zone = pytz.timezone(zone_name)
+        if all_day:
+            first = datetime.combine(start.date(), datetime.min.time())
+            last = datetime.combine(max(end.date(), start.date() + timedelta(days=1)), datetime.min.time())
+        else:
+            first, last = start.astimezone(zone).replace(tzinfo=None), end.astimezone(zone).replace(tzinfo=None)
+        return {"isAllDay": all_day,
+                "start": {"dateTime": first.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": zone_name},
+                "end": {"dateTime": last.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": zone_name}}
+
+    def delete_event(self, calendar_name: str, event: Event) -> None:
+        """One occurrence of a series is deleted alone: Graph reads an occurrence id as that one."""
+        path = self._event_path(calendar_name, event)
+        try:
+            self._client.delete(path)
+        except GraphError as e:
+            if e.status == 404:
+                raise ValueError(f"'{event.title}' is no longer in '{calendar_name}'") from e
+            raise
+        info(f"{self.name}: event '{event.title}' ({event.id}) deleted from '{calendar_name}'")
+
+    def move_event(self, calendar_name: str, event: Event, start: datetime, end: datetime, all_day: bool) -> None:
+        """A PATCH of the bounds; an occurrence of a series becomes an exception of it."""
+        path = self._event_path(calendar_name, event)
+        try:
+            self._client.patch(path, self._bounds(start, end, all_day))
+        except GraphError as e:
+            if e.status == 404:
+                raise ValueError(f"'{event.title}' is no longer in '{calendar_name}'") from e
+            raise
+        info(f"{self.name}: event '{event.title}' ({event.id}) in '{calendar_name}' moved to {start.isoformat()} - {end.isoformat()}"
+             f"{' (all day)' if all_day else ''}")
 
     def create_event(self, calendar_name: str, event: Event) -> None:
         ids = self._ids()
         calendar_id = ids.get(calendar_name)
         if calendar_id is None:
             raise ValueError(f"Calendar '{calendar_name}' not found. Available: {list(ids)}")
-        zone_name = self._timezone()
-        zone = pytz.timezone(zone_name)
-        if event.all_day:
-            start = datetime.combine(event.start.date(), datetime.min.time())
-            end = datetime.combine(max(event.end.date(), event.start.date() + timedelta(days=1)), datetime.min.time())
-        else:
-            start, end = event.start.astimezone(zone).replace(tzinfo=None), event.end.astimezone(zone).replace(tzinfo=None)
-        payload = {"subject": event.title, "isAllDay": event.all_day,
-                   "start": {"dateTime": start.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": zone_name},
-                   "end": {"dateTime": end.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": zone_name}}
+        payload = {"subject": event.title, **self._bounds(event.start, event.end, event.all_day)}
         self._client.post(f"/me/calendars/{calendar_id}/events", payload)
         info(f"{self.name}: event '{event.title}' created in '{calendar_name}'")
 

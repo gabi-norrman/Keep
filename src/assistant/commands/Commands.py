@@ -105,7 +105,7 @@ class Commands:
         "vault_request", "config_set", "load_toolkit", "pr_feedback",
         "load_watch", "save_watch", "delete_watch",
         "load_procedure", "save_procedure", "delete_procedure",
-        "create_event", "load_calendar", "fetch_camera_images", "car_navigate",
+        "create_event", "delete_event", "move_event", "load_calendar", "fetch_camera_images", "car_navigate",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
@@ -403,6 +403,58 @@ class Commands:
             return ""
         except Exception as e:
             return f"create_event failed: {e}"
+
+    _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+    @classmethod
+    def _split_title(cls, args: list[str], command: str) -> tuple[str, list[str]]:
+        """The title and what follows it: the title is everything before the first date
+        token, rejoined when the LLM under-quoted a title with a comma in it."""
+        first_date = next((i for i, a in enumerate(args) if cls._DATE_RE.match(a)), None)
+        if not first_date:
+            raise ValueError(f"{command} failed: expected a title followed by its date (YYYY-MM-DD)")
+        return ", ".join(args[:first_date]), args[first_date:]
+
+    def cmd_delete_event(self, *args: str):
+        self.background_command(self._run_delete_event, list(args))
+
+    @classmethod
+    def _run_delete_event(cls, *args: str) -> str:
+        """`delete_event(title, date, calendar = "")`."""
+        try:
+            args = [a.strip() for a in args if a.strip()]
+            title, rest = cls._split_title(args, "delete_event")
+            if len(rest) > 2:
+                return "delete_event failed: expected title, date and at most a calendar name"
+            calendar_name = rest[1].strip("'\"") if len(rest) > 1 else ""
+            return CalendarAccess.current().delete(title, rest[0], calendar_name)
+        except Exception as e:
+            return f"delete_event failed: {e}"
+
+    def cmd_move_event(self, *args: str):
+        self.background_command(self._run_move_event, list(args))
+
+    @classmethod
+    def _run_move_event(cls, *args: str) -> str:
+        """`move_event(title, date, new_date, start_time = "", end_time = "", calendar = "")`:
+        the two dates follow the title, then both times or neither, then the calendar."""
+        try:
+            args = [a.strip() for a in args if a.strip()]
+            title, rest = cls._split_title(args, "move_event")
+            if len(rest) < 2 or not cls._DATE_RE.match(rest[1]):
+                return "move_event failed: expected title, date and new date (YYYY-MM-DD), then optionally start and end time"
+            date_str, new_date, rest = rest[0], rest[1], rest[2:]
+            times = [t for t in rest[:2] if cls._TIME_RE.match(t)]
+            if len(times) == 1:
+                return "move_event failed: give both the start and the end time, or neither to keep the event's own"
+            rest = rest[len(times):]
+            if len(rest) > 1:
+                return "move_event failed: expected at most a calendar name after the times"
+            calendar_name = rest[0].strip("'\"") if rest else ""
+            start_time, end_time = times if times else ("", "")
+            return CalendarAccess.current().move(title, date_str, new_date, start_time, end_time, calendar_name)
+        except Exception as e:
+            return f"move_event failed: {e}"
 
     def cmd_load_calendar(self, *names: str):
         self.background_command(self._run_load_calendar, list(names))
@@ -1785,6 +1837,12 @@ class Commands:
     def describe_create_event(self, p):
         title = p.split(",", 1)[0].strip()
         return f"Creating calendar event '{title}'" if title else "Creating calendar event"
+    def describe_delete_event(self, p):
+        title = self._first_argument(p)
+        return f"Deleting calendar event '{title}'" if title else "Deleting a calendar event"
+    def describe_move_event(self, p):
+        title = self._first_argument(p)
+        return f"Moving calendar event '{title}'" if title else "Moving a calendar event"
     def describe_schedule_wakeup(self, p):     return f"Scheduling wakeup in {p.strip()} min"
     def describe_caffeinate(self, p):             return "Staying awake"
     def describe_send_email(self, p):

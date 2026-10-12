@@ -201,24 +201,61 @@ class GoogleCalendarAccount(CalendarAccount):
                 start_dt, all_day = self._as_datetime(item.get("start") or {})
                 end_dt, _ = self._as_datetime(item.get("end") or item.get("start") or {})
                 found.append(Event(start_dt, end_dt, str(item.get("summary") or "(no title)"),
-                                   calendar=name, account=self.name, all_day=all_day))
+                                   calendar=name, account=self.name, all_day=all_day, id=str(item.get("id") or ""),
+                                   recurring=bool(item.get("recurringEventId"))))
         trace(f"{self.name}: {len(found)} event(s) in {calendar_names} between {start} and {end}")
         return found
+
+    def _event_path(self, calendar_name: str, event: Event) -> tuple[str, str]:
+        """The path of an event read earlier, and the listed name of its calendar."""
+        resolved = self._resolve(calendar_name)
+        if resolved is None:
+            raise ValueError(f"Calendar '{calendar_name}' not found. Available: {list(self._ids())}")
+        if not event.id:
+            raise ValueError(f"'{event.title}' has no event id")
+        name, calendar_id = resolved
+        return f"/calendars/{quote(calendar_id, safe='')}/events/{quote(event.id, safe='')}", name
+
+    def _bounds(self, start: datetime, end: datetime, all_day: bool) -> dict:
+        """The `start` and `end` of an event payload: dates for an all-day event, else the
+        times in the home timezone."""
+        zone_name = self._timezone()
+        zone = pytz.timezone(zone_name)
+        if all_day:
+            last = max(end.date(), start.date() + timedelta(days=1))
+            return {"start": {"date": start.date().isoformat()}, "end": {"date": last.isoformat()}}
+        return {"start": {"dateTime": start.astimezone(zone).replace(tzinfo=None).isoformat(), "timeZone": zone_name},
+                "end": {"dateTime": end.astimezone(zone).replace(tzinfo=None).isoformat(), "timeZone": zone_name}}
+
+    def delete_event(self, calendar_name: str, event: Event) -> None:
+        """One instance of a series is deleted alone: Google reads an instance id as that occurrence."""
+        path, name = self._event_path(calendar_name, event)
+        try:
+            self._call("DELETE", path)
+        except GoogleCalendarError as e:
+            if e.status in (404, 410):
+                raise ValueError(f"'{event.title}' is no longer in '{name}'") from e
+            raise
+        info(f"{self.name}: event '{event.title}' ({event.id}) deleted from '{name}'")
+
+    def move_event(self, calendar_name: str, event: Event, start: datetime, end: datetime, all_day: bool) -> None:
+        """A PATCH of the bounds; an instance of a series becomes an exception of it."""
+        path, name = self._event_path(calendar_name, event)
+        try:
+            self._call("PATCH", path, json=self._bounds(start, end, all_day))
+        except GoogleCalendarError as e:
+            if e.status in (404, 410):
+                raise ValueError(f"'{event.title}' is no longer in '{name}'") from e
+            raise
+        info(f"{self.name}: event '{event.title}' ({event.id}) in '{name}' moved to {start.isoformat()} - {end.isoformat()}"
+             f"{' (all day)' if all_day else ''}")
 
     def create_event(self, calendar_name: str, event: Event) -> None:
         resolved = self._resolve(calendar_name)
         if resolved is None:
             raise ValueError(f"Calendar '{calendar_name}' not found. Available: {list(self._ids())}")
         name, calendar_id = resolved
-        zone_name = self._timezone()
-        zone = pytz.timezone(zone_name)
-        if event.all_day:
-            last = max(event.end.date(), event.start.date() + timedelta(days=1))
-            payload = {"summary": event.title, "start": {"date": event.start.date().isoformat()}, "end": {"date": last.isoformat()}}
-        else:
-            payload = {"summary": event.title,
-                       "start": {"dateTime": event.start.astimezone(zone).replace(tzinfo=None).isoformat(), "timeZone": zone_name},
-                       "end": {"dateTime": event.end.astimezone(zone).replace(tzinfo=None).isoformat(), "timeZone": zone_name}}
+        payload = {"summary": event.title, **self._bounds(event.start, event.end, event.all_day)}
         self._call("POST", f"/calendars/{quote(calendar_id, safe='')}/events", json=payload)
         info(f"{self.name}: event '{event.title}' created in '{name}'")
 

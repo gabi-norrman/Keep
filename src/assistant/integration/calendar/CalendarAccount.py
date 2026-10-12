@@ -2,11 +2,13 @@
 holding several calendars.
 
 An account names its calendars, answers the events of some of them over a window, creates an
-event in one, and says which calendars the prompt always shows and which one takes an event that
-names none. The vobject or JSON parsing is the backend's; what crosses the contract is `Event`."""
+event in one, deletes or moves one it read earlier, and says which calendars the prompt always
+shows and which one takes an event that names none. The vobject or JSON parsing is the backend's;
+what crosses the contract is `Event` — its `id` is the account's own handle, so an event read by
+one account is deleted or moved by that account alone."""
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 from .Event import Event
@@ -70,6 +72,17 @@ class CalendarAccount(ABC):
     def create_event(self, calendar_name: str, event: Event) -> None:
         """Raises ValueError when the account has no such calendar."""
         ...
+
+    def delete_event(self, calendar_name: str, event: Event) -> None:
+        """Deletes an event `events()` returned; raises ValueError when the account cannot
+        (no such event any more, a recurring one the backend will not touch)."""
+        raise ValueError(f"deleting an event is not supported by the {self.service or 'account'} account {self.name}")
+
+    def move_event(self, calendar_name: str, event: Event, start: datetime, end: datetime, all_day: bool) -> None:
+        """Gives an event `events()` returned the new bounds — tz-aware datetimes, or with
+        `all_day` the midnight-UTC datetimes of its first day and the day after its last — and
+        raises ValueError when the account cannot."""
+        raise ValueError(f"moving an event is not supported by the {self.service or 'account'} account {self.name}")
 
     @abstractmethod
     def check(self) -> bool:

@@ -53,6 +53,12 @@ class GraphClient:
     def post(self, path: str, json: dict) -> dict:
         return self._call("POST", path, json=json)
 
+    def patch(self, path: str, json: dict) -> dict:
+        return self._call("PATCH", path, json=json)
+
+    def delete(self, path: str) -> None:
+        self._call("DELETE", path)
+
     def _call(self, method: str, path: str, params=None, headers=None, json=None, retried: bool = False) -> dict:
         url = path if path.startswith("https://") else BASE_URL + path
         token = self._auth.token()

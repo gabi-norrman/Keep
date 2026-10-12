@@ -1,5 +1,5 @@
-"""A CalendarAccount over CalDAV: the account's calendars, their events and a new event, parsed
-from and written as vobject through the `caldav` library."""
+"""A CalendarAccount over CalDAV: the account's calendars, their events, a new event and the
+deletion or move of one, parsed from and written as vobject through the `caldav` library."""
 import logging
 from datetime import datetime, timedelta, date
 from typing import Callable, Optional
@@ -80,11 +80,31 @@ class CalDavCalendarAccount(CalendarAccount):
             for event in events:
                 vevent = event.vobject_instance.vevent
                 dtstart, all_day = self._as_datetime(vevent.contents['dtstart'][0].value)
-                dtend, _ = self._as_datetime(vevent.contents['dtend'][0].value)
+                dtend = self._end(vevent, dtstart)
                 found.append(Event(dtstart, dtend, vevent.summary.value, calendar=str(calendar.name),
-                                   account=self.name, all_day=all_day))
+                                   account=self.name, all_day=all_day, id=self._uid(vevent),
+                                   recurring=self._is_recurring(vevent)))
         trace(f"{self.name}: {len(found)} event(s) in {sorted(wanted)} between {start} and {end}")
         return found
+
+    @classmethod
+    def _end(cls, vevent, dtstart: datetime) -> datetime:
+        """DTEND, or DTSTART plus DURATION when the event carries that instead, or DTSTART
+        itself when it carries neither (an instant, the way RFC 5545 reads a bare DTSTART)."""
+        if 'dtend' in vevent.contents:
+            return cls._as_datetime(vevent.contents['dtend'][0].value)[0]
+        if 'duration' in vevent.contents:
+            return dtstart + vevent.contents['duration'][0].value
+        return dtstart
+
+    @staticmethod
+    def _uid(vevent) -> str:
+        return str(vevent.contents['uid'][0].value) if 'uid' in vevent.contents else ""
+
+    @staticmethod
+    def _is_recurring(vevent) -> bool:
+        """A series (RRULE / RDATE) or one expanded occurrence of one (RECURRENCE-ID)."""
+        return any(key in vevent.contents for key in ('rrule', 'rdate', 'recurrence-id'))
 
     @staticmethod
     def _as_datetime(value) -> tuple[datetime, bool]:
@@ -99,11 +119,58 @@ class CalDavCalendarAccount(CalendarAccount):
         return value, False
 
     def create_event(self, calendar_name: str, event: Event) -> None:
+        calendar = self._calendar(calendar_name)
+        calendar.save_event(dtstart=event.start, dtend=event.end, summary=event.title)
+        info(f"{self.name}: event '{event.title}' saved in '{calendar_name}'")
+
+    def _calendar(self, calendar_name: str):
         calendar = next((c for c in self._calendar_objects() if c.name == calendar_name), None)
         if calendar is None:
             raise ValueError(f"Calendar '{calendar_name}' not found. Available: {[c.name for c in self._calendar_objects()]}")
-        calendar.save_event(dtstart=event.start, dtend=event.end, summary=event.title)
-        info(f"{self.name}: event '{event.title}' saved in '{calendar_name}'")
+        return calendar
+
+    def _resource(self, calendar_name: str, event: Event, verb: str):
+        """The library's object for an event read earlier, looked up by its UID; refuses an
+        event of a series, whose resource is the whole series (saving one expanded occurrence
+        would overwrite the series with that instance, deleting it would delete every one)."""
+        if event.recurring:
+            raise ValueError(f"'{event.title}' is a recurring event, which cannot be {verb} yet — only single events can")
+        if not event.id:
+            raise ValueError(f"'{event.title}' has no UID, so it cannot be {verb}")
+        calendar = self._calendar(calendar_name)
+        try:
+            resource = calendar.event_by_uid(event.id)
+        except Exception as e:
+            info(f"{self.name}: event '{event.title}' ({event.id}) not found in '{calendar_name}': {type(e).__name__}: {e}")
+            raise ValueError(f"'{event.title}' is no longer in '{calendar_name}'") from e
+        if self._is_recurring(resource.vobject_instance.vevent):
+            raise ValueError(f"'{event.title}' is a recurring event, which cannot be {verb} yet — only single events can")
+        return resource
+
+    def delete_event(self, calendar_name: str, event: Event) -> None:
+        self._resource(calendar_name, event, "deleted").delete()
+        info(f"{self.name}: event '{event.title}' ({event.id}) deleted from '{calendar_name}'")
+
+    def move_event(self, calendar_name: str, event: Event, start: datetime, end: datetime, all_day: bool) -> None:
+        """Rewrites DTSTART and DTEND (a DURATION gives way to a DTEND) and PUTs the event
+        back; the library bumps SEQUENCE so invitees see the change. Timed bounds are written
+        in UTC, the form `events()` reads back; all-day ones as plain dates."""
+        resource = self._resource(calendar_name, event, "moved")
+        vevent = resource.vobject_instance.vevent
+        if 'duration' in vevent.contents:
+            del vevent.contents['duration']
+        if 'dtend' not in vevent.contents:
+            vevent.add('dtend')
+        # A TZID or VALUE=DATE parameter left over from the old value would contradict the new one.
+        for key in ('dtstart', 'dtend'):
+            vevent.contents[key][0].params.clear()
+        if all_day:
+            vevent.dtstart.value, vevent.dtend.value = start.date(), end.date()
+        else:
+            vevent.dtstart.value, vevent.dtend.value = start.astimezone(pytz.UTC), end.astimezone(pytz.UTC)
+        resource.save()
+        info(f"{self.name}: event '{event.title}' ({event.id}) in '{calendar_name}' moved to {start.isoformat()} - {end.isoformat()}"
+             f"{' (all day)' if all_day else ''}")
 
     def check(self) -> bool:
         calendars = self._calendar_objects(refresh=True)

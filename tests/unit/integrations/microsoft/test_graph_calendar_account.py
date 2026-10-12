@@ -1,5 +1,6 @@
 """GraphCalendarAccount against a fake of Graph v1.0: the calendars, the calendarView window
-asked in the home timezone and paged to the end, and the event posted with that timezone."""
+asked in the home timezone and paged to the end, the event posted with that timezone, and an
+event deleted or moved by its id."""
 from datetime import date, datetime
 from unittest.mock import patch
 
@@ -18,9 +19,9 @@ STOCKHOLM = pytz.timezone("Europe/Stockholm")
 
 
 def view(*events, next_link=None):
-    body = {"value": [{"subject": title, "isAllDay": all_day,
+    body = {"value": [{"subject": title, "isAllDay": all_day, **dict(more),
                        "start": {"dateTime": start, "timeZone": "Europe/Stockholm"},
-                       "end": {"dateTime": end, "timeZone": "Europe/Stockholm"}} for title, start, end, all_day in events]}
+                       "end": {"dateTime": end, "timeZone": "Europe/Stockholm"}} for title, start, end, all_day, *more in events]}
     if next_link:
         body["@odata.nextLink"] = next_link
     return body
@@ -60,11 +61,21 @@ class TestEvents:
         call, = graph.sent("GET", "/me/calendars/c-1/calendarView")
         assert call.headers["Prefer"] == 'outlook.timezone="Europe/Stockholm"'
         assert (call.params["startDateTime"], call.params["endDateTime"]) == ("2026-06-15T00:00:00", "2026-06-22T00:00:00")
-        assert call.params["$select"].split(",") >= ["subject"] and call.params["$top"] == 250
+        assert {"id", "subject", "type"} <= set(call.params["$select"].split(",")) and call.params["$top"] == 250
         event, = events
         assert event.start == datetime(2026, 6, 15, 7, 0, tzinfo=pytz.UTC) and event.end.tzinfo is not None
         assert (event.title, event.calendar, event.account, event.all_day) == ("Standup", "Calendar", "Work", False)
         assert not graph.sent("GET", "/me/calendars/c-2/calendarView")
+
+    def test_the_id_comes_back_and_an_occurrence_of_a_series_is_recurring(self, graph):
+        graph.route("GET", "/me/calendars", CALENDARS)
+        graph.route("GET", "/me/calendars/c-1/calendarView",
+                    view(("Dentist", "2026-06-15T09:00:00.0000000", "2026-06-15T10:00:00.0000000", False, ("id", "ev-1"), ("type", "singleInstance")),
+                         ("Standup", "2026-06-16T09:00:00.0000000", "2026-06-16T09:15:00.0000000", False, ("id", "ev-2"), ("type", "occurrence"))))
+
+        dentist, standup = account().events(["Calendar"], date(2026, 6, 15), date(2026, 6, 22))
+
+        assert (dentist.id, dentist.recurring) == ("ev-1", False) and (standup.id, standup.recurring) == ("ev-2", True)
 
     def test_an_all_day_event_becomes_midnight_utc_bounds(self, graph):
         graph.route("GET", "/me/calendars", CALENDARS)
@@ -129,3 +140,51 @@ class TestCreate:
         with pytest.raises(ValueError) as raised:
             account().create_event("Kids", Event(datetime(2026, 6, 15, tzinfo=pytz.UTC), datetime(2026, 6, 15, tzinfo=pytz.UTC), "x"))
         assert "Birthdays" in str(raised.value) and not graph.sent("POST", "/me/calendars/c-1/events")
+
+
+def _read(id="ev-1"):
+    return Event(datetime(2026, 6, 15, 7, 0, tzinfo=pytz.UTC), datetime(2026, 6, 15, 8, 30, tzinfo=pytz.UTC), "Dentist Charlotte",
+                 calendar="Calendar", account="Work", id=id)
+
+
+@pytest.mark.unit
+class TestDeleteAndMove:
+    def test_the_event_is_deleted_by_its_id(self, graph):
+        graph.route("GET", "/me/calendars", CALENDARS)
+        graph.route("DELETE", "/me/events/ev-1", None, status=204)
+
+        account().delete_event("Calendar", _read())
+
+        assert len(graph.sent("DELETE", "/me/events/ev-1")) == 1
+
+    def test_a_move_patches_the_bounds_in_the_home_timezone(self, graph):
+        graph.route("GET", "/me/calendars", CALENDARS)
+        graph.route("PATCH", "/me/events/ev-1", {"id": "ev-1"})
+
+        account().move_event("Calendar", _read(), datetime(2026, 6, 18, 8, 0, tzinfo=pytz.UTC),
+                             datetime(2026, 6, 18, 9, 30, tzinfo=pytz.UTC), all_day=False)
+
+        patched, = graph.sent("PATCH", "/me/events/ev-1")
+        assert patched.json == {"isAllDay": False,
+                                "start": {"dateTime": "2026-06-18T10:00:00", "timeZone": "Europe/Stockholm"},
+                                "end": {"dateTime": "2026-06-18T11:30:00", "timeZone": "Europe/Stockholm"}}
+
+    def test_an_all_day_move_runs_midnight_to_the_next_midnight(self, graph):
+        graph.route("GET", "/me/calendars", CALENDARS)
+        graph.route("PATCH", "/me/events/ev-1", {"id": "ev-1"})
+
+        account().move_event("Calendar", _read(), datetime(2026, 6, 18, tzinfo=pytz.UTC), datetime(2026, 6, 18, tzinfo=pytz.UTC), all_day=True)
+
+        patched, = graph.sent("PATCH", "/me/events/ev-1")
+        assert patched.json["isAllDay"] is True
+        assert (patched.json["start"]["dateTime"], patched.json["end"]["dateTime"]) == ("2026-06-18T00:00:00", "2026-06-19T00:00:00")
+
+    def test_a_gone_event_an_unknown_calendar_or_no_id_raises_a_value_error(self, graph):
+        graph.route("GET", "/me/calendars", CALENDARS)
+        with pytest.raises(ValueError, match="no longer"):
+            account().delete_event("Calendar", _read(id="gone"))
+        with pytest.raises(ValueError, match="Calendar 'Kids' not found"):
+            account().delete_event("Kids", _read())
+        with pytest.raises(ValueError, match="no event id"):
+            account().move_event("Calendar", _read(id=""), datetime(2026, 6, 18, tzinfo=pytz.UTC), datetime(2026, 6, 18, tzinfo=pytz.UTC), True)
+        assert not [c for c in graph.calls if c.method == "PATCH"]

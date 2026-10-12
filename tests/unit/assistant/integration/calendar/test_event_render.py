@@ -1,12 +1,12 @@
 """Event.render: the lines of the calendar section — the window, the order, the home timezone,
-the same-day and multi-day forms."""
+the same-day and multi-day forms; `covers`, the day an event is named by."""
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 import pytz
 
-from assistant.integration.calendar.Event import Event, render, NO_EVENTS
+from assistant.integration.calendar.Event import Event, covers, render, when, NO_EVENTS
 
 UTC = pytz.UTC
 
@@ -83,3 +83,26 @@ class TestRender:
 
     def test_nothing_in_the_window_is_the_no_events_text(self):
         assert render([], date(2025, 6, 15), date(2025, 6, 20)) == NO_EVENTS
+
+
+@pytest.mark.unit
+class TestCovers:
+    STOCKHOLM = pytz.timezone("Europe/Stockholm")
+
+    def test_a_timed_event_is_on_the_local_date_of_its_start_not_the_utc_one(self):
+        late = _event("Late call", datetime(2025, 6, 15, 22, 30, tzinfo=UTC), datetime(2025, 6, 15, 23, 0, tzinfo=UTC))   # 00:30 the 16th CEST
+        assert covers(late, date(2025, 6, 16), self.STOCKHOLM) and not covers(late, date(2025, 6, 15), self.STOCKHOLM)
+
+    def test_an_event_crossing_midnight_is_on_both_days(self):
+        party = _event("Party", datetime(2025, 6, 15, 18, 0, tzinfo=UTC), datetime(2025, 6, 16, 1, 0, tzinfo=UTC))
+        assert covers(party, date(2025, 6, 15), self.STOCKHOLM) and covers(party, date(2025, 6, 16), self.STOCKHOLM)
+        assert not covers(party, date(2025, 6, 17), self.STOCKHOLM)
+
+    def test_an_all_day_event_is_on_its_days_and_not_on_the_day_its_end_names(self):
+        camp = _event("Camp", datetime(2025, 6, 15, tzinfo=UTC), datetime(2025, 6, 17, tzinfo=UTC), all_day=True)
+        assert [covers(camp, date(2025, 6, d), self.STOCKHOLM) for d in (14, 15, 16, 17)] == [False, True, True, False]
+
+    def test_an_all_day_event_whose_end_is_its_start_is_still_one_day(self):
+        birthday = _event("Birthday", datetime(2025, 6, 15, tzinfo=UTC), datetime(2025, 6, 15, tzinfo=UTC), all_day=True)
+        assert covers(birthday, date(2025, 6, 15), self.STOCKHOLM)
+        assert when(birthday, self.STOCKHOLM) == "2025-06-15"

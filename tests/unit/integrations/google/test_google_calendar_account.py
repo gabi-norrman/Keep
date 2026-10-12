@@ -1,6 +1,6 @@
 """GoogleCalendarAccount against a fake of Calendar v3: the calendar list with its primary
 aliases, the events window asked in the home timezone and paged to the end, the event posted
-with that timezone, and the 401 / rate-limit rules."""
+with that timezone, an event deleted or moved by its id, and the 401 / rate-limit rules."""
 from datetime import date, datetime
 from unittest.mock import patch
 
@@ -81,6 +81,16 @@ class TestEvents:
         assert birthday.all_day and birthday.start == datetime(2026, 6, 16, tzinfo=pytz.UTC) and birthday.end == datetime(2026, 6, 17, tzinfo=pytz.UTC)
         assert not call.all_day and call.start == STOCKHOLM.localize(datetime(2026, 6, 16, 14, 0))
 
+    def test_the_id_comes_back_and_an_instance_of_a_series_is_recurring(self, google):
+        google.route("GET", FAMILY_PATH, events_page(
+            timed("Dentist", "2026-06-15T09:00:00+02:00", "2026-06-15T10:00:00+02:00", id="ev-1"),
+            timed("Standup", "2026-06-16T09:00:00+02:00", "2026-06-16T09:15:00+02:00", id="ev-2_20260616T070000Z", recurringEventId="ev-2")))
+
+        dentist, standup = account().events(["Family"], date(2026, 6, 15), date(2026, 6, 22))
+
+        assert (dentist.id, dentist.recurring) == ("ev-1", False)
+        assert (standup.id, standup.recurring) == ("ev-2_20260616T070000Z", True)
+
     def test_the_pages_are_followed_through_next_page_token_and_cancelled_instances_left_out(self, google):
         pages = {None: events_page(timed("One", "2026-06-15T09:00:00+02:00", "2026-06-15T10:00:00+02:00"), next_page_token="p2"),
                  "p2": events_page(timed("Gone", "2026-06-15T11:00:00+02:00", "2026-06-15T12:00:00+02:00", status="cancelled"),
@@ -120,6 +130,48 @@ class TestCreate:
         with pytest.raises(ValueError) as raised:
             account().create_event("Kids", Event(datetime(2026, 6, 15, tzinfo=pytz.UTC), datetime(2026, 6, 15, tzinfo=pytz.UTC), "x"))
         assert "Family" in str(raised.value) and not [c for c in google.calls if c.method == "POST"]
+
+
+def _read(id="ev-1", title="Dentist Charlotte"):
+    return Event(datetime(2026, 6, 15, 7, 0, tzinfo=pytz.UTC), datetime(2026, 6, 15, 8, 30, tzinfo=pytz.UTC), title,
+                 calendar="Family", account="Personal", id=id)
+
+
+@pytest.mark.unit
+class TestDeleteAndMove:
+    def test_the_event_is_deleted_by_its_id_under_its_calendar(self, google):
+        google.route("DELETE", FAMILY_PATH + "/ev-1", None, status=204)
+
+        account().delete_event("Family", _read())
+
+        assert len(google.sent("DELETE", FAMILY_PATH + "/ev-1")) == 1
+
+    def test_a_move_patches_the_bounds_in_the_home_timezone(self, google):
+        google.route("PATCH", FAMILY_PATH + "/ev-1", {"id": "ev-1"})
+
+        account().move_event("Family", _read(), datetime(2026, 6, 18, 8, 0, tzinfo=pytz.UTC),
+                             datetime(2026, 6, 18, 9, 30, tzinfo=pytz.UTC), all_day=False)
+
+        patched, = google.sent("PATCH", FAMILY_PATH + "/ev-1")
+        assert patched.json == {"start": {"dateTime": "2026-06-18T10:00:00", "timeZone": "Europe/Stockholm"},
+                                "end": {"dateTime": "2026-06-18T11:30:00", "timeZone": "Europe/Stockholm"}}
+
+    def test_an_all_day_move_patches_dates_ending_the_day_after(self, google):
+        google.route("PATCH", FAMILY_PATH + "/ev-1", {"id": "ev-1"})
+
+        account().move_event("Family", _read(), datetime(2026, 6, 18, tzinfo=pytz.UTC), datetime(2026, 6, 18, tzinfo=pytz.UTC), all_day=True)
+
+        patched, = google.sent("PATCH", FAMILY_PATH + "/ev-1")
+        assert patched.json == {"start": {"date": "2026-06-18"}, "end": {"date": "2026-06-19"}}
+
+    def test_a_gone_event_an_unknown_calendar_or_no_id_raises_a_value_error(self, google):
+        with pytest.raises(ValueError, match="no longer"):
+            account().delete_event("Family", _read(id="gone"))
+        with pytest.raises(ValueError, match="Calendar 'Kids' not found"):
+            account().move_event("Kids", _read(), datetime(2026, 6, 18, tzinfo=pytz.UTC), datetime(2026, 6, 18, tzinfo=pytz.UTC), True)
+        with pytest.raises(ValueError, match="no event id"):
+            account().delete_event("Family", _read(id=""))
+        assert not [c for c in google.calls if c.method in ("DELETE", "PATCH") and c.path != FAMILY_PATH + "/gone"]
 
 
 @pytest.mark.unit
