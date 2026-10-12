@@ -105,7 +105,8 @@ def _post_startup_message(prompt_manager) -> str:
     trace(f"Posting startup message to history: {message!r}")
     prompt_manager.message_history.add_context_message("system", message, time.time(), "startup")
     StartupTracker.write_current_startup(time.time(), Version.version() if whats_new else None)
-    return StartupTracker.build_announcement(commits, Version.label(), whats_new)
+    from assistant.agents.PullRequestTrial import PullRequestTrial
+    return StartupTracker.build_announcement(commits, Version.label(), whats_new, PullRequestTrial.announcement_note())
 
 
 def _announce_startup(server: "Server"):

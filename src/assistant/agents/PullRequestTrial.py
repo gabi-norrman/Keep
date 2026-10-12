@@ -10,6 +10,7 @@ line saying what is running. A PR whose server does not come up is caught by sta
 it the branch to fall back to, and it checks that branch out again and relaunches (`take_rollback_note`
 tells the user afterwards).
 """
+import html
 import json
 import re
 import subprocess
@@ -186,6 +187,19 @@ class PullRequestTrial:
                 f"the same by itself. try_pull_request({trial.number}) again picks up new commits pushed to the PR. "
                 f"A PR job (improve_integration, self_improvement) pushes to this PR instead of opening a new one, "
                 f"and pr_feedback({trial.number}, text) posts the user's verdict on it.")
+
+    @staticmethod
+    def announcement_note() -> str:
+        """What the startup announcement adds while a trial runs, in the Notifier's HTML dialect
+        — the user asked for the trial and should see at a glance that the server is on it; ""
+        on a normal branch."""
+        trial = PullRequestTrial.current()
+        if trial is None:
+            return ""
+        title = f", <i>{html.escape(trial.title, quote=False)}</i>" if trial.title else ""
+        info(f"PullRequestTrial: the startup announcement says PR #{trial.number} is on trial")
+        return (f"You are trying PR #{trial.number}{title}. Tell me what you think and I post the verdict on the PR; "
+                f"a restart ends the trial and returns to {trial.return_branch}.")
 
     @staticmethod
     def pr_job_instructions() -> str:

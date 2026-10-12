@@ -125,6 +125,11 @@ class TestBuildAnnouncement:
         text = StartupTracker.build_announcement([], "Keep v2026.10.7")
         assert "Keep v2026.10.7" in text and "\n" not in text and "•" not in text
 
+    def test_a_trial_note_closes_the_announcement_as_its_own_paragraph(self):
+        text = StartupTracker.build_announcement(["abc1234 fix: x"], "Keep v1 trial/pr-9", trial_note="You are trying PR #9.")
+        assert text.endswith("\n\nYou are trying PR #9.") and "fix: x" in text
+        assert "You are trying" not in StartupTracker.build_announcement(["abc1234 fix: x"], "Keep v1")
+
     def test_subjects_are_escaped_for_the_chat_html_dialect(self):
         text = StartupTracker.build_announcement(["abc1234 fix: the <commands> block & its tail"], "Keep v1")
         assert "&lt;commands&gt; block &amp; its tail" in text

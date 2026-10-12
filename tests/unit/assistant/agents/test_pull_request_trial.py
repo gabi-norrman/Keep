@@ -63,6 +63,7 @@ class TestTheBranchIsTheState:
         with patch.object(module.Version, "branch", return_value="release"):
             assert PullRequestTrial.current() is None
             assert PullRequestTrial.prompt_line() == ""
+            assert PullRequestTrial.announcement_note() == ""
             assert PullRequestTrial.pr_job_instructions() == ""
         github.assert_not_called()
 
@@ -97,6 +98,13 @@ class TestTheBranchIsTheState:
             line = PullRequestTrial.prompt_line()
         assert "PR #204" in line and "Tesla: close the trunk once" in line and "14:02" in line
         assert "master" in line and "restart_server" in line and "03:00" in line
+
+    def test_the_startup_announcement_tells_the_user_which_pr_is_on_trial(self, github, git):
+        github.answer(_pr(title="Tesla: <trunk> & frunk"))
+        with patch.object(module.Version, "branch", return_value="trial/pr-204"), \
+                patch.object(CodeQualityMaintainer, "target_branch", return_value="master"):
+            note = PullRequestTrial.announcement_note()
+        assert "PR #204" in note and "Tesla: &lt;trunk&gt; &amp; frunk" in note and "master" in note
 
     def test_a_pr_job_is_told_to_push_to_the_tried_pr_and_open_none(self, github, git):
         with patch.object(module.Version, "branch", return_value="trial/pr-204"), \

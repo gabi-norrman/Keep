@@ -147,16 +147,19 @@ class StartupTracker:
         return message
 
     @staticmethod
-    def build_announcement(commits: list[str], version: str, whats_new: str = "") -> str:
+    def build_announcement(commits: list[str], version: str, whats_new: str = "", trial_note: str = "") -> str:
         """What the owner's chats are told once the server is up: that it is running again,
         on which version, and the subjects of the commits picked up since the last start — or,
         on the first start of a release, its what's new in their place (already in the
-        Notifier's HTML dialect; the subjects are escaped into it)."""
+        Notifier's HTML dialect; the subjects are escaped into it). *trial_note* is what a
+        PR trial adds (`PullRequestTrial.announcement_note`), a paragraph of its own at the end."""
         up = f"Server is up again — {html.escape(version)}."
         if whats_new:
-            return f"{up} What's new in this release:\n\n{whats_new}"
-        if not commits:
-            return f"{up} No new commits since the last start."
-        subjects = "\n".join(f"• {html.escape(c.partition(' ')[2] or c, quote=False)}" for c in commits)
-        count = f"{len(commits)} new commit{'s' if len(commits) != 1 else ''}"
-        return f"{up} {count} since the last start:\n{subjects}"
+            text = f"{up} What's new in this release:\n\n{whats_new}"
+        elif not commits:
+            text = f"{up} No new commits since the last start."
+        else:
+            subjects = "\n".join(f"• {html.escape(c.partition(' ')[2] or c, quote=False)}" for c in commits)
+            count = f"{len(commits)} new commit{'s' if len(commits) != 1 else ''}"
+            text = f"{up} {count} since the last start:\n{subjects}"
+        return f"{text}\n\n{trial_note}" if trial_note else text
