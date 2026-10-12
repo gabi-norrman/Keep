@@ -838,6 +838,17 @@ class TestCmdSelfImprovement:
         text, _ = self._run(commands_instance, "Opened PR #12 with the fix.\n\nDetails follow.")
         assert "PR #12 open: Opened PR #12 with the fix." in text
 
+    def test_the_user_is_invited_to_try_the_pr_and_send_feedback(self, commands_instance):
+        """No LLM speaks after a job — the report is pushed as is — so the invitation stands in
+        the pushed message, and the row tells the LLM it was made; neither without a PR."""
+        text, chat = self._run(commands_instance, self.REPORT)
+        pushed = chat.send_message.call_args.args[0]
+        assert "try PR #49" in pushed and "merged" in pushed
+        assert "try_pull_request(49)" in text and "pr_feedback(49" in text
+        text, chat = self._run(commands_instance, "**Declined**: the request is too vague to act on.")
+        assert "try PR" not in chat.send_message.call_args.args[0]
+        assert "try_pull_request" not in text
+
     def test_no_pr_says_so_with_the_reports_first_line(self, commands_instance):
         text, _ = self._run(commands_instance, "**Declined**: the request is too vague to act on.\nAsk for the file.")
         assert text.startswith("[Self-improvement complete] no PR was created: Declined: the request is too vague to act on.")

@@ -783,7 +783,7 @@ class Commands:
                 report = job()
                 trace(f"Received {label.lower()} report from Code Quality Maintainer")
                 fine(f"Report: {report}")
-                html_report = notifier().markdown_to_html(report)
+                html_report = notifier().markdown_to_html(report + self._trial_invitation(report))
                 sent = notifier().send_message(f"{label} report:\n\n{html_report}")
                 aam = AutonomousActionManager.get_instance()
                 if aam and aam.prompt_manager:
@@ -794,6 +794,19 @@ class Commands:
                 error(f"{label} failed: {e}")
 
         self.fire_and_forget(_run_and_deliver, None)
+
+    @staticmethod
+    def _trial_invitation(report: str) -> str:
+        """The paragraph under a report that opened a PR: the message is pushed to the chat as
+        is, no LLM speaks after a job, so the user is invited here to run the PR as a trial and
+        send their verdict — a tried PR with the tester's feedback is what the developers merge
+        first. "" for a report without a PR."""
+        number, _ = CodeQualityMaintainer.pull_request_in(report)
+        if number is None:
+            return ""
+        return (f"\n\n**Try it:** say \"try PR #{number}\" and the server runs it as a trial. Then tell me whether it "
+                f"works — I post your verdict on the PR. A PR that was tried and has your feedback is much more "
+                f"likely to be merged, and fast.")
 
     @staticmethod
     def _pr_outcome(label: str, report: str, sent: bool) -> str:
@@ -810,6 +823,8 @@ class Commands:
             text = f"[{label} complete]{delivery} PR #{number} open: {title}"
             if url:
                 text += f"\n{url}"
+            text += (f"\nThe user was invited to run it with try_pull_request({number}) and to post their verdict "
+                     f"with pr_feedback({number}, text).")
         else:
             text = f"[{label} complete]{delivery} no PR was created: {title}"
         if not sent:
