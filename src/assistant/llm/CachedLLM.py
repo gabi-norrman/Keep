@@ -81,9 +81,9 @@ class CachedLLM(AbstractLLM):
         self.last_served_responses = None
         return marked
 
-    def create_completion(self, messages: list[dict], thinking: bool = False) -> str:
+    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
         self.last_response_was_cached = False
-        return self.llm.create_completion(messages, thinking=thinking)
+        return self.llm.create_completion(messages, thinking=thinking, volatile_tail=volatile_tail)
 
     def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
         self.last_response_was_cached = False

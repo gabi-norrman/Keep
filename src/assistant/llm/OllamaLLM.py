@@ -908,7 +908,7 @@ class OllamaLLM(AbstractLLM):
             fine(f"Ollama thought:\n{message['thinking'].strip()}")
         return message.get("content", "")
 
-    def create_completion(self, messages: list[dict], thinking: bool = False) -> str:
+    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
         payload_str = self._log_prefix_match(messages)
         rendered_prompt, rendered_prefix_stats = self._log_rendered_prompt_match(messages)
         self._interactive_begin()

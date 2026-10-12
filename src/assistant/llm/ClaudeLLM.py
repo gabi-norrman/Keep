@@ -14,8 +14,8 @@ class ClaudeLLM(AbstractLLM):
     """Talks to Anthropic's Messages API with prompt caching, extended thinking and fast mode.
 
     Places cache_control breakpoints from the prompt's CACHE_BREAKPOINT_MARKERs (3 system + 1
-    history — on the last message when the trailing turn is byte-stable, see _message_cache_index), retries retryable status errors and raises LLMRefusalError when the safety layer
-    keeps refusing.
+    history — on the last message every later request sends unchanged, see _message_cache_index),
+    retries retryable status errors and raises LLMRefusalError when the safety layer keeps refusing.
     """
 
     FAST_MODE_BETA = "fast-mode-2026-02-01"
@@ -126,11 +126,23 @@ class ClaudeLLM(AbstractLLM):
         lose it in this mode, so both keep the old tail."""
         return self.handles_thinking_internally() and not self.prefers_prepended_user_query()
 
-    def _message_cache_index(self) -> int:
+    def _message_cache_index(self, volatile_tail: int = 0) -> int:
         """Which message carries the history cache breakpoint: the last one when the trailing
         turn is byte-stable (the next round's prefix then ends exactly there), else the one
-        before it — a trailing turn that will be re-rendered would only ever be written."""
-        return -1 if BYTE_PREFIX_TAIL and self.prefers_byte_prefix_tail() else -2
+        before it — a trailing turn that will be re-rendered would only ever be written.
+        `volatile_tail` trailing messages the caller folded on for this call alone (the
+        autonomous check's instruction) move it further back the same way. Anthropic has a
+        cache entry only where a request put a breakpoint, so a breakpoint on bytes no later
+        request repeats leaves the next one nothing to read: it rewrites the whole window
+        (12–22K tokens on prod, 2026-10-10..12, after every periodic check)."""
+        stable = -1 if BYTE_PREFIX_TAIL and self.prefers_byte_prefix_tail() else -2
+        return min(stable, -1 - volatile_tail)
+
+    @staticmethod
+    def _carries_image(message: dict) -> bool:
+        content = message.get('content')
+        return isinstance(content, list) and any(
+            isinstance(block, dict) and block.get('type') == 'image' for block in content)
 
     def set_prompt_cache(self, enabled: bool):
         """Toggle Anthropic prompt caching for the next request. Prepending the user
@@ -241,7 +253,7 @@ class ClaudeLLM(AbstractLLM):
             'content': [{"type": "text", "text": content, "cache_control": {"type": "ephemeral", "ttl": self.history_cache_ttl}}],
         }
 
-    def _build_api_params(self, messages: list[dict], thinking: bool, stream: bool) -> dict:
+    def _build_api_params(self, messages: list[dict], thinking: bool, stream: bool, volatile_tail: int = 0) -> dict:
         """Build common API call parameters."""
         system_message, anthropic_messages = self._convert_messages(messages)
 
@@ -252,8 +264,13 @@ class ClaudeLLM(AbstractLLM):
         else:
             system = None
 
-        if self.prompt_cache and len(anthropic_messages) >= 2:
-            index = self._message_cache_index()
+        index = self._message_cache_index(volatile_tail)
+        if index == -1 and self._carries_image(anthropic_messages[-1]):
+            # The history keeps an image turn as its text alone (RequestProcessor), so the
+            # turn as sent never comes back: the breakpoint goes on the message before it.
+            trace("Claude cache: the trailing turn carries an image — history breakpoint on the message before it")
+            index = -2
+        if self.prompt_cache and len(anthropic_messages) >= max(2, -index):
             cached = self._with_cache_breakpoint(anthropic_messages[index])
             if cached is not None:
                 anthropic_messages[index] = cached
@@ -448,10 +465,10 @@ class ClaudeLLM(AbstractLLM):
                  f"blocks={block_types or 'none'})")
         return text
 
-    def create_completion(self, messages: list[dict], thinking: bool = False) -> str:
+    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
         self._ensure_initialized()
 
-        api_params = self._build_api_params(messages, thinking, stream=False)
+        api_params = self._build_api_params(messages, thinking, stream=False, volatile_tail=volatile_tail)
         text = ""
         for attempt in range(self.EMPTY_REPLY_RETRIES + 1):
             text = self._complete_once(api_params)

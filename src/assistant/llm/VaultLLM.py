@@ -37,8 +37,9 @@ class VaultLLM(AbstractLLM):
         inner = self.llm.create_streaming_completion(self.redactor.redact_messages(messages), thinking=thinking)
         yield from RestoringStream(inner, self.redactor)
 
-    def create_completion(self, messages: list[dict], thinking: bool = False) -> str:
-        return self._restored(self.llm.create_completion(self.redactor.redact_messages(messages), thinking=thinking))
+    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
+        return self._restored(self.llm.create_completion(self.redactor.redact_messages(messages), thinking=thinking,
+                                                         volatile_tail=volatile_tail))
 
     def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
         return self._restored(self.llm.create_completion_with_images(

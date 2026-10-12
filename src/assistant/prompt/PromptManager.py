@@ -78,6 +78,11 @@ class PromptManager:
         # baseline), so notes form an append-only changelog — a later change adds a
         # fresh note instead of re-stating earlier ones under a new timestamp.
         self._section_current: dict[str, str] = {}
+        # Per carried section: the chars of notes sent since its last load_toolkit (the
+        # _CARRIED_NOTES_BUDGET meter) and whether a "load it again" pointer is out. Kept here
+        # rather than read off the history's notes, which stay in the window once sent.
+        self._carried_note_chars: dict[str, int] = {}
+        self._carried_pointer_out: set[str] = set()
         # Cached {PHOTO_COUNT} value and when it was fetched (see _PHOTO_COUNT_REFRESH_S).
         self._photo_count: int | None = None
         self._photo_count_fetched_at = 0.0
@@ -483,35 +488,38 @@ class PromptManager:
             if toolkit not in self.message_history.loaded_toolkits():
                 trace(f"Section '{section_name}' changed but was never sent (no load_toolkit yet) — no delta note")
                 return None
-            if any(e.get("section") == key for e in self.message_history.transient_entries):
+            if key in self._carried_pointer_out:
                 trace(f"Section '{section_name}' changed, its pointer note is already out — nothing to add")
                 return None
             info(f"Section '{section_name}' changed with the {toolkit} toolkit in the window but no baseline "
                  f"(sent before a restart?) — one pointer note tells the LLM to load it again")
-            self._add_transient_note_locked(key, self._reload_pointer(heading, toolkit))
+            self._add_carried_pointer_locked(key, heading, toolkit)
             return self._resolved_messages_locked()
         if new_content == prev:
             return None
         if toolkit not in self.message_history.loaded_toolkits():
             info(f"Section '{section_name}' changed but the {toolkit} toolkit left the window — tracking stops")
             self._section_current.pop(key)
-            self.message_history.clear_transient_entries_for_section(key)
             return None
         diff = self._compute_section_delta(prev, new_content)
         if not diff:
             return None
-        accumulated = sum(len(e["content"]) for e in self.message_history.transient_entries if e.get("section") == key)
+        accumulated = self._carried_note_chars.get(key, 0)
         if len(diff) <= self._DIFF_SIZE_THRESHOLD and accumulated + len(diff) <= self._CARRIED_NOTES_BUDGET:
             trace(f"Adding section delta: {section_name} ({len(diff)} chars, {accumulated} chars of notes before it)")
             self._add_transient_note_locked(key, f"{heading} updated:\n{diff}")
+            self._carried_note_chars[key] = accumulated + len(diff)
             self._section_current[key] = new_content
         else:
             info(f"Section '{section_name}' changed too much for notes ({len(diff)} chars on top of {accumulated}) "
-                 f"— one pointer note replaces them, tracking stops until the next load_toolkit({toolkit})")
-            self.message_history.clear_transient_entries_for_section(key)
-            self._add_transient_note_locked(key, self._reload_pointer(heading, toolkit))
+                 f"— one pointer note follows them, tracking stops until the next load_toolkit({toolkit})")
+            self._add_carried_pointer_locked(key, heading, toolkit)
             self._section_current.pop(key)
         return self._resolved_messages_locked()
+
+    def _add_carried_pointer_locked(self, key: str, heading: str, toolkit: str):
+        self._add_transient_note_locked(key, self._reload_pointer(heading, toolkit))
+        self._carried_pointer_out.add(key)
 
     @staticmethod
     def _reload_pointer(heading: str, toolkit: str) -> str:
@@ -637,7 +645,6 @@ class PromptManager:
             if baseline is None or current is None:
                 trace(f"Section '{key}' lost its notes to a trim but has no baseline — nothing to restate")
                 continue
-            self.message_history.clear_transient_entries_for_section(key)
             diff = self._compute_section_delta(baseline, current)
             if not diff:
                 trace(f"Section '{key}' lost its notes to a trim but is back at its baseline — nothing to restate")
@@ -702,20 +709,20 @@ class PromptManager:
             self.prompt = self._substitute(prompt, new_baselines)
             self._messages = [{"role": "system", "content": self.prompt}]
 
-            # Re-baseline for the next round of delta decisions, and drop any pending
-            # transient deltas — the new prompt already contains their content.
-            # Both happen under _prompt_lock to keep on_section_updated atomic with
-            # rebuilds: a racing delta thread can't read a stale baseline or leave a
-            # transient note alive past the rebuild that already absorbed its content.
+            # Re-baseline for the next round of delta decisions, under _prompt_lock so a
+            # racing delta thread cannot read a stale baseline. The notes already in the
+            # window stay there: the new prompt holds their content, but they are rows the
+            # LLM was sent, and dropping them would change the window's bytes from the first
+            # one on — the next request then rewrote the whole window (prod, 2026-10-10..12:
+            # a 12–22K-token write after each of the 13–93 rebuilds a day). They read as a
+            # dated log of what changed and leave with the trim like any other row.
             self._section_baselines = new_baselines
             # Reset last-seen state to the freshly-baked bytes: the new prompt now
             # contains everything, so the next delta diffs against the baseline again. A
-            # carried section keeps its last-sent state and every note of it — including a
-            # "load it again" pointer, which has no state left but still has to be seen.
+            # carried section keeps its last-sent state.
             carried = {key: content for key, content in self._section_current.items()
                        if key in Toolkits.CARRIED_SECTIONS}
             self._section_current = dict(new_baselines) | carried
-            self.message_history.clear_transient_entries(keep_sections=tuple(Toolkits.CARRIED_SECTIONS))
 
             # Update last assembly time
             self._last_assembly_time = time.time()
@@ -785,8 +792,9 @@ class PromptManager:
         """The toolkit's carried sections (Toolkits.CARRIED_SECTIONS) rendered as load_toolkit
         sends them after the reference, current as of now; empty for a toolkit that carries
         none. What goes out becomes the section's last-seen state, so later changes reach the
-        LLM as delta notes while the toolkit stays in its window, and the notes of the previous
-        send are dropped: this text supersedes them. `record=False` renders without any of
+        LLM as delta notes while the toolkit stays in its window; the notes of the previous
+        send stay in the window (this text supersedes them, and the window is append-only) but
+        the notes budget and the pointer start over. `record=False` renders without any of
         that — for a send that never reaches the shared history (the autonomous check's own
         messages), which must not pass for the baseline the history's readers were sent."""
         from assistant.commands import Toolkits
@@ -797,7 +805,8 @@ class PromptManager:
             if record:
                 for key, content in contents.items():
                     self._section_current[key] = content
-                    self.message_history.clear_transient_entries_for_section(key)
+                    self._carried_note_chars[key] = 0
+                    self._carried_pointer_out.discard(key)
         data = Toolkits.render_sections(toolkit, contents)
         info(f"load_toolkit: {toolkit.name} brings its {', '.join(contents) or 'missing'} data ({len(data)} chars"
              f"{'' if record else ', not recorded as the baseline'})")

@@ -52,8 +52,8 @@ REDACTED = [{"role": "system", "content": f"The user's e-mail is {PH_EMAIL}."},
 class TestOutbound:
     def test_str_content_reaches_the_inner_llm_redacted(self, wrapped, inner, messages):
         inner.create_completion.return_value = "ok"
-        wrapped.create_completion(messages, thinking=True)
-        inner.create_completion.assert_called_once_with(REDACTED, thinking=True)
+        wrapped.create_completion(messages, thinking=True, volatile_tail=1)
+        inner.create_completion.assert_called_once_with(REDACTED, thinking=True, volatile_tail=1)
 
     def test_caller_messages_are_not_mutated(self, wrapped, inner, messages):
         inner.create_completion.return_value = "ok"
@@ -174,7 +174,7 @@ class TestBaseClassEntryPoints:
         result = wrapped.think(f"Owner mail: {EMAIL}", f"Owner phone: {MOBILE}")
         inner.create_completion.assert_called_once_with(
             [{"role": "system", "content": f"Owner mail: {PH_EMAIL}"},
-             {"role": "user", "content": f"Owner phone: {PH_MOBILE}"}], thinking=False)
+             {"role": "user", "content": f"Owner phone: {PH_MOBILE}"}], thinking=False, volatile_tail=0)
         assert result == f"Reach the owner at {MOBILE}"
 
     def test_think_with_images_goes_through_the_wrapper(self, wrapped, inner):
@@ -239,7 +239,7 @@ class TestDelegation:
             def name(self):
                 return "Backend"
 
-            def create_completion(self, messages, thinking=False):
+            def create_completion(self, messages, thinking=False, volatile_tail=0):
                 return ""
 
             def create_completion_with_images(self, messages, images):
@@ -271,7 +271,7 @@ class TestDelegation:
         assert isinstance(result, VaultLLM)
         assert result.redactor.vault is stocked
         result.create_completion(messages)
-        fallback.create_completion.assert_called_once_with(REDACTED, thinking=False)
+        fallback.create_completion.assert_called_once_with(REDACTED, thinking=False, volatile_tail=0)
 
     def test_refusal_fallback_none_stays_none(self, wrapped, inner):
         inner.refusal_fallback.return_value = None
@@ -286,7 +286,7 @@ class TestDelegation:
             def __init__(self):
                 self._last_stop_reason = None
 
-            def create_completion(self, messages, thinking=False):
+            def create_completion(self, messages, thinking=False, volatile_tail=0):
                 self._last_stop_reason = 'max_tokens'
                 return "half a memory ba"
 

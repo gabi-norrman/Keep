@@ -112,7 +112,8 @@ class TestAutonomousActionManager:
         assert "NO" in result
         mock_llm.think_with_messages.assert_called_once()
         fallback.initialize.assert_called_once()
-        fallback.think_with_messages.assert_called_once_with(mock_llm.think_with_messages.call_args[0][0])
+        fallback.think_with_messages.assert_called_once_with(*mock_llm.think_with_messages.call_args.args,
+                                                             **mock_llm.think_with_messages.call_args.kwargs)
 
     @patch('assistant.agents.AutonomousActionManager.create_llm')
     def test_activity_check_skips_when_the_fallback_refuses_too(self, mock_claude):
@@ -1511,12 +1512,41 @@ class TestThinkingTagInstruction:
         llm.handles_thinking_internally.return_value = internal
         sent = []
         # Snapshot at call time: the check appends the reply to the same list afterwards.
-        llm.think_with_messages.side_effect = lambda messages: sent.extend(messages) or "NO"
+        llm.think_with_messages.side_effect = lambda messages, **kw: sent.extend(messages) or "NO"
 
         mgr.activity_check(prompt="test prompt")
 
         assert sent[-1] == {"role": "user", "content": AutonomousActionManager._action_prompt(llm)}
         assert any("<thinking>" in m["content"] for m in sent) is not internal
+
+    def test_only_the_first_round_marks_its_tail_volatile(self):
+        """The first round ends in the clock note and the instruction, which the history never
+        keeps — so the LLM is told to keep its cache breakpoint off that turn. A follow-up
+        round ends in the reply and the command result, both of which the history persists as
+        sent, so the breakpoint may sit on the last message again."""
+        mgr, llm = make_manager()
+        llm.think_with_messages.return_value = "NO"
+
+        mgr.activity_check(prompt="test prompt")
+        assert llm.think_with_messages.call_args.kwargs == {"volatile_tail": 1}
+
+        llm.think_with_messages.reset_mock()
+        mgr._think([{"role": "system", "content": "test prompt"},
+                    {"role": "user", "content": AutonomousActionManager._action_prompt(llm)},
+                    {"role": "assistant", "content": "door_state(garage)"},
+                    {"role": "user", "content": "result:\nclosed"}])
+        assert llm.think_with_messages.call_args.kwargs == {"volatile_tail": 0}
+
+    def test_the_refusal_fallback_gets_the_same_volatile_tail(self):
+        mgr, llm = make_manager()
+        llm.think_with_messages.side_effect = LLMRefusalError("refused")
+        fallback = Mock()
+        fallback.think_with_messages.return_value = "NO"
+        llm.refusal_fallback.return_value = fallback
+
+        mgr._think([{"role": "system", "content": "p"}, {"role": "user", "content": "q"}], volatile_tail=1)
+
+        assert fallback.think_with_messages.call_args.kwargs == {"volatile_tail": 1}
 
     def test_image_follow_up_on_a_self_thinking_vision_tier_loses_the_paragraph(self):
         """The prompt is built for the first round's model. When a later round carries camera
@@ -1526,7 +1556,7 @@ class TestThinkingTagInstruction:
         llm.handles_thinking_internally.return_value = False
         vision = Mock()
         vision.handles_thinking_internally.return_value = True
-        vision.think_with_messages.side_effect = lambda messages: [m.copy() for m in messages]
+        vision.think_with_messages.side_effect = lambda messages, **kw: [m.copy() for m in messages]
         mgr.llm_vision = vision
         messages = [{"role": "system", "content": "test prompt"},
                     {"role": "user", "content": "(Current time: 14:50)\n\n" + AutonomousActionManager._action_prompt(llm)},
@@ -1542,7 +1572,7 @@ class TestThinkingTagInstruction:
     def test_text_round_on_a_tag_model_keeps_the_paragraph(self):
         mgr, llm = make_manager()
         llm.handles_thinking_internally.return_value = False
-        llm.think_with_messages.side_effect = lambda messages: [m.copy() for m in messages]
+        llm.think_with_messages.side_effect = lambda messages, **kw: [m.copy() for m in messages]
         prompt = AutonomousActionManager._action_prompt(llm)
 
         sent = mgr._think([{"role": "system", "content": "test prompt"}, {"role": "user", "content": prompt}])

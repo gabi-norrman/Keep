@@ -48,8 +48,8 @@ class TestSubscribe:
         section.subscribe(lambda: calls.append(len(section.get_merged_entries())))
         section.add_transient_entry("system", "Prompt section `weather` updated", 1000.0, section="weather")
         assert calls == [1]
-        section.clear_transient_entries()
-        assert calls == [1, 0]
+        section.add_transient_entry("system", "Prompt section `calendar` updated", 1001.0, section="calendar")
+        assert calls == [1, 2]
 
     def test_a_failing_subscriber_does_not_break_the_others(self):
         section = _make_history_section()
@@ -663,18 +663,6 @@ class TestTransientEntries:
         joined = "\n".join(m["content"] for m in msgs)
         assert "Light turned on" in joined
 
-    def test_clear_transient_entries_drops_them_from_rendering(self):
-        section = _make_history_section()
-        section.add_transient_entry("system", "delta one", 1000.0)
-        section.add_transient_entry("system", "delta two", 1001.0)
-        assert len(section.transient_entries) == 2
-
-        section.clear_transient_entries()
-        assert section.transient_entries == []
-
-        msgs = section.get_history_messages()
-        assert msgs == []
-
     def test_transient_and_persisted_merge_sorted_by_timestamp(self):
         section = _make_history_section()
         section.history = [
@@ -688,50 +676,52 @@ class TestTransientEntries:
         contents = [e["content"] for e in merged]
         assert contents == ["first", "second", "third"]
 
-    def test_clear_transient_entries_for_section_drops_only_matching(self):
+    def test_a_note_never_leaves_the_window_short_of_a_trim(self):
+        """The window is append-only: removing a note would change the rendered bytes from
+        that row on and lose the prefix cache the next request reads. A newer note for the
+        same section goes after the old one; both stay."""
         section = _make_history_section()
         section.add_transient_entry("system", "weather diff", 1000.0, section="weather")
         section.add_transient_entry("system", "calendar diff", 1001.0, section="calendar")
+        before = section.get_history_messages()
         section.add_transient_entry("system", "weather diff 2", 1002.0, section="weather")
+        after = section.get_history_messages()
+        assert after[0]["content"].startswith(before[0]["content"]), "the earlier bytes are a prefix of the later"
+        assert [e["section"] for e in section.transient_entries] == ["weather", "calendar", "weather"]
+        assert not hasattr(section, "clear_transient_entries")
+        assert not hasattr(section, "clear_transient_entries_for_section")
 
-        dropped = section.clear_transient_entries_for_section("weather")
-
-        assert dropped == 2
-        remaining = section.transient_entries
-        assert len(remaining) == 1
-        assert remaining[0]["section"] == "calendar"
-
-    def test_clear_transient_entries_for_section_ignores_untagged(self):
-        """Untagged transients (section=None) must not be swept by a section-scoped
-        clear — only the full clear_transient_entries() removes them."""
+    def test_a_trim_forgets_the_notes_it_left_behind_the_cutoff(self):
+        """Pruning is bookkeeping, not a change: the rows behind the cutoff are not rendered
+        anyway, so the window stays byte-identical, while notes at or after the cutoff stay."""
         section = _make_history_section()
-        section.add_transient_entry("system", "untagged note", 1000.0)
-        assert section.transient_entries[0]["section"] is None
+        section.trim_high_bytes = 2_000
+        section.trim_low_bytes = 1_000
+        section.history = [{"role": "Marcus", "content": f"m{i:03d}" + "x" * 100, "timestamp": 1000.0 + i,
+                            "source": None, "location": None} for i in range(30)]
+        section.add_transient_entry("system", "early note", 1000.5, source="prompt_delta", section="weather")
+        section.add_transient_entry("system", "late note", 1029.5, source="prompt_delta", section="weather")
+        rendered = section.get_history_messages()
 
-        dropped = section.clear_transient_entries_for_section("weather")
+        assert section._trim_cutoff > 1000.5, "the trim moved past the early note"
+        assert [e["content"] for e in section.transient_entries] == ["late note"]
+        assert "early note" not in "\n".join(m["content"] for m in rendered)
+        assert "late note" in "\n".join(m["content"] for m in rendered)
+        assert section.get_history_messages() == rendered
 
-        assert dropped == 0
-        assert len(section.transient_entries) == 1
-
-    def test_clear_transient_entries_keeps_the_carried_sections_notes(self):
-        """A full prompt rebuild bakes every section but a carried one (the Indigo data rides
-        with the home toolkit), so its notes survive the sweep while the rest go."""
+    def test_pruning_keeps_the_eviction_stub_behind_the_cutoff(self):
         section = _make_history_section()
-        section.add_transient_entry("system", "weather diff", 1000.0, section="weather")
-        section.add_transient_entry("system", "indigo diff", 1001.0, section="indigo")
-        section.add_transient_entry("system", "untagged note", 1002.0)
-        with patch.object(section, '_notify_changed') as notify:
-            section.clear_transient_entries(keep_sections=("indigo",))
-        assert [e["content"] for e in section.transient_entries] == ["indigo diff"]
-        assert notify.call_count == 1
-
-    def test_clear_transient_entries_with_only_kept_notes_changes_nothing(self):
-        section = _make_history_section()
-        section.add_transient_entry("system", "indigo diff", 1001.0, section="indigo")
-        with patch.object(section, '_notify_changed') as notify:
-            section.clear_transient_entries(keep_sections=("indigo",))
-        assert len(section.transient_entries) == 1
-        notify.assert_not_called()
+        section.trim_high_bytes = 2_000
+        section.trim_low_bytes = 1_000
+        section.history = [{"role": "command", "content": "result: \n# Toolkit: browser\n" + "z" * 800,
+                            "timestamp": 1000.0, "source": None, "location": None}]
+        section.history += [{"role": "Marcus", "content": f"m{i:03d}" + "x" * 100, "timestamp": 1010.0 + i,
+                             "source": None, "location": None} for i in range(20)]
+        section.add_transient_entry("system", "old note", 1001.0, source="prompt_delta", section="weather")
+        section.get_history_messages()
+        sources = [e["source"] for e in section.transient_entries]
+        assert sources == [section.SOURCE_TOOLKIT_EVICTED]
+        assert section.transient_entries[0]["timestamp"] < section._trim_cutoff
 
 
 # ===========================================================================
@@ -1020,13 +1010,19 @@ class TestToolkitEvictionStubs:
         assert again == msgs, "the head must stay byte-stable between renders for the cache"
         assert self._stubs(section) == [stub] and self._stubs(section)[0] is stub
 
-    def test_the_stub_retires_when_the_toolkit_is_loaded_again(self):
-        section, _ = self._section_after_eviction()
+    def test_the_stub_holds_still_when_the_toolkit_is_loaded_again(self):
+        """The stub is the window's first row: a byte of it changing is a cache miss on the
+        whole window, so a reload leaves it as it is — the reload row below is what tells
+        the LLM the toolkit is current again."""
+        section, before = self._section_after_eviction()
+        stub = self._stubs(section)[0]
         section.history.append(self._toolkit_row("browser", 2000.0, size=10))
         msgs = section.get_history_messages()
-        assert not msgs[0]["content"].startswith("System (")
+        assert msgs[0]["content"].startswith(before[0]["content"]), "the earlier window is a byte prefix of the new"
+        assert msgs[0]["content"].split("\n")[0] == before[0]["content"].split("\n")[0]
         assert "# Toolkit: browser" in self._joined(msgs)
-        assert self._stubs(section) == []
+        assert self._stubs(section) == [stub] and self._stubs(section)[0] is stub
+        assert section.loaded_toolkits() == {"browser": 2000.0}
 
     def test_the_stub_retires_at_the_next_trim(self):
         section, _ = self._section_after_eviction()
@@ -1062,21 +1058,27 @@ class TestToolkitEvictionStubs:
         assert [e["toolkits"] for e in self._stubs(section)] == [["browser", "web"]]
         assert self._stubs(section)[0]["timestamp"] == 1002.0, "the newest evicted row's place"
 
-    def test_a_reloaded_toolkit_leaves_the_stub_and_the_other_stays(self):
-        section, _ = self._section_after_evicting_two()
+    def test_a_reloaded_toolkit_does_not_change_the_stub_naming_two(self):
+        section, before = self._section_after_evicting_two()
         section.history.append(self._toolkit_row("web", 2000.0, size=10))
         msgs = section.get_history_messages()
-        head = msgs[0]["content"].split("\n")[0]
-        assert head.startswith("System (") and "browser" in head and "web" not in head
-        assert [e["toolkits"] for e in self._stubs(section)] == [["browser"]]
-        assert self._stubs(section)[0]["timestamp"] == 1002.0, "a retired name does not move the stub"
+        assert msgs[0]["content"].startswith(before[0]["content"])
+        assert [e["toolkits"] for e in self._stubs(section)] == [["browser", "web"]]
+        assert self._stubs(section)[0]["timestamp"] == 1002.0
 
     def test_the_stub_survives_a_full_prompt_rebuild(self):
+        """A rebuild re-bakes the sections into the prompt; it touches no row of the window,
+        the stub included."""
         section, _ = self._section_after_eviction()
-        with patch.object(section, '_notify_changed'):
-            section.clear_transient_entries()
+        section.add_transient_entry("system", "weather diff", 1030.0, source="prompt_delta", section="weather")
+        head_before = section.get_history_messages()[0]
+        from assistant.prompt.PromptManager import PromptManager
+        manager = PromptManager(test_suite=True)
+        manager.message_history = section
+        manager._assemble_prompt(force=True)
         assert [e["toolkits"] for e in self._stubs(section)] == [["browser"]]
-        assert "browser" in section.get_history_messages()[0]["content"].split("\n")[0]
+        assert section.get_history_messages()[0] == head_before
+        assert [e["content"] for e in section.transient_entries if e["source"] == "prompt_delta"] == ["weather diff"]
 
     def test_the_prompt_tab_shows_the_stub(self):
         section, _ = self._section_after_eviction()

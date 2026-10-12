@@ -290,7 +290,7 @@ class GeminiLLM(AbstractLLM):
             if chunk.text:
                 yield chunk.text
 
-    def create_completion(self, messages: list[dict], thinking: bool = False) -> str:
+    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
         self._ensure_initialized()
 
         system_instruction, gemini_messages = self._convert_messages(messages)

@@ -1041,14 +1041,15 @@ def test_a_section_back_at_its_baseline_gets_no_note_after_a_trim(prompt_test_en
 
 
 @pytest.mark.unit
-def test_large_change_forces_full_rebuild_and_clears_transients(prompt_test_environment):
+def test_large_change_forces_full_rebuild_and_keeps_the_notes(prompt_test_environment):
     manager, sections = _seed_full_rebuild(prompt_test_environment)
     received = []
     manager.on_prompt_assembled(lambda msgs: received.append(msgs))
 
-    # Pre-load a stale transient note that the full rebuild must purge.
+    # A note already in the window: the rebuild bakes its content into the prompt but the
+    # row stays — dropping it would change the window's bytes and lose the prefix cache.
     manager.message_history.add_transient_entry("system", "old note", 1000.0, source="prompt_delta")
-    assert len(manager.message_history.transient_entries) == 1
+    window_before = manager.message_history.get_history_messages()
 
     huge = "X" * (PromptManager._DIFF_SIZE_THRESHOLD * 5)
     sections["calendar"] = DummySection(huge)
@@ -1058,8 +1059,8 @@ def test_large_change_forces_full_rebuild_and_clears_transients(prompt_test_envi
     assert huge in manager.prompt, "large change must be baked into the prompt"
     assert manager._section_baselines["calendar"] == huge, "baselines must be re-snapshotted"
     assert len(received) == 1, "pre-heat callback must fire on full rebuild"
-    assert manager.message_history.transient_entries == [], \
-        "full rebuild must clear stale transients (their content is now in the prompt)"
+    assert manager.message_history.get_history_messages() == window_before, \
+        "a full rebuild changes the prompt, never the window"
 
 
 @pytest.mark.unit
@@ -1691,10 +1692,13 @@ def test_carried_data_is_sent_current_and_starts_the_tracking(prompt_test_enviro
     assert _notes(manager) == [POINTER], "one pointer, not one per change"
 
     data = manager.carried_data(Toolkits.by_name("home"))
-    assert _notes(manager) == [], "the send supersedes the pointer"
+    assert _notes(manager) == [POINTER], "the pointer stays in the window; the send supersedes it"
     assert data == '## HOME AUTOMATION DATA\n## LIGHTS\n"Lamp [Kök]": 50\n'
     assert manager._section_current["home"] == '## LIGHTS\n"Lamp [Kök]": 50'
     assert manager.carried_data(Toolkits.by_name("web")) == ""
+    manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": 70'
+    manager.on_section_updated("HomeData")
+    assert _notes(manager)[-1].endswith('-"Lamp [Kök]": 50\n+"Lamp [Kök]": 70'), "tracking starts from the send"
 
 
 @pytest.mark.unit
@@ -1719,8 +1723,9 @@ def test_carried_section_changes_become_notes_while_the_toolkit_is_in_the_window
 
 
 @pytest.mark.unit
-def test_carried_notes_survive_a_full_rebuild_and_a_new_send_replaces_them(prompt_test_environment):
+def test_carried_notes_survive_a_full_rebuild_and_a_new_send_restarts_the_budget(prompt_test_environment, monkeypatch):
     from assistant.commands import Toolkits
+    monkeypatch.setattr(PromptManager, "_CARRIED_NOTES_BUDGET", 120)
     manager = _carried_manager(prompt_test_environment)
     manager.carried_data(Toolkits.by_name("home"))
     manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": on'
@@ -1730,11 +1735,15 @@ def test_carried_notes_survive_a_full_rebuild_and_a_new_send_replaces_them(promp
     assert len(manager.message_history.transient_entries) == 2
 
     manager._assemble_prompt()
-    assert _notes(manager, "procedures") == [] and len(_notes(manager)) == 1, "the rebuild bakes procedures, not indigo"
+    assert len(manager.message_history.transient_entries) == 2, "the rebuild changes the prompt, not the window"
     assert manager._section_current["home"] == '## LIGHTS\n"Lamp [Kök]": on', "the last-sent state survives"
 
     manager.carried_data(Toolkits.by_name("home"))
-    assert _notes(manager) == [], "the fresh data supersedes the notes"
+    assert len(_notes(manager)) == 1, "the old note stays in the window; the fresh data supersedes it"
+    for level in (10, 20, 30):
+        manager.sections["home"]._content = f'## LIGHTS\n"Lamp [Kök]": {level}'
+        manager.on_section_updated("HomeData")
+    assert POINTER not in _notes(manager), "the budget counts from the send, not from the notes before it"
 
 
 @pytest.mark.unit
@@ -1746,13 +1755,14 @@ def test_carried_section_stops_tracking_when_the_toolkit_leaves_the_window(promp
     manager.on_section_updated("HomeData")
     assert len(_notes(manager)) == 1
 
+    notes = _notes(manager)
     manager.message_history.loaded_toolkits = lambda: {}
     manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": 50'
     manager.on_section_updated("HomeData")
-    assert _notes(manager) == [] and "home" not in manager._section_current
+    assert _notes(manager) == notes and "home" not in manager._section_current
     manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": 70'
     manager.on_section_updated("HomeData")
-    assert _notes(manager) == []
+    assert _notes(manager) == notes, "no new note, and the ones sent stay"
 
 
 @pytest.mark.unit
@@ -1766,7 +1776,7 @@ def test_carried_section_big_change_becomes_one_pointer_note(prompt_test_environ
     manager.on_section_updated("HomeData")
 
     notes = _notes(manager)
-    assert notes == [POINTER]
+    assert len(notes) == 2 and notes[-1] == POINTER, "the pointer follows the note that was sent"
     assert "home" not in manager._section_current
     manager.sections["home"]._content = "## LIGHTS\nnothing"
     manager.on_section_updated("HomeData")
@@ -1775,7 +1785,10 @@ def test_carried_section_big_change_becomes_one_pointer_note(prompt_test_environ
     assert _notes(manager) == notes, "a full rebuild keeps the pointer: no prompt embeds the data"
     assert manager.untracked_sections(Toolkits.by_name("home")) == ["home"]
     manager.carried_data(Toolkits.by_name("home"))
-    assert _notes(manager) == [] and manager.untracked_sections(Toolkits.by_name("home")) == []
+    assert _notes(manager) == notes and manager.untracked_sections(Toolkits.by_name("home")) == []
+    manager.sections["home"]._content = "## LIGHTS\nsomething"
+    manager.on_section_updated("HomeData")
+    assert len(_notes(manager)) == 3 and _notes(manager)[-1] != POINTER, "the send restarts the tracking"
 
 
 @pytest.mark.unit
@@ -1788,7 +1801,8 @@ def test_carried_notes_budget_ends_in_a_pointer_note(prompt_test_environment, mo
         manager.sections["home"]._content = f'## LIGHTS\n"Lamp [Kök]": {level}'
         manager.on_section_updated("HomeData")
     notes = _notes(manager)
-    assert notes == [POINTER]
+    assert notes[-1] == POINTER and POINTER not in notes[:-1]
+    assert 1 <= len(notes) - 1 < 5, "the notes that fit the budget were sent and stay; the pointer ends the run"
 
 
 @pytest.mark.unit

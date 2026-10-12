@@ -84,7 +84,7 @@ class ChatGPTLLM(AbstractLLM):
             if chunk.choices[0].delta.content is not None:
                 yield chunk.choices[0].delta.content
 
-    def create_completion(self, messages: list[dict], thinking: bool = False) -> str:
+    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
         if thinking:
             raise ThinkingNotSupportedError(f"{self.name()} does not support native thinking mode")
 

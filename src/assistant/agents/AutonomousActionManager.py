@@ -231,11 +231,14 @@ class AutonomousActionManager:
             return self._get_vision_llm()
         return self.llm
 
-    def _think(self, messages) -> str:
+    def _think(self, messages, volatile_tail: int = 0) -> str:
         """One blocking LLM turn. A safety refusal (Fable refuses these checks in bursts,
         deterministically) is handed to the tier's refusal_fallback() once, as
         DialogManager does for user turns; without one, or when the fallback refuses
-        too, the check yields an empty result and the next interval tries again."""
+        too, the check yields an empty result and the next interval tries again.
+        `volatile_tail` is 1 for the first round: its trailing turn is the clock note and
+        the instruction folded onto the history, which no later request sends — the
+        follow-up rounds end in the reply and the command result, which the history keeps."""
         llm = self._llm_for(messages)
         # The action prompt was built for the model of the first round; a follow-up round
         # that carries images goes to the vision tier, which may think on its own.
@@ -244,7 +247,7 @@ class AutonomousActionManager:
             if stripped:
                 info(f"{llm.name()} thinks on its own — <thinking> tag paragraph removed from the autonomous prompt")
         try:
-            return llm.think_with_messages(messages)
+            return llm.think_with_messages(messages, volatile_tail=volatile_tail)
         except LLMRefusalError:
             fallback = llm.refusal_fallback()
             if fallback is None:
@@ -253,7 +256,7 @@ class AutonomousActionManager:
             info(f"{llm.name()} refused the autonomous check (safety filter) — falling back to {fallback.name()}.")
             fallback.initialize()
             try:
-                return fallback.think_with_messages(messages)
+                return fallback.think_with_messages(messages, volatile_tail=volatile_tail)
             except LLMRefusalError:
                 info(f"{fallback.name()} refused the autonomous check too — skipping.")
                 return ""
@@ -408,7 +411,7 @@ class AutonomousActionManager:
                 self.prompt_manager.save_prompt_to_file(messages)
 
             start_time = time.time()
-            result = self._think(messages)
+            result = self._think(messages, volatile_tail=1)
             fine(f"Raw result:\n {result}")
             trace(f"Thought for {time.time() - start_time:.2f}s")
 

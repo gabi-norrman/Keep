@@ -170,10 +170,11 @@ class MessageHistory:
                             section: str | None = None):
         """Add an in-memory-only history entry. NOT persisted to floxy.db.
 
-        Used by PromptManager to inject section-diff notes between full prompt
-        rebuilds (see PromptManager._emit_transient_section_update). `section` tags
-        the entry with the section it describes so a later delta for that same
-        section can supersede it (clear_transient_entries_for_section).
+        Used by PromptManager to inject section-diff notes (see
+        PromptManager._emit_transient_section_update). `section` tags the entry with the
+        section it describes. Once in the window a note stays until the trim drops it:
+        removing or rewording a row changes the window's bytes from that row on, and the
+        prefix cache reads the window only while every byte before the breakpoint repeats.
         """
         self.transient_entries.append({
             "role": role,
@@ -186,41 +187,17 @@ class MessageHistory:
         trace(f"MessageHistory: transient entry added ({role}, {len(content)} chars, source={source})")
         self._notify_changed()
 
-    def clear_transient_entries(self, keep_sections: tuple[str, ...] = ()):
-        """Drop the in-memory transient entries. Called by PromptManager on full rebuild
-        (the new prompt now embeds the section data, so the deltas are obsolete), except the
-        notes of `keep_sections` — the sections a toolkit carries, which no prompt embeds —
-        and the toolkit-eviction stubs, which describe the history window, not the prompt."""
-        if not self.transient_entries:
-            return
+    def _prune_transient_entries_before_cutoff(self):
+        """Forget the transient notes the trim left behind the cutoff. They can never render
+        again (the cutoff only advances), so this changes no byte of the window — it is
+        memory hygiene, the one way a note ever leaves the list short of a wipe. The
+        eviction stub stays: it stands at the evicted row's time, behind the cutoff by design."""
         kept = [e for e in self.transient_entries
-                if e.get("section") in keep_sections or self._is_eviction_stub(e)]
-        count = len(self.transient_entries) - len(kept)
-        if not count:
-            trace(f"MessageHistory: nothing to clear, all {len(kept)} transient entries are carried-section notes")
-            return
-        self.transient_entries = kept
-        info(f"MessageHistory: cleared {count} transient entries" + (f", kept {len(kept)}" if kept else ""))
-        self._notify_changed()
-
-    def clear_transient_entries_for_section(self, section: str) -> int:
-        """Drop in-memory transient notes tagged for a given section; return the count.
-
-        PromptManager calls this before emitting a fresh delta for a section (and when
-        a section reverts to its baseline) so only the latest delta per section is ever
-        shown to the LLM. Each delta is a diff against the frozen baseline, so an older
-        one describes a stale intermediate state — append-only entries would otherwise
-        keep those visible until the next full rebuild.
-        """
-        if not self.transient_entries:
-            return 0
-        before = len(self.transient_entries)
-        self.transient_entries = [e for e in self.transient_entries if e.get("section") != section]
-        dropped = before - len(self.transient_entries)
-        if dropped:
-            info(f"MessageHistory: cleared {dropped} stale transient entries for section '{section}'")
-            self._notify_changed()
-        return dropped
+                if e["timestamp"] >= self._trim_cutoff or self._is_eviction_stub(e)]
+        pruned = len(self.transient_entries) - len(kept)
+        if pruned:
+            self.transient_entries = kept
+            trace(f"MessageHistory: {pruned} transient note(s) behind the trim cutoff forgotten")
 
     def get_history_messages(self, max_bytes: int | None = None) -> list[dict]:
         """Render history as standard LLM message items (role/content dicts).
@@ -307,6 +284,7 @@ class MessageHistory:
         dropped = kept[:keep_from]
         kept = kept[keep_from:]
         self._trim_cutoff = kept[0][0]["timestamp"]
+        self._prune_transient_entries_before_cutoff()
         why = (f"ceiling {self.trim_ceiling_bytes // 1024}KB, newest dropped row only {newest_dropped_age / 60:.1f}m old"
                if fresh else f"high {self.trim_high_bytes // 1024}KB")
         info(f"MessageHistory: window hit {total / 1024:.1f}KB "
@@ -337,20 +315,19 @@ class MessageHistory:
 
     @staticmethod
     def _stub_text(names: list[str]) -> str:
-        return f"Toolkit references trimmed from the window: {', '.join(names)}."
+        return (f"Toolkit references trimmed from the window: {', '.join(names)}. A toolkit loaded "
+                f"again below is current; load the others again before using them.")
 
     def _with_eviction_stub(self, stub: dict | None, kept: list[tuple[dict, str, str]],
                             dropped: list[tuple[dict, str, str]]) -> list[tuple[dict, str, str]]:
-        """The window with its one toolkit-eviction stub in front. A name whose toolkit is back
-        in the window leaves the stub; a trim (`dropped` non-empty) retires the earlier trim's
-        stub whole — a toolkit not reloaded within one window's worth of conversation is not
-        in use — and leaves a fresh one naming every toolkit row it evicted."""
+        """The window with its one toolkit-eviction stub in front. The stub holds still between
+        trims: it is the window's first row, and a byte of it changing (a name leaving when its
+        toolkit was loaded again, as it used to) is a cache miss on the whole window — so the
+        text points at the reload rows below instead. A trim (`dropped` non-empty) retires the
+        earlier trim's stub whole — a toolkit not reloaded within one window's worth of
+        conversation is not in use — and leaves a fresh one naming every toolkit row it evicted."""
         in_window = {name for entry, _, _ in kept for name in self._toolkit_names(entry)}
-        names = [] if dropped or stub is None else [n for n in stub["toolkits"] if n not in in_window]
-        if stub is not None and names != stub["toolkits"]:
-            gone = sorted(set(stub["toolkits"]) - set(names))
-            trace(f"MessageHistory: the eviction stub drops {', '.join(gone)}"
-                  + (" — loaded again" if not dropped else " — not loaded again before the next trim"))
+        names = [] if dropped or stub is None else list(stub["toolkits"])
 
         evicted: dict[str, float] = {}
         for entry, _, _ in dropped:

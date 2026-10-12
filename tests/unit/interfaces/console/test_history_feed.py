@@ -128,9 +128,10 @@ class TestLiveInserts:
                                         T0, source="prompt_delta", section="tesla")
             assert shown(pane)[0] == (KIND_DIFF, "System (prompt_delta)",
                                       "Prompt section `TeslaInfo` updated:\n-Charlottes <Model 3>")
-            # Superseding the note keeps the chat a log of what happened
-            history.clear_transient_entries_for_section("tesla")
-            assert len(pane.entries) == 1
+            # A later note for the same section is a second entry: the chat is a log of what happened
+            history.add_transient_entry("system", "Prompt section `TeslaInfo` updated:\n+Charlottes <Model 3>",
+                                        T0 + 1, source="prompt_delta", section="tesla")
+            assert len(pane.entries) == 2
 
     def test_messaging_rows_are_marked_up_for_the_pane(self, history, pane, feed):
         land(history, entry("system", "iMessage received:\nFrom Charlotte to Marcus: hej", T0, source="iMessage"))

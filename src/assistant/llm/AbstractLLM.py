@@ -203,15 +203,19 @@ class AbstractLLM(ABC):
         Only meaningful when supports_video() is True."""
         raise NotImplementedError(f"{self.name()} cannot take video input")
 
-    def think_with_messages(self, messages: list[dict], thinking: bool = False) -> str:
+    def think_with_messages(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
         """
         Sends a request to the LLM with a full message history, blocks until done, and returns the response.
 
         Args:
             messages: List of message dictionaries with 'role' and 'content'
             thinking: Enable native thinking mode if supported by this LLM
+            volatile_tail: how many trailing messages no later request will send as they are
+                (an instruction folded onto the history for this call only). An LLM with a
+                prefix cache keeps its history breakpoint off them — a breakpoint on bytes
+                nobody sends again is a write that never gets its read.
         """
-        return self._retry(lambda: self.create_completion(messages, thinking=thinking))
+        return self._retry(lambda: self.create_completion(messages, thinking=thinking, volatile_tail=volatile_tail))
 
     @abstractmethod
     def create_streaming_completion(self, messages: list[dict], thinking: bool = False) -> Generator[str, None, None]:
@@ -228,13 +232,14 @@ class AbstractLLM(ABC):
         pass
 
     @abstractmethod
-    def create_completion(self, messages: list[dict], thinking: bool = False) -> str:
+    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
         """
         Create a non-streaming completion from the llm
 
         Args:
             messages: List of message dictionaries with 'role' and 'content'
             thinking: Enable native thinking mode if supported by this LLM
+            volatile_tail: see think_with_messages; only an LLM with a prefix cache acts on it
 
         Returns:
             String containing the complete response

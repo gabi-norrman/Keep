@@ -605,6 +605,57 @@ class TestClaudeLLM:
         params = ClaudeLLM("claude-sonnet-4-5")._build_api_params(self._ROUNDS, thinking=False, stream=True)
         assert self._marked(params) == [len(params['messages']) - 2]
 
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_a_volatile_tail_moves_the_breakpoint_off_the_messages_nobody_sends_again(self, mock_config):
+        """The autonomous check folds its instruction onto the history for one call: a
+        breakpoint there is a write no later request reads, so it goes on the message before."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        llm = ClaudeLLM("claude-fable-5-1")
+        params = llm._build_api_params(self._ROUNDS, thinking=False, stream=False, volatile_tail=1)
+        assert self._marked(params) == [len(params['messages']) - 2]
+        assert llm._message_cache_index(volatile_tail=2) == -3
+        assert llm._message_cache_index(volatile_tail=0) == -1
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_the_volatile_tail_reaches_the_request_through_create_completion(self, mock_config):
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        llm = ClaudeLLM("claude-fable-5-1")
+        llm.client = Mock()
+        text = Mock(); text.type = "text"; text.text = "NO"
+        llm.client.messages.create.return_value = Mock(content=[text], usage=None, stop_reason="end_turn")
+        llm.create_completion(self._ROUNDS, volatile_tail=1)
+        sent = llm.client.messages.create.call_args.kwargs['messages']
+        assert [i for i, m in enumerate(sent) if isinstance(m['content'], list)
+                and any('cache_control' in b for b in m['content'])] == [len(sent) - 2]
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_an_image_turn_at_the_tail_is_not_the_breakpoint(self, mock_config):
+        """The history keeps an image turn as its text alone, so the turn as sent never comes
+        back: caching it would be a write without a read."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        messages = self._ROUNDS + [
+            {"role": "assistant", "content": "Closed. Anything else?"},
+            {"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc"}},
+                {"type": "text", "text": "Marcus (Telegram): what is this?"},
+            ]},
+        ]
+        params = ClaudeLLM("claude-fable-5-1")._build_api_params(messages, thinking=False, stream=True)
+        assert self._marked(params) == [len(params['messages']) - 2]
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_a_lone_message_gets_no_history_breakpoint(self, mock_config):
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        lone = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+        params = ClaudeLLM("claude-fable-5-1")._build_api_params(lone, thinking=False, stream=True)
+        assert self._marked(params) == []
+        params = ClaudeLLM("claude-fable-5-1")._build_api_params(lone, thinking=False, stream=True, volatile_tail=1)
+        assert self._marked(params) == []
+
     @patch('assistant.llm.ClaudeLLM.BYTE_PREFIX_TAIL', False)
     @patch('assistant.llm.ClaudeLLM.config')
     def test_with_the_byte_prefix_tail_switched_off_the_last_message_is_not_cached(self, mock_config):

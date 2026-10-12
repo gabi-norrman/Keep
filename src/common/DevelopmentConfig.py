@@ -55,8 +55,11 @@ BYTE_PREFIX_TAIL = os.environ.get("FLOXY_BYTE_PREFIX_TAIL", "1") != "0"
 CLAUDE_STATIC_CACHE_TTL = os.environ.get("FLOXY_CLAUDE_STATIC_CACHE_TTL", "1h")
 # TTL of the breakpoint on the history's last turn (ClaudeLLM._with_cache_breakpoint). Anthropic
 # allows a shorter TTL after a longer one, never the reverse, so this is at most the static TTL.
-# The history is written on nearly every request — each round of a turn, and again after every
-# window trim — and read back unchanged 5–60 min later only now and then: on prod on 2026-10-09
-# the 1h tier cost $2.39 more in writes than the 5m tier would have and saved $0.75 of rewrites
-# (8 of 71 requests). It goes back to "1h" when the trims are rare enough for the hits to win.
-CLAUDE_HISTORY_CACHE_TTL = os.environ.get("FLOXY_CLAUDE_HISTORY_CACHE_TTL", "5m")
+# A 5m breakpoint is gone before the next quiet-hour request or the next periodic check (55 min
+# apart), so each of those rewrote the whole window: 16–27 calls and 200–290K tokens a day on
+# prod, 2026-10-10..12. "1h" (write 2x instead of 1.25x) turns those into reads as long as the
+# window's bytes hold still between calls — which is what the autonomous check's volatile_tail,
+# the untouched transient notes and the frozen eviction stub are for (ClaudeLLM._message_cache_index,
+# MessageHistory). A 2026-10-09 trial of "1h" lost ($2.39 more in writes, $0.75 of rewrites saved)
+# because the window was edited between calls and the 2x writes never got their read.
+CLAUDE_HISTORY_CACHE_TTL = os.environ.get("FLOXY_CLAUDE_HISTORY_CACHE_TTL", "1h")
