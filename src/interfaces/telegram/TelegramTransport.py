@@ -423,10 +423,17 @@ class TelegramTransport(Integration, ChatTransport):
         return ids
 
     def owner_conversations(self) -> list:
+        """The owners' private chats: the positive ids of the allow list. A group (a negative
+        id) is never one — what goes to the owners alone (proactive pushes by default, the
+        approval cards and secret prompts, the first-run brief) must not land in front of its
+        guests."""
         allowed = self._allowed_chat_ids
         if not allowed:
             trace("No allowed_chat_ids configured, nowhere to notify.")
-        return list(allowed)
+        owners = [c for c in allowed if c > 0]
+        if len(owners) < len(allowed):
+            trace(f"Owner conversations: {owners} ({len(allowed) - len(owners)} group(s) on the allow list left out)")
+        return owners
 
     def notification_conversations(self) -> list:
         notify = self._notify_chat_ids
@@ -538,6 +545,12 @@ class TelegramTransport(Integration, ChatTransport):
             fine(f"Telegram: unauthorized chat_id {chat_id}")
             await update.message.reply_text(NOT_AUTHORIZED)
             return None
+        if chat_id < 0 and not self._allowed_chat_ids:
+            # An empty allow list makes everyone an owner — in a private chat, which is the
+            # person's own. In a group that would hand the household to every member.
+            info(f"Telegram [{chat_id}]: a group message while allowed_chat_ids is empty — ignored, a group "
+                 f"is served only when its id is on the list")
+            return None
         if chat_id < 0 and not self._replies_to_bot(update):
             # A group: the bot answers replies to its own bubbles. Privacy mode delivers nothing
             # else anyway; with it off this keeps her from answering every message. Her name
@@ -588,6 +601,13 @@ class TelegramTransport(Integration, ChatTransport):
         if self._hub is None:
             await self._delete_message_async(chat_id, message_id)
             await self._apologise_unavailable(update)
+            return
+        if not self._is_owner(getattr(getattr(update, 'effective_user', None), 'id', None)):
+            # The prompt is the owner's to answer; the text is deleted all the same, it may
+            # have been meant as the secret.
+            info(f"Telegram [{chat_id}]: text for the open secret prompt from {self._sender_name(update)}, "
+                 f"not an owner — deleted, not taken")
+            await self._delete_message_async(chat_id, message_id)
             return
         claimed = await asyncio.to_thread(self._hub.claim_secret, self, chat_id, update.message.text or "",
                                           self._sender_name(update))

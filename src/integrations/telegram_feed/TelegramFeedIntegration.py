@@ -300,9 +300,18 @@ class TelegramFeedIntegration(Integration, Feed):
         return ids
 
     @staticmethod
+    def _bot_user_id() -> Optional[int]:
+        """The bot's own user id — the prefix of its token, no API call needed."""
+        prefix = str(config.get('telegram_bot.bot_token', '') or '').partition(':')[0]
+        return int(prefix) if prefix.isdigit() else None
+
+    @staticmethod
     def _names_assistant(text: str) -> bool:
-        names = [config.get('wake_word', 'Michelle'), *(config.get('wake_word_aliases', []) or [])]
-        pattern = r"\b(" + "|".join(re.escape(n) for n in names if n) + r")\b"
+        names = [n for n in (config.get('wake_word', 'Michelle'), *(config.get('wake_word_aliases', []) or [])) if n]
+        if not names:
+            trace("TelegramFeed: no wake word configured, nothing can wake the assistant from a group")
+            return False
+        pattern = r"\b(" + "|".join(re.escape(n) for n in names) + r")\b"
         return re.search(pattern, text, re.IGNORECASE) is not None
 
     def _bot_wake_allowed(self, chat_id: int) -> bool:
@@ -329,6 +338,10 @@ class TelegramFeedIntegration(Integration, Feed):
         ids = self._bot_chat_ids()
         if chat_id >= 0 or chat_id not in ids:
             trace(f"TelegramFeed: '{getattr(chat, 'title', chat_id)}' names the assistant but the bot is not in it")
+            return False
+        bot_id = self._bot_user_id()
+        if bot_id is not None and msg.sender_id == bot_id:
+            trace("TelegramFeed: the bot's own reply names the assistant — not woken by herself")
             return False
         is_from_me = msg.sender_id == self._me.id
         if is_from_me:
@@ -549,8 +562,8 @@ class TelegramFeedIntegration(Integration, Feed):
         """The chat with Floxy's own bot: that conversation is already in the history first
         hand. A bot token is `<bot user id>:<secret>` and a private chat's id is the peer's
         user id, so no lookup is needed; read live, the bot can be configured after the feed opened."""
-        bot_id = str(config.get('telegram_bot.bot_token', '') or '').partition(':')[0]
-        return bot_id.isdigit() and getattr(entity, 'id', None) == int(bot_id)
+        bot_id = TelegramFeedIntegration._bot_user_id()
+        return bot_id is not None and getattr(entity, 'id', None) == bot_id
 
     @staticmethod
     def _media_kind(msg) -> Optional[str]:

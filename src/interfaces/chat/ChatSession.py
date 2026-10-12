@@ -58,6 +58,10 @@ class _Album:
 
     def __init__(self, sender: str):
         self.sender = sender
+        # Who the sender is (IncomingMessage.guest / sender_is_bot): the batch's request runs
+        # with the facts of its photos — a guest's captioned photo is a guest turn.
+        self.guest = False
+        self.sender_is_bot = False
         self.images: list[dict] = []
         self.captions: list[str] = []
         self.timer: Optional[threading.Timer] = None
@@ -119,6 +123,9 @@ class ChatSession:
             self._add_to_album(msg)
             return
         if msg.kind == KIND_TEXT and DebugCommands.is_command(msg.text):
+            if msg.guest:
+                info(f"{self._log_prefix()}: debug command {msg.text} from {msg.sender}, a guest — refused")
+                return
             self._debug_command(msg)
             return
         with self._lock:
@@ -213,6 +220,8 @@ class ChatSession:
             if album.pending:
                 album.pending -= 1
                 album.touched = time.monotonic()
+            album.guest = album.guest or msg.guest
+            album.sender_is_bot = album.sender_is_bot or msg.sender_is_bot
             if msg.text:
                 album.captions.append(msg.text)
             for att in msg.attachments:
@@ -249,7 +258,8 @@ class ChatSession:
             return
         query = " ".join(album.captions) if album.captions else "See images"
         info(f"{self._log_prefix()} dispatching batch: {len(album.images)} image(s), query: {query}")
-        self._start(IncomingMessage(conversation=self._conversation, sender=album.sender, text=query),
+        self._start(IncomingMessage(conversation=self._conversation, sender=album.sender, text=query,
+                                    guest=album.guest, sender_is_bot=album.sender_is_bot),
                     images=album.images)
 
     def _cancel_album(self):

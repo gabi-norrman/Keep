@@ -427,6 +427,7 @@ class TestWakeAssistant:
     CONFIG = {
         'telegram_feed.api_id': 12345, 'telegram_feed.api_hash': 'abc', 'telegram_feed.blacklist': [],
         'telegram_bot.allowed_chat_ids': [42, '-5001'], 'wake_word': 'Michelle', 'wake_word_aliases': ['michel'],
+        'telegram_bot.bot_token': '777:secret',
     }
 
     @pytest.fixture
@@ -501,6 +502,20 @@ class TestWakeAssistant:
         assert fake.receive_chat_message.call_args.kwargs["sender_is_bot"] is True
         await say("Michelle, ping", sender_id=123)  # a human is not capped
         assert fake.receive_chat_message.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_her_own_reply_never_wakes_her(self, wake):
+        # The bot's reply in the group often carries her name ("I'm Michelle", the quoted
+        # question): read by the owner's account like any message, it must not start a turn.
+        m, say, fake = wake
+        await say("Michelle here — dinner is pasta", sender_id=777, bot=True, name="Keep")
+        fake.receive_chat_message.assert_not_called()
+
+    def test_no_wake_word_wakes_on_nothing(self, wake, monkeypatch):
+        m, _, _ = wake
+        monkeypatch.setitem(self.CONFIG, 'wake_word', '')
+        monkeypatch.setitem(self.CONFIG, 'wake_word_aliases', [])
+        assert not m._names_assistant("hello there")
 
     def test_name_matching_is_a_whole_word_in_any_case(self, wake):
         m, _, _ = wake

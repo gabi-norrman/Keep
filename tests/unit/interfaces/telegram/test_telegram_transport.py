@@ -1351,6 +1351,16 @@ class TestAllowedChatIds:
         t = _make_transport(allowed=(111, 222), running=False)
         assert t.notification_conversations() == [111, 222]
 
+    def test_a_group_on_the_allow_list_is_not_an_owner_conversation(self):
+        # What is the owners' alone — the pushes by default, the cards, the brief — must not
+        # land in front of a group's guests; a group gets pushes only when notify_chat_ids names it.
+        t = _make_transport(allowed=(111, -5001), running=False)
+        assert t.owner_conversations() == [111]
+        assert t.notification_conversations() == [111]
+        assert t._is_authorized(-5001)
+        t.config_values['telegram_bot.notify_chat_ids'] = [-5001]
+        assert t.notification_conversations() == [-5001]
+
     def test_notify_chat_ids_narrow_the_pushes_but_not_who_may_talk(self):
         t = _make_transport(allowed=(111, 222), notify=("111",), running=False)
         assert t.notification_conversations() == [111]
@@ -1454,6 +1464,26 @@ class TestGroupsAndGuests:
     async def test_an_empty_allow_list_makes_everyone_an_owner(self, transport, hub):
         await transport._handle_message(_update(user_id=8), MagicMock())
         assert received(hub).guest is False
+
+    @pytest.mark.asyncio
+    async def test_an_empty_allow_list_serves_no_group(self):
+        # Everyone an owner is fine in a private chat, the person's own; in a group it would
+        # hand the household to every member, so a group is served only when its id is listed.
+        transport, hub = _bot_in_group(allowed=())
+        update = _update(chat_id=-5001, reply=_bubble_of(777), user_id=8)
+        await transport._handle_message(update, MagicMock())
+        hub.receive.assert_not_called()
+        update.message.reply_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_secret_reply_from_a_guest_is_deleted_not_taken(self):
+        transport, hub = _bot_in_group()
+        transport._secret_prompts[-5001] = (99, "tok", "body")
+        update = _update(chat_id=-5001, reply=_bubble_of(777), user_id=8, text="hunter2")
+        await transport._handle_message(update, MagicMock())
+        hub.claim_secret.assert_not_called()
+        hub.receive.assert_not_called()
+        transport._application.bot.delete_message.assert_awaited_once_with(chat_id=-5001, message_id=10)
 
     @staticmethod
     def _tap(chat_id, user_id):
