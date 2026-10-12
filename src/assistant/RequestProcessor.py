@@ -279,8 +279,10 @@ class RequestProcessor:
 
             return self.generate_events(prompt_manager)
         except BaseException:
-            # generate_events() never got to return its generator, so its
-            # finally block won't fire — release the in-flight counter here.
+            # generate_events() never got to return its generator, so its finally block
+            # won't fire — release the in-flight counter here, and the in-flight flag
+            # (Assistant._in_flight reads it: stuck true, it would refuse every guest turn).
+            self.is_performing_request = False
             self._notify_autonomous_user_ended()
             raise
 

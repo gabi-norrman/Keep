@@ -202,6 +202,51 @@ class TestDispatch:
         assert a.running_handlers() == [] or first not in a.running_handlers()
         assert len(a.running_handlers()) == 1
 
+    def test_a_guest_request_does_not_supersede_a_running_one(self):
+        # A group member who is not an owner must not abort the owners' turns by saying
+        # her name: the guest's turn is refused as busy and the running one is left alone.
+        a = make_assistant(pool_size=2)
+        a.stream(ctx())
+        first = a.running_handlers()[0]
+        with pytest.raises(AssistantBusy, match="guest turn does not supersede"):
+            a.stream(ctx(user="Bob", guest=True))
+        assert not first.is_killed and a.running_handlers() == [first]
+        assert a.pooled_handlers() == 1  # nothing was taken from the pool for the refused turn
+
+    def test_a_guest_request_runs_when_the_previous_one_is_over(self):
+        # A handler stays in the running set after its turn until the next dispatch: that
+        # must not count as in flight, or guests would be refused nearly always.
+        a = make_assistant(pool_size=2)
+        a.stream(ctx())
+        first = a.running_handlers()[0]
+        first.is_performing_request = False  # what the generator's finally does when the turn ends
+        a.stream(ctx(user="Bob", guest=True))
+        assert first.is_killed and len(a.running_handlers()) == 1
+
+    def test_a_guest_request_runs_over_one_killed_before_its_turn(self):
+        # Killed before generation began, a handler never clears its flag; it is not in flight.
+        a = make_assistant(pool_size=2)
+        a.stream(ctx())
+        first = a.running_handlers()[0]
+        first.kill("test")
+        a.stream(ctx(user="Bob", guest=True))
+        assert len(a.running_handlers()) == 1
+
+    def test_an_owner_request_still_supersedes_a_running_one(self):
+        a = make_assistant(pool_size=2)
+        a.stream(ctx())
+        first = a.running_handlers()[0]
+        a.stream(ctx(user="Charlotte"))
+        assert first.is_killed
+
+    def test_dispatch_lock_is_released_after_a_refused_guest_request(self):
+        a = make_assistant(pool_size=2)
+        a.stream(ctx())
+        with pytest.raises(AssistantBusy):
+            a.stream(ctx(user="Bob", guest=True))
+        assert a._dispatch_lock.acquire(timeout=0.05)
+        a._dispatch_lock.release()
+
     def test_pool_exhausted_raises_busy(self):
         a = make_assistant(pool_size=1)
         a.POOL_GET_TIMEOUT = 0.05

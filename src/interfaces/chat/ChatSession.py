@@ -434,6 +434,11 @@ class ChatSession:
             try:
                 stream = assistant.stream(req, query)
             except AssistantBusy as busy:
+                if guest:
+                    # A guest's turn is dropped while an owner's request runs (Assistant.stream);
+                    # an apology bubble in the group for every such wake would be noise.
+                    info(f"{prefix}: assistant busy, the guest's turn is dropped without a word: {busy}")
+                    return
                 info(f"{prefix}: assistant busy, apologising: {busy}")
                 events.put(Notice(f"Sorry, I'm busy right now ({busy})."))
                 return

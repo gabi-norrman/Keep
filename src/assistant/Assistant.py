@@ -152,6 +152,12 @@ class Assistant:
         """Snapshot of the in-flight handlers (the microphone routes read their turn gates)."""
         return list(self._running.queue)
 
+    def _in_flight(self) -> bool:
+        """Whether a dispatched request is still being served. A handler stays in `_running`
+        after its turn until the next dispatch, so the flag it keeps for the turn is what
+        tells; one killed before its turn began never cleared it, hence the second test."""
+        return any(h.is_performing_request and not h.is_killed for h in self.running_handlers())
+
     def kill_all(self, reason: str = "superseded"):
         killed = 0
         while self._running.qsize() > 0:
@@ -202,6 +208,12 @@ class Assistant:
             raise AssistantBusy("Server busy processing another request")
         try:
             fine(f"Requests currently running: {self._running.qsize()}")
+            if req.guest and self._in_flight():
+                # A guest (someone in a Telegram group who is not an owner) must not be able
+                # to abort the owners' turns by saying her name: their turn is dropped, not
+                # queued — a deferred turn would mean a thread or a timer held per guest.
+                info(f"Guest request from {req.user} refused: a request is in flight, a guest turn does not supersede it")
+                raise AssistantBusy("a request is in flight; a guest turn does not supersede it")
             self.kill_all(f"superseded by new request {req.user_input!r}")
             try:
                 handler = self._pool.get(timeout=self.POOL_GET_TIMEOUT)

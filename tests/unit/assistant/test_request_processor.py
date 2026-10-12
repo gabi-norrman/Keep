@@ -1611,6 +1611,23 @@ class TestProcess:
 
         MockDM.assert_called_once_with(full_handler, False, voice_factory=factory)
 
+    def test_a_failure_before_the_generator_clears_the_in_flight_flag(self, full_handler):
+        # Assistant._in_flight reads the flag to refuse a guest turn; left true by a handler
+        # that never got to its generator's finally, it would refuse guests until the next
+        # owner request killed the handler.
+        full_handler.request_data = RequestData("GET", "/", {"query": "hi"}, {"Range": None, "X-Playback-Session-Id": None, "Icy-Metadata": None, "User-Agent": "test"})
+        full_handler.request_context = RequestContext.from_request_data(full_handler.request_data)
+        prompt_manager = Mock()
+        prompt_manager.prompt_touched_at = 0
+
+        with patch.object(full_handler, 'generate_events', side_effect=RuntimeError("boom")), \
+             patch.object(full_handler, '_notify_autonomous_user_ended') as ended, \
+             pytest.raises(RuntimeError):
+            full_handler.process(prompt_manager)
+
+        assert full_handler.is_performing_request is False
+        ended.assert_called_once()
+
     def test_killed_returns_empty_response(self, full_handler):
         full_handler.is_killed = True
         full_handler.request_data = RequestData("GET", "/", {"query": "hi"}, {"Range": None, "X-Playback-Session-Id": None, "Icy-Metadata": None, "User-Agent": "test"})
