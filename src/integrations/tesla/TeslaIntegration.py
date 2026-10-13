@@ -46,6 +46,7 @@ class TeslaIntegration(Integration, VehicleProvider):
         self._validate_config()
 
         self._access_token = self._config.get("tessie_access_token")
+        self._reported_cabin_temp: Dict[str, float] = {}
 
     @property
     def name(self) -> str:
@@ -160,8 +161,10 @@ class TeslaIntegration(Integration, VehicleProvider):
     def vehicle_state(self, spec: VehicleSpec) -> VehicleState:
         """Tessie's cached `/state` of the car, folded into the contract's shape. A car that
         is not online gets the snapshot's timestamp as `data_time`, so the prompt can say how
-        old the data is."""
-        state = self._api_get(self._require_vin(spec), "state")
+        old the data is. The cabin temperature is held at the last reported value until it has
+        moved a full degree — Tessie's tenths would otherwise change the prompt every poll."""
+        vin = self._require_vin(spec)
+        state = self._api_get(vin, "state")
         drive, charge, climate = state.get("drive_state", {}), state.get("charge_state", {}), state.get("climate_state", {})
         connectivity = state.get("state")
         timestamp_ms = drive.get("timestamp")
@@ -172,11 +175,21 @@ class TeslaIntegration(Integration, VehicleProvider):
             latitude=drive.get("latitude"),
             longitude=drive.get("longitude"),
             battery_percent=charge.get("usable_battery_level"),
-            cabin_temp_c=climate.get("inside_temp"),
+            cabin_temp_c=self._steady_cabin_temp(vin, climate.get("inside_temp")),
             destination=drive.get("active_route_destination"),
             minutes_to_arrival=drive.get("active_route_minutes_to_arrival"),
             data_time=timestamp_ms / 1000 if timestamp_ms and connectivity not in (None, "online") else None,
         )
+
+    def _steady_cabin_temp(self, vin: str, fresh: Optional[float]) -> Optional[float]:
+        last = self._reported_cabin_temp.get(vin)
+        if fresh is None:
+            self._reported_cabin_temp.pop(vin, None)
+            return None
+        if last is not None and abs(fresh - last) < 1:
+            return last
+        self._reported_cabin_temp[vin] = fresh
+        return fresh
 
     def max_defrost(self, spec: VehicleSpec) -> str:
         self._api_post(self._require_vin(spec), "command/start_max_defrost")

@@ -166,6 +166,16 @@ class TestVehicleState:
         api = self._api({"state": "online", "drive_state": {"timestamp": 1_700_000_000_000}, "charge_state": {}})
         assert api.vehicle_state(family(api)).data_time is None
 
+    def test_the_cabin_temperature_holds_until_it_has_moved_a_full_degree(self):
+        session = FakeSession()
+        api = TeslaIntegration(config=build_default_config(), session=session)
+        reported = []
+        for inside_temp in (21.5, 21.9, 22.4, 22.5, 22.0, 21.5, None, 21.5):
+            session.queue_response("GET", f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/state",
+                                   DummyResponse(200, {"climate_state": {"inside_temp": inside_temp}}))
+            reported.append(api.vehicle_state(family(api)).cabin_temp_c)
+        assert reported == [21.5, 21.5, 21.5, 22.5, 22.5, 21.5, None, 21.5]
+
     def test_missing_blocks_leave_every_field_unset(self):
         state = self._api({}).vehicle_state(family(self._api({})))
         assert state == VehicleState()
