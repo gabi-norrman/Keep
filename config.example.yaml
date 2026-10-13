@@ -180,7 +180,9 @@ local_outposts:
   exclude_mics: []          # name substrings (case-insensitive) of mics to skip, e.g. ["Bose QC45"] keeps
                             # earphones out; add one with config_set("local_outposts.exclude_mics[0]", "Bose QC45")
                             # (the ambient-noise volume monitor skips them too, even when one is the default input)
-  # location: Kitchen       # the room the server's mics are in, reported with every query; unset = unknown location
+  # location: Kitchen       # the room the server's mics are in, reported with every query, and the name the
+                            # server's speakers answer to in post_message (alias "speakers"), registered when
+                            # the voice interface starts; unset = unknown location and the speakers are no destination
   auto_recovery: true       # restart a mic whose audio stream stalls
   usb_power_cycle: true     # power-cycle the USB port as the last recovery step
 

@@ -129,6 +129,7 @@ are in, through a room's speakers — post it:
 The destinations: {DESTINATIONS}
 
 `owner` is the owner's chat(s), the route your pushes take. A group or a room is read by whoever is there: be mindful of privacy.
+A room is listed while the voice interface runs with `local_outposts.location` set — no room in the list is a setting, not a fault.
 A post is one-way — it is not a turn and nobody answers it. Give `text` as a triple-quoted block when it has commas or several lines:
 `post_message("owner", """The pasta is done.""")`.
 
