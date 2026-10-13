@@ -430,6 +430,12 @@ class TestIntegrationGrid:
     def test_no_integrations_is_no_rows(self):
         assert DashboardTab._integration_grid(0, 40)[1] == 0
 
+    def test_a_short_tile_caps_the_rows_so_the_tail_of_the_list_is_clipped_not_every_column(self):
+        two_columns = 2 * DashboardTab.INTEGRATION_COLUMN_MIN
+        assert DashboardTab._integration_grid(20, two_columns, max_rows=4) == (2, 4)
+        assert DashboardTab._integration_grid(5, two_columns, max_rows=4) == (2, 3), "a tall enough tile is not capped"
+        assert DashboardTab._integration_grid(5, two_columns, max_rows=-1) == (2, 0)
+
 
 @pytest.mark.unit
 class TestIntegrationRows:
@@ -449,3 +455,16 @@ class TestIntegrationRows:
     def test_disabled_integrations_are_not_dropped(self):
         rows = DashboardTab._integration_rows([self.status("Arlo", "disabled")])
         assert [s["name"] for s in rows] == ["Arlo"]
+
+    def test_a_tile_too_short_for_the_list_clips_disabled_integrations_before_any_enabled_one(self, monkeypatch):
+        from assistant.integration import IntegrationMonitor as monitor_module
+        statuses = [self.status(f"On{i}") for i in range(5)] + [self.status(f"Off{i}", "disabled") for i in range(4)]
+        monitor = type("Monitor", (), {"get_all_statuses": staticmethod(lambda: statuses)})()
+        monkeypatch.setattr(monitor_module.IntegrationMonitor, "get_instance", classmethod(lambda cls: monitor))
+        width = 2 * DashboardTab.INTEGRATION_COLUMN_MIN + 4      # two columns
+        height = Tile.CARD_CHROME + 3                           # six cells for nine integrations
+        screen = TUIScreen(width + 2, height + 2)
+        make_tab()._draw_integrations(screen, 1, 1, width, height)
+        text = "\n".join("".join(cell.char for cell in row) for row in screen.next_frame)
+        assert all(f"On{i}" in text for i in range(5)), "every enabled integration is shown"
+        assert "Off0" in text and "Off1" not in text, "the disabled ones fill the cells left and are clipped first"

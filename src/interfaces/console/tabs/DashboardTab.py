@@ -647,11 +647,15 @@ class DashboardTab(TabView):
         return sorted(statuses, key=lambda s: (s["state"] == disabled, s["name"]))
 
     @classmethod
-    def _integration_grid(cls, count: int, inner_w: int) -> Tuple[int, int]:
+    def _integration_grid(cls, count: int, inner_w: int, max_rows: Optional[int] = None) -> Tuple[int, int]:
         """(columns, rows) the integrations are laid out in: as many columns as fit the tile,
-        filled top to bottom."""
+        filled top to bottom. With `max_rows` (the content rows a clipped tile has) the rows
+        are capped, so the grid holds the first `columns * rows` items and the rest are clipped."""
         columns = max(1, min(3, inner_w // cls.INTEGRATION_COLUMN_MIN))
-        return columns, math.ceil(count / columns)
+        rows = math.ceil(count / columns)
+        if max_rows is not None:
+            rows = max(0, min(rows, max_rows))
+        return columns, rows
 
     def _status_panel_height(self, screen: TUIScreen) -> int:
         """Height of the status tiles: the tallest body plus the tile's own rows, so the chart rows above can shrink to fit it."""
@@ -677,14 +681,13 @@ class DashboardTab(TabView):
         Tile.draw_card(screen, self._cards, x, y, width, height, "Integrations", f"{ok}/{len(enabled)} ok" if enabled else "",
                         Theme.COLOR_GREEN if ok == len(enabled) else Theme.COLOR_YELLOW)
 
-        columns, rows = self._integration_grid(len(statuses), inner_w)
+        # A tile too short for the whole list shows the first columns * rows of it: the enabled
+        # ones come first in the list, so the disabled ones are clipped before any enabled one.
+        columns, rows = self._integration_grid(len(statuses), inner_w, max_rows=height - Tile.CARD_CHROME)
         column_w = inner_w // columns
-        bottom = y + height - 2     # the last content row
-        for i, status in enumerate(statuses):
+        for i, status in enumerate(statuses[:columns * rows]):
             cx = x + 2 + (i // rows) * column_w
             cy = y + Tile.CARD_TOP + i % rows
-            if cy > bottom:
-                continue
             healthy = status["state"] == IntegrationState.OK.value
             state_color = self.STATUS_STATE_COLORS.get(status["state"], Theme.COLOR_DIM)
             screen.set_color(state_color)
