@@ -121,7 +121,7 @@ linked). Semantics:
 > After `</thinking>` output only commands. Anything you want said goes through
 > `post_message(destination, text)` — to `owner` for the user's chats, to a group by its name, to a
 > room by its name when someone is there and the matter is worth a spoken line. Destinations now:
-> {destinations}. Nothing to say and nothing to do: output nothing.
+> {destinations}. Nothing to say and nothing to do: output "NO" (after any commands).
 
 The delivery tail (`_activity_check_inner` after the command loop) shrinks to: run the commands
 and save the result to history as today. Text left over after the commands is not delivered

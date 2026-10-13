@@ -1,3 +1,4 @@
+import re
 import json
 import queue
 import threading
@@ -1416,14 +1417,36 @@ class TestAutonomousActionPromptInvariant:
             "inside <thinking>; without this, untagged prose leaks to Telegram"
         )
 
-    def test_prompt_allows_only_commands_after_thinking_and_names_post_message_as_the_voice(self):
+    def test_prompt_allows_only_commands_or_no_after_thinking_and_names_post_message_as_the_voice(self):
         # Once </thinking> is closed only commands are allowed: anything the check wants said
-        # goes through post_message, and the old "NO" sentinel is gone with the text reply.
+        # goes through post_message. A model is bad at outputting nothing, so "NO" stays the
+        # answer for a check with nothing to do — the text reply it once marked is gone.
         text = FORMATTED_AUTONOMOUS_ACTION_PROMPT
         assert "</thinking>" in text, "prompt must reference the closing tag"
         assert "post_message" in text
         assert Destinations.NONE_YET in text, "the destinations the check can post to are listed"
-        assert '"NO"' not in text and "Telegram message" not in text
+        assert '"NO"' in text and "Telegram message" not in text
+
+
+class TestNoSentinel:
+    """A bare "NO" is the check's verdict, not stray text and not a history line."""
+
+    @pytest.mark.parametrize("answer", ["NO", "no", "NO.", " No! ", "<thinking>quiet night</thinking>\nNO"])
+    def test_a_no_in_any_dress_is_recognised(self, answer):
+        assert AutonomousActionManager._is_no(
+            re.sub(r'<thinking>.*?</thinking>', '', answer, flags=re.DOTALL))
+
+    @pytest.mark.parametrize("answer", ["NOTE", "No, the lights are on.", "", "post_message(owner, hi)"])
+    def test_other_text_is_not_a_no(self, answer):
+        assert not AutonomousActionManager._is_no(answer)
+
+    def test_a_no_is_not_written_to_the_history(self):
+        pm = make_mock_prompt_manager()
+        mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
+        mgr.clean_result_and_potentially_add_to_history("<thinking>nothing due</thinking>NO")
+        mgr._save_autonomous_result_to_history("NO.")
+        for call in pm.update_history.call_args_list:
+            assert not AutonomousActionManager._is_no(call.args[2]), call.args[2]
 
 
 class TestSaveAutonomousResultToHistory:

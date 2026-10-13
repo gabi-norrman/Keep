@@ -58,7 +58,7 @@ CAFFEINE_DEFAULT_DURATION_MINUTES = 60
 THINKING_TAG_INSTRUCTION = (
     'Start your reply with a <thinking> tag and put your entire thinking and analysis in this tag. '
     'ALL reasoning must stay inside the <thinking> tag — once you close </thinking> you may only emit '
-    'commands.\n\n')
+    'commands (or "NO").\n\n')
 
 # Appended after the autonomous instruction when the check is a scheduled wake-up. The note
 # states the fact and nothing more: a wake-up once carried an instruction to the model's future
@@ -134,11 +134,13 @@ The WATCH LIST above is only an index. These are the items whose poll is due, wi
 
 ## Response Format
 
-{thinking_tag_instruction}Output only commands (using proper command syntax). Feel free to do chains of commands (send one command, get reply back then send another command and so on) — just running commands does not create noise for the user.
+{thinking_tag_instruction}Output only commands (using proper command syntax). Feel free to do chains of commands (send one or several commands, get reply back then send another batch of commands and so on) — just running commands does not create noise for the user.
 
-Anything you want said goes through `post_message(destination, text)`: to `owner` for the user's chats (formatted by the rules of the "Text Chat" section), to a group by its name, to a room by its name when someone is there and the matter is worth a spoken line (a request made by voice, about something in the room, is answered by voice). The destinations now: {destinations}. Text outside a command is delivered nowhere.
+Anything you want said goes through `post_message(destination, text)`: to `owner` for the user's chat(s) (formatted by the rules of the 
+"Text Chat" section), or to a group by its name, or to a room by its name when someone is there and the matter is worth a spoken line (a request 
+made by voice, about something in the room, etc). The destinations now: {destinations}. No other text outside commands.
 
-Nothing to say and nothing to do: output nothing.
+Nothing to say: output "NO" — after your commands, or alone when there is nothing to do either. "NO" is a verdict, not a message; it is never sent anywhere.
 
 Now analyze the conversation and system state above and respond accordingly.
 """
@@ -517,9 +519,10 @@ class AutonomousActionManager:
                 self._save_autonomous_result_to_history(result)
             elif not ran_commands:
                 self.clean_result_and_potentially_add_to_history(result)
-            # The check emits commands only; what it wants said goes through post_message. Text
-            # left over is delivered nowhere — the trace is there to see it in the log if the
-            # model ever strays from the format.
+            # The check emits commands only; what it wants said goes through post_message. "NO"
+            # is the explicit verdict that there was nothing to do; any other text left over is
+            # delivered nowhere — the trace is there to see it in the log if the model ever
+            # strays from the format.
             self._drop_stray_text(stray)
             return result
 
@@ -535,11 +538,22 @@ class AutonomousActionManager:
             stray += remaining
         return stray
 
-    @staticmethod
-    def _drop_stray_text(stray: str) -> None:
+    # The sentinel the check answers with when there is nothing to say and nothing to do. A
+    # model is bad at outputting nothing at all, so the instruction asks for this one word
+    # instead; it is recognised with any punctuation or case a flaky model wraps it in.
+    NO_SENTINEL = "NO"
+
+    @classmethod
+    def _is_no(cls, text: str) -> bool:
+        return re.sub(r'[^A-Za-z]', '', text or "").upper() == cls.NO_SENTINEL
+
+    @classmethod
+    def _drop_stray_text(cls, stray: str) -> None:
         text = re.sub(r'<thinking>.*?</thinking>', '', stray or "", flags=re.DOTALL)
         text = re.sub(r'\[[^\]]*\]', '', text).strip()
-        if text:
+        if cls._is_no(text):
+            trace("Autonomous check answered NO: nothing to say, nothing to do.")
+        elif text:
             trace(f"Autonomous check left {len(text)} chars of text after its commands — dropped, post_message is "
                   f"how to say something: {text[:120]!r}")
 
@@ -556,7 +570,7 @@ class AutonomousActionManager:
         result_cleaned = re.sub(r'<thinking>.*?</thinking>', '', result, flags=re.DOTALL)
         result_cleaned = re.sub(r'<[^>]*>', '', result_cleaned)
         result_cleaned = re.sub(r'\[[^\]]*\]', '', result_cleaned).strip()
-        if result_cleaned:
+        if result_cleaned and not self._is_no(result_cleaned):
             self.prompt_manager.update_history(None, None, result_cleaned)
         return result_cleaned
 
@@ -576,7 +590,7 @@ class AutonomousActionManager:
             # model then mimicked in fresh responses — an unclosed prefix the
             # streaming parser couldn't strip.
             parts.append(f"<thinking>{thinking_text}</thinking>")
-        if visible:
+        if visible and not self._is_no(visible):
             parts.append(visible)
 
         if parts:
