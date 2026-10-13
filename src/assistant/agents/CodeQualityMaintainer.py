@@ -1009,6 +1009,12 @@ class CodeQualityMaintainer:
         number, _ = CodeQualityMaintainer.pull_request_in(report)
         if number is None:
             return report
+        if CodeQualityMaintainer._is_tried_pr(number):
+            # During a trial the job pushed onto the tried PR — the developers' own, open
+            # before this run and holding whatever it holds. Its files are not this job's
+            # scope to judge, and closing it would delete the branch the server runs.
+            info(f"CodeQualityMaintainer: PR #{number} is the tried PR, not checked against the integration scope")
+            return report
         try:
             title, files = CodeQualityMaintainer._pr_files(number)
             violations = CodeQualityMaintainer.scope_violations(files, folder)
@@ -1024,6 +1030,12 @@ class CodeQualityMaintainer:
         return (f"PR #{number} was closed again: {reason}.\n\nThe change needs more than the "
                 f"{name} integration — the user can file it for the developers with report_issue.\n\n"
                 f"Claude Code's report:\n{report}")
+
+    @staticmethod
+    def _is_tried_pr(number: int) -> bool:
+        from assistant.agents.PullRequestTrial import PullRequestTrial
+        trial = PullRequestTrial.current()
+        return trial is not None and trial.number == number
 
     @staticmethod
     def _trial_instructions() -> str:

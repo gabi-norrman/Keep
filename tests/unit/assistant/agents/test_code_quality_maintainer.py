@@ -1500,6 +1500,20 @@ class TestImproveIntegration:
         close.assert_called_once()
         assert "rate limited" in result
 
+    def test_the_tried_pr_is_never_closed_for_straying(self):
+        # During a trial the job pushes onto the tried PR, whose files are the developers'
+        # whole change; closing it would delete the branch the server runs.
+        from assistant.agents.PullRequestTrial import PullRequestTrial, Trial
+        trial = Trial(number=31, title="core refactor", head_ref="feat/core", since="14:02", return_branch="release")
+        with patch.object(PullRequestTrial, "current", return_value=trial):
+            result, _, close = self._run("tesla", [_file("src/assistant/Assistant.py")])
+        close.assert_not_called()
+        assert result == self.REPORT
+        other = Trial(number=30, title="t", head_ref="feat/x", since="14:02", return_branch="release")
+        with patch.object(PullRequestTrial, "current", return_value=other):
+            _, _, close = self._run("tesla", [_file("src/assistant/Assistant.py")])
+        close.assert_called_once()
+
     def test_a_declined_request_opens_nothing_to_check(self):
         result, _, close = self._run("tesla", [], report="Declined: the request names no symptom.")
         assert result.startswith("Declined") and not close.called
