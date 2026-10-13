@@ -138,6 +138,10 @@ class ChatSession:
         if msg.kind == KIND_TEXT and album is not None:
             with self._lock:
                 album.captions.append(msg.text)
+                # The batch runs with the facts of everything in it: a guest's text folded into
+                # an owner's album makes it a guest turn, as a guest's photo does (_add_to_album).
+                album.guest = album.guest or msg.guest
+                album.sender_is_bot = album.sender_is_bot or msg.sender_is_bot
                 self._reset_album_timer(album, self.PHOTO_DEBOUNCE_SECONDS)
             info(f"{self._log_prefix()} text folded into photo batch: {msg.text}")
             self._hub.record(self._transport, self._conversation, "user", msg.text)
@@ -179,6 +183,12 @@ class ChatSession:
         request = _Request()
         with self._lock:
             previous = self._request
+            if previous is not None and msg.guest:
+                # A guest never supersedes a turn in flight here: the guard in Assistant.stream
+                # refuses the guest's request, but only once this conversation's previous one
+                # is cancelled — too late for the owner. Dropped without a word, like there.
+                info(f"{self._log_prefix()}: a reply is in flight, the guest turn from {msg.sender} is dropped")
+                return
             self._request = request
         if previous is not None:
             info(f"{self._log_prefix()}: cancelling previous response (new message arrived)")
