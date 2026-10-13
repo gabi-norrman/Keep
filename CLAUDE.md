@@ -17,6 +17,10 @@ send the stream back to the client for playback.
 
 - **Only commit when explicitly asked** — never commit automatically after completing work.
 - **Always use the `/commit` command** when committing changes. Never commit manually.
+- **A push to master succeeds.** The remote prints "Changes must be made through a pull request" on every
+  push — it is a notice, not a rejection; check `git log origin/master` before concluding a push failed.
+- **Never `git reset --hard`, `git checkout -- <file>` or `git stash` a tree with changes you did not make.**
+  Other sessions work in this same checkout; their uncommitted edits are on disk and nowhere else.
 
 ## Releases
 
@@ -38,6 +42,7 @@ back to after a Claude Code run, `target_branch()` the one to pull.
 ## Code Style
 
 - Keep code concise and readable
+- Keep it simple
 - NO trivial comments - only add comments when they add real value
 - Follow existing patterns in each codebase
 - Python: Class files use uppercase naming (e.g., `VoiceSynthesizer.py` contains `class VoiceSynthesizer`)
