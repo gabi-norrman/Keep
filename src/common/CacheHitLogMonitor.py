@@ -11,8 +11,14 @@ from common.Paths import LOG_DIR
 
 
 class CacheHitLogMonitor:
-    """Averages the prompt-cache hit percentage of every Claude request per day from the server
+    """The median prompt-cache hit percentage of a day's Claude requests, per day, from the server
     log, for the DashboardTab's per-day cache chart.
+
+    The median, not the mean: a few misses a day are normal — the first request after a prompt
+    change, an idle gap past the cache TTL, a toolkit load — and on a day of twenty restarts
+    they drag a mean twenty points under what a typical request got. The median reads through
+    them. The percentage is an integer, so a histogram of 101 buckets per day is the whole
+    state and the median comes out exact.
 
     `log/floxy.out` is appended across runs and never rotated, so it holds the cache lines of
     every request the machine ever made — hundreds of megabytes. The scan runs once at startup
@@ -24,6 +30,7 @@ class CacheHitLogMonitor:
     LOG_FILE = LOG_DIR / "floxy.out"
     SCAN_INTERVAL = 24 * 3600.0
     MAX_DAYS = 120
+    BUCKETS = 101               # one per integer percentage, 0 through 100
     CHUNK_BYTES = 4 * 1024 * 1024
     CHUNK_PAUSE = 0.005         # a breath between chunks so the GIL goes round while a run is live
     # `… Claude cache: 1200 read, 0 created (0 5m + 0 1h), 300 uncached (total 1500, 80% cached)`
@@ -39,7 +46,7 @@ class CacheHitLogMonitor:
         self._thread: Optional[threading.Thread] = None
         self._offset = 0
         self._tail = b""
-        self._sums: Dict[date, List[int]] = defaultdict(lambda: [0, 0])    # day -> [sum of pct, count]
+        self._histograms: Dict[date, List[int]] = defaultdict(lambda: [0] * self.BUCKETS)    # day -> requests per pct
 
     def start(self):
         if self._thread and self._thread.is_alive() and not self._stop_event.is_set():
@@ -90,7 +97,7 @@ class CacheHitLogMonitor:
         if size < self._offset:
             info(f"CacheHitLogMonitor: {path.name} shrank from {self._offset} to {size} bytes, rescanning it whole")
             self._offset, self._tail = 0, b""
-            self._sums.clear()
+            self._histograms.clear()
         if size == self._offset:
             trace("CacheHitLogMonitor: nothing appended to the log since the last scan")
             self._publish()
@@ -112,7 +119,7 @@ class CacheHitLogMonitor:
                 lines += self._take(pieces)
                 stop_event.wait(self.CHUNK_PAUSE)
         self._publish()
-        info(f"CacheHitLogMonitor: read {lines} cache lines, {len(self._sums)} days with requests, "
+        info(f"CacheHitLogMonitor: read {lines} cache lines, {len(self._histograms)} days with requests, "
              f"log offset now {self._offset}")
 
     def _take(self, lines: List[bytes]) -> int:
@@ -130,28 +137,42 @@ class CacheHitLogMonitor:
                 day = datetime.strptime(match.group(1).decode(), "%Y-%m-%d").date()
             except ValueError:
                 continue
-            entry = self._sums[day]
-            entry[0] += int(match.group(2))
-            entry[1] += 1
+            self._histograms[day][min(int(match.group(2)), self.BUCKETS - 1)] += 1
             taken += 1
         return taken
 
     def _publish(self):
-        self._dashboard_tab.cache_daily = self.daily_averages(self._sums, date.today())
+        self._dashboard_tab.cache_daily = self.daily_medians(self._histograms, date.today())
         self._dashboard_tab.cache_daily_error = ""
 
     @classmethod
-    def daily_averages(cls, sums: Dict[date, List[int]], today: date) -> List[Tuple[date, Optional[float]]]:
+    def daily_medians(cls, histograms: Dict[date, List[int]], today: date) -> List[Tuple[date, Optional[float]]]:
         """One entry per calendar day from the first day with requests (at most `MAX_DAYS` back)
-        through `today`: the day's mean hit percentage, or None for a day without a request —
-        a gap in the chart, not a 0 % that would read as a cache that missed all day."""
-        days_with_requests = [d for d, (_, count) in sums.items() if count]
+        through `today`: the median hit percentage of the day's requests, or None for a day
+        without one — a gap in the chart, not a 0 % that would read as a cache that missed all
+        day."""
+        days_with_requests = [d for d, histogram in histograms.items() if any(histogram)]
         if not days_with_requests:
             return []
         first = max(min(days_with_requests), today - timedelta(days=cls.MAX_DAYS - 1))
         series = []
         for i in range((today - first).days + 1):
             day = first + timedelta(days=i)
-            total, count = sums.get(day, (0, 0))
-            series.append((day, total / count if count else None))
+            histogram = histograms.get(day)
+            series.append((day, cls.median(histogram) if histogram and any(histogram) else None))
         return series
+
+    @staticmethod
+    def median(histogram: List[int]) -> float:
+        """The median of the values a histogram counts (index = value): the middle one, or the
+        mean of the two middle ones when the count is even."""
+        count = sum(histogram)
+        lower_rank, upper_rank = (count - 1) // 2, count // 2
+        seen, middle = 0, []
+        for value, n in enumerate(histogram):
+            seen += n
+            while len(middle) < 2 and seen > (lower_rank, upper_rank)[len(middle)]:
+                middle.append(value)
+            if len(middle) == 2:
+                break
+        return (middle[0] + middle[1]) / 2

@@ -1,4 +1,4 @@
-"""CacheHitLogMonitor: the per-day prompt-cache average the dashboard charts, scanned from
+"""CacheHitLogMonitor: the per-day prompt-cache median the dashboard charts, scanned from
 the appended-forever server log in one startup pass and incremental daily passes."""
 import threading
 from datetime import date, timedelta
@@ -24,6 +24,13 @@ OTHER_LINES = ("\x1b[2m\x1b[90mI\x1b[38;2;80;80;80m│\x1b[2m\x1b[90m2026-03-05 
                "I│2026-03-05 09:40:18.000 │ main │ Number of unique responses in cache: 3\n").encode()
 
 
+def histogram(*pcts: int) -> list:
+    counts = [0] * CacheHitLogMonitor.BUCKETS
+    for pct in pcts:
+        counts[pct] += 1
+    return counts
+
+
 def make_monitor(tmp_path, monkeypatch, **overrides):
     tab = Mock()
     tab.cache_daily, tab.cache_daily_error = [], ""
@@ -43,39 +50,50 @@ class TestTheLogLine:
     def test_the_coloured_line_yields_its_day_and_percentage__contract_with_floxy_out(self, tmp_path, monkeypatch):
         monitor, _, _ = make_monitor(tmp_path, monkeypatch)
         assert monitor._take([log_line("2026-03-05", 80), *OTHER_LINES.split(b"\n")]) == 1
-        assert dict(monitor._sums) == {date(2026, 3, 5): [80, 1]}
+        assert dict(monitor._histograms) == {date(2026, 3, 5): histogram(80)}
 
     def test_a_cache_line_of_another_shape_is_skipped_not_fatal(self, tmp_path, monkeypatch):
         monitor, _, _ = make_monitor(tmp_path, monkeypatch)
         assert monitor._take([b"Claude cache: 5 read, 5 uncached (total 10, 50% cached)  <- no timestamp"]) == 0
-        assert not monitor._sums
+        assert not monitor._histograms
 
 
 @pytest.mark.unit
-class TestDailyAverages:
-    def test_a_day_is_the_mean_of_its_requests_and_a_day_without_one_is_a_gap(self):
-        sums = {date(2026, 3, 5): [150, 2], date(2026, 3, 7): [40, 1]}
-        assert CacheHitLogMonitor.daily_averages(sums, TODAY) == [
-            (date(2026, 3, 5), 75.0), (date(2026, 3, 6), None), (date(2026, 3, 7), 40.0)]
+class TestDailyMedians:
+    def test_a_day_is_the_median_of_its_requests_and_a_day_without_one_is_a_gap(self):
+        histograms = {date(2026, 3, 5): histogram(70, 80, 95), date(2026, 3, 7): histogram(40)}
+        assert CacheHitLogMonitor.daily_medians(histograms, TODAY) == [
+            (date(2026, 3, 5), 80.0), (date(2026, 3, 6), None), (date(2026, 3, 7), 40.0)]
+
+    def test_a_day_of_restarts_reads_as_what_a_typical_request_got(self):
+        """Twenty restarts' worth of misses among a hundred hits: the mean would read 80, the
+        chart should read the hit."""
+        day = histogram(*([0] * 20 + [100] * 100))
+        assert CacheHitLogMonitor.daily_medians({TODAY: day}, TODAY) == [(TODAY, 100.0)]
+
+    def test_an_even_count_takes_the_mean_of_the_two_middle_requests(self):
+        assert CacheHitLogMonitor.median(histogram(10, 20, 80, 90)) == 50.0
+        assert CacheHitLogMonitor.median(histogram(0, 100)) == 50.0
+        assert CacheHitLogMonitor.median(histogram(37)) == 37.0
 
     def test_the_series_runs_through_today_even_when_today_has_no_request_yet(self):
-        series = CacheHitLogMonitor.daily_averages({date(2026, 3, 5): [90, 1]}, TODAY)
+        series = CacheHitLogMonitor.daily_medians({date(2026, 3, 5): histogram(90)}, TODAY)
         assert series[-1] == (TODAY, None) and len(series) == 3
 
     def test_the_series_reaches_no_further_back_than_max_days(self):
         ancient = TODAY - timedelta(days=CacheHitLogMonitor.MAX_DAYS + 30)
-        series = CacheHitLogMonitor.daily_averages({ancient: [50, 1], TODAY: [10, 1]}, TODAY)
+        series = CacheHitLogMonitor.daily_medians({ancient: histogram(50), TODAY: histogram(10)}, TODAY)
         assert len(series) == CacheHitLogMonitor.MAX_DAYS
         assert series[-1] == (TODAY, 10.0)
 
     def test_no_requests_is_an_empty_series(self):
-        assert CacheHitLogMonitor.daily_averages({}, TODAY) == []
-        assert CacheHitLogMonitor.daily_averages({TODAY: [0, 0]}, TODAY) == []
+        assert CacheHitLogMonitor.daily_medians({}, TODAY) == []
+        assert CacheHitLogMonitor.daily_medians({TODAY: histogram()}, TODAY) == []
 
 
 @pytest.mark.unit
 class TestScanning:
-    def test_the_first_scan_averages_every_day_in_the_log(self, tmp_path, monkeypatch):
+    def test_the_first_scan_takes_in_every_day_in_the_log(self, tmp_path, monkeypatch):
         monitor, tab, log = make_monitor(tmp_path, monkeypatch)
         today, yesterday = date.today(), date.today() - timedelta(days=1)
         log.write_bytes(OTHER_LINES + log_line(str(yesterday), 60) + log_line(str(yesterday), 80)
@@ -92,7 +110,7 @@ class TestScanning:
         with log.open("ab") as f:
             f.write(log_line(str(today), 0))
         scan(monitor)
-        assert tab.cache_daily == [(today, 50.0)], "a line counted twice would pull the mean off"
+        assert tab.cache_daily == [(today, 50.0)], "a line counted twice would pull the median off"
         assert monitor._offset == log.stat().st_size
 
     def test_a_pass_stops_at_the_size_it_started_with(self, tmp_path, monkeypatch):

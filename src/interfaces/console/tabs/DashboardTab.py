@@ -97,7 +97,7 @@ class DashboardTab(TabView):
         self.memory_word_count: int = 0
         self.memory_log_error: str = ""
 
-        self.cache_daily: list = []             # (day, mean hit % or None) per calendar day, written by CacheHitLogMonitor
+        self.cache_daily: list = []             # (day, median hit % or None) per calendar day, written by CacheHitLogMonitor
         self.cache_daily_error: str = ""
 
         self.cpu_temp: float = 0.0
@@ -604,14 +604,15 @@ class DashboardTab(TabView):
             Tile.write_segments(screen, legend_x, y, legend_w, legend)
 
     def _draw_cache_daily_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int):
-        """A column per calendar day: the mean prompt-cache hit of the day's requests, from the
-        log scan. A day without a request is an empty column; the value is the latest day that
-        had one, so a quiet morning still shows yesterday's figure."""
+        """A column per calendar day: the median prompt-cache hit of the day's requests, from
+        the log scan. A day without a request is an empty column; the value is the latest day
+        that had one, so a quiet morning still shows yesterday's figure."""
         series = self.cache_daily
-        with_requests = [(day, avg) for day, avg in series if avg is not None]
+        with_requests = [(day, median) for day, median in series if median is not None]
         value = f"{with_requests[-1][0]:%-d %b} {with_requests[-1][1]:.0f}%" if with_requests else ""
-        self._draw_bar_chart(screen, x, y, width, chart_h, [avg or 0.0 for _, avg in series], Theme.COLOR_TEAL,
-                             "KV-Cache Hit % per day", value, max_value=100.0, y_axis_format=self._format_pct)
+        self._draw_bar_chart(screen, x, y, width, chart_h, [median or 0.0 for _, median in series],
+                             Theme.COLOR_TEAL, "KV-Cache Hit % per day", value, max_value=100.0,
+                             y_axis_format=self._format_pct)
         if not series and self.cache_daily_error:
             screen.set_color(Theme.COLOR_DIM)
             screen.set_bg_color(Theme.COLOR_PANEL_BG)
