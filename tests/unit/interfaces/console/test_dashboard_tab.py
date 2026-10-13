@@ -433,31 +433,19 @@ class TestIntegrationGrid:
 
 @pytest.mark.unit
 class TestIntegrationRows:
-    """Disabled integrations leave the bullet list and share wrapped "Disabled: …" lines instead."""
+    """Every integration is a row of the grid: the enabled ones first, the disabled ones after them."""
 
     @staticmethod
     def status(name, state="ok"):
         return {"name": name, "state": state}
 
-    def test_enabled_are_sorted_and_disabled_are_summarised(self):
-        enabled, lines = DashboardTab._integration_rows([
+    def test_enabled_come_first_and_each_group_is_sorted_by_name(self):
+        rows = DashboardTab._integration_rows([
             self.status("Ring", "disabled"), self.status("iMessage"), self.status("Arlo", "disabled"),
-            self.status("Gmail"),
+            self.status("Gmail", "error"),
         ])
-        assert [s["name"] for s in enabled] == ["Gmail", "iMessage"]
-        assert lines == ["Disabled: Arlo, Ring"]
+        assert [s["name"] for s in rows] == ["Gmail", "iMessage", "Arlo", "Ring"]
 
-    def test_no_disabled_means_no_summary_lines(self):
-        enabled, lines = DashboardTab._integration_rows([self.status("Gmail")])
-        assert [s["name"] for s in enabled] == ["Gmail"]
-        assert lines == []
-
-    def test_a_long_disabled_list_wraps_inside_the_column(self):
-        names = ["Arlo", "CalDAV", "Gmail", "Home Assistant", "Indigo", "Photos", "Reminders",
-                 "Ring", "Self Improvement", "Sonos & Spotify", "Telegram", "Tesla", "X", "YR Weather"]
-        _, lines = DashboardTab._integration_rows([self.status(n, "disabled") for n in names])
-        assert len(lines) > 1
-        assert all(len(line) <= DashboardTab.INTEGRATIONS_WIDTH for line in lines)
-        assert lines[0].startswith("Disabled: ")
-        assert all(not line.startswith(" ") for line in lines[1:])   # continuation lines sit flush left
-        assert " ".join(lines) == "Disabled: " + ", ".join(names)
+    def test_disabled_integrations_are_not_dropped(self):
+        rows = DashboardTab._integration_rows([self.status("Arlo", "disabled")])
+        assert [s["name"] for s in rows] == ["Arlo"]

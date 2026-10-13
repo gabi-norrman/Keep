@@ -1,6 +1,5 @@
 import collections
 import math
-import textwrap
 import time
 from typing import TYPE_CHECKING, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
@@ -637,32 +636,27 @@ class DashboardTab(TabView):
     }
     TIMING_ROWS = 6           # the six stages; their total is in the title strip
 
-    INTEGRATIONS_WIDTH = 38   # what the "Disabled: …" lines wrap to unless the tile says otherwise
     INTEGRATION_COLUMN_MIN = 18
     PROMPT_BUDGET_KB = 100.0
 
     @classmethod
-    def _integration_rows(cls, statuses: List[dict], width: Optional[int] = None) -> Tuple[List[dict], List[str]]:
-        """The enabled integrations, sorted by name, and the wrapped "Disabled: a, b, c" lines
-        that follow them — a disabled integration only takes a share of one line, not a row."""
-        enabled = sorted((s for s in statuses if s["state"] != IntegrationState.DISABLED.value),
-                         key=lambda s: s["name"])
-        disabled = sorted(s["name"] for s in statuses if s["state"] == IntegrationState.DISABLED.value)
-        lines = textwrap.wrap("Disabled: " + ", ".join(disabled), max(10, width or cls.INTEGRATIONS_WIDTH)) if disabled else []
-        return enabled, lines
+    def _integration_rows(cls, statuses: List[dict]) -> List[dict]:
+        """Every integration as a row of the grid: the enabled ones sorted by name, then the
+        disabled ones sorted by name, so the dim rows cluster at the end."""
+        disabled = IntegrationState.DISABLED.value
+        return sorted(statuses, key=lambda s: (s["state"] == disabled, s["name"]))
 
     @classmethod
     def _integration_grid(cls, count: int, inner_w: int) -> Tuple[int, int]:
-        """(columns, rows) the enabled integrations are laid out in: as many columns as fit
-        the tile, filled top to bottom."""
+        """(columns, rows) the integrations are laid out in: as many columns as fit the tile,
+        filled top to bottom."""
         columns = max(1, min(3, inner_w // cls.INTEGRATION_COLUMN_MIN))
         return columns, math.ceil(count / columns)
 
     def _status_panel_height(self, screen: TUIScreen) -> int:
         """Height of the status tiles: the tallest body plus the tile's own rows, so the chart rows above can shrink to fit it."""
         inner_w = self._columns(screen, 4)[0][1] - 4
-        enabled, disabled_lines = self._integration_rows(IntegrationMonitor.get_instance().get_all_statuses(), inner_w)
-        integrations = self._integration_grid(len(enabled), inner_w)[1] + (1 + len(disabled_lines) if disabled_lines else 0)
+        integrations = self._integration_grid(len(IntegrationMonitor.get_instance().get_all_statuses()), inner_w)[1]
         pm = self.console.prompt_manager
         prompt_sections = len(pm.get_section_stats()) if pm else 0
         return max(integrations, self.TIMING_ROWS, len(self._resource_rows()), prompt_sections) + Tile.CARD_CHROME
@@ -677,15 +671,16 @@ class DashboardTab(TabView):
 
     def _draw_integrations(self, screen: TUIScreen, x: int, y: int, width: int, height: int):
         inner_w = width - 4
-        enabled, disabled_lines = self._integration_rows(IntegrationMonitor.get_instance().get_all_statuses(), inner_w)
+        statuses = self._integration_rows(IntegrationMonitor.get_instance().get_all_statuses())
+        enabled = [s for s in statuses if s["state"] != IntegrationState.DISABLED.value]
         ok = sum(1 for status in enabled if status["state"] == IntegrationState.OK.value)
         Tile.draw_card(screen, self._cards, x, y, width, height, "Integrations", f"{ok}/{len(enabled)} ok" if enabled else "",
                         Theme.COLOR_GREEN if ok == len(enabled) else Theme.COLOR_YELLOW)
 
-        columns, rows = self._integration_grid(len(enabled), inner_w)
+        columns, rows = self._integration_grid(len(statuses), inner_w)
         column_w = inner_w // columns
         bottom = y + height - 2     # the last content row
-        for i, status in enumerate(enabled):
+        for i, status in enumerate(statuses):
             cx = x + 2 + (i // rows) * column_w
             cy = y + Tile.CARD_TOP + i % rows
             if cy > bottom:
@@ -696,10 +691,6 @@ class DashboardTab(TabView):
             screen.write_at(cx, cy, "●")
             screen.set_color(Theme.COLOR_LABEL if healthy else state_color)
             screen.write_at(cx + 2, cy, fit(status["name"], column_w - 3))
-        screen.set_color(Theme.COLOR_DIM)
-        for i, line in enumerate(disabled_lines):
-            if y + Tile.CARD_TOP + rows + 1 + i <= bottom:
-                screen.write_at(x + 2, y + Tile.CARD_TOP + rows + 1 + i, line)
         screen.reset_color()
 
     def _draw_timing(self, screen: TUIScreen, x: int, y: int, width: int, height: int):
