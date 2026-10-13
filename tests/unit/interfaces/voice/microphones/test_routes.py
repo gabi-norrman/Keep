@@ -236,6 +236,23 @@ class TestFalsePositiveKill:
         assert routes.kill_running_request_matching("turn on the lights") == 0
         h.kill.assert_not_called()
 
+    def test_grown_phrase_is_killed_only_when_asked(self, routes, deps):
+        """The outpost's accumulator appends the next fragment to the vetoed phrase, so the
+        Scribe veto (include_grown) must reach the grown request; the low-confidence guard
+        keeps the exact match."""
+        h = _handler("Turn on the lights. Make an orange water.")
+        deps.running.put(h)
+        assert routes.kill_running_request_matching("Turn on the lights") == 0
+        h.kill.assert_not_called()
+        assert routes.kill_running_request_matching("Turn on the lights", include_grown=True) == 1
+        h.kill.assert_called_once()
+
+    def test_grown_match_needs_a_word_boundary(self, routes, deps):
+        h = _handler("turn on the lightsaber")
+        deps.running.put(h)
+        assert routes.kill_running_request_matching("turn on the lights", include_grown=True) == 0
+        h.kill.assert_not_called()
+
     def test_empty_phrase_kills_nothing(self, routes, deps):
         h = _handler("turn on the lights")
         deps.running.put(h)

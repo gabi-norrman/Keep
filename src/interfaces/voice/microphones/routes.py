@@ -102,20 +102,30 @@ class MicrophoneRoutes:
                 armed += 1
         return armed
 
-    def kill_running_request_matching(self, phrase: str, reason: str = "") -> int:
+    def kill_running_request_matching(self, phrase: str, reason: str = "",
+                                      include_grown: bool = False) -> int:
         """Kill any in-flight request whose query normalizes to `phrase`, flagging it a false
         positive. Phrase-targeted on purpose: a request the server has since moved on to (a
         different phrase) is left running, so a stale veto can never kill the wrong reply.
-        Returns how many were killed. Shared by the low-confidence guard in
-        accept_transcription and the /false_positive veto route."""
+        With `include_grown` a request whose query STARTS with the phrase is killed too: the
+        outpost's accumulator only ever appends, so by the time Scribe's veto lands the
+        vetoed fire may already run as "<phrase> <next fragment>" (2026-10-12 prod: the veto
+        for 'Sir, get dressed, …' missed 'Sir, get dressed, … make an orange water.' and
+        Floxy answered). Returns how many were killed. Shared by the low-confidence guard in
+        accept_transcription (exact match) and the /false_positive veto route (grown too)."""
         analyzer = self.deps.speech_analyzer
         normalized = analyzer.normalize_query(phrase)
         if not normalized:
             return 0
+
+        def matches(user_input):
+            running = analyzer.normalize_query(user_input)
+            return running == normalized or (include_grown and running.startswith(normalized + " "))
+
         killed = 0
         for h in self._running():
             if (h.request_context and h.request_context.user_input
-                    and analyzer.normalize_query(h.request_context.user_input) == normalized
+                    and matches(h.request_context.user_input)
                     and h.is_performing_request):
                 note(f"Killing in-flight request as a false positive: '{phrase}'"
                      + (f" ({reason})." if reason else "."))
@@ -335,7 +345,8 @@ class MicrophoneRoutes:
                          f"'{confirmed_by or 'outpost'}' already confirmed the wake word for that phrase.")
                     deps.speech_analyzer.mark_scribe_settled(query)
                     return "", 204
-                killed = self.kill_running_request_matching(query, reason=f"Scribe veto from {mic or 'outpost'}")
+                killed = self.kill_running_request_matching(query, reason=f"Scribe veto from {mic or 'outpost'}",
+                                                            include_grown=True)
                 deps.speech_analyzer.mark_scribe_settled(query)
                 if not killed:
                     trace(f"Scribe veto for '{query}': no matching in-flight request "
