@@ -1218,6 +1218,19 @@ class TestDueWatcher:
         (call,) = mgr.activity_check.call_args_list
         assert [(item.name, moment) for item, moment in call.kwargs["due"]] == [("water-meter", datetime(2026, 10, 11, 17, 0))]
 
+    def test_an_item_with_a_due_time_and_a_short_cadence_fires_each_moment_once(self):
+        # Both moments are reached at once; remembering one per item made the other fire again
+        # every poll until the item was stamped.
+        WatchList.save("water-meter", "read it and report", "2026-10-11 17:00", every="20m")
+        self.stamp_checked("water-meter", "2026-10-11 12:00")
+        mgr = self.manager()
+        assert mgr._poll_due(datetime(2026, 10, 11, 17, 0)) is True
+        assert mgr._poll_due(datetime(2026, 10, 11, 17, 1)) is False
+        assert mgr._poll_due(datetime(2026, 10, 11, 17, 2)) is False
+        (call,) = mgr.activity_check.call_args_list
+        assert sorted(moment for _, moment in call.kwargs["due"]) == [datetime(2026, 10, 11, 12, 20),
+                                                                      datetime(2026, 10, 11, 17, 0)]
+
     def test_a_bare_due_date_fires_nothing(self):
         WatchList.save("sofa-delivery", "on its way", "2026-10-11")
         mgr = self.manager()

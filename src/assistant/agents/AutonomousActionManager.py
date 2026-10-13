@@ -193,7 +193,7 @@ class AutonomousActionManager:
         self.thread = threading.Thread(target=self._run_periodic_check, daemon=True)
         # The (item, moment) pairs the due watcher has fired for: once each, whatever the LLM
         # then does with the item. In memory only — a restart fires a reached moment again.
-        self._fired_due: dict[str, datetime] = {}
+        self._fired_due: set[tuple[str, datetime]] = set()
         self._next_due_logged: Optional[datetime] = None   # the watcher logs the next moment when it changes
         self.due_thread = threading.Thread(target=self._run_due_watcher, daemon=True, name="DueWatcher")
         if not test_mode:
@@ -610,8 +610,11 @@ class AutonomousActionManager:
         morning; a user in flight leaves it for the next read a minute on."""
         now = now or datetime.now()
         pending = WatchList.pending(now, within=timedelta(seconds=PERIODIC_CHECK_INTERVAL_SECONDS))
+        # An item earns several moments at once (its due time and its cadence's next poll), each
+        # fired once; a moment no longer pending was looked at and cannot come back.
+        self._fired_due &= {(item.name, moment) for item, moment in pending}
         reached = [(item, moment) for item, moment in pending
-                   if moment <= now and self._fired_due.get(item.name) != moment]
+                   if moment <= now and (item.name, moment) not in self._fired_due]
         if not reached:
             ahead = [moment for _, moment in pending if moment > now]
             next_due = min(ahead) if ahead else None
@@ -626,8 +629,7 @@ class AutonomousActionManager:
         if self.is_user_interaction_active():
             info(f"Due watcher: {names} reached — user interaction active or recent, trying again in a minute")
             return False
-        for item, moment in reached:
-            self._fired_due[item.name] = moment
+        self._fired_due.update((item.name, moment) for item, moment in reached)
         info(f"Due watcher: firing a check for {names}")
         self.activity_check(due=reached)
         return True
