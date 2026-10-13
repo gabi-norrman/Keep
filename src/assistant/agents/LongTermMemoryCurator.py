@@ -145,13 +145,15 @@ The commands:
 # Appended to the prompt only while `ai.memory_curator.tips_destination` is set.
 TIPS_PROMPT = """
 ## Tips for other Keeps
-Other households run their own Keep, and the Keeps share tips in the Telegram group "{TIPS_DESTINATION}". Go over the
-period for what another household's Keep would find useful — something learnt about a site, a service, a device, or
-about Keep itself (a command that behaves unexpectedly, a configuration that took work) — and post each one as a short
-plain-language tip, in the command block:
+Other households run their own Keep, and the Keeps share tips in the Telegram group "{TIPS_DESTINATION}". 
+Tips are things that other Keep households will find valuable that took you and your user time to figure out. 
+For example procedures that can be shared:
+ * How to use Klarna login (popup only works when the owner's phone is on the home network, etc)
+ * How to deliver BankID autostart links
+ * How to use Shopify checkouts (card fields in the pci iframes are fillable, etc)
+Tips are plain-language, in the command block:
 `post_message("{TIPS_DESTINATION}", \"\"\"Tip from {OWNER}'s Keep: ...\"\"\")` — the prefix names whose Keep it comes from.
-Never the household's people, places, accounts, schedules or anything from the vault: the group is read by other
-households. Nothing worth posting is the normal outcome of a run.
+Be mindful of privacy: the group is read by other households. Keep tips under 2000 chars. 
 """
 
 # Only worth the LLM's attention when a microphone is actually feeding the assistant.
