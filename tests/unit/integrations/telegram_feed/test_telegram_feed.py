@@ -61,6 +61,7 @@ def _make_msg(sender_id, text, get_sender_name="Alice", photo=None, download_med
     msg = Mock()
     msg.sender_id = sender_id
     msg.text = text
+    msg.reply_to_msg_id = None
     msg.photo = photo
     msg.video = video
     msg.gif = gif
@@ -442,11 +443,17 @@ class TestWakeAssistant:
             "Chess club": Chat(id=6001, title="Chess club", photo=None, participants_count=9, date=None, version=1),
         }
 
-        async def say(text, sender_id=123, group="Family", bot=False, name="Alice"):
+        async def say(text, sender_id=123, group="Family", bot=False, name="Alice", reply_to_sender=None):
             event = Mock()
             event.message = _dated(_make_msg(sender_id, text, get_sender_name=name), 400.0)
             if bot:
                 (await event.message.get_sender()).bot = True
+            if reply_to_sender is not None:
+                event.message.reply_to_msg_id = 55
+
+                async def get_reply_message():
+                    return Mock(sender_id=reply_to_sender)
+                event.message.get_reply_message = get_reply_message
 
             async def get_chat():
                 return chats[group]
@@ -510,6 +517,16 @@ class TestWakeAssistant:
         m, say, fake = wake
         await say("Michelle here — dinner is pasta", sender_id=777, bot=True, name="Keep")
         fake.receive_chat_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_reply_to_the_bots_bubble_is_left_to_the_bot(self, wake):
+        # Telegram delivers a reply to the bot's own message to the bot itself, so the chat
+        # layer already gets it as a turn; the feed handing it over too would start a second.
+        m, say, fake = wake
+        await say("Michelle, and the garage?", reply_to_sender=777)
+        fake.receive_chat_message.assert_not_called()
+        await say("Michelle, and the garage?", reply_to_sender=123)   # a reply to a human's message
+        fake.receive_chat_message.assert_called_once()
 
     def test_no_wake_word_wakes_on_nothing(self, wake, monkeypatch):
         m, _, _ = wake

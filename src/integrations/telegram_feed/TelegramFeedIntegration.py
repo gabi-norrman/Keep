@@ -324,6 +324,19 @@ class TelegramFeedIntegration(Integration, Feed):
         recent.append(now)
         return True
 
+    @staticmethod
+    async def _replies_to_the_bot(msg, bot_id: Optional[int]) -> bool:
+        """A reply to one of the bot's own bubbles reaches the bot through the Bot API even in
+        privacy mode (TelegramInterface serves it), so the feed must not hand it over too."""
+        if bot_id is None or not getattr(msg, 'reply_to_msg_id', None):
+            return False
+        try:
+            replied = await msg.get_reply_message()
+        except Exception as e:
+            trace(f"TelegramFeed: the replied-to message could not be read ({e}), treating it as not the bot's")
+            return False
+        return replied is not None and getattr(replied, 'sender_id', None) == bot_id
+
     async def _wake_assistant(self, msg, chat) -> bool:
         """A live message in a group the bot is in (a negative id on telegram_bot.allowed_chat_ids)
         that names the assistant: handed to the chat layer as a turn of that group, so the
@@ -342,6 +355,9 @@ class TelegramFeedIntegration(Integration, Feed):
         bot_id = self._bot_user_id()
         if bot_id is not None and msg.sender_id == bot_id:
             trace("TelegramFeed: the bot's own reply names the assistant — not woken by herself")
+            return False
+        if await self._replies_to_the_bot(msg, bot_id):
+            trace("TelegramFeed: the message replies to the bot's own bubble — the bot receives it itself, not woken twice")
             return False
         is_from_me = msg.sender_id == self._me.id
         if is_from_me:
