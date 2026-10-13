@@ -58,12 +58,22 @@ class SpeakerIdentifier:
     """
 
     _instance: ClassVar[Optional['SpeakerIdentifier']] = None
+    # The enrollment folders as last read (name, mtime); None = not tracking the disk, which is
+    # what a double built without __init__ gets.
+    _enrollment_seen: tuple | None = None
 
     VOICE_ID_DIR = _VOICE_ID_DIR
     MODEL_DIR = Path(__file__).parent / "pretrained_models"
     UNKNOWN_THRESHOLD = 0.35  # lower than around 31% gives false identifications
     K_NEAREST = 3
     IDENTIFICATION_VOTE_WINDOW = 30.0  # seconds to consider for voting
+    # The discovery's candidates live under voice_id/ too (VoiceCandidates); not an enrollment.
+    CANDIDATES_FOLDER = "candidates"
+    # What the discovery embeds: a clip shorter or quieter than this carries no voice, and halves
+    # less alike than this hold two voices (see VoiceDiscovery for the measurements).
+    CLIP_MIN_DURATION = 2.0
+    CLIP_MIN_RMS = 0.003
+    CLIP_MIXED_SIM = 0.0
 
     @classmethod
     def get_instance(cls) -> Optional['SpeakerIdentifier']:
@@ -92,10 +102,12 @@ class SpeakerIdentifier:
 
         self._classifier = None
         self._enrolled_users: Dict[str, List[torch.Tensor]] = {}
+        self._candidate_ids: set[str] = set()
         self._identification_history: List[Tuple[str, float, float]] = []  # (username, confidence, timestamp)
         # Guards _identification_history: multiple local mic outposts can call identify()
         # concurrently (one send thread per mic), interleaving append + prune.
         self._history_lock = threading.Lock()
+        self._enrollment_seen = ()
         self._enroll_users()
 
     def _ensure_model_loaded(self):
@@ -111,8 +123,31 @@ class SpeakerIdentifier:
         )
         trace("SpeechBrain model loaded.")
 
+    def _enrollment_version(self) -> tuple:
+        """Changes when an enrollment folder is added, removed or written to — `name_voice`
+        moving a candidate's clips into voice_id/<name>/."""
+        try:
+            folders = [d for d in self.VOICE_ID_DIR.iterdir() if d.is_dir()]
+            folders += [d for d in folders if d.name == self.CANDIDATES_FOLDER for d in d.iterdir() if d.is_dir()]
+            return tuple(sorted((d.name, d.stat().st_mtime_ns) for d in folders))
+        except OSError:
+            return ()
+
+    def _reload_if_changed(self):
+        """Re-enroll when voice_id/ changed on disk, so a voice the owner just named is
+        recognised without a restart."""
+        if self._enrollment_seen is None:
+            return
+        version = self._enrollment_version()
+        if version != self._enrollment_seen:
+            info("Voice enrollment changed on disk, re-enrolling")
+            self._enrolled_users = {}
+            self._enroll_users()
+
     def _enroll_users(self):
         """Scan voice_id/ directory and enroll all users."""
+        if self._enrollment_seen is not None:
+            self._enrollment_seen = self._enrollment_version()
         if not self.VOICE_ID_DIR.exists():
             info(f"Voice ID directory not found: {self.VOICE_ID_DIR}")
             info("Create voice_id/<username>/ directories with WAV samples to enroll users.")
@@ -120,36 +155,53 @@ class SpeakerIdentifier:
 
         self._ensure_model_loaded()
 
+        candidates_dir = None
         for user_dir in self.VOICE_ID_DIR.iterdir():
             if not user_dir.is_dir():
                 continue
-
-            username = user_dir.name
-            wav_files = list(user_dir.glob("*.wav"))
-
-            if not wav_files:
-                fine(f"No WAV files found for user: {username}")
+            if user_dir.name == self.CANDIDATES_FOLDER:
+                candidates_dir = user_dir
                 continue
+            self._enroll(user_dir.name, list(user_dir.glob("*.wav")))
 
-            embeddings = []
-            for wav_file in wav_files:
-                try:
-                    embedding = self._extract_embedding_from_file(wav_file)
-                    if embedding is not None:
-                        embeddings.append(embedding)
-                except Exception as e:
-                    fine(f"Failed to process {wav_file.name}: {e}")
+        # The discovery's unnamed voices are enrolled under their id, so the one speaking is
+        # recognised and the assistant can ask who they are (routes.py says so in the turn note).
+        self._candidate_ids = set()
+        if candidates_dir is not None:
+            for folder in candidates_dir.iterdir():
+                if folder.is_dir() and self._enroll(folder.name, list(folder.glob("*.wav"))):
+                    self._candidate_ids.add(folder.name)
 
-            if not embeddings:
-                error(f"No valid embeddings for user: {username}")
-                continue
+        info(f"Speaker identification ready: {len(self._enrolled_users) - len(self._candidate_ids)} users and "
+             f"{len(self._candidate_ids)} unnamed voices enrolled")
 
-            # Normalize and store all embeddings for k-NN matching
-            normalized = [F.normalize(emb, p=2, dim=-1) for emb in embeddings]
-            self._enrolled_users[username] = normalized
-            trace(f"Enrolled user '{username}' with {len(embeddings)} samples")
+    def _enroll(self, username: str, wav_files: list) -> bool:
+        if not wav_files:
+            fine(f"No WAV files found for user: {username}")
+            return False
 
-        info(f"Speaker identification ready: {len(self._enrolled_users)} users enrolled")
+        embeddings = []
+        for wav_file in wav_files:
+            try:
+                embedding = self._extract_embedding_from_file(wav_file)
+                if embedding is not None:
+                    embeddings.append(embedding)
+            except Exception as e:
+                fine(f"Failed to process {wav_file.name}: {e}")
+
+        if not embeddings:
+            error(f"No valid embeddings for user: {username}")
+            return False
+
+        # Normalize and store all embeddings for k-NN matching
+        normalized = [F.normalize(emb, p=2, dim=-1) for emb in embeddings]
+        self._enrolled_users[username] = normalized
+        trace(f"Enrolled user '{username}' with {len(embeddings)} samples")
+        return True
+
+    def is_candidate(self, username: str) -> bool:
+        """Whether an identified name is one of the discovery's unnamed voices."""
+        return username in getattr(self, "_candidate_ids", ())
 
     def _extract_embedding_from_file(self, wav_path: Path) -> torch.Tensor | None:
         """Extract speaker embedding from a WAV file."""
@@ -167,6 +219,39 @@ class SpeakerIdentifier:
         # Extract embedding
         embedding = self._classifier.encode_batch(signal)
         return embedding.squeeze()
+
+    def embed_clip(self, wav_path: Path) -> tuple['np.ndarray | None', str, float]:
+        """A `log/audio` clip for the voice discovery: (unit embedding of the whole clip, "ok" or
+        why the clip is unusable — short, quiet, mixed —, duration in seconds)."""
+        signal, sample_rate = torchaudio.load(str(wav_path))
+        if signal.shape[0] > 1:
+            signal = torch.mean(signal, dim=0, keepdim=True)
+        if sample_rate != 16000:
+            signal = torchaudio.transforms.Resample(sample_rate, 16000)(signal)
+        duration = signal.shape[1] / 16000
+        if duration < self.CLIP_MIN_DURATION:
+            return None, "short", duration
+        if float(signal.pow(2).mean().sqrt()) < self.CLIP_MIN_RMS:
+            return None, "quiet", duration
+        self._ensure_model_loaded()
+        unit = lambda part: F.normalize(self._classifier.encode_batch(part).squeeze(), p=2, dim=-1)
+        half = signal.shape[1] // 2
+        if float(unit(signal[:, :half]) @ unit(signal[:, half:])) < self.CLIP_MIXED_SIM:
+            return None, "mixed", duration
+        return unit(signal).numpy(), "ok", duration
+
+    def embed_sample(self, wav_path: Path) -> 'np.ndarray | None':
+        """An enrollment sample's unit embedding, the way `_enroll` sees it — no length or
+        loudness filter, the hand-recorded samples are short and quiet."""
+        self._ensure_model_loaded()
+        embedding = self._extract_embedding_from_file(wav_path)
+        return F.normalize(embedding, p=2, dim=-1).numpy() if embedding is not None else None
+
+    def enrolled_embeddings(self) -> dict[str, 'np.ndarray']:
+        """Every enrolled person's unit embeddings as one array each, for the discovery's
+        matching — the unnamed voices left out, or a candidate would count as known."""
+        return {name: torch.stack(embs).numpy() for name, embs in self._enrolled_users.items()
+                if embs and not self.is_candidate(name)}
 
     def _extract_embedding_from_pcm(self, audio_data: bytes, sample_rate: int = 16000,
                                     bit_depth: int = 16) -> torch.Tensor | None:
@@ -210,6 +295,7 @@ class SpeakerIdentifier:
         Returns:
             Tuple of (username, confidence). Returns ("unknown", 0.0) if no match.
         """
+        self._reload_if_changed()
         if not self._enrolled_users:
             return ("unknown", 0.0)
 

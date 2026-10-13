@@ -22,6 +22,7 @@ from interfaces.voice.microphones.speech_analysis.SpeechAnalyzer import SpeechAn
 from interfaces.voice.server_audio.DynamicServerVolumeController import DynamicServerVolumeController
 from interfaces.voice.server_audio.PlaySound import PlaySound
 from interfaces.voice.server_audio.ServerPlayback import ServerPlayback
+from interfaces.voice.speaker_id.VoiceDiscovery import VoiceDiscovery
 from interfaces.voice.tts.VoiceFactory import create_voice
 from interfaces.voice.VoiceTurnGate import VoiceTurnGate
 
@@ -47,6 +48,7 @@ class VoiceInterface(Interface):
         self.text_stream = TextStreamRegistry.get_instance()
         self.volume_controller = None
         self.local_outpost_manager = None
+        self.voice_discovery = None
         self.microphone_routes = None
         self._outpost_server_task = None
         self.announcer: Announcer | None = None
@@ -84,6 +86,8 @@ class VoiceInterface(Interface):
             info("Voice interface in testsuite mode: no speaker id, volume controller or TTS monitoring.")
         else:
             threading.Thread(target=self._init_speaker_identifier, name="SpeakerIdInit", daemon=True).start()
+            self.voice_discovery = VoiceDiscovery()
+            self.voice_discovery.start()
             self.volume_controller.start()
             self._register_tts_integrations()
 
@@ -146,6 +150,8 @@ class VoiceInterface(Interface):
 
     def stop(self) -> None:
         """Stop all audio streams before Python teardown to prevent CoreAudio callback crashes."""
+        if self.voice_discovery is not None:
+            self.voice_discovery.stop()
         if self.announcer is not None:
             self.announcer.stop()
         unregister_room(self._room)

@@ -186,6 +186,24 @@ local_outposts:
   auto_recovery: true       # restart a mic whose audio stream stalls
   usb_power_cycle: true     # power-cycle the USB port as the last recovery step
 
+# Voice discovery: once a night the voice interface listens through the last days of recordings (log/audio) for a
+# voice the house keeps hearing that matches nobody enrolled in voice_id/. One that comes back on enough days is
+# filed under voice_id/candidates/ and listed in the prompt's VOICES section, and the assistant asks the owner who
+# it is; the answer (name_voice) makes the clips the person's enrollment, so the speaker is recognised from then on,
+# and dismiss_voice drops a TV or a visitor for good. Runs only while the voice interface is on.
+voice_discovery:
+  enabled: true
+  hour: 5                   # the hour of the nightly run
+  days: 7                   # how many days of recordings it looks at
+  min_clips: 100            # a voice is asked about once it has this many clips...
+  min_days: 3               # ...spread over at least this many days; a one-day voice is a visitor
+  refresh_enrollment: true  # a voice that clearly matches an enrolled person refreshes that person's samples in
+                            # voice_id/<name>/: the best samples_per_person are kept — clean, telling the person
+                            # apart from the others, spread over rooms and moods, recent — a fifth of them at most
+                            # replaced per night; the replaced files go to log/voice_id/replaced/, and samples.json
+                            # beside the samples says why each is there
+  samples_per_person: 40
+
 vault:                      # secrets the LLM never sees — the console's Vault tab (VAULT_PLAN.md)
   key: CHANGE_ME            # passphrase that encrypts vault.bin. Lose it and the vault is lost; change it and the
                             # existing vault.bin can no longer be opened. Unset = vault disabled.

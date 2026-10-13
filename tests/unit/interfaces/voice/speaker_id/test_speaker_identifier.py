@@ -540,3 +540,32 @@ class TestExtractEmbeddingFromFile:
         si._extract_embedding_from_file(Path("/fake/path.wav"))
 
         mock_torchaudio.transforms.Resample.assert_called_with(44100, 16000)
+
+
+def _dir(name, wavs=(), subdirs=()):
+    d = Mock()
+    d.is_dir.return_value = True
+    d.name = name
+    d.glob.return_value = list(wavs)
+    d.iterdir.return_value = list(subdirs)
+    return d
+
+
+def test_unnamed_voices_are_enrolled_under_their_id_but_are_not_persons(mock_ml_globals):
+    """A candidate of the voice discovery (voice_id/candidates/<id>/) is recognised when it
+    speaks, yet the discovery's own matching must not count it as a known person."""
+    si = make_speaker_identifier()
+    wav = Mock(); wav.name = "voice-7f3a-01.wav"
+    root = Mock(); root.exists.return_value = True
+    root.iterdir.return_value = [_dir("alice", [wav]), _dir("candidates", subdirs=[_dir("voice-7f3a", [wav]), _dir("voice-0000")])]
+    si.VOICE_ID_DIR = root
+    si._ensure_model_loaded = Mock()
+    si._extract_embedding_from_file = Mock(return_value=Mock())
+    mock_F.normalize.return_value = Mock()
+    mock_torch.stack.return_value = Mock(numpy=lambda: "array")
+
+    si._enroll_users()
+
+    assert set(si._enrolled_users) == {"alice", "voice-7f3a"}
+    assert si.is_candidate("voice-7f3a") and not si.is_candidate("alice")
+    assert set(si.enrolled_embeddings()) == {"alice"}

@@ -344,6 +344,21 @@ class TestAcceptTranscription:
         routes.accept_transcription(_req({"query": "hello there", "confidence": "0.9", "mic": "kitchen"}), ctx)
         assert ctx.user == "Marcus"
 
+    def test_an_unnamed_voice_speaking_is_said_so_in_the_turn_note(self, routes, deps):
+        deps.speaker_identifier().get_last_identified_user.return_value = "voice-7f3a"
+        deps.speaker_identifier().is_candidate.return_value = True
+        ctx = RequestContext(note="in a group")
+        routes.accept_transcription(_req({"query": "hello there", "confidence": "0.9", "mic": "kitchen"}), ctx)
+        assert ctx.user == "voice-7f3a"
+        assert ctx.note.startswith("in a group\n") and "voice-7f3a" in ctx.note and "name" in ctx.note
+
+    def test_a_known_person_speaking_adds_no_note(self, routes, deps):
+        deps.speaker_identifier().get_last_identified_user.return_value = "Marcus"
+        deps.speaker_identifier().is_candidate.return_value = False
+        ctx = RequestContext()
+        routes.accept_transcription(_req({"query": "hello there", "confidence": "0.9", "mic": "kitchen"}), ctx)
+        assert ctx.note is None
+
     def test_explicit_user_is_kept(self, routes, deps):
         deps.speaker_identifier().get_last_identified_user.return_value = "Marcus"
         ctx = RequestContext(user="Anna")

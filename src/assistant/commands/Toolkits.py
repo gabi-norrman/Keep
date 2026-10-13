@@ -220,13 +220,16 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
             ("self_improvement",), requires="is_developer"),
     Toolkit("voice", "how to reply when the user is speaking: spoken style, emotion tags, false positives",
             ("false_positive",), hidden=True),
+    Toolkit("voices", "a voice the house keeps hearing that has no name yet (listed under VOICES): name it once the "
+                      "owner says who it is, or dismiss it",
+            ("name_voice", "dismiss_voice")),
 )
 
 # The order of the index, which is part of the prompt: a toolkit keeps its place wherever its
 # file lives. A toolkit not named here (a new folder's) comes after these, by name.
 INDEX_ORDER = ("home", "cameras", "web", "browser", "x", "email", "imessage", "whatsapp", "telegram", "music", "photos", "location", "calendar",
                "reminders", "weather", "timers", "cars", "husdata", "history", "vault", "setup", "developer",
-               "self_improvement", "voice")
+               "self_improvement", "voice", "voices")
 
 TOOLKITS: tuple[Toolkit, ...] = assemble(CORE_TOOLKITS, discover(), INDEX_ORDER)
 trace(f"Toolkits: {len(CORE_TOOLKITS)} core, {len(TOOLKITS) - len(CORE_TOOLKITS)} from integration folders")

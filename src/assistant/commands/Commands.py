@@ -14,7 +14,7 @@ from assistant.integration import HomeAutomation as home
 from assistant.tools.WebAccess import WebAccess, NETWORK_LOG_HEADER
 from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import CommandSet, Toolkits, ToolkitPreloader
-from assistant import Destinations, FirstRun, MemoryFile, Procedures, WatchList
+from assistant import Destinations, FirstRun, MemoryFile, Procedures, VoiceCandidates, WatchList
 from common.logging import trace, info, note, error, fine
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from common.ConfigManager import ConfigManager
@@ -106,7 +106,7 @@ class Commands:
         "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
         "vault_request", "config_set", "load_toolkit", "pr_feedback",
         "load_watch", "save_watch", "delete_watch",
-        "load_procedure", "save_procedure", "delete_procedure", "post_message",
+        "load_procedure", "save_procedure", "delete_procedure", "post_message", "name_voice", "dismiss_voice",
         "create_event", "delete_event", "move_event", "load_calendar", "fetch_camera_images", "car_navigate",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
@@ -1424,6 +1424,13 @@ class Commands:
     def cmd_delete_procedure(self, *args: str) -> str:
         return Procedures.run("delete_procedure", list(args))
 
+    # The unnamed voices the discovery filed: the folder is the contract, VoiceCandidates owns it.
+    def cmd_name_voice(self, *args: str) -> str:
+        return VoiceCandidates.run("name_voice", list(args))
+
+    def cmd_dismiss_voice(self, *args: str) -> str:
+        return VoiceCandidates.run("dismiss_voice", list(args))
+
     def cmd_false_positive(self, parameter_string: str):
         info("We detected a false positive!")
 
@@ -1925,6 +1932,8 @@ class Commands:
     def describe_post_message(self, p):           return f"Posting to {self._first_argument(p)}" if p.strip() else "Posting a message"
     def describe_load_watch(self, p):             return f"Looking at: {self._first_argument(p)}" if p.strip() else "Looking at a watch item"
     def describe_save_watch(self, p):             return f"Watching: {self._first_argument(p)}" if p.strip() else "Saving a watch item"
+    def describe_name_voice(self, p):             return f"Naming voice {self._first_argument(p)}" if p.strip() else "Naming a voice"
+    def describe_dismiss_voice(self, p):          return f"Dismissing voice {self._first_argument(p)}" if p.strip() else "Dismissing a voice"
     def describe_checked_watch(self, p):          return f"Checked: {self._first_argument(p)}" if p.strip() else "Marking a watch item checked"
     def describe_delete_watch(self, p):           return f"No longer watching: {self._first_argument(p)}" if p.strip() else "Deleting a watch item"
     def describe_load_procedure(self, p):         return f"Loading the {self._first_argument(p)} procedure" if p.strip() else "Loading a procedure"

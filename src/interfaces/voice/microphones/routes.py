@@ -269,6 +269,11 @@ class MicrophoneRoutes:
             if identified_user:
                 context.user = identified_user
                 info(f"User identified by voice: {identified_user}")
+                if speaker_id.is_candidate(identified_user):
+                    from assistant import VoiceCandidates
+                    note = VoiceCandidates.unnamed_speaker_note(identified_user)
+                    context.note = f"{context.note}\n{note}" if context.note else note
+                    info(f"The speaker is the unnamed voice {identified_user}: the turn note asks for the name")
             else:
                 info(f"Could not identify user using voice.")
 

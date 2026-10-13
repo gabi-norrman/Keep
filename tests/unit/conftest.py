@@ -123,10 +123,11 @@ def isolated_memory_stores(tmp_path_factory):
     """No unit test reads or writes the developer's memory/watchlist and memory/procedures (or
     their log/memory trail): the stores' default directories are empty ones for the session.
     A test of the stores passes or patches its own tmp_path."""
-    from assistant import Procedures, WatchList
+    from assistant import Procedures, VoiceCandidates, WatchList
     root = tmp_path_factory.mktemp("memory")
     WatchList.WATCHLIST_DIR, WatchList.LOG_DIR = root / "watchlist", root / "log" / "watchlist"
     Procedures.PROCEDURES_DIR, Procedures.LOG_DIR = root / "procedures", root / "log" / "procedures"
+    VoiceCandidates.CANDIDATES_DIR, VoiceCandidates.LOG_DIR = root / "voice_candidates", root / "log" / "voice_id"
 
 
 @pytest.fixture(autouse=True, scope="session")
