@@ -32,8 +32,8 @@ from common.logging import error, info, trace
 from interfaces.chat import RichText
 from interfaces.chat.ChatSession import ChatSession
 from interfaces.chat.ChatTransport import ChatTransport
-from interfaces.chat.ChatTypes import (DECISION_ACCEPTED, DECISION_APPROVE, DECISION_CANCEL, DECISION_REJECTED,
-                                       DECISION_TIMEOUT, DECISION_UNAVAILABLE, IncomingMessage)
+from interfaces.chat.ChatTypes import (DECISION_ACCEPTED, DECISION_APPROVE, DECISION_CANCEL, DECISION_CANCELLED,
+                                       DECISION_REJECTED, DECISION_TIMEOUT, DECISION_UNAVAILABLE, IncomingMessage)
 
 
 class _CommandEcho:
@@ -47,7 +47,8 @@ class _CommandEcho:
 
 
 class ChatHub(SingletonMixin):
-    DEFAULT_APPROVAL_TIMEOUT_SECONDS = 60.0
+    DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
+    APPROVAL_POLL_SECONDS = 1.0   # how often a pending approval looks at its request's kill flag
     STALE_COMMAND_SECONDS = 600.0   # a command echo never completed is forgotten after this
     DEFAULT_SECRET_TIMEOUT_SECONDS = 3600.0   # the user often has to set something up before answering
     SECRET_ATTEMPTS = 3
@@ -378,11 +379,15 @@ class ChatHub(SingletonMixin):
     # --- approvals ------------------------------------------------------------------------
 
     def request_approval(self, title: str, details: str = "", timeout: Optional[float] = None,
-                         source: Optional[str] = None, conversation: Any = None) -> str:
+                         source: Optional[str] = None, conversation: Any = None,
+                         cancelled: Optional[Callable[[], bool]] = None) -> str:
         """Ask the chat the request came from (every owner conversation for a request from
         outside the chat layer), block until the first answer, the timeout, or — when no chat
-        can show the question — return "unavailable" at once.
-        Returns "approve", "deny", "timeout" or "unavailable". Safe to call from any thread."""
+        can show the question — return "unavailable" at once. While waiting, `cancelled()` is
+        polled: once it says the request behind the question is gone, the prompts are closed
+        and "cancelled" comes back, so a card is never approved into a dead request.
+        Returns "approve", "deny", "timeout", "cancelled" or "unavailable". Safe to call from
+        any thread."""
         origin = self._origin(source, conversation, owners_only=True)
         targets = origin or self._targets()
         if not targets:
@@ -411,15 +416,42 @@ class ChatHub(SingletonMixin):
             info(f"Approval [{token[:8]}] could not be shown anywhere, answering 'unavailable'")
             return DECISION_UNAVAILABLE
 
-        try:
-            result = entry["future"].result(timeout=wait_seconds)
-        except concurrent.futures.TimeoutError:
-            result = DECISION_TIMEOUT
+        result = self._await_approval(entry, wait_seconds, cancelled)
+        if result == DECISION_TIMEOUT:
             info(f"Approval [{token[:8]}] timed out after {wait_seconds:.0f}s")
             self._close_prompts(entry, "⏱ Timed out")
+        elif result == DECISION_CANCELLED:
+            info(f"Approval [{token[:8]}] cancelled: the request behind it is gone")
+            self._close_prompts(entry, "🚫 Cancelled (the request was superseded)")
         with self._approvals_lock:
             self._pending_approvals.pop(token, None)
         return result
+
+    def _await_approval(self, entry: dict, wait_seconds: float,
+                        cancelled: Optional[Callable[[], bool]]) -> str:
+        """The user's answer, "timeout", or "cancelled" the moment `cancelled()` turns true;
+        the answer wins when both arrive. The decision is sealed under the lock so a late tap
+        cannot set_result on a future already given up on."""
+        deadline = time.time() + wait_seconds
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            try:
+                return entry["future"].result(timeout=min(remaining, self.APPROVAL_POLL_SECONDS))
+            except concurrent.futures.TimeoutError:
+                pass
+            if cancelled is not None and cancelled():
+                with self._approvals_lock:
+                    if entry["future"].done():
+                        return entry["future"].result()
+                    entry["future"].set_result(DECISION_CANCELLED)
+                return DECISION_CANCELLED
+        with self._approvals_lock:
+            if entry["future"].done():
+                return entry["future"].result()
+            entry["future"].set_result(DECISION_TIMEOUT)
+        return DECISION_TIMEOUT
 
     def resolve_approval(self, token: str, decision: str, who: str = "user") -> bool:
         """A transport reports the user's answer. False when the request is unknown or

@@ -112,7 +112,7 @@ location:
 # >> self_improvement: src/integrations/self_improvement/config.example.yaml
 
 chat:
-  approval_timeout_seconds: 60  # seconds to wait for an Approve/Deny answer on sensitive commands (e.g. send_imessage) in any chat interface
+  approval_timeout_seconds: 300  # seconds to wait for an Approve/Deny answer on sensitive commands (e.g. send_imessage) in any chat interface; a card is withdrawn early if a newer message supersedes the request it belongs to
   secret_request_timeout_seconds: 3600  # seconds to wait for a value after vault_request / config_request opened a masked prompt; long because the user often has to look the value up or set something up first
 
 # Looking for the user's own Telegram messages ("read my Telegram")?

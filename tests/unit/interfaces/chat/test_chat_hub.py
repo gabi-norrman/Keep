@@ -455,6 +455,42 @@ class TestApprovals:
         assert result["d"] == "approve"
         assert ("close", 111, 101, "✅ Approved by user") in transport.calls
 
+    def test_a_killed_request_withdraws_its_card(self, hub, transport):
+        killed = threading.Event()
+        hub.APPROVAL_POLL_SECONDS = 0.01
+        result = {}
+        t = threading.Thread(target=lambda: result.update(
+            d=hub.request_approval("x", timeout=5.0, cancelled=killed.is_set)), daemon=True)
+        t.start()
+        assert wait_until(lambda: any(c[0] == "approval" for c in transport.calls))
+        killed.set()
+        t.join(timeout=2)
+        assert result["d"] == "cancelled"
+        closes = [c for c in transport.calls if c[0] == "close"]
+        assert len(closes) == 1 and closes[0][1:3] == (111, 101) and "ancelled" in closes[0][3]
+        assert hub.pending_approvals() == 0
+
+    def test_a_tap_that_lands_before_the_kill_still_wins(self, hub, transport):
+        hub.APPROVAL_POLL_SECONDS = 0.01
+        result = {}
+        t = threading.Thread(target=lambda: result.update(
+            d=hub.request_approval("x", timeout=5.0, cancelled=lambda: False)), daemon=True)
+        t.start()
+        assert wait_until(lambda: any(c[0] == "approval" for c in transport.calls))
+        token = next(c[2] for c in transport.calls if c[0] == "approval")
+        assert hub.resolve_approval(token, "approve") is True
+        t.join(timeout=2)
+        assert result["d"] == "approve"
+
+    def test_a_tap_after_the_card_was_withdrawn_is_ignored(self, hub, transport):
+        hub.APPROVAL_POLL_SECONDS = 0.01
+        t = threading.Thread(target=lambda: hub.request_approval("x", timeout=5.0, cancelled=lambda: True),
+                             daemon=True)
+        t.start()
+        t.join(timeout=2)
+        token = next(c[2] for c in transport.calls if c[0] == "approval")
+        assert hub.resolve_approval(token, "approve") is False
+
     def test_a_close_that_raises_still_closes_the_other_prompts(self, transport):
         def down(*args, **kwargs):
             raise RuntimeError("down")

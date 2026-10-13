@@ -226,11 +226,19 @@ class CommandProcessor:
         ctx = self._context_for(dialog_manager)
         decision = notifier().request_approval(
             title=title, details=details,
-            source=getattr(ctx, 'source', None), conversation=getattr(ctx, 'conversation', None))
+            source=getattr(ctx, 'source', None), conversation=getattr(ctx, 'conversation', None),
+            cancelled=lambda: self._killed(dialog_manager))
 
+        if decision == "approve" and self._killed(dialog_manager):
+            # Approved into a dead request (the kill landed between the answer and this check):
+            # the user superseded the turn, so the command they approved must not run.
+            decision = "cancelled"
         if decision == "approve":
             info(f"Sensitive command '{command_name}' approved.")
             return False
+        if decision == "cancelled":
+            info(f"Sensitive command '{command_name}' not run: the request was killed while its approval was pending.")
+            return True
 
         msg_by_decision = {
             "deny": f"Command '{command_name}({params_display})' was denied by user.",
@@ -580,6 +588,9 @@ class CommandProcessor:
             f"{command_name} was not run: the reply ended before the parenthesis opened by "
             f"{command_name}( was closed, so the call could not be parsed. Nothing after that "
             f"point in the reply reached the user either. Received: {shown}")
+
+    def _killed(self, dialog_manager) -> bool:
+        return self.is_killed or (dialog_manager is not None and dialog_manager.is_killed)
 
     def take_unterminated_command_report(self) -> str | None:
         report, self.unterminated_command_report = self.unterminated_command_report, None

@@ -63,6 +63,7 @@ PHASE_COMMANDS = "commands"     # a command the LLM asked for is running
 DECISION_APPROVE = "approve"
 DECISION_DENY = "deny"
 DECISION_TIMEOUT = "timeout"
+DECISION_CANCELLED = "cancelled"   # the request behind the question was killed while it waited
 DECISION_UNAVAILABLE = "unavailable"
 
 # Secret requests (a value typed into a masked prompt, never seen by the LLM).

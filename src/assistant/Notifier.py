@@ -59,12 +59,15 @@ class Notifier(Protocol):
         ...
 
     def request_approval(self, title: str, details: str = "", timeout: Optional[float] = None,
-                         source: Optional[str] = None, conversation: Any = None) -> str:
-        """Block until the user answers. Returns "approve", "deny", "timeout" or "unavailable".
-        *source* and *conversation* (the RequestContext's) name the chat the request came
-        from so the question is asked only there — the person who asked for the command is
-        the one who answers for it; without them it is asked everywhere the owner is
-        reachable (a voice request has no chat of its own)."""
+                         source: Optional[str] = None, conversation: Any = None,
+                         cancelled: Optional[Callable[[], bool]] = None) -> str:
+        """Block until the user answers. Returns "approve", "deny", "timeout", "cancelled" or
+        "unavailable". *source* and *conversation* (the RequestContext's) name the chat the
+        request came from so the question is asked only there — the person who asked for the
+        command is the one who answers for it; without them it is asked everywhere the owner
+        is reachable (a voice request has no chat of its own). `cancelled()` is polled while
+        waiting: true means the request behind the question is gone, the prompt is withdrawn
+        and "cancelled" comes back."""
         ...
 
     def request_secret(self, title: str, details: str, accept: Callable[[str], str],
@@ -129,7 +132,8 @@ class NullNotifier:
         return False
 
     def request_approval(self, title: str, details: str = "", timeout: Optional[float] = None,
-                         source: Optional[str] = None, conversation: Any = None) -> str:
+                         source: Optional[str] = None, conversation: Any = None,
+                         cancelled: Optional[Callable[[], bool]] = None) -> str:
         info(f"no notifier configured — approval request for {title!r} dropped, answering 'unavailable'")
         return "unavailable"
 

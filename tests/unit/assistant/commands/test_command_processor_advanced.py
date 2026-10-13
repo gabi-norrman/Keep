@@ -1584,8 +1584,11 @@ class TestCommandProcessorSensitiveGate:
 
         fake_bot = MagicMock()
 
-        def fake_request_approval(title, details="", timeout=None, source=None, conversation=None):
-            approval_calls.append({"title": title, "details": details, "source": source, "conversation": conversation})
+        def fake_request_approval(title, details="", timeout=None, source=None, conversation=None, cancelled=None):
+            approval_calls.append({"title": title, "details": details, "source": source,
+                                   "conversation": conversation, "cancelled": cancelled})
+            if callable(decision):
+                return decision(processor)
             return decision
 
         fake_bot.request_approval = fake_request_approval
@@ -1611,6 +1614,28 @@ class TestCommandProcessorSensitiveGate:
         assert len(approval_calls) == 1
         assert approval_calls[0]["details"] == "Anna, are you home?"
         assert run_calls == [("send_imessage", ["Anna, are you home?"])]
+
+    def test_gate_hands_the_notifier_a_kill_probe(self, monkeypatch):
+        # The hub polls this while the card is open, so a superseded request withdraws its card.
+        processor, _, approval_calls, _ = self._run_with_decision("deny", monkeypatch)
+        probe = approval_calls[0]["cancelled"]
+        assert callable(probe)
+        assert probe() is True  # the processor was killed after the run
+
+    def test_cancelled_decision_runs_nothing_and_reports_nothing(self, monkeypatch):
+        processor, run_calls, _, _ = self._run_with_decision("cancelled", monkeypatch)
+        assert run_calls == []
+        assert processor._sync_replies == []
+
+    def test_approve_into_a_killed_request_does_not_run(self, monkeypatch):
+        # The user tapped Approve, but a newer message had already killed the request the
+        # card belonged to: the command it would have run is theirs no more.
+        def approve_after_kill(processor):
+            processor.is_killed = True
+            return "approve"
+
+        _, run_calls, _, _ = self._run_with_decision(approve_after_kill, monkeypatch)
+        assert run_calls == []
 
     def test_approval_details_normalizes_literal_escape_sequences(self, monkeypatch):
         # The approval preview must match what cmd_send_imessage actually delivers:
