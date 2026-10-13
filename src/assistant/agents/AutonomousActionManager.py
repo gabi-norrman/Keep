@@ -21,6 +21,10 @@ SCHEDULE_FILE = os.path.join(os.path.dirname(__file__), "scheduled_wakeups.json"
 # interaction so we don't double-reply on top of the user's own request.
 USER_INTERACTION_QUIET_PERIOD_SECONDS = 60
 
+# A wake-up the user asked for ("in 15 seconds") waits only this long after their last request
+# — the full quiet period would hold a sub-minute wake-up back by a minute or more every time.
+SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS = 3
+
 # If the in-flight counter has been non-zero for longer than this without any
 # fresh user activity, assume a start/end pairing was leaked and reset it so
 # periodic checks can resume. A real request lasts at most a couple minutes.
@@ -663,11 +667,12 @@ class AutonomousActionManager:
             if self.prompt_manager.is_night_mode_active():
                 info("Scheduled wakeup skipped — Night mode is active")
                 return
-            # If the user just interacted (or is interacting), defer briefly so
-            # we don't pile a second assistant reply on top of theirs.
-            while self.running and self.is_user_interaction_active():
+            # Hold the wake-up only while a request is in flight or has just ended, so it
+            # does not pile a second reply on top of the user's own — but no longer: the
+            # user asked for this moment.
+            while self.running and self.is_user_interaction_active(SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS):
                 info("Scheduled wakeup deferred — user interaction active or recent. Retrying shortly.")
-                time.sleep(USER_INTERACTION_QUIET_PERIOD_SECONDS)
+                time.sleep(SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS)
             self.activity_check(wakeup=wakeup)
 
         thread = threading.Thread(target=_delayed_check, daemon=True)
@@ -738,9 +743,9 @@ class AutonomousActionManager:
             if self.prompt_manager.is_night_mode_active():
                 info(f"Missed wakeup ({late} late) skipped — Night mode is active")
                 continue
-            while self.running and self.is_user_interaction_active():
+            while self.running and self.is_user_interaction_active(SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS):
                 info("Missed wakeup deferred — user interaction active or recent. Retrying shortly.")
-                time.sleep(USER_INTERACTION_QUIET_PERIOD_SECONDS)
+                time.sleep(SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS)
             info(f"Firing missed wakeup {late} late")
             try:
                 self.activity_check(wakeup={**wakeup, "missed": True})

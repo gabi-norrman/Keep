@@ -985,7 +985,7 @@ class TestWakeupPersistence:
         assert [c.kwargs["wakeup"]["at"] for c in check.call_args_list] == [w["at"] for w in missed]
 
     @patch('assistant.agents.AutonomousActionManager.MISSED_WAKEUP_STARTUP_GRACE_SECONDS', 0)
-    @patch('assistant.agents.AutonomousActionManager.USER_INTERACTION_QUIET_PERIOD_SECONDS', 0)
+    @patch('assistant.agents.AutonomousActionManager.SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS', 0)
     def test_a_missed_wakeup_waits_until_the_user_is_done_like_one_on_time(self):
         """Startup is when the user is likely talking to the server: a missed wake-up goes through
         the same gate as a timely one — held back while a request is in flight or just ended, then
@@ -996,7 +996,7 @@ class TestWakeupPersistence:
         mgr.running = True
         mgr.prompt_manager.is_night_mode_active.return_value = False
         busy = iter([True, True, False])
-        with patch.object(mgr, 'is_user_interaction_active', side_effect=lambda: next(busy)) as asked, \
+        with patch.object(mgr, 'is_user_interaction_active', side_effect=lambda *_: next(busy)) as asked, \
              patch.object(mgr, 'activity_check', return_value="") as check:
             mgr._fire_missed_wakeups([wakeup])
         assert asked.call_count == 3
@@ -1315,6 +1315,47 @@ class TestUserInteractionGating:
         assert mgr.is_user_interaction_active(quiet_seconds=0) is True
         mgr.notify_user_interaction_ended()
         assert mgr.is_user_interaction_active(quiet_seconds=0) is False
+
+    def _run_scheduled_wakeup(self, mgr) -> list:
+        """Run one scheduled wake-up on a captured thread, returning the activity_check calls."""
+        created = []
+        real_thread_cls = threading.Thread
+
+        def capture_thread(*args, **kwargs):
+            t = real_thread_cls(*args, **kwargs)
+            created.append(t)
+            return t
+
+        mgr.running = True
+        mgr.prompt_manager.is_night_mode_active.return_value = False
+        with patch.object(mgr, 'activity_check', return_value="") as check, \
+             patch.object(mgr, '_remove_wakeup'), \
+             patch('assistant.agents.AutonomousActionManager.SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS', 0.01), \
+             patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
+            mgr._start_wakeup_thread({"at": time.time(), "scheduled_at": time.time()})
+            created[0].join(timeout=2.0)
+        return check.call_args_list
+
+    def test_a_scheduled_wakeup_fires_inside_the_periodic_quiet_period(self):
+        """"Wake me in 15 seconds" lands inside the minute the periodic checks stay quiet after a
+        request; the user asked for that moment, so the wake-up fires anyway."""
+        mgr, _ = make_manager()
+        mgr.notify_user_interaction_started()
+        mgr.notify_user_interaction_ended()
+        assert mgr.is_user_interaction_active() is True
+        assert len(self._run_scheduled_wakeup(mgr)) == 1
+
+    def test_a_scheduled_wakeup_waits_for_the_request_in_flight(self):
+        """While the user's own request is still being answered, the wake-up holds — and fires
+        once the request ends, not a minute later."""
+        mgr, _ = make_manager()
+        mgr.notify_user_interaction_started()
+        ended = threading.Timer(0.05, mgr.notify_user_interaction_ended)
+        ended.start()
+        started = time.time()
+        calls = self._run_scheduled_wakeup(mgr)
+        assert len(calls) == 1
+        assert time.time() - started < 1.0
 
     def test_ended_without_started_does_not_underflow(self):
         mgr, _ = make_manager()
