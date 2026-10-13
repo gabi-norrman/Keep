@@ -3,6 +3,7 @@ import time
 from datetime import datetime
 from typing import Callable
 
+from assistant.ChannelProfile import WINDOW_TEXT
 from common.logging import info, trace
 from common.FloxyDatabase import FloxyDatabase, ROLE_COMMAND as DB_ROLE_COMMAND
 from ..tools.MessageFormatter import MessageFormatter
@@ -24,6 +25,14 @@ class MessageHistory:
     prompt at request time. Feeds (iMessage, Telegram, Photos, Indigo, Home Assistant) pour their rows in
     through add_context_messages. Subscribers (the TUI's HistoryFeed) are called after
     every change, on the thread that made it.
+
+    One history, two windows (ChannelProfile.window): a row a preload put in for one channel
+    is stamped with that window in its `source` (`preload:voice`) and rendered for that
+    window only, and a carried-section delta note is rendered where the toolkit's reference
+    is — so a chat request after a spoken one never carries voice's toolkits (`visible`).
+    Everything else of the window — the trim, its cutoff, the eviction stub — is shared and
+    counts the hidden rows too; the cutoff is a timestamp, so each window's head stays as
+    stable as before.
     """
 
     MAX_RENDER_CHARS = 2000
@@ -67,6 +76,11 @@ class MessageHistory:
     # A name leaves the stub when its toolkit is loaded again; the stub goes at the next
     # trim, with the day's wipe, or when its last name leaves.
     SOURCE_TOOLKIT_EVICTED = "toolkit_evicted"
+    # The `source` of a `command` row a preload put in for one window: this prefix and the
+    # window's name (preload_source / preload_window). A command row the LLM loaded itself
+    # has no source and is every window's.
+    SOURCE_PRELOAD_PREFIX = "preload:"
+    SOURCE_PROMPT_DELTA = "prompt_delta"
 
     def __init__(self):
         self.history = []
@@ -199,8 +213,45 @@ class MessageHistory:
             self.transient_entries = kept
             trace(f"MessageHistory: {pruned} transient note(s) behind the trim cutoff forgotten")
 
-    def get_history_messages(self, max_bytes: int | None = None) -> list[dict]:
-        """Render history as standard LLM message items (role/content dicts).
+    @classmethod
+    def preload_source(cls, window: str) -> str:
+        """The `source` a preloaded toolkit row carries for `window`."""
+        return cls.SOURCE_PRELOAD_PREFIX + window
+
+    @classmethod
+    def preload_window(cls, entry: dict) -> str | None:
+        """The window a row was preloaded for, None for a row every window renders."""
+        source = entry.get("source") or ""
+        return source[len(cls.SOURCE_PRELOAD_PREFIX):] if source.startswith(cls.SOURCE_PRELOAD_PREFIX) else None
+
+    @classmethod
+    def visible(cls, rows: list[tuple[dict, str, str]], window: str) -> list[tuple[dict, str, str]]:
+        """The rendered rows `window` may see: without the rows preloaded for another window,
+        and without the delta notes of a carried section whose toolkit reference the window
+        does not hold (the note diffs against data the LLM was never sent). A note always
+        comes after the reference it belongs to, so one forward pass decides."""
+        from assistant.commands.Toolkits import CARRIED_SECTIONS
+        kept, held, hidden = [], set(), 0
+        for row in rows:
+            entry = row[0]
+            preloaded_for = cls.preload_window(entry)
+            if preloaded_for is not None and preloaded_for != window:
+                hidden += 1
+                continue
+            if entry.get("source") == cls.SOURCE_PROMPT_DELTA:
+                toolkit = CARRIED_SECTIONS.get(entry.get("section"))
+                if toolkit is not None and toolkit not in held:
+                    hidden += 1
+                    continue
+            held.update(cls._toolkit_names(entry))
+            kept.append(row)
+        if hidden:
+            trace(f"MessageHistory: {hidden} row(s) of the window are not the {window} window's — left out")
+        return kept
+
+    def get_history_messages(self, max_bytes: int | None = None, window: str = WINDOW_TEXT) -> list[dict]:
+        """Render history as standard LLM message items (role/content dicts) for `window`
+        (ChannelProfile.window, see `visible`).
 
         Each entry maps to a user/assistant turn (system/context events ride on
         the user side). Named-user entries are formatted byte-identically to the
@@ -218,14 +269,15 @@ class MessageHistory:
         """
         if max_bytes is not None:
             return self.render_messages(self.get_merged_entries(), max_bytes, self.max_render_chars)
-        return self._finalize_messages([(role, content) for _, role, content in self._window()])
+        return self._finalize_messages([(role, content) for _, role, content in self._window(window)])
 
-    def _window(self) -> list[tuple[dict, str, str]]:
+    def _window(self, window: str) -> list[tuple[dict, str, str]]:
         """The live history window as (entry, role, content) rows: every entry rendered,
-        superseded rows compressed, the hysteresis trim applied. get_history_messages sends
-        it and render_for_display shows it, so the Prompt tab never drifts from the request."""
+        superseded rows compressed, the hysteresis trim applied, then `window`'s rows of it
+        (`visible`). get_history_messages sends it and render_for_display shows it, so the
+        Prompt tab never drifts from the request."""
         rendered = self._compressor.compress(self._render_entries(self.get_merged_entries(), self.max_render_chars))
-        return self._hysteresis_trim(rendered)
+        return self.visible(self._hysteresis_trim(rendered), window)
 
     def trim_window(self):
         """Advance the sticky trim cutoff the way the next get_history_messages() would, so a
@@ -291,7 +343,7 @@ class MessageHistory:
              f"({why}) — trimmed {len(dropped)} entries, "
              f"kept {len(kept)} ({kept_bytes / 1024:.1f}KB), new cutoff "
              f"{datetime.fromtimestamp(self._trim_cutoff).strftime('%H:%M:%S')}")
-        dropped_notes = [entry for entry, _, _ in dropped if entry.get("source") == "prompt_delta"]
+        dropped_notes = [entry for entry, _, _ in dropped if entry.get("source") == self.SOURCE_PROMPT_DELTA]
         if dropped_notes:
             sections = {entry.get("section") for entry in dropped_notes} - {None}
             self.dropped_delta_sections |= sections
@@ -522,20 +574,22 @@ class MessageHistory:
 
         return MessageHistory.render_messages(entries, MessageHistory.TRIM_HIGH_BYTES, MessageHistory.MAX_RENDER_CHARS)
 
-    def render_for_display(self) -> str:
-        """Render the LLM history window as markdown for the console PromptTab viewer.
+    def render_for_display(self, window: str = WINDOW_TEXT) -> str:
+        """Render the LLM history window of `window` as markdown for the console PromptTab
+        viewer (it toggles between the text and the voice window).
 
         The rows are the window get_history_messages() sends (_window: rendered,
         compressed, trimmed), so every body is byte for byte what the LLM receives —
         a superseded browse snapshot shows collapsed, a long turn shows cut. Each row
-        gets an h3 header (name/time/source) so MarkdownTabView colours it; the
-        entries before the trim cutoff are summarised in a single leading note.
+        gets an h3 header (name/time/source; a preloaded row says whose window it is) so
+        MarkdownTabView colours it; the entries before the trim cutoff are summarised in
+        a single leading note.
         """
         entries = self.get_merged_entries()
         if not entries:
             return "_No conversation history yet._"
 
-        window = self._window()
+        window = self._window(window)
         trimmed = sum(1 for e in entries if e["timestamp"] < self._trim_cutoff and not self._is_eviction_stub(e))
         blocks = []
         if trimmed:
@@ -554,7 +608,9 @@ class MessageHistory:
         if role == "system":
             return f"System ({MessageFormatter.format_timestamp(timestamp)})"
         if role == cls.ROLE_COMMAND:
-            return f"Command result ({MessageFormatter.format_timestamp(timestamp)})"
+            preloaded_for = cls.preload_window(entry)
+            only = f", {preloaded_for} window only" if preloaded_for else ""
+            return f"Command result ({MessageFormatter.format_timestamp(timestamp)}{only})"
         if role == cls.ROLE_NOTE:
             return f"Note ({MessageFormatter.format_timestamp(timestamp)})"
         return MessageFormatter.format_header(role.capitalize(), timestamp, entry.get("source"), entry.get("location"))
@@ -625,24 +681,29 @@ class MessageHistory:
         self._notify_changed()
         return stored
 
-    def loaded_toolkits(self) -> dict[str, float]:
-        """Toolkit name → timestamp of the `command` rows inside the LLM's window (at or after
-        the trim cutoff) that carry a toolkit reference, so load_toolkit can point back at
-        one the model still sees instead of sending it again."""
+    def loaded_toolkits(self, window: str = WINDOW_TEXT) -> dict[str, float]:
+        """Toolkit name → timestamp of the `command` rows inside `window` (at or after the
+        trim cutoff, not preloaded for another window) that carry a toolkit reference, so
+        load_toolkit can point back at one the model still sees instead of sending it again."""
         loaded = {}
         for entry in self.get_merged_entries():
             if entry["timestamp"] < self._trim_cutoff:
                 continue
+            preloaded_for = self.preload_window(entry)
+            if preloaded_for is not None and preloaded_for != window:
+                continue
             for name in self._toolkit_names(entry):
                 loaded[name] = entry["timestamp"]
-        trace(f"MessageHistory: toolkits in the window: {sorted(loaded) or 'none'}")
+        trace(f"MessageHistory: toolkits in the {window} window: {sorted(loaded) or 'none'}")
         return loaded
 
-    def add_command_result(self, result: str, cap: bool = True):
+    def add_command_result(self, result: str, cap: bool = True, source: str | None = None):
         """Persist a command round's result (the `result: …` text the LLM was shown) as a
         `command` row, ordered after the newest row so it follows the assistant round that
         ran the command even when the reply was instant. `cap=False` stores it whole (a
-        toolkit reference; the cap is for web pages and log dumps)."""
+        toolkit reference; the cap is for web pages and log dumps). `source` is the
+        preload stamp (preload_source) of a row one window alone renders; a command row
+        never carries anything else there."""
         if not result or not result.strip():
             trace("MessageHistory: empty command result, nothing to persist")
             return
@@ -653,8 +714,8 @@ class MessageHistory:
         entries = self.get_merged_entries()
         newest = entries[-1]["timestamp"] if entries else 0.0
         timestamp = max(time.time(), newest + 0.001)
-        self._save_history_entry(self.ROLE_COMMAND, result, timestamp)
-        trace(f"MessageHistory: command result persisted ({len(result)} chars)")
+        self._save_history_entry(self.ROLE_COMMAND, result, timestamp, source)
+        trace(f"MessageHistory: command result persisted ({len(result)} chars{f', {source}' if source else ''})")
         self._load_history()
         self._notify_changed()
 

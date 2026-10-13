@@ -20,6 +20,11 @@ away. A toolkit in the window whose carried data has no known baseline
 (`PromptManager.untracked_sections` — sent before a restart, or a pointer note ended the
 tracking) gets its data again the same way, since the copy the LLM holds is stale.
 
+Every row a preload persists is stamped with the channel's history window
+(`ChannelProfile.window`, `MessageHistory.preload_source`) and rendered for that window
+alone: the rows voice puts in are voice's, a chat request after it never sees them, and a
+toolkit the chat LLM then needs it loads itself, unstamped, for every window.
+
 One preload at a time: the iOS client sends a speculative request per partial transcript
 ("Turn", "Turn off", "Turn off the music" within 160 ms), each on its own handler thread,
 and two of them checking the window before either had persisted both loaded `home` — two
@@ -34,6 +39,7 @@ from typing import Callable
 
 from assistant.ChannelProfile import ChannelProfile
 from assistant.commands import Toolkits
+from assistant.prompt.MessageHistory import MessageHistory
 from common.ConfigManager import config
 from common.logging import info, trace
 
@@ -98,7 +104,8 @@ def _monitor():
 
 def _preload_locked(prompt_manager, profile: ChannelProfile, wanted: tuple[str, ...], monitor) -> list[str]:
     prompt_manager.message_history.trim_window()
-    in_window = prompt_manager.message_history.loaded_toolkits()
+    in_window = prompt_manager.message_history.loaded_toolkits(profile.window)
+    stamp = MessageHistory.preload_source(profile.window)
     loaded = []
     for name in wanted:
         toolkit = Toolkits.by_name(name)
@@ -114,14 +121,14 @@ def _preload_locked(prompt_manager, profile: ChannelProfile, wanted: tuple[str, 
                 trace(f"Toolkit preload: {toolkit.name} is already in the window — nothing to do")
                 continue
             text = refresh_preface(toolkit, profile.name) + "\n\n" + prompt_manager.carried_data(toolkit)
-            prompt_manager.add_command_result(text, cap=False)
+            prompt_manager.add_command_result(text, cap=False, source=stamp)
             loaded.append(toolkit.name)
             info(f"Toolkit preload: {toolkit.name} is in the window but its {', '.join(untracked)} data has no "
                  f"known baseline — sent again for the {profile.name} request ({len(text)} chars)")
             continue
         text = preface(toolkit, profile.name) + "\n\n" + render_load(toolkit, prompt_manager)
-        prompt_manager.add_command_result(text, cap=False)
+        prompt_manager.add_command_result(text, cap=False, source=stamp)
         loaded.append(toolkit.name)
-        info(f"Toolkit preload: {toolkit.name} was not in the window — loaded for the {profile.name} "
-             f"request ({len(text)} chars)")
+        info(f"Toolkit preload: {toolkit.name} was not in the {profile.window} window — loaded for the "
+             f"{profile.name} request ({len(text)} chars, {stamp})")
     return loaded

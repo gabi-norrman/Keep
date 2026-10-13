@@ -1168,7 +1168,7 @@ class TestPrepareContext:
                 mock_mf.format_message.return_value = f"User: {text}"
                 full_handler.request_context.user_input = text
                 full_handler._prepare_llm_context(prompt_manager)
-            prompt_manager.get_messages.assert_called_once_with(extended_thinking=True, time_note=None)
+            prompt_manager.get_messages.assert_called_once_with(extended_thinking=True, time_note=None, window="voice")
             assert full_handler.dialog_manager.thinking is False
 
     def test_no_thinking_tag_instruction_for_a_model_that_thinks_on_its_own(self, full_handler):
@@ -1184,7 +1184,7 @@ class TestPrepareContext:
             full_handler.request_context.user_input = "tell me about the weather today please"
             full_handler._prepare_llm_context(prompt_manager)
 
-        prompt_manager.get_messages.assert_called_once_with(extended_thinking=False, time_note=None)
+        prompt_manager.get_messages.assert_called_once_with(extended_thinking=False, time_note=None, window="voice")
         assert full_handler.dialog_manager.thinking is False
 
     @pytest.mark.parametrize("picked_thinks_internally", [True, False])
@@ -1206,7 +1206,7 @@ class TestPrepareContext:
             full_handler._prepare_llm_context(prompt_manager)
 
         prompt_manager.get_messages.assert_called_once_with(extended_thinking=not picked_thinks_internally,
-                                                            time_note=None)
+                                                            time_note=None, window="voice")
 
     def test_byte_prefix_tail_sends_the_turn_as_the_history_will_render_it(self, full_handler):
         """An LLM whose cache restores only at the previous request's end (Ollama's MLX
@@ -1224,7 +1224,7 @@ class TestPrepareContext:
         assert full_handler.dialog_manager.byte_prefix_tail is True
         assert isinstance(full_handler.turn_timestamp, float)
         prompt_manager.get_messages.assert_called_once_with(extended_thinking=False,
-                                                            time_note=full_handler.time_note)
+                                                            time_note=full_handler.time_note, window="voice")
         assert full_handler.time_note == PromptManager.current_time_note(full_handler.turn_timestamp)
         assert full_handler.dialog_manager.reply_to_llm == MessageFormatter.format_message(
             "TestUser", full_handler.turn_timestamp, "VoiceToVoice", "Kitchen", "what's the plan for today?")
@@ -1256,7 +1256,7 @@ class TestPrepareContext:
 
         assert full_handler.dialog_manager.byte_prefix_tail is False
         assert full_handler.turn_timestamp is None and full_handler.time_note is None
-        prompt_manager.get_messages.assert_called_once_with(extended_thinking=True, time_note=None)
+        prompt_manager.get_messages.assert_called_once_with(extended_thinking=True, time_note=None, window="voice")
         assert sent == MessageFormatter.format_message("TestUser", None, "VoiceToVoice", "Kitchen",
                                                        "what's the plan for today?")
 

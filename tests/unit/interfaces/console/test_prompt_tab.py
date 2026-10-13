@@ -70,6 +70,18 @@ class TestClear:
         tab.handle_input('y')
         assert bottom_bar(tab) == "Clear failed: db locked"
 
+    def test_v_shows_the_other_channels_window(self, tab, prompt_manager):
+        """The text window is shown until `v` flips to voice's, and the history is rendered
+        for the window shown; the hint names the other one."""
+        bottom = bottom_bar(tab)
+        prompt_manager.message_history.render_for_display.assert_called_with("text")
+        assert "v show voice window" in bottom
+        assert tab.handle_input('v') is True
+        bottom = bottom_bar(tab)
+        prompt_manager.message_history.render_for_display.assert_called_with("voice")
+        assert "v show text window" in bottom
+        assert any("the voice window" in line for line in tab.prompt_lines)
+
     def test_scroll_keys_still_work(self, tab):
         tab.display_height = 5
         wrapped = tab.line_wrap

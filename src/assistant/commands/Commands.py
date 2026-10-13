@@ -1697,7 +1697,8 @@ class Commands:
         if not names:
             return "load_toolkit failed: expected a toolkit name. Available: " + ", ".join(Toolkits.names(monitor))
         prompt_manager = self._prompt_manager()
-        in_window = prompt_manager.message_history.loaded_toolkits() if prompt_manager else {}
+        in_window = (prompt_manager.message_history.loaded_toolkits(self._current_profile.window)
+                     if prompt_manager else {})
         # The autonomous check's rounds live in its own messages, never in the history: what
         # it is sent must not become the baseline the history's readers are diffed against.
         record = self._current_profile is not AUTONOMOUS

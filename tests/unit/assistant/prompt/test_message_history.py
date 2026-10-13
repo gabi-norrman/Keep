@@ -5,6 +5,8 @@ import time
 import pytest
 from unittest.mock import patch, Mock
 
+from assistant.prompt.MessageHistory import MessageHistory
+
 
 def _make_history_section():
     """Create a MessageHistory without the DB load its constructor does."""
@@ -326,15 +328,15 @@ class TestHysteresisTrim:
         section.trim_high_bytes = 2_000
         section.trim_low_bytes = 1_000
         section.history = self._entries(30)
-        section.add_transient_entry("system", "Prompt section `weather` updated:\n-a\n+b",
-                                    timestamp=1000.5, source="prompt_delta", section="weather")
-        section.add_transient_entry("system", "Prompt section `home` updated:\n-x\n+y",
-                                    timestamp=1029.5, source="prompt_delta", section="home")
+        section.add_transient_entry("system", "Prompt section `calendar` updated:\n-a\n+b",
+                                    timestamp=1000.5, source="prompt_delta", section="calendar")
+        section.add_transient_entry("system", "Prompt section `cars` updated:\n-x\n+y",
+                                    timestamp=1029.5, source="prompt_delta", section="cars")
 
         joined = "\n".join(m["content"] for m in section.get_history_messages())
 
-        assert "`weather` updated" not in joined and "`home` updated" in joined
-        assert section.dropped_delta_sections == {"weather"}
+        assert "`calendar` updated" not in joined and "`cars` updated" in joined
+        assert section.dropped_delta_sections == {"calendar"}
 
     def test_trim_never_cuts_inside_a_timestamp_tie(self):
         """The cutoff is a bare timestamp, so a cut inside a tied batch would be
@@ -699,8 +701,8 @@ class TestTransientEntries:
         section.trim_low_bytes = 1_000
         section.history = [{"role": "Marcus", "content": f"m{i:03d}" + "x" * 100, "timestamp": 1000.0 + i,
                             "source": None, "location": None} for i in range(30)]
-        section.add_transient_entry("system", "early note", 1000.5, source="prompt_delta", section="weather")
-        section.add_transient_entry("system", "late note", 1029.5, source="prompt_delta", section="weather")
+        section.add_transient_entry("system", "early note", 1000.5, source="prompt_delta", section="calendar")
+        section.add_transient_entry("system", "late note", 1029.5, source="prompt_delta", section="calendar")
         rendered = section.get_history_messages()
 
         assert section._trim_cutoff > 1000.5, "the trim moved past the early note"
@@ -897,6 +899,62 @@ class TestCommandResults:
         ])
         section._trim_cutoff = 60.0     # the web row was trimmed out of the window
         assert section.loaded_toolkits() == {"email": 100.0, "x": 100.0}
+
+    def test_a_preloaded_row_is_in_its_own_window_only(self):
+        """A toolkit voice preloaded (its row stamped preload:voice) is in voice's window and
+        out of a chat's; a toolkit the LLM loaded itself (no stamp) is in both."""
+        section = self._section_with([
+            {"role": "Marcus", "content": "lights off", "timestamp": 100.0, "source": "VoiceToVoice"},
+            {"role": "command", "content": "result: \n# Toolkit: home\nhome text", "timestamp": 101.0,
+             "source": MessageHistory.preload_source("voice")},
+            {"role": "command", "content": "result: \n# Toolkit: web\nweb text", "timestamp": 102.0},
+            {"role": "assistant", "content": "Done", "timestamp": 103.0},
+        ])
+        voice = "\n".join(m["content"] for m in section.get_history_messages(window="voice"))
+        text = "\n".join(m["content"] for m in section.get_history_messages(window="text"))
+        assert "# Toolkit: home" in voice and "# Toolkit: web" in voice
+        assert "# Toolkit: home" not in text and "# Toolkit: web" in text
+        assert "lights off" in text and "Done" in text, "the conversation itself is every window's"
+        assert set(section.loaded_toolkits("voice")) == {"home", "web"}
+        assert set(section.loaded_toolkits("text")) == {"web"}
+
+    def test_a_carried_delta_note_follows_its_toolkits_reference(self):
+        """Home's delta notes diff against the data the last load sent: a window without
+        that load (chat, after a voice preload of home) must not get them, and gets the
+        ones written after it loaded home itself. A note of a prompt section (no toolkit
+        carries it) is every window's."""
+        section = self._section_with([
+            {"role": "command", "content": "result: \n# Toolkit: home\nhome text", "timestamp": 100.0,
+             "source": MessageHistory.preload_source("voice")},
+        ])
+        section.add_transient_entry("system", "HOME AUTOMATION DATA updated:\n+lamp on", 101.0,
+                                    source=MessageHistory.SOURCE_PROMPT_DELTA, section="home")
+        section.add_transient_entry("system", "Prompt section `calendar` updated:\n+lunch", 102.0,
+                                    source=MessageHistory.SOURCE_PROMPT_DELTA, section="calendar")
+        text = "\n".join(m["content"] for m in section.get_history_messages(window="text"))
+        assert "+lamp on" not in text and "+lunch" in text
+        voice = "\n".join(m["content"] for m in section.get_history_messages(window="voice"))
+        assert "+lamp on" in voice and "+lunch" in voice
+
+        section.history.append({"role": "command", "content": "result: \n# Toolkit: home\nhome text",
+                                "timestamp": 103.0})
+        section.add_transient_entry("system", "HOME AUTOMATION DATA updated:\n+lamp off", 104.0,
+                                    source=MessageHistory.SOURCE_PROMPT_DELTA, section="home")
+        text = "\n".join(m["content"] for m in section.get_history_messages(window="text"))
+        assert "+lamp on" not in text and "+lamp off" in text
+
+    def test_the_display_shows_one_window_and_marks_the_preloaded(self):
+        section = self._section_with([
+            {"role": "command", "content": "result: \n# Toolkit: home\nhome text", "timestamp": 100.0,
+             "source": MessageHistory.preload_source("voice")},
+            {"role": "command", "content": "result: \n# Toolkit: web\nweb text", "timestamp": 101.0},
+        ])
+        shown = section.render_for_display("voice")
+        assert "home text" in shown and "web text" in shown
+        headers = [line for line in shown.splitlines() if line.startswith("### Command result")]
+        assert len(headers) == 2
+        assert "voice window only" in headers[0] and "window only" not in headers[1]
+        assert "home text" not in section.render_for_display("text")
 
     def test_renders_verbatim_on_the_user_side(self):
         big = "result: \n" + "line\n" * 1000     # far past MAX_RENDER_CHARS, stays whole

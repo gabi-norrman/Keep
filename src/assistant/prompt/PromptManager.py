@@ -21,6 +21,7 @@ from .sections.WebSectionGenerator import WebSectionGenerator
 from .sections.CalendarSectionGenerator import CalendarSectionGenerator
 from .sections.CarSectionGenerator import CarSectionGenerator
 from assistant import Destinations
+from assistant.ChannelProfile import WINDOW_TEXT
 from .MessageHistory import MessageHistory, THINKING_TAG_INSTRUCTION
 from common.FloxyDatabase import FloxyDatabase
 from common.ConfigManager import config
@@ -69,6 +70,9 @@ class PromptManager:
         self._prompt_lock = threading.Lock()
         self._last_assembly_time = 0
         self._on_prompt_assembled_callbacks = []
+        # The history window (ChannelProfile.window) the last request rendered: the one the
+        # pre-heats warm, since the next request is most likely on the same channel.
+        self._last_window = WINDOW_TEXT
         # Snapshot of each section's content at the time of the last full assembly —
         # the bytes baked into the currently-active prompt. Used to detect a cold
         # start (no baseline → rebuild).
@@ -556,7 +560,7 @@ class PromptManager:
             role="system",
             content=content,
             timestamp=time.time(),
-            source="prompt_delta",
+            source=MessageHistory.SOURCE_PROMPT_DELTA,
             section=key,
         )
 
@@ -601,12 +605,14 @@ class PromptManager:
         Callback signature: callback(messages: list[dict])"""
         self._on_prompt_assembled_callbacks.append(callback)
 
-    def _resolved_messages_locked(self) -> list[dict]:
-        """The byte prefix every real request shares: system prompt with per-request
-        placeholders resolved, plus live history (including transient delta notes).
-        get_messages() adds only the per-request tail on top of this (time note,
-        thinking instruction, incoming query), so pre-heating these exact bytes
-        warms the KV prefix real requests reuse. Caller must hold _prompt_lock."""
+    def _resolved_messages_locked(self, window: str | None = None) -> list[dict]:
+        """The byte prefix every real request of `window` shares: system prompt with
+        per-request placeholders resolved, plus the live history window (including
+        transient delta notes; the last request's window when None). get_messages() adds
+        only the per-request tail on top of this (time note, thinking instruction,
+        incoming query), so pre-heating these exact bytes warms the KV prefix real
+        requests reuse. Caller must hold _prompt_lock."""
+        window = window or self._last_window
         messages = [dict(m) for m in self._messages]
 
         if TimeOfDay.get_current() == TimeOfDay.DAY:
@@ -621,9 +627,9 @@ class PromptManager:
             messages[0] = {"role": "system", "content": content}
 
         if not self.test_suite:
-            history = self.message_history.get_history_messages()
+            history = self.message_history.get_history_messages(window=window)
             if self._restate_trimmed_sections_locked():
-                history = self.message_history.get_history_messages()
+                history = self.message_history.get_history_messages(window=window)
             messages.extend(history)
         return messages
 
@@ -833,17 +839,22 @@ class PromptManager:
         with self._prompt_lock:
             return [key for key in toolkit.sections if key in self.sections and key not in self._section_current]
 
-    def get_messages(self, extended_thinking: bool = False, time_note: str | None = None) -> list[dict]:
-        """Get the current messages (for LLM). `time_note` replaces the clock note computed
-        here: a byte-prefix request passes the one it will persist with the exchange, so the
-        note the LLM saw and the row the next request renders are the same bytes."""
+    def get_messages(self, extended_thinking: bool = False, time_note: str | None = None,
+                     window: str = WINDOW_TEXT) -> list[dict]:
+        """Get the current messages (for LLM) with the request channel's history `window`
+        (ChannelProfile.window). `time_note` replaces the clock note computed here: a
+        byte-prefix request passes the one it will persist with the exchange, so the note
+        the LLM saw and the row the next request renders are the same bytes."""
         with self._prompt_lock:
+            if window != self._last_window:
+                trace(f"PromptManager: the {window} history window is served now, the pre-heats follow it")
+                self._last_window = window
             # Shared byte prefix (system prompt + live history) — same bytes the
             # pre-heat callbacks warm, so the KV cache prefix is fully reusable.
             # The test suite uses a fixed fixture instead of the live, mutable history,
             # but the turns are rendered identically (MessageHistory.render_messages),
             # so the LLM receives the same message structure either way.
-            messages = self._resolved_messages_locked()
+            messages = self._resolved_messages_locked(window)
             if self.test_suite:
                 messages.extend(self._test_history_messages)
                 messages.extend(self._test_toolkit_messages)
@@ -947,11 +958,12 @@ class PromptManager:
             messages = self._resolved_messages_locked()
         self._fire_prompt_callbacks(messages)
 
-    def add_command_result(self, result: str, cap: bool = True):
+    def add_command_result(self, result: str, cap: bool = True, source: str | None = None):
         """Persist a command round's result so later turns still see it (no pre-heat:
         the follow-up round that consumes it starts right away). `cap=False` for a
-        toolkit reference, which is stored whole."""
-        self.message_history.add_command_result(result, cap=cap)
+        toolkit reference, which is stored whole; `source` stamps a preloaded one with
+        its window (MessageHistory.preload_source)."""
+        self.message_history.add_command_result(result, cap=cap, source=source)
 
     @staticmethod
     def save_prompt_to_file(messages: list[dict]):

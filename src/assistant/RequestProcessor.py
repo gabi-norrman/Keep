@@ -543,7 +543,8 @@ class RequestProcessor:
         if byte_prefix_tail or self.ctx.note:
             self.time_note = self._turn_note(prompt_manager, byte_prefix_tail)
         self.dialog_manager.messages = prompt_manager.get_messages(extended_thinking=use_prompt_hack,
-                                                                   time_note=self.time_note).copy()
+                                                                   time_note=self.time_note,
+                                                                   window=profile_for(self.ctx.source).window).copy()
         self.dialog_manager.thinking = use_native_thinking
 
         source = self.ctx.source

@@ -19,6 +19,11 @@ SOURCE_AUTONOMOUS = "autonomous"
 PHOTO_TARGET_SCREEN = "screen"
 PHOTO_TARGET_CHAT = "chat"
 
+# The history windows (ChannelProfile.window): one conversation, rendered for a voice request
+# with the voice preloads in it and for a text request without them (MessageHistory.visible).
+WINDOW_VOICE = "voice"
+WINDOW_TEXT = "text"
+
 
 @dataclass(frozen=True)
 class ChannelProfile:
@@ -57,6 +62,11 @@ class ChannelProfile:
     # the config list's reach: voice's is `voice`, the spoken dialog style and the false
     # positive rule, which the prompt carries nowhere else.
     fixed_toolkits: tuple[str, ...] = ()
+    # The history window the channel's requests render (MessageHistory.get_history_messages).
+    # The history is one conversation for every channel; what a preload puts in it is stamped
+    # with the window it was loaded for and rendered for that window only, so one spoken
+    # request does not leave voice's toolkits (8 KB of them) in every chat prompt after it.
+    window: str = WINDOW_TEXT
 
 
 VOICE_TO_VOICE = ChannelProfile(
@@ -64,6 +74,7 @@ VOICE_TO_VOICE = ChannelProfile(
     command_notifications=False, notification_ephemeral=False, notify_observers_of_commands=False,
     photo_target=PHOTO_TARGET_SCREEN, screenshot_allowed=False,
     streams_tokens=False, preload_toolkits=("home", "music", "cars", "weather", "timers"), fixed_toolkits=("voice",),
+    window=WINDOW_VOICE,
 )
 
 TEXT_CHAT = ChannelProfile(

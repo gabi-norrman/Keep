@@ -41,11 +41,20 @@ def test_home_missing_from_the_window_is_loaded_with_its_data():
     assert ToolkitPreloader.preload(pm, HOME_ONLY) == ["home"]
     pm.add_command_result.assert_called_once()
     text, kwargs = pm.add_command_result.call_args.args[0], pm.add_command_result.call_args.kwargs
-    assert kwargs == {"cap": False}
+    assert kwargs == {"cap": False, "source": "preload:voice"}, "stamped for voice's window alone"
     assert text.startswith("The home toolkit is loaded ahead of this VoiceToVoice request, no load_toolkit needed")
     assert "\n# Toolkit: home\n" in text
     assert "\n## HOME AUTOMATION DATA\n" in text and text.rstrip().endswith('"Lamp [Kök]": off')
     pm.carried_data.assert_called_once_with(Toolkits.by_name("home"), record=True)
+
+
+@pytest.mark.unit
+def test_the_window_asked_about_is_the_channels_own():
+    """A home row voice preloaded earlier is in voice's window, not a chat's: the preload
+    asks the history about its channel's window, so chat's answer never counts voice's rows."""
+    pm = _prompt_manager({})
+    ToolkitPreloader.preload(pm, HOME_ONLY)
+    pm.message_history.loaded_toolkits.assert_called_once_with(HOME_ONLY.window)
 
 
 @pytest.mark.unit
@@ -83,7 +92,7 @@ def test_home_in_the_window_without_a_baseline_gets_its_data_again():
     pm = _prompt_manager({"home": 1000.0}, untracked=["home"])
     assert ToolkitPreloader.preload(pm, HOME_ONLY) == ["home"]
     text = pm.add_command_result.call_args.args[0]
-    assert pm.add_command_result.call_args.kwargs == {"cap": False}
+    assert pm.add_command_result.call_args.kwargs == {"cap": False, "source": "preload:voice"}
     assert text.startswith("The home toolkit's reference is above in this conversation")
     assert "# Toolkit: home" not in text and Toolkits.loaded_name(text) is None
     assert "\n## HOME AUTOMATION DATA\n" in text and text.rstrip().endswith('"Lamp [Kök]": off')
@@ -141,9 +150,9 @@ def _racing_prompt_manager(persist_started: threading.Event, release_persist: th
     *release_persist* so a second caller can be lined up behind it."""
     window: dict[str, float] = {}
     pm = _prompt_manager(window)
-    pm.message_history.loaded_toolkits.side_effect = lambda: dict(window)
+    pm.message_history.loaded_toolkits.side_effect = lambda *_: dict(window)
 
-    def persist(text, cap=True):
+    def persist(text, cap=True, source=None):
         persist_started.set()
         release_persist.wait(timeout=5)
         window[Toolkits.loaded_name(text.split("\n")[2])] = 1000.0

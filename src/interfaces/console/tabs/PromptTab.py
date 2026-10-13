@@ -1,4 +1,6 @@
 from typing import List
+
+from assistant.ChannelProfile import WINDOW_TEXT, WINDOW_VOICE
 from common.logging import info
 from .MarkdownTabView import MarkdownTabView
 from .TabView import SUB_CONTENT_TOP
@@ -8,14 +10,17 @@ CONFIRM_HINT = " Clear today's dialog history? y/n "
 
 
 class PromptTab(MarkdownTabView):
-    """Prompt viewer tab showing the current prompt from PromptManager, with the developer's
-    `c` to wipe today's dialog history (confirmed with `y`) so a test can start over."""
+    """Prompt viewer tab showing the current prompt from PromptManager — the system prompt
+    and the history window of one channel, the text window until `v` flips it to the voice
+    window (ChannelProfile.window) — with the developer's `c` to wipe today's dialog history
+    (confirmed with `y`) so a test can start over."""
 
     def __init__(self, prompt_manager):
         super().__init__()
         self.prompt_manager = prompt_manager
         self.prompt_lines: List[str] = []
         self.last_cache_key = None
+        self.window = WINDOW_TEXT
         self._confirm_clear = False
         self._status = ""   # the outcome of the last clear, shown in place of the key hints
 
@@ -63,13 +68,15 @@ class PromptTab(MarkdownTabView):
             return CONFIRM_HINT
         if self._status:
             return f" {self._status} "
-        return f" {self.wrap_hint}  ↑↓ scroll  PgUp/PgDn page  c clear "
+        other = WINDOW_VOICE if self.window == WINDOW_TEXT else WINDOW_TEXT
+        return f" {self.wrap_hint}  ↑↓ scroll  PgUp/PgDn page  v show {other} window  c clear "
 
     def on_deactivate(self):
         self._confirm_clear = False
 
     def handle_input(self, key: str) -> bool:
-        """Scrolling, plus `c` → `y` to wipe today's dialog history."""
+        """Scrolling, `v` to show the other channel's window, plus `c` → `y` to wipe today's
+        dialog history."""
         if self._confirm_clear:
             self._confirm_clear = False
             if key == 'y':
@@ -81,6 +88,10 @@ class PromptTab(MarkdownTabView):
         self._status = ""
         if key == 'c':
             self._confirm_clear = True
+            return True
+        if key == 'v':
+            self.window = WINDOW_VOICE if self.window == WINDOW_TEXT else WINDOW_TEXT
+            info(f"PromptTab: showing the {self.window} history window")
             return True
         return self.handle_scroll_input(key, self.scroll_total(len(self.prompt_lines)))
 
@@ -110,14 +121,14 @@ class PromptTab(MarkdownTabView):
             # Rebuild only when the prompt or the history actually changes —
             # last_update_time bumps on every history mutation/refresh, so we
             # avoid re-rendering the whole history on every frame.
-            cache_key = (hash(prompt_text), message_history.last_update_time)
+            cache_key = (hash(prompt_text), message_history.last_update_time, self.window)
             if cache_key == self.last_cache_key:
                 return
 
-            history_md = message_history.render_for_display()
+            history_md = message_history.render_for_display(self.window)
             combined = (
                 prompt_text.rstrip()
-                + "\n\n# ── MESSAGES (sent as turns after the prompt) ──\n\n"
+                + f"\n\n# ── MESSAGES (sent as turns after the prompt — the {self.window} window) ──\n\n"
                 + history_md
                 + "\n"
             )
