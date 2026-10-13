@@ -37,13 +37,14 @@ class ClaudeLLM(AbstractLLM):
 
     # Output caps. With adaptive thinking the thinking tokens count against max_tokens too,
     # so a thinking call that must emit a long answer (the memory curator rewrites a ~8k-token
-    # bank) needs real headroom: at 16000 the curator's replies were cut mid-sentence for weeks.
-    THINKING_MAX_TOKENS = 32000
+    # bank) needs real headroom: at 16000 the curator's replies were cut mid-sentence for weeks,
+    # and at 32000 a run whose thinking ran long was still cut in the bank's last section.
+    THINKING_MAX_TOKENS = 64000
     MAX_TOKENS = 4096
     # The SDK refuses a non-streaming request whose max_tokens implies more than 10 minutes
-    # (about 21k tokens) unless a timeout is given explicitly. 32000 tokens take ~7 minutes
-    # at the rate the nightly curation has shown, so 20 minutes leaves headroom.
-    NON_STREAMING_TIMEOUT = httpx.Timeout(20 * 60, connect=5.0)
+    # (about 21k tokens) unless a timeout is given explicitly. 32000 tokens took ~7 minutes
+    # at the rate the nightly curation has shown, so 30 minutes covers the cap with headroom.
+    NON_STREAMING_TIMEOUT = httpx.Timeout(30 * 60, connect=5.0)
 
     def __init__(self, model: str = "claude-sonnet-4-5", speed: str | None = None, prompt_cache: bool = True,
                  static_cache_ttl: str | None = None, history_cache_ttl: str | None = None):

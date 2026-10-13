@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .. import Destinations, MemoryFile, Procedures, WatchList
 from ..llm import create_llm, parse_llm_config
+from .MemoryCondenser import MemoryCondenser
 from common.ConfigManager import ConfigManager
 from common.FloxyDatabase import FloxyDatabase, NO_INTERACTIONS
 from assistant.integration.calendar.CalendarAccess import CalendarAccess, EVENTS_UNAVAILABLE, NOT_CONFIGURED
@@ -27,6 +28,15 @@ CURATION_CHUNK_DAYS = 4
 # The size the curator is told to keep the bank under. The LLM cannot count words in a 40 KB
 # document, so the prompt also states the measured count ({MEMORY_SIZE}) rather than trusting it to.
 MEMORY_WORD_LIMIT = 4000
+# A bank more than CONDENSE_TRIGGER over the limit gets a condensing pass before the curation
+# (`MemoryCondenser`, section by section), asked to cut CONDENSE_CUT of the limit or the whole
+# excess, whichever is more (`condense_cut`). The curation prompt cannot do it: with the
+# period's interactions and the "never drop a fact" rules in front of it the model rewords an
+# oversize bank at the same length however plainly the size note demands a cut — three nights
+# at ~5000 words, and a test pass with the full prompt cut 8 words of 992 asked. Trigger above
+# the cut: a hysteresis, so a bank hovers under the trigger instead of being condensed every night.
+CONDENSE_TRIGGER = 0.10
+CONDENSE_CUT = 0.20
 # How long a nightly run waits for its batch before it makes the ordinary full-price call
 # (`ai.memory_curator.batch_wait_minutes`): from the 04:00 run, done before the house wakes.
 BATCH_WAIT_MINUTES = 90
@@ -537,6 +547,31 @@ class LongTermMemoryCurator:
         return note
 
     @staticmethod
+    def needs_condensing(word_count: int) -> bool:
+        return word_count > MEMORY_WORD_LIMIT * (1 + CONDENSE_TRIGGER)
+
+    @staticmethod
+    def condense_cut(word_count: int) -> int:
+        """The words a condensing pass is asked to remove: the whole excess, at least CONDENSE_CUT
+        of the limit — so one pass brings a bank far over the limit back to it."""
+        return max(int(MEMORY_WORD_LIMIT * CONDENSE_CUT), word_count - MEMORY_WORD_LIMIT)
+
+    def _condense(self, bank: str) -> tuple[str, dict]:
+        """The condensing pass (`MemoryCondenser`): the bank back shorter, with what happened
+        for the journal. Never a batch — a handful of small calls, a few minutes of work."""
+        words = self.word_count(bank)
+        cut = self.condense_cut(words)
+        info(f"Rem: {words} words is more than {CONDENSE_TRIGGER:.0%} over the limit — a condensing pass first, "
+             f"asked to remove {cut} words")
+        condensed, outcome = MemoryCondenser(self.llm, MEMORY_WORD_LIMIT).condense(bank, cut)
+        if self.word_count(condensed) >= words:
+            info("Rem: the condensing pass removed nothing — curating the bank as it was")
+            return bank, outcome
+        info(f"Rem: condensed to {outcome['to']} words (was {words})"
+             + (" — still over the limit" if outcome['to'] > MEMORY_WORD_LIMIT else "") + " — now the curation")
+        return condensed, outcome
+
+    @staticmethod
     def _as_datetime(value: datetime | date) -> datetime:
         if isinstance(value, datetime):
             return value
@@ -590,17 +625,21 @@ class LongTermMemoryCurator:
               f"(interfaces.voice.enabled={voice_enabled})")
         word_count = self.word_count(current_memory)
         info(f"Rem: current memory bank is {word_count} words (limit {MEMORY_WORD_LIMIT})")
-        full_prompt = PROMPT.replace("{WATCHLIST}", WatchList.render(self.watchlist_dir)) \
+        prompt = PROMPT.replace("{WATCHLIST}", WatchList.render(self.watchlist_dir)) \
             .replace("{PROCEDURES}", Procedures.render_index(self.procedures_dir)) \
             .replace("{TODAY}", f"{datetime.now():%Y-%m-%d}") \
             .replace("{INTERACTION_HISTORY}", interaction_history) \
             .replace("{CALENDAR}", calendar_data) \
-            .replace("{CURRENT_MEMORY}", current_memory) \
-            .replace("{MEMORY_SIZE}", self.memory_size_note(word_count)) \
             .replace("{WORD_LIMIT}", str(MEMORY_WORD_LIMIT)) \
             .replace("{PERIOD}", period_text) \
             .replace("{STT_NOTE}", STT_NOTE if voice_enabled else "") \
             .replace("{TIPS}", self._tips_prompt())
+        loaded_memory, condense = current_memory, None
+        if self.needs_condensing(word_count):
+            current_memory, condense = self._condense(current_memory)
+            word_count = self.word_count(current_memory)
+        full_prompt = prompt.replace("{CURRENT_MEMORY}", current_memory) \
+            .replace("{MEMORY_SIZE}", self.memory_size_note(word_count))
 
         # Send to LLM with thinking enabled for complex reasoning
         info("Rem: deep in REM — consolidating the period's memories with the AI...")
@@ -610,23 +649,8 @@ class LongTermMemoryCurator:
         trace(f"Rem: woke after {llm_duration:.1f}s of dreaming")
 
         response, commands = self._split_commands(response)
-        new_memory = self._extract_memory_content(response)
-        new_words = self.word_count(new_memory)
-        info(f"Rem: the AI returned a {new_words}-word memory bank (was {word_count}, limit {MEMORY_WORD_LIMIT})"
-             + (" — still over the limit" if new_words > MEMORY_WORD_LIMIT else ""))
-
-        # A reply cut off at the output cap is a bank missing its tail: saving it would
-        # forget every section past the cut, and the next run could never bring them back.
-        truncated = getattr(self.llm, 'last_stop_reason', None) == 'max_tokens'
-        if truncated:
-            error(f"Rem: the dream was cut short — the AI hit its output limit after {len(new_memory)} chars. "
-                  "Keeping the previous memory bank.")
-            new_memory = current_memory
-            commands = ""
-        elif not new_memory or len(new_memory) < len(current_memory) * 0.3:
-            error(f"WARNING: AI returned suspiciously short memory ({len(new_memory)} chars)")
-            error("Keeping previous memory state")
-            new_memory = current_memory
+        new_memory, truncated = self._accept(response, current_memory)
+        if new_memory is current_memory:
             commands = ""
 
         # Build metadata
@@ -635,17 +659,39 @@ class LongTermMemoryCurator:
             'period_end': period[1].isoformat(timespec='minutes') if period else '',
             'interaction_count': interaction_count,
             'calendar_events_count': calendar_events_count,
-            'old_memory_size': len(current_memory),
+            'old_memory_size': len(loaded_memory),
             'new_memory_size': len(new_memory),
             'llm_duration_seconds': llm_duration,
             'truncated': truncated,
+            'condense': condense,
             'timestamp': time.time(),
-            'old_memory': current_memory,
+            'old_memory': loaded_memory,
             'full_prompt': full_prompt,
             'commands': commands,
         }
 
         return new_memory, metadata
+
+    def _accept(self, response: str, current_memory: str) -> tuple[str, bool]:
+        """The bank in the reply, or `current_memory` itself when the reply cannot be trusted
+        (returned as the same object, so the caller can tell): a reply cut off at the output
+        cap is a bank missing its tail — saving it would forget every section past the cut,
+        and the next run could never bring them back — and a suspiciously short one is no
+        bank at all. Also whether the reply was cut off."""
+        new_memory = self._extract_memory_content(response)
+        new_words = self.word_count(new_memory)
+        info(f"Rem: the AI returned a {new_words}-word memory bank (limit {MEMORY_WORD_LIMIT})"
+             + (" — still over the limit" if new_words > MEMORY_WORD_LIMIT else ""))
+        truncated = getattr(self.llm, 'last_stop_reason', None) == 'max_tokens'
+        if truncated:
+            error(f"Rem: the dream was cut short — the AI hit its output limit after {len(new_memory)} chars. "
+                  "Keeping the previous memory bank.")
+            return current_memory, True
+        if not new_memory or len(new_memory) < len(current_memory) * 0.3:
+            error(f"WARNING: AI returned suspiciously short memory ({len(new_memory)} chars)")
+            error("Keeping previous memory state")
+            return current_memory, False
+        return new_memory, False
 
     def _think(self, prompt: str, user_message: str) -> str:
         """The curation call: through the batch API at half price when this run can wait
@@ -757,6 +803,10 @@ class LongTermMemoryCurator:
                 f.write(f"- LLM duration: {metadata.get('llm_duration_seconds', 0):.1f}s\n")
                 if metadata.get('truncated'):
                     f.write("- Result: reply cut off at the output cap — previous bank kept\n")
+                if metadata.get('condense'):
+                    c = metadata['condense']
+                    f.write(f"- Condensing pass: {c['from']} → {c.get('to', '?')} words (asked to remove {c['cut']}), "
+                            f"{c.get('llm_duration_seconds', 0):.1f}s\n")
                 f.write("\n")
                 f.write("---\n\n")
 

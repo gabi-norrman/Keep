@@ -6,7 +6,8 @@ import pytest
 
 from assistant import MemoryFile
 from assistant import Procedures
-from assistant.agents.LongTermMemoryCurator import HISTORY_SOURCE, MEMORY_WORD_LIMIT, LongTermMemoryCurator
+from assistant.agents.LongTermMemoryCurator import (CONDENSE_CUT, CONDENSE_TRIGGER, HISTORY_SOURCE,
+                                                    MEMORY_WORD_LIMIT, LongTermMemoryCurator)
 from assistant.commands.Commands import is_reference_result
 from common.FloxyDatabase import NO_INTERACTIONS
 
@@ -220,6 +221,68 @@ class TestMemoryWordCount:
         note = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT + 2162)
         assert "OVER the limit by 2162 words" in note
         assert "at least 2162 words shorter" in note
+
+
+def _bank(words: int) -> str:
+    return "# Memory\n" + " ".join(f"w{i}" for i in range(words - 1))
+
+
+class TestCondensingPass:
+    """A bank well over the limit is condensed by a pass of its own before the curation (the
+    MemoryCondenser, the bank alone, no interactions): the curation prompt only rewords an
+    oversize bank."""
+
+    def _curator(self, replies: list[str]):
+        llm = Mock()
+        llm.last_stop_reason = None
+        llm.think.side_effect = replies
+        return LongTermMemoryCurator(llm=llm, test_mode=True)
+
+    def test_cut_is_the_excess_or_a_fifth_of_the_limit_whichever_is_more(self):
+        assert LongTermMemoryCurator.condense_cut(MEMORY_WORD_LIMIT + 10) == int(MEMORY_WORD_LIMIT * CONDENSE_CUT)
+        assert LongTermMemoryCurator.condense_cut(MEMORY_WORD_LIMIT * 2) == MEMORY_WORD_LIMIT
+
+    def test_trigger_is_above_the_limit(self):
+        assert not LongTermMemoryCurator.needs_condensing(MEMORY_WORD_LIMIT + 1)
+        assert LongTermMemoryCurator.needs_condensing(int(MEMORY_WORD_LIMIT * (1 + CONDENSE_TRIGGER)) + 1)
+
+    def test_over_the_trigger_condenses_then_curates_the_condensed_bank(self):
+        oversize = _bank(int(MEMORY_WORD_LIMIT * 1.3))
+        condensed = _bank(MEMORY_WORD_LIMIT - 100)
+        curated = _bank(MEMORY_WORD_LIMIT - 90)
+        curator = self._curator([f"<section>{condensed}</section>", f"<memory>{curated}</memory>"])
+        memory, metadata = curator.curate_memory_with_data("the period's history", "", oversize)
+        first, second = [c.kwargs['system_message'] for c in curator.llm.think.call_args_list]
+        assert "the period's history" not in first and oversize in first      # one section: one condensing call
+        assert "the period's history" in second and condensed in second and oversize not in second
+        assert "headroom" in second
+        assert memory == curated
+        assert metadata['condense']['from'] == curator.word_count(oversize)
+        assert metadata['condense']['to'] == curator.word_count(condensed)
+        assert metadata['old_memory'] == oversize  # the append carry-over compares with the bank as loaded
+
+    def test_under_the_trigger_is_one_call(self):
+        curator = self._curator([f"<memory>{_bank(3000)}</memory>"])
+        _, metadata = curator.curate_memory_with_data("history", "", _bank(MEMORY_WORD_LIMIT + 10))
+        assert curator.llm.think.call_count == 1
+        assert metadata['condense'] is None
+
+    def test_a_condensing_pass_that_removed_nothing_curates_the_bank_as_it_was(self):
+        oversize = _bank(int(MEMORY_WORD_LIMIT * 1.3))
+        curated = _bank(3000)
+        curator = self._curator(["no section here", f"<memory>{curated}</memory>"])
+        memory, metadata = curator.curate_memory_with_data("history", "", oversize)
+        assert oversize in curator.llm.think.call_args_list[1].kwargs['system_message']
+        assert memory == curated and not metadata['truncated']
+        assert metadata['condense']['to'] == metadata['condense']['from']
+
+    def test_the_condensing_pass_never_waits_for_a_batch(self):
+        curator = self._curator([f"<section>{_bank(3000)}</section>", f"<memory>{_bank(3000)}</memory>"])
+        curator.batch = True
+        curator.llm.think_batched.return_value = None
+        curator.curate_memory_with_data("history", "", _bank(int(MEMORY_WORD_LIMIT * 1.3)))
+        assert curator.llm.think_batched.call_count == 1     # the curation; the condensing went straight through
+        assert "<section>" in curator.llm.think.call_args_list[0].kwargs['user_message']
 
 
 def _mock_curator() -> Mock:
