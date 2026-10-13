@@ -16,7 +16,7 @@ A command returns a human-readable string that is relayed back as the reply.
     //feed <pause|resume> <all|name> - hold / carry on filling the history from a feed; bare //feed lists them
     //memory_curate <start> [end]    - curate the long-term memory over a span of days (YYYYMMDD, end inclusive), in 4-day chunks
     //memory_split [apply]           - propose the split of an old one-file bank into bank / watch list / procedures; apply the latest proposal
-    //nightly [bugs|tests|health|merge] - run the nightly code-quality run now, or one step of it
+    //nightly [bugs|fix|tests|health|merge] - run the nightly code-quality run now, or one step of it (fix runs the bug analysis first)
     //first_run [stage <name>|reset] - the first-run pipeline's state; force a stage or delete the state (FTUE testing)
     //toolkits      - the toolkits with their size and whether each is in the LLM's history window
     //toolkit <name> - the reference of one toolkit as the LLM receives it
@@ -407,7 +407,7 @@ class DebugCommands:
     # --- //nightly ------------------------------------------------------------------------
 
     def cmd_NIGHTLY(self, args: str) -> str:
-        """//nightly [bugs|tests|health|merge]: run the nightly code-quality run now (bug analysis, test generation, test health, auto-merge), or one step alone — in the background, also with self_improvement.nightly_runs off; the report is emailed."""
+        """//nightly [bugs|fix|tests|health|merge]: run the nightly code-quality run now (bug analysis, a PR fixing its Critical and Major findings, test generation, test health, auto-merge), or one step alone (fix runs the bug analysis first, it reads from it) — in the background, also with self_improvement.nightly_runs off; the report is emailed."""
         from assistant.agents import CodeQualityMaintainer as cqm
         only = args.strip().lower() or None
         if only and only not in cqm.NIGHTLY_STEPS:

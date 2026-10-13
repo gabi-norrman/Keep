@@ -5,7 +5,7 @@ this). They need the "Self Improvement" integration enabled (`list_integrations`
 must be installed on the server machine; with `api_keys.anthropic` set nothing else is needed, a claude.ai login is
 the alternative — `config_help("self_improvement")` has the steps). Filing a PR or an issue also needs the GitHub
 CLI (`gh`) logged in on the server machine; if it is not, the job says so at once.
-The integration also has scheduled nightly runs (bug analysis, test generation, fixing flaky and slow tests, auto-merge of test-only PRs), off
+The integration also has scheduled nightly runs (bug analysis, a PR fixing its critical and major findings, test generation, fixing flaky and slow tests, auto-merge of test-only PRs), off
 unless `self_improvement.nightly_runs` is true; the commands below work either way.
 
 ### Which command

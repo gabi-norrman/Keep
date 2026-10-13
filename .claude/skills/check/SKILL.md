@@ -76,5 +76,4 @@ Compare both reviewers' findings. Independently verify the key claims (re-read t
 reviewed, each reviewer's verdict, which findings survived your own scrutiny, and a clear ship / don't-ship conclusion. We're not interested in small nit-pick issues, we're looking for actual
 problems.
 
-Keep the report short. Create three tables: one with results from claude, one with results from codex and one with what you actually feel needs to be fixed.
-just ad
+Keep the report short. Create three tables: one with results from claude, one with results from codex and one with what you actually feel needs to be fixed. Every row of every table carries the finding's severity (critical/major/minor/nit) in a column of its own — an automated fix step reads the last table and takes on the critical and major rows.

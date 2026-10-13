@@ -80,7 +80,8 @@ NIGHTLY_UPDATE_KEY = "nightly_update"
 RELEASE_BRANCH = "release"
 DEVELOPER_BRANCH = "master"
 NIGHTLY_OFF_MESSAGE = f"{NIGHTLY_RUNS_KEY} is off"
-NIGHTLY_STEPS = ("bugs", "tests", "health", "merge")   # what //nightly takes to run one step alone
+NIGHTLY_STEPS = ("bugs", "fix", "tests", "health", "merge")   # what //nightly takes to run one step alone
+FIX_SEVERITIES = ("critical", "major")   # the findings the nightly fix step takes on
 GH_NOT_LOGGED_IN_MESSAGE = (
     "GitHub CLI is not logged in on the server, so nothing can be filed on the repository. "
     "Run `gh auth login` in a terminal on the server machine with an account that has write access "
@@ -89,6 +90,7 @@ GH_NOT_LOGGED_IN_MESSAGE = (
 # The labels the filed PRs and issues carry, for triage on GitHub (created once in the repository).
 INTEGRATION_PR_LABEL = "integration-pr"
 SELF_IMPROVEMENT_LABEL = "self-improvement"
+NIGHTLY_FIX_LABEL = "nightly-fix"
 ISSUE_LABEL = "reported-by-keep"
 # What a new integration adds outside its own folder: the registry lines "Adding an integration" in
 # CLAUDE.md names. A PR from improve_integration may add to these files, never remove from them.
@@ -220,6 +222,30 @@ BUG_ANALYSIS_PROMPT = """
 Run the /check skill with the target "last 24h" to review the last day's commits for bugs.
 
 IMPORTANT: Your entire analysis must be in your final message. Do not ask follow-up questions or offer to implement fixes.
+"""
+
+FIX_BUGS_PROMPT = """
+The nightly bug analysis of this code base just finished; its report is below. Your job is to fix the items of its
+fix list (the last table, what the analysis itself says needs fixing) whose finding is tagged Critical or Major —
+and only those. Leave every Minor and Nit item alone.
+
+Steps:
+1. Prepare for PR: create a branch.
+2. Fix each Critical and Major item of the fix list. Read the cited code first; if an item cannot be reproduced,
+   or its fix is too risky or too large for an automated PR, leave it and say why in the report.
+3. If applicable create new unit tests.
+4. Run all unit tests to make sure nothing is broken.
+5. Commit (check rules for commits in the /commit skill) and create one PR and push it. Give the PR the label
+   `{label}` and end its description with the line `Opened by Keep {version} (nightly fix)`.
+
+If nothing was fixed, open no PR and say so.
+
+IMPORTANT: Your entire response to the user must be in your final message: the PR link, a table of the items you fixed and
+a table of the items you left with the reason for each. Keep it concise — it will be read over a chat on a phone.
+
+The analysis:
+
+{analysis}
 """
 
 SELF_ANALYSIS_PROMPT = """
@@ -515,21 +541,28 @@ class CodeQualityMaintainer:
     def _nightly_run(self, only):
         note(f"CodeQualityMaintainer: starting nightly run{f' ({only} only)' if only else ''}...")
         self._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
+        reports = {}
         steps = dict(zip(NIGHTLY_STEPS, [("Bug Analysis", self._step_bug_analysis),
+                                         ("Bug Fixes", lambda: self._step_fix_bugs(reports.get("bugs", ""))),
                                          ("Test Generation", self._step_generate_tests),
                                          ("Test Health", self._step_test_health),
                                          ("Auto-Merge Test PRs", self._step_auto_merge)]))
-        if only:
-            steps = [steps[only]]
+        if only == "fix":
+            info("CodeQualityMaintainer: the fix step reads the bug analysis, so that runs first.")
+            keys = ["bugs", "fix"]
+        elif only:
+            keys = [only]
         elif self._has_recent_commits():
-            steps = list(steps.values())
+            keys = list(steps)
         else:
             info("CodeQualityMaintainer: no recent commits, only the auto-merge runs tonight.")
-            steps = [steps["merge"]]
+            keys = ["merge"]
         sections = []
-        for title, step in steps:
+        for key in keys:
+            title, step = steps[key]
             try:
                 report = step()
+                reports[key] = report
                 if report:
                     sections.append((title, report))
                 else:
@@ -932,6 +965,33 @@ class CodeQualityMaintainer:
         except Exception as e:
             error(f"CodeQualityMaintainer: bug analysis failed: {e}")
             return ""
+
+    @staticmethod
+    def fixable_severities(analysis: str) -> list[str]:
+        """The severities of FIX_SEVERITIES the analysis mentions at all — a cheap screen so a
+        night without a Critical or Major finding costs no Claude Code run. A report that only
+        says "no major issues" passes the screen; the run then fixes nothing and says so."""
+        words = set(re.findall(r"[a-z]+", analysis.lower()))
+        return [severity for severity in FIX_SEVERITIES if severity in words]
+
+    @staticmethod
+    def _step_fix_bugs(analysis: str) -> str:
+        """Fixes the Critical and Major items of the bug analysis' fix list as one PR, through
+        `_pr_job`; the auto-merge leaves that PR alone, since it touches more than tests/."""
+        if not analysis:
+            info("CodeQualityMaintainer: no bug analysis to fix from, skipping the fix step.")
+            return ""
+        severities = CodeQualityMaintainer.fixable_severities(analysis)
+        if not severities:
+            info("CodeQualityMaintainer: the bug analysis names nothing Critical or Major, nothing to fix.")
+            return "The bug analysis names nothing Critical or Major — nothing to fix tonight."
+        reason = CodeQualityMaintainer._github_unavailable()
+        if reason:
+            return reason
+        info(f"CodeQualityMaintainer: the bug analysis mentions {', '.join(severities)} findings, fixing...")
+        prompt = FIX_BUGS_PROMPT.format(analysis=analysis, label=NIGHTLY_FIX_LABEL,
+                                        version=CodeQualityMaintainer._version())
+        return CodeQualityMaintainer._pr_job(prompt + CodeQualityMaintainer._trial_instructions(), "nightly-fix")
 
     @staticmethod
     def analyze_code(request: str) -> str:

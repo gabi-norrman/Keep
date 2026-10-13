@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeStatus, API_KEY_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeStatus, API_KEY_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -1133,22 +1133,56 @@ class TestNightlySkipReason:
 class TestExecuteNightlyRun:
     @pytest.fixture(autouse=True)
     def later_steps(self):
-        with patch.object(CodeQualityMaintainer, '_step_test_health', return_value="") as health, \
+        with patch.object(CodeQualityMaintainer, '_step_fix_bugs', return_value="") as fix, \
+                patch.object(CodeQualityMaintainer, '_step_test_health', return_value="") as health, \
                 patch.object(CodeQualityMaintainer, '_step_auto_merge', return_value="") as merge:
-            self.health, self.merge = health, merge
+            self.fix, self.health, self.merge = fix, health, merge
             yield
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_runs_the_four_steps_in_order_with_the_auto_merge_last(self, mock_sub, mock_commits, maintainer):
+    def test_runs_the_five_steps_in_order_with_the_fix_after_the_analysis_and_the_auto_merge_last(
+            self, mock_sub, mock_commits, maintainer):
         call_order = []
+        self.fix.side_effect = lambda analysis: call_order.append('fix') or ''
         self.health.side_effect = lambda: call_order.append('health') or ''
         self.merge.side_effect = lambda: call_order.append('merge') or ''
         with patch.object(CodeQualityMaintainer, '_step_bug_analysis', side_effect=lambda: call_order.append('bugs') or ''):
             with patch.object(CodeQualityMaintainer, '_step_generate_tests', side_effect=lambda: call_order.append('tests') or ''):
                 with patch.object(CodeQualityMaintainer, '_send_email'):
                     maintainer._execute_nightly_run()
-        assert call_order == ['bugs', 'tests', 'health', 'merge']
+        assert call_order == ['bugs', 'fix', 'tests', 'health', 'merge']
+        assert list(NIGHTLY_STEPS) == ['bugs', 'fix', 'tests', 'health', 'merge']   # //nightly names them the same way
+
+    @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_the_fix_step_reads_the_nights_bug_analysis(self, mock_sub, mock_commits, maintainer):
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value="| Major | foo.py:3 | off by one |"), \
+                patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_send_email'):
+            maintainer._execute_nightly_run()
+        self.fix.assert_called_once_with("| Major | foo.py:3 | off by one |")
+
+    @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_a_crashed_bug_analysis_leaves_the_fix_step_nothing_to_read(self, mock_sub, mock_commits, maintainer):
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis', side_effect=Exception("boom")), \
+                patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_send_email'):
+            maintainer._execute_nightly_run()
+        self.fix.assert_called_once_with("")
+
+    @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=False)
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_the_fix_step_alone_runs_the_bug_analysis_first(self, mock_sub, mock_commits, maintainer):
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value="Critical: x") as bugs, \
+                patch.object(CodeQualityMaintainer, '_step_generate_tests') as tests, \
+                patch.object(CodeQualityMaintainer, '_send_email'):
+            maintainer._execute_nightly_run(only="fix")
+        bugs.assert_called_once()
+        self.fix.assert_called_once_with("Critical: x")
+        tests.assert_not_called()
+        self.merge.assert_not_called()
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
@@ -1611,3 +1645,56 @@ class TestPullRequestTrialHooks:
         assert mock_popen.call_args[0][0] == ['bash', 'start.sh', str(os.getpid()), 'release']
         CodeQualityMaintainer.restart("audio recovery")
         assert mock_popen.call_args[0][0] == ['bash', 'start.sh', str(os.getpid())]
+
+
+@pytest.mark.unit
+class TestFixBugsStep:
+    """The step after the bug analysis: one PR fixing the Critical and Major items of its fix
+    list, and no Claude Code run on a night that has none."""
+
+    ANALYSIS = "| Severity | Where | What |\n| Major | foo.py:3 | off by one |\n| Minor | bar.py:9 | typo |"
+
+    def test_without_an_analysis_nothing_runs(self):
+        with patch.object(CodeQualityMaintainer, '_pr_job') as job, \
+                patch.object(CodeQualityMaintainer, '_github_unavailable') as gh:
+            assert CodeQualityMaintainer._step_fix_bugs("") == ""
+        job.assert_not_called()
+        gh.assert_not_called()
+
+    @pytest.mark.parametrize("analysis", ["| Minor | bar.py:9 | typo |\n| Nit | baz.py:1 | naming |",
+                                          "The majority of the changes are fine. No findings."])
+    def test_an_analysis_without_a_critical_or_major_finding_costs_no_run_but_is_reported(self, analysis):
+        with patch.object(CodeQualityMaintainer, '_pr_job') as job:
+            report = CodeQualityMaintainer._step_fix_bugs(analysis)
+        job.assert_not_called()
+        assert report   # the email says why nothing was fixed
+
+    @pytest.mark.parametrize("severity", ["Major", "CRITICAL"])
+    def test_a_critical_or_major_finding_starts_the_pr_job_with_the_analysis(self, severity):
+        analysis = f"| {severity} | foo.py:3 | off by one |"
+        with patch.object(CodeQualityMaintainer, '_pr_job', return_value="PR #7 opened") as job, \
+                patch.object(CodeQualityMaintainer, '_github_unavailable', return_value=None), \
+                patch.object(CodeQualityMaintainer, '_trial_instructions', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_version', return_value="v2026.10.1"):
+            assert CodeQualityMaintainer._step_fix_bugs(analysis) == "PR #7 opened"
+        prompt = job.call_args[0][0]
+        assert analysis in prompt
+        assert NIGHTLY_FIX_LABEL in prompt and "v2026.10.1" in prompt
+
+    def test_the_trial_instructions_follow_the_prompt(self):
+        with patch.object(CodeQualityMaintainer, '_pr_job', return_value="ok") as job, \
+                patch.object(CodeQualityMaintainer, '_github_unavailable', return_value=None), \
+                patch.object(CodeQualityMaintainer, '_trial_instructions', return_value="\nPush to the tried PR."):
+            CodeQualityMaintainer._step_fix_bugs(self.ANALYSIS)
+        assert job.call_args[0][0].endswith("Push to the tried PR.")
+
+    def test_without_gh_the_step_says_so_instead_of_running(self):
+        with patch.object(CodeQualityMaintainer, '_pr_job') as job, \
+                patch.object(CodeQualityMaintainer, '_github_unavailable', return_value=GH_NOT_LOGGED_IN_MESSAGE):
+            assert CodeQualityMaintainer._step_fix_bugs(self.ANALYSIS) == GH_NOT_LOGGED_IN_MESSAGE
+        job.assert_not_called()
+
+    def test_the_severity_screen_matches_whole_words_in_any_case(self):
+        assert CodeQualityMaintainer.fixable_severities("MAJOR: x\nminor: y") == ["major"]
+        assert CodeQualityMaintainer.fixable_severities("a critical path; a majority vote") == ["critical"]
+        assert CodeQualityMaintainer.fixable_severities("critically slow") == []
