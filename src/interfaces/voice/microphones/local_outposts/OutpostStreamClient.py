@@ -9,9 +9,12 @@ Mirrors Android's voice identification too: before the /stream GET, the utteranc
 audio is run through the in-process SpeakerIdentifier (the equivalent of Android's
 POST /identify_voice). That populates the server's identification history, so the
 /stream handler's existing voting fills in the speaker. Identify and GET share one
-ordered task, so the history is always populated before the server votes.
+ordered task, so the history is always populated before the server votes. Like the
+/identify_voice route, a wake-word-confirmed utterance leaves its sample in
+log/audio/identification — speculative background speech never does.
 """
 
+import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -19,7 +22,10 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 from .constants import SERVER_HOST, SEND_TIMEOUT, OUTPOST_SOURCE, OUTPOST_LOCATION, SAMPLE_RATE
+from common.audio_log import save_pcm_wav
 from common.logging import info, trace, error, fine
+
+IDENTIFICATION_AUDIO_DIR = "log/audio/identification"
 
 
 class OutpostStreamClient:
@@ -164,7 +170,7 @@ class OutpostStreamClient:
         speculatively on ALL background speech, so attributing the identity here would let
         kitchen chatter overwrite the identified user with no one addressing Floxy.
 
-        Returns (speaker, confidence), or None when identification couldn't run. Best-effort:
+        Returns (speaker, confidence, pcm), or None when identification couldn't run. Best-effort:
         a missing identifier, no enrolled users, or an unknown speaker just means the server
         falls back to no attribution. Imported lazily so this package stays light on
         platforms without the (heavy, Apple-Silicon) ML stack."""
@@ -188,18 +194,20 @@ class OutpostStreamClient:
                 # Speculative identification fires on every utterance (before any wake
                 # word), so an unidentified speaker is the common no-op case — fine().
                 fine(f"[{label}] speaker unknown (best '{speaker}' {conf:.1%}).")
-            return speaker, conf
+            return speaker, conf, pcm
         except Exception as e:
             error(f"[{label}] speaker identification failed: {e}")
             return None
 
     def _record_identification(self, result, label: str):
         """Commit a deferred identification to the voting history once a wake word confirms
-        the speaker is actually addressing Floxy. `result` is the (speaker, conf) tuple from
-        _identify_speaker; None or 'unknown' is a no-op."""
+        the speaker is actually addressing Floxy. `result` is the (speaker, conf, pcm) tuple
+        from _identify_speaker; None is a no-op, 'unknown' only leaves the sample behind.
+        The sample is saved the way the /identify_voice route saves a phone's, so the folder
+        holds every utterance addressed to Floxy from either kind of outpost."""
         if not result:
             return
-        speaker, conf = result
+        speaker, conf, pcm = result
         try:
             from interfaces.voice.speaker_id.SpeakerIdentifier import SpeakerIdentifier
             identifier = SpeakerIdentifier.get_instance()
@@ -209,6 +217,18 @@ class OutpostStreamClient:
                     trace(f"[{label}] recorded identified user '{speaker}' (wake word).")
         except Exception as e:
             trace(f"[{label}] could not record identification: {e}")
+        self._save_identification_sample(pcm, speaker, label)
+
+    def _save_identification_sample(self, pcm: bytes, speaker, label: str):
+        """Keep the wake-word utterance's PCM under IDENTIFICATION_AUDIO_DIR, named by its
+        millisecond timestamp like the route's phone samples, with the mic label after it
+        so the two sources tell apart."""
+        try:
+            name = f"{int(time.time() * 1000)}_{label.strip()}"
+            path = save_pcm_wav(IDENTIFICATION_AUDIO_DIR, name, pcm, sample_rate=SAMPLE_RATE)
+            trace(f"[{label}] identification sample saved: {path} (speaker '{speaker}').")
+        except Exception as e:
+            trace(f"[{label}] could not save identification sample: {e}")
 
     def _identify_then_get(self, url: str, audio, label: str, wake_word: bool = False):
         """One ordered task: identify, record the identity only on a wake word, then GET.

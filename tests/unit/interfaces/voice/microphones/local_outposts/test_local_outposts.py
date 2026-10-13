@@ -1851,24 +1851,42 @@ class TestSpeakerIdentification:
         assert fake.identify.call_args.kwargs.get("record") is False
         fake.record_identification.assert_not_called()
 
-    def test_wake_word_records_deferred_identification(self, monkeypatch):
-        # On a wake word, the deferred identify result is committed to the vote history.
+    def test_wake_word_records_deferred_identification(self, monkeypatch, tmp_path):
+        # On a wake word, the deferred identify result is committed to the vote history
+        # and the utterance's sample lands in the identification folder like a phone's.
+        monkeypatch.chdir(tmp_path)
         fake = MagicMock()
         self._fake_identifier(monkeypatch, fake)
         client = OutpostStreamClient(8888)
         client._get = lambda url, label: None
-        client._identify_speaker = lambda audio, label: ("Sam", 0.9)
-        client._identify_then_get("http://x/stream", AUDIO, "m1", wake_word=True)
+        client._identify_speaker = lambda audio, label: ("Sam", 0.9, b"\x01\x00" * 160)
+        client._identify_then_get("http://x/stream", AUDIO, "USB mic #1 ", wake_word=True)
         fake.record_identification.assert_called_once_with("Sam", 0.9)
+        saved = list((tmp_path / "log" / "audio" / "identification").glob("*.wav"))
+        assert len(saved) == 1 and saved[0].name.endswith("_USB_mic__1.wav")
+        assert saved[0].stat().st_size > 320  # the PCM plus a WAV header
 
-    def test_no_wake_word_skips_deferred_recording(self, monkeypatch):
+    def test_unknown_speaker_on_wake_word_still_leaves_a_sample(self, monkeypatch, tmp_path):
+        # The sample is the debugging trail for a miss, so 'unknown' keeps it too.
+        monkeypatch.chdir(tmp_path)
+        self._fake_identifier(monkeypatch, MagicMock())
+        client = OutpostStreamClient(8888)
+        client._get = lambda url, label: None
+        client._identify_speaker = lambda audio, label: ("unknown", 0.2, b"\x00\x00" * 160)
+        client._identify_then_get("http://x/stream", AUDIO, "m1", wake_word=True)
+        assert len(list((tmp_path / "log" / "audio" / "identification").glob("*.wav"))) == 1
+
+    def test_no_wake_word_skips_deferred_recording(self, monkeypatch, tmp_path):
+        # Speculative background speech neither records nor leaves a sample behind.
+        monkeypatch.chdir(tmp_path)
         fake = MagicMock()
         self._fake_identifier(monkeypatch, fake)
         client = OutpostStreamClient(8888)
         client._get = lambda url, label: None
-        client._identify_speaker = lambda audio, label: ("Sam", 0.9)
+        client._identify_speaker = lambda audio, label: ("Sam", 0.9, b"\x01\x00" * 160)
         client._identify_then_get("http://x/stream", AUDIO, "m1", wake_word=False)
         fake.record_identification.assert_not_called()
+        assert not (tmp_path / "log" / "audio" / "identification").exists()
 
     def test_send_query_with_future_waits_instead_of_reidentifying(self):
         # When identification was started early, send_query waits on that future and
