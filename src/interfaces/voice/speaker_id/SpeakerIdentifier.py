@@ -74,6 +74,9 @@ class SpeakerIdentifier:
     CLIP_MIN_DURATION = 2.0
     CLIP_MIN_RMS = 0.003
     CLIP_MIXED_SIM = 0.0
+    # A change to voice_id/ younger than this is still being written (the refresh copies file by
+    # file): the reload waits for it to settle.
+    RELOAD_SETTLE_S = 5.0
 
     @classmethod
     def get_instance(cls) -> Optional['SpeakerIdentifier']:
@@ -108,6 +111,7 @@ class SpeakerIdentifier:
         # concurrently (one send thread per mic), interleaving append + prune.
         self._history_lock = threading.Lock()
         self._enrollment_seen = ()
+        self._reload_lock = threading.Lock()
         self._enroll_users()
 
     def _ensure_model_loaded(self):
@@ -135,17 +139,34 @@ class SpeakerIdentifier:
 
     def _reload_if_changed(self):
         """Re-enroll when voice_id/ changed on disk, so a voice the owner just named is
-        recognised without a restart."""
+        recognised without a restart. The re-enrollment runs on its own thread and the callers
+        keep identifying against the old set until the new one is swapped in whole; a change
+        still settling (files being copied) waits for the next call."""
         if self._enrollment_seen is None:
             return
         version = self._enrollment_version()
-        if version != self._enrollment_seen:
-            info("Voice enrollment changed on disk, re-enrolling")
-            self._enrolled_users = {}
-            self._enroll_users()
+        if version == self._enrollment_seen:
+            return
+        newest = max((mtime_ns for _, mtime_ns in version), default=0) / 1e9
+        if time.time() - newest < self.RELOAD_SETTLE_S:
+            return
+        if not self._reload_lock.acquire(blocking=False):
+            return
+        info("Voice enrollment changed on disk, re-enrolling in the background")
+
+        def reload():
+            try:
+                self._enroll_users()
+            except Exception as e:
+                error(f"Re-enrolling the voices failed: {e}")
+            finally:
+                self._reload_lock.release()
+
+        threading.Thread(target=reload, name="SpeakerIdReload", daemon=True).start()
 
     def _enroll_users(self):
-        """Scan voice_id/ directory and enroll all users."""
+        """Scan voice_id/ and enroll every user into a new set, swapped in whole at the end — a
+        concurrent identify() sees the old set or the new one, never a half-built one."""
         if self._enrollment_seen is not None:
             self._enrollment_seen = self._enrollment_version()
         if not self.VOICE_ID_DIR.exists():
@@ -155,6 +176,8 @@ class SpeakerIdentifier:
 
         self._ensure_model_loaded()
 
+        enrolled: Dict[str, List[torch.Tensor]] = {}
+        candidate_ids: set[str] = set()
         candidates_dir = None
         for user_dir in self.VOICE_ID_DIR.iterdir():
             if not user_dir.is_dir():
@@ -162,20 +185,20 @@ class SpeakerIdentifier:
             if user_dir.name == self.CANDIDATES_FOLDER:
                 candidates_dir = user_dir
                 continue
-            self._enroll(user_dir.name, list(user_dir.glob("*.wav")))
+            self._enroll(enrolled, user_dir.name, list(user_dir.glob("*.wav")))
 
         # The discovery's unnamed voices are enrolled under their id, so the one speaking is
         # recognised and the assistant can ask who they are (routes.py says so in the turn note).
-        self._candidate_ids = set()
         if candidates_dir is not None:
             for folder in candidates_dir.iterdir():
-                if folder.is_dir() and self._enroll(folder.name, list(folder.glob("*.wav"))):
-                    self._candidate_ids.add(folder.name)
+                if folder.is_dir() and self._enroll(enrolled, folder.name, list(folder.glob("*.wav"))):
+                    candidate_ids.add(folder.name)
 
-        info(f"Speaker identification ready: {len(self._enrolled_users) - len(self._candidate_ids)} users and "
-             f"{len(self._candidate_ids)} unnamed voices enrolled")
+        self._enrolled_users, self._candidate_ids = enrolled, candidate_ids
+        info(f"Speaker identification ready: {len(enrolled) - len(candidate_ids)} users and "
+             f"{len(candidate_ids)} unnamed voices enrolled")
 
-    def _enroll(self, username: str, wav_files: list) -> bool:
+    def _enroll(self, enrolled: dict, username: str, wav_files: list) -> bool:
         if not wav_files:
             fine(f"No WAV files found for user: {username}")
             return False
@@ -194,8 +217,7 @@ class SpeakerIdentifier:
             return False
 
         # Normalize and store all embeddings for k-NN matching
-        normalized = [F.normalize(emb, p=2, dim=-1) for emb in embeddings]
-        self._enrolled_users[username] = normalized
+        enrolled[username] = [F.normalize(emb, p=2, dim=-1) for emb in embeddings]
         trace(f"Enrolled user '{username}' with {len(embeddings)} samples")
         return True
 
@@ -296,7 +318,8 @@ class SpeakerIdentifier:
             Tuple of (username, confidence). Returns ("unknown", 0.0) if no match.
         """
         self._reload_if_changed()
-        if not self._enrolled_users:
+        enrolled_users = self._enrolled_users   # one set for the whole call, a reload swaps the reference
+        if not enrolled_users:
             return ("unknown", 0.0)
 
         self._ensure_model_loaded()
@@ -312,7 +335,7 @@ class SpeakerIdentifier:
         best_match = "unknown"
         best_score = -1.0
 
-        for username, enrolled_embs in self._enrolled_users.items():
+        for username, enrolled_embs in enrolled_users.items():
             # Compute similarity to all embeddings for this user
             similarities = [
                 F.cosine_similarity(embedding.unsqueeze(0), emb.unsqueeze(0)).item()

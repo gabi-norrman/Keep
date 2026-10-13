@@ -57,14 +57,15 @@ def test_score_rewards_identity_and_margin_and_penalises_age(tmp_path, voices):
 def test_select_keeps_one_of_a_near_duplicate_pair_and_fills_up_to_size(tmp_path, voices):
     rng, a, _, _ = voices
     distinct = _samples(tmp_path, _around(rng, a, 6, spread=1.2), "p")
-    twin = Sample(tmp_path / "twin.wav", distinct[0].embedding, NOW)
+    near = distinct[0].embedding + 0.25 * _unit(rng.standard_normal(DIM))   # cosine ~0.97: the same condition, not the same file
+    twin = Sample(tmp_path / "twin.wav", near / np.linalg.norm(near), NOW)
     pool = distinct + [twin]
     score(pool, {}, NOW)
     twin.score = distinct[0].score + 1   # the twin outranks its original
-    kept = select(pool, size=6, floor=0.0, diversity=0.99)
+    kept = select(pool, size=6, floor=0.0, diversity=0.95)
     names = {s.name for s in kept}
     assert "twin.wav" in names and distinct[0].name not in names and len(kept) == 6
-    assert len(select(pool, size=7, floor=0.0, diversity=0.99)) == 7   # room left: the duplicate fills it
+    assert len(select(pool, size=7, floor=0.0, diversity=0.95)) == 7   # room left: the near-duplicate fills it
 
 
 def test_select_drops_samples_below_the_cleanliness_floor(tmp_path, voices):
@@ -173,3 +174,39 @@ def test_two_refreshes_on_one_day_do_not_overwrite_each_other_s_files(tmp_path, 
     second = _samples(tmp_path, _around(rng, a, 5), "second", origin=er.ORIGIN_DISCOVERY)
     refresh("charlotte", folder, current, second, {}, size=20, now=NOW, replaced_dir=tmp_path / "r")
     assert len(list(folder.glob("*.wav"))) == 10
+
+
+def test_the_same_clips_offered_night_after_night_are_not_added_twice(tmp_path, voices):
+    """The window re-offers a clip for a week; renamed into the set it must still count as taken."""
+    rng, a, _, _ = voices
+    folder = tmp_path / "charlotte"
+    current = _samples(tmp_path, _around(rng, a, 2), "charlotte")
+    offered = _samples(tmp_path, _around(rng, a, 6), "offer", origin=er.ORIGIN_DISCOVERY)
+    for night in range(5):
+        current = er.current_samples(folder, lambda path: a) if night else current
+        again = [Sample(o.path, o.embedding, o.when, o.origin) for o in offered]
+        er.refresh("charlotte", folder, current, again, {}, size=20, now=NOW + night * DAY, replaced_dir=tmp_path / "r")
+    ledger = json.loads((folder / er.LEDGER).read_text())
+    assert len(ledger) == 8 and len({e["source"] for e in ledger}) == 8
+
+
+def test_select_never_fills_the_set_with_a_twin(tmp_path, voices):
+    rng, a, _, _ = voices
+    pool = _samples(tmp_path, _around(rng, a, 3), "p")
+    twin = Sample(tmp_path / "twin.wav", pool[0].embedding.copy(), NOW)
+    score(pool + [twin], {}, NOW)
+    assert len(select(pool + [twin], size=10, floor=0.0)) == 3
+
+
+def test_same_day_numbering_continues_past_a_dropped_file(tmp_path, voices):
+    rng, a, _, _ = voices
+    folder = tmp_path / "charlotte"
+    current = _samples(tmp_path, _around(rng, a, 2), "charlotte")
+    first = _samples(tmp_path, _around(rng, a, 3), "first", origin=er.ORIGIN_DISCOVERY)
+    er.refresh("charlotte", folder, current, first, {}, size=20, now=NOW, replaced_dir=tmp_path / "r")
+    (next(folder.glob("charlotte-*-01.wav"))).unlink()
+    current = er.current_samples(folder, lambda path: a)
+    second = _samples(tmp_path, _around(rng, a, 2), "second", origin=er.ORIGIN_DISCOVERY)
+    er.refresh("charlotte", folder, current, second, {}, size=20, now=NOW, replaced_dir=tmp_path / "r")
+    numbers = sorted(int(f.name[-6:-4]) for f in folder.glob("charlotte-*-*.wav"))
+    assert numbers == [2, 3, 4, 5]

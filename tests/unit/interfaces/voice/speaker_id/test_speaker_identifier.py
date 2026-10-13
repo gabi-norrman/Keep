@@ -569,3 +569,46 @@ def test_unnamed_voices_are_enrolled_under_their_id_but_are_not_persons(mock_ml_
     assert set(si._enrolled_users) == {"alice", "voice-7f3a"}
     assert si.is_candidate("voice-7f3a") and not si.is_candidate("alice")
     assert set(si.enrolled_embeddings()) == {"alice"}
+
+
+def test_re_enrolling_swaps_the_set_in_whole(mock_ml_globals):
+    """identify() on another mic thread must see the old set or the new one, never one being filled."""
+    si = make_speaker_identifier()
+    wav = Mock(); wav.name = "a.wav"
+    root = Mock(); root.exists.return_value = True
+    root.iterdir.return_value = [_dir("alice", [wav]), _dir("bob", [wav])]
+    si.VOICE_ID_DIR = root
+    si._ensure_model_loaded = Mock()
+    seen_during = []
+    before = si._enrolled_users = {"old": [Mock()]}
+
+    def extract(path):
+        seen_during.append(dict(si._enrolled_users))
+        return Mock()
+    si._extract_embedding_from_file = extract
+
+    si._enroll_users()
+
+    assert all(snapshot == before for snapshot in seen_during)
+    assert set(si._enrolled_users) == {"alice", "bob"}
+
+
+def test_a_reload_already_running_or_still_settling_is_not_started_again():
+    import threading, time
+    si = make_speaker_identifier()
+    si._enrollment_seen = ()
+    si._reload_lock = threading.Lock()
+    si._enrollment_version = lambda: (("alice", int(time.time() * 1e9)),)
+    si._enroll_users = Mock()
+    si._reload_if_changed()                      # changed a moment ago: still settling
+    si._enroll_users.assert_not_called()
+    si._enrollment_version = lambda: (("alice", int((time.time() - 60) * 1e9)),)
+    si._reload_lock.acquire()                    # a reload is running on another thread
+    si._reload_if_changed()
+    si._enroll_users.assert_not_called()
+    si._reload_lock.release()
+    si._reload_if_changed()
+    deadline = time.time() + 2
+    while not si._enroll_users.called and time.time() < deadline:
+        time.sleep(0.01)
+    si._enroll_users.assert_called_once()

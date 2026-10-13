@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -29,6 +30,7 @@ SIZE = 40
 TURNOVER = 0.2          # the share of the set a night may replace
 CLEAN_SIM = 0.50        # a sample further than this from the person's centre is not kept
 DIVERSITY_SIM = 0.90    # two samples this alike are one condition; the better scored stays
+TWIN_SIM = 0.995        # the same recording twice: never kept, even to fill the set
 AGE_PENALTY = 0.05      # per year, off the score
 MARGIN_FLOOR = 0.25     # a set whose leave-one-out margin stays above this may change freely; below it, never for the worse
 LEDGER = "samples.json"
@@ -43,10 +45,14 @@ class Sample:
     embedding: np.ndarray
     when: float                      # epoch of the recording
     origin: str = ORIGIN_ENROLLED
+    source: str = ""                 # the log/audio clip the sample was copied from; its own name for a hand-made one
     identity: float = 0.0
     margin: float = 0.0
     score: float = 0.0
     keep: bool = field(default=False, compare=False)
+
+    def __post_init__(self):
+        self.source = self.source or self.path.name
 
     @property
     def name(self) -> str:
@@ -77,17 +83,25 @@ def score(samples: list[Sample], others: dict[str, np.ndarray], now: float) -> N
 def select(samples: list[Sample], size: int = SIZE, floor: float = CLEAN_SIM,
            diversity: float = DIVERSITY_SIM) -> list[Sample]:
     """The best *size* samples: in score order, skipping one within *diversity* of a kept one,
-    then — if that leaves room — the best of the skipped ones. Below *floor* nothing is kept."""
+    then — if that leaves room — the best of the skipped ones, never a twin (the same recording
+    again). Below *floor* nothing is kept."""
     ranked = sorted((s for s in samples if s.identity >= floor), key=lambda s: -s.score)
     kept, skipped = [], []
     for s in ranked:
         if len(kept) == size:
             break
-        if any(float(s.embedding @ k.embedding) >= diversity for k in kept):
+        closest = max((float(s.embedding @ k.embedding) for k in kept), default=-1.0)
+        if closest >= TWIN_SIM:
+            continue
+        if closest >= diversity:
             skipped.append(s)
         else:
             kept.append(s)
-    kept += skipped[:size - len(kept)]
+    for s in skipped:
+        if len(kept) == size:
+            break
+        if all(float(s.embedding @ k.embedding) < TWIN_SIM for k in kept):
+            kept.append(s)
     return kept
 
 
@@ -118,7 +132,7 @@ def load_ledger(folder: Path) -> dict[str, dict]:
 
 
 def save_ledger(folder: Path, samples: list[Sample]) -> None:
-    entries = [{"file": s.name, "when": s.when, "origin": s.origin, "identity": round(s.identity, 4),
+    entries = [{"file": s.name, "source": s.source, "when": s.when, "origin": s.origin, "identity": round(s.identity, 4),
                 "margin": round(s.margin, 4), "score": round(s.score, 4),
                 "embedding": [round(float(v), 5) for v in s.embedding]} for s in sorted(samples, key=lambda s: -s.score)]
     (folder / LEDGER).write_text(json.dumps(entries, indent=0), encoding="utf-8")
@@ -132,7 +146,8 @@ def current_samples(folder: Path, embed: Callable[[Path], Optional[np.ndarray]])
         entry = ledger.get(path.name)
         if entry is not None and entry.get("embedding"):
             samples.append(Sample(path, _unit(np.asarray(entry["embedding"], dtype=np.float32)),
-                                  float(entry.get("when", path.stat().st_mtime)), entry.get("origin", ORIGIN_ENROLLED)))
+                                  float(entry.get("when", path.stat().st_mtime)), entry.get("origin", ORIGIN_ENROLLED),
+                                  entry.get("source", "")))
             continue
         try:
             embedding = embed(path)
@@ -151,7 +166,9 @@ def refresh(person: str, folder: Path, current: list[Sample], offered: list[Samp
     added, dropped and the reason when nothing changed."""
     now = now or datetime.now().timestamp()
     replaced_dir = (replaced_dir or REPLACED_DIR) / person
-    pool = current + [o for o in offered if o.name not in {c.name for c in current}]
+    # A clip already in the set — under its new name — is not offered again.
+    taken = {c.source for c in current} | {c.name for c in current}
+    pool = current + [o for o in offered if o.source not in taken and o.name not in taken]
     score(pool, others, now)
     proposal = select(pool, size)
     current_names = {c.name for c in current}
@@ -179,8 +196,9 @@ def refresh(person: str, folder: Path, current: list[Sample], offered: list[Samp
         return outcome
     try:
         stamp = datetime.fromtimestamp(now).strftime("%Y%m%d")
-        taken = len(list(folder.glob(f"{person}-{stamp}-*.wav")))
-        for n, s in enumerate(added, taken + 1):
+        used = [int(m.group(1)) for f in folder.glob(f"{person}-{stamp}-*.wav")
+                if (m := re.search(r"-(\d+)\.wav$", f.name))]
+        for n, s in enumerate(added, max(used, default=0) + 1):
             target = folder / f"{person}-{stamp}-{n:02d}.wav"
             shutil.copy(s.path, target)
             s.path, s.origin = target, ORIGIN_DISCOVERY

@@ -9,7 +9,7 @@ import pytest
 
 from assistant import VoiceCandidates
 from interfaces.voice.speaker_id import VoiceDiscovery as vd
-from interfaces.voice.speaker_id.VoiceDiscovery import VoiceDiscovery, cluster, match_enrolled, describe_hours
+from interfaces.voice.speaker_id.VoiceDiscovery import VoiceDiscovery, cluster, cluster_by_day, match_enrolled, describe_hours
 
 DIM = 32
 NOW = datetime(2026, 10, 14, 5, 0)
@@ -151,11 +151,11 @@ def test_a_second_run_refreshes_the_open_candidate_instead_of_filing_it_again(tm
     fake.voice(0, 40, days=[1, 2, 3, 4])
     discovery = fake.discovery(tmp_path)
     discovery.run(NOW)
-    fake.voice(0, 10, days=[5, 6], prefix="later")
+    fake.voice(0, 20, days=[5, 6], prefix="later")
     summary = discovery.run(NOW)
     assert summary["refreshed"] == 1 and summary["filed"] == 0 and len(fake.asked) == 1
     (candidate,) = VoiceCandidates.items(tmp_path / "candidates")
-    assert candidate.clips == 50 and candidate.days == 6
+    assert candidate.clips == 60 and candidate.days == 6
 
 
 def test_the_cache_spares_the_clips_embedded_before(tmp_path):
@@ -245,3 +245,39 @@ def test_two_buckets_of_one_person_make_one_refresh_within_the_nightly_cap(tmp_p
     summary = fake.discovery(tmp_path, enrolled=enrolled).run(NOW)
     assert summary["known"] == 2 and summary["enrollment_refreshed"] == 1
     assert len(list(folder.glob("*.wav"))) == 5
+
+
+def test_cluster_by_day_reassembles_a_voice_across_days_and_caps_a_day_by_length():
+    from datetime import date
+    rng = np.random.default_rng(4)
+    a, b = _centres(rng, 2)
+    X = np.vstack([_voice(rng, 30, a), _voice(rng, 20, b), _voice(rng, 20, a), _voice(rng, 10, b)])
+    days = [date(2026, 10, 6)] * 50 + [date(2026, 10, 7)] * 30
+    buckets = cluster_by_day(X, days)
+    assert [len(x) for x in buckets] == [50, 30]
+    assert set(buckets[0]) == set(range(30)) | set(range(50, 70))
+    durations = [1.0] * 80
+    durations[:30] = [9.0] * 30   # day one over the cap keeps its 35 longest: all of a, too little of b
+    capped = cluster_by_day(X, days, durations, max_chunk=35)
+    assert [len(x) for x in capped] == [50, 10]
+
+
+def test_a_rewritten_clip_with_a_new_mtime_is_embedded_again(tmp_path):
+    fake = Fake(tmp_path)
+    fake.voice(0, 40, days=[1, 2, 3, 4])
+    discovery = fake.discovery(tmp_path)
+    discovery.run(NOW)
+    name = next(iter(fake.table))
+    path = fake.audio / name
+    later = (NOW - timedelta(hours=6)).timestamp()
+    os.utime(path, (later, later))
+    calls = fake.calls
+    discovery.run(NOW)
+    assert fake.calls == calls + 1
+
+
+def test_a_boot_inside_the_run_hour_counts_tonight_as_done(tmp_path, monkeypatch):
+    discovery = Fake(tmp_path).discovery(tmp_path, hour=datetime.now().hour)
+    monkeypatch.setattr(discovery, "_loop", lambda: None)
+    discovery.start()
+    assert discovery._last_run_date == datetime.now().date()

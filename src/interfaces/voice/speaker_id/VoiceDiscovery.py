@@ -53,6 +53,7 @@ KNOWN_SIM = 0.45      # a bucket this close to an enrolled speaker (top-3 mean).
 KNOWN_MARGIN = 0.10   # ...and this far ahead of the runner-up is that speaker
 SAME_VOICE_SIM = 0.60 # a bucket this close to an open or dismissed candidate is that voice again
 REFRESH_OFFER = 200   # the most central clips of a known bucket offered to the person's enrollment refresh
+MAX_CHUNK = 6000      # clips clustered at once: linkage needs n²/2 float64 (6k -> 150 MB, 20k -> 3 GB measured)
 SAMPLES_KEPT = 12
 TRANSCRIPTS_SHOWN = 6
 MIN_TRANSCRIPT_WORDS = 3
@@ -101,6 +102,34 @@ def cluster(X: np.ndarray, cut: float = CUT, merge: float = MERGE_SIM, outlier: 
         return parts
     C = np.stack([centroid(X, p) for p in parts])
     merged = fcluster(linkage(C, method="average", metric="cosine"), t=1 - merge, criterion="distance")
+    buckets: dict[int, list[np.ndarray]] = {}
+    for part, label in zip(parts, merged):
+        buckets.setdefault(int(label), []).append(part)
+    return sorted((np.concatenate(ps) for ps in buckets.values()), key=len, reverse=True)
+
+
+def cluster_by_day(X: np.ndarray, days: list[date], durations: list[float] = None,
+                   max_chunk: int = MAX_CHUNK) -> list[np.ndarray]:
+    """`cluster` on each day's clips, then the days' buckets merged by their centroids (average
+    linkage at MERGE_SIM): the memory of one day's linkage instead of the window's, and every
+    household voice comes out of a single day on its own (measured). A day beyond *max_chunk*
+    clips keeps its longest ones."""
+    days = np.asarray(days)
+    parts = []
+    for day in sorted(set(days.tolist())):
+        idx = np.where(days == day)[0]
+        if len(idx) > max_chunk:
+            longest = np.argsort([-(durations[i] if durations else 0.0) for i in idx])[:max_chunk]
+            trace(f"Voice discovery: {day} has {len(idx)} usable clips, clustering the {max_chunk} longest")
+            idx = idx[longest]
+        parts += [idx[b] for b in cluster(X[idx])]
+    if not parts:
+        return []
+    if len(parts) == 1:
+        return parts
+    from scipy.cluster.hierarchy import fcluster, linkage
+    C = np.stack([centroid(X, p) for p in parts])
+    merged = fcluster(linkage(C, method="average", metric="cosine"), t=1 - MERGE_SIM, criterion="distance")
     buckets: dict[int, list[np.ndarray]] = {}
     for part, label in zip(parts, merged):
         buckets.setdefault(int(label), []).append(part)
@@ -161,6 +190,12 @@ class VoiceDiscovery:
         if not self.config["enabled"]:
             info("Voice discovery is off (voice_discovery.enabled)")
             return
+        now = datetime.now()
+        if now.hour == int(self.config["hour"]):
+            # A boot inside the run hour: the speaker identifier is still loading and a run now
+            # would embed nothing, and a restart after tonight's run must not run it twice.
+            self._last_run_date = now.date()
+            info(f"Voice discovery: started inside the {int(self.config['hour']):02d}:00 hour, tonight counts as done")
         self._running = True
         self._thread = threading.Thread(target=self._loop, name="VoiceDiscovery", daemon=True)
         self._thread.start()
@@ -200,7 +235,7 @@ class VoiceDiscovery:
                  f"min_clips {cfg['min_clips']} — nothing to do")
             return summary
         X = np.stack([c.embedding for c in usable])
-        buckets = cluster(X)
+        buckets = cluster_by_day(X, [c.day for c in usable], [c.duration for c in usable])
         summary["buckets"] = len(buckets)
         info(f"Voice discovery: {len(usable)} usable clips of {len(clips)} -> {len(buckets)} voice bucket(s)")
         enrolled = self._enrolled_embeddings()
@@ -323,7 +358,8 @@ class VoiceDiscovery:
                 if mtime >= cutoff:
                     files.append((entry.name, mtime))
         cached = self._load_cache()
-        todo = [(name, mtime) for name, mtime in files if name not in cached]
+        # A name comes back once the size cap deleted its file: a changed mtime is a new clip.
+        todo = [(name, mtime) for name, mtime in files if name not in cached or cached[name].mtime != mtime]
         if todo:
             embedder = self._embedder or self._default_embedder()
             if embedder is None:
