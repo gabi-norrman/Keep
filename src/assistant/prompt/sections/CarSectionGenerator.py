@@ -2,9 +2,12 @@
 beside whatever other brand the house has — with the car's vehicle_id, whether it is parked or
 driving, where it is (Home, or an address), its route or how far from home it is, the cabin
 temperature and the charge. Refreshed every five minutes while every car is parked and every
-minute while one is driving; a brand that fails gets an error on its car's line and the others
-stay. Without a ready provider the section is the setup hint."""
+minute while one is driving; a parked car's minutes from home are asked for every ten minutes
+and held through a one-minute traffic wobble; a brand that fails gets an error on its car's
+line and the others stay. Without a ready provider the section is the setup hint."""
 import math
+import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
@@ -16,6 +19,15 @@ from common.ConfigManager import config
 from common.logging import info, trace
 
 from ..PromptSectionGenerator import PromptSectionGenerator
+
+
+@dataclass(frozen=True)
+class _ParkedEta:
+    """The ETA to home shown for a parked car, with when and where it was fetched."""
+    minutes: int
+    fetched_at: float
+    latitude: float
+    longitude: float
 
 
 class CarSectionGenerator(PromptSectionGenerator):
@@ -30,6 +42,13 @@ class CarSectionGenerator(PromptSectionGenerator):
     UPDATE_INTERVAL_DRIVING = 60
     UPDATE_INTERVAL_PARKED = 300
     UPDATE_INTERVAL_NOT_READY = 30      # a provider is on but not configured yet: look again soon after setup
+    # A parked car's ETA to home moves with the traffic alone, and the Distance Matrix answer
+    # wobbles by a minute between calls — each wobble a diff of the section. So a parked car
+    # is asked for every ten minutes, and the line keeps its value until the answer moves by
+    # the dead band. A driving car's ETA is live.
+    PARKED_ETA_REFRESH_S = 600
+    PARKED_ETA_DEAD_BAND_MIN = 2
+    PARKED_ETA_SAME_SPOT_M = 100
 
     def __init__(self, prompt_manager):
         super().__init__(prompt_manager, "CarInfo")
@@ -38,6 +57,7 @@ class CarSectionGenerator(PromptSectionGenerator):
         self.home_lon = config.get_home_longitude()
         self._any_car_driving = False
         self._ready = False
+        self._parked_etas: dict[str, _ParkedEta] = {}
 
     def _start_monitoring(self):
         while not self._stop_event.is_set():
@@ -98,7 +118,7 @@ class CarSectionGenerator(PromptSectionGenerator):
         if has_route:
             eta_text = f"Navigating to {state.destination}, ETA {round(state.minutes_to_arrival)} min"
         elif not is_at_home and has_position:
-            eta_minutes = self._get_eta_to_home(state.latitude, state.longitude)
+            eta_minutes = self._eta_to_home(spec, state)
             eta_text = f"~{eta_minutes} min from home" if eta_minutes is not None else ""
         else:
             eta_text = ""
@@ -124,6 +144,30 @@ class CarSectionGenerator(PromptSectionGenerator):
         parts = [f"{spec.label} (vehicle_id: {spec.id}):", status, speed_text, location_text, eta_text,
                  cabin_text, energy_text, range_text, asleep_text]
         return " ".join(p for p in parts if p)
+
+    def _eta_to_home(self, spec: VehicleSpec, state: VehicleState) -> Optional[int]:
+        """The minutes from home for the line: live for a moving car, held for a parked one
+        (see PARKED_ETA_REFRESH_S)."""
+        if state.is_driving or state.in_gear:
+            self._parked_etas.pop(spec.id, None)
+            return self._get_eta_to_home(state.latitude, state.longitude)
+        held = self._parked_etas.get(spec.id)
+        if held and self._haversine_distance(held.latitude, held.longitude, state.latitude, state.longitude) > self.PARKED_ETA_SAME_SPOT_M:
+            trace(f"CarInfo: {spec.label} is parked somewhere else, its held ETA is dropped")
+            held = None
+        now = time.time()
+        if held and now - held.fetched_at < self.PARKED_ETA_REFRESH_S:
+            return held.minutes
+        fetched = self._get_eta_to_home(state.latitude, state.longitude)
+        if fetched is None:
+            # The held value stands on a failed fetch; the next pass asks again.
+            return held.minutes if held else None
+        minutes = fetched
+        if held and abs(fetched - held.minutes) < self.PARKED_ETA_DEAD_BAND_MIN:
+            trace(f"CarInfo: {spec.label} ETA fetched as {fetched} min, kept at {held.minutes} min")
+            minutes = held.minutes
+        self._parked_etas[spec.id] = _ParkedEta(minutes, now, state.latitude, state.longitude)
+        return minutes
 
     @staticmethod
     def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

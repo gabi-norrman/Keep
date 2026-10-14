@@ -138,6 +138,62 @@ class TestFetchContent:
 
 
 @pytest.mark.unit
+class TestParkedEta:
+    """A parked car's ETA to home is traffic alone: fetched every ten minutes, held through a
+    one-minute wobble; a moving car's is live."""
+
+    def _line(self, section, state, eta, at=None):
+        with patch(f"{MODULE}.reverse_geocode", return_value="Avenyn"), \
+                patch.object(section, "_get_eta_to_home", return_value=eta) as fetch, \
+                patch(f"{MODULE}.time.time", return_value=at if at is not None else time.time()):
+            line = section._render(CAR, state)
+        return line, fetch.call_count
+
+    def test_a_parked_car_is_not_asked_again_within_ten_minutes(self, section):
+        parked = VehicleState(latitude=AWAY[0], longitude=AWAY[1])
+        line, calls = self._line(section, parked, 19, at=1000)
+        assert "~19 min from home" in line and calls == 1
+        line, calls = self._line(section, parked, 18, at=1000 + CarSectionGenerator.PARKED_ETA_REFRESH_S - 1)
+        assert "~19 min from home" in line and calls == 0
+
+    def test_a_one_minute_wobble_after_the_refresh_keeps_the_shown_value(self, section):
+        parked = VehicleState(latitude=AWAY[0], longitude=AWAY[1])
+        self._line(section, parked, 19, at=1000)
+        line, calls = self._line(section, parked, 18, at=1000 + CarSectionGenerator.PARKED_ETA_REFRESH_S)
+        assert "~19 min from home" in line and calls == 1
+
+    def test_a_real_change_after_the_refresh_is_shown(self, section):
+        parked = VehicleState(latitude=AWAY[0], longitude=AWAY[1])
+        self._line(section, parked, 19, at=1000)
+        line, _ = self._line(section, parked, 25, at=1000 + CarSectionGenerator.PARKED_ETA_REFRESH_S)
+        assert "~25 min from home" in line
+
+    def test_a_failed_refresh_keeps_the_held_value_and_asks_again_next_pass(self, section):
+        parked = VehicleState(latitude=AWAY[0], longitude=AWAY[1])
+        self._line(section, parked, 19, at=1000)
+        later = 1000 + CarSectionGenerator.PARKED_ETA_REFRESH_S
+        line, _ = self._line(section, parked, None, at=later)
+        assert "~19 min from home" in line
+        line, calls = self._line(section, parked, 30, at=later + 1)
+        assert "~30 min from home" in line and calls == 1
+
+    def test_a_car_parked_somewhere_else_is_asked_at_once(self, section):
+        self._line(section, VehicleState(latitude=AWAY[0], longitude=AWAY[1]), 19, at=1000)
+        elsewhere = VehicleState(latitude=AWAY[0] + 0.05, longitude=AWAY[1])
+        line, calls = self._line(section, elsewhere, 40, at=1001)
+        assert "~40 min from home" in line and calls == 1
+
+    def test_a_driving_car_is_live_and_a_fresh_park_is_asked_anew(self, section):
+        parked = VehicleState(latitude=AWAY[0], longitude=AWAY[1])
+        self._line(section, parked, 19, at=1000)
+        driving = VehicleState(latitude=AWAY[0], longitude=AWAY[1], speed_kmh=30, in_gear=True)
+        line, calls = self._line(section, driving, 18, at=1001)
+        assert "~18 min from home" in line and calls == 1
+        line, calls = self._line(section, parked, 17, at=1002)
+        assert "~17 min from home" in line and calls == 1
+
+
+@pytest.mark.unit
 class TestUpdateInterval:
     """Driving status is carried over from the fetch pass — the interval check makes no calls."""
 
