@@ -155,3 +155,20 @@ def test_a_command_of_a_config_gated_toolkit_is_refused_while_the_key_is_off(com
     with _config(**{toolkit.requires: True}), \
             patch.object(Commands, "_integration_monitor", staticmethod(lambda: FakeMonitor())):
         assert commands.refused(command) is None
+
+
+@pytest.mark.unit
+def test_the_voices_toolkit_is_a_contract_with_the_voice_interface_switch(commands):
+    """A house without the voice interface never hears of the voices toolkit: the discovery
+    that files a voice is the interface's nightly job, so the toolkit follows its config key."""
+    toolkit = Toolkits.by_name("voices")
+    assert toolkit.requires == "interfaces.voice.enabled"
+    with _config(**{"interfaces.voice.enabled": False}), \
+            patch.object(Commands, "_integration_monitor", staticmethod(lambda: FakeMonitor())):
+        assert "voices" not in Toolkits.names(FakeMonitor()) and "`voices`" not in Toolkits.render_index(FakeMonitor())
+        refusal = commands.refused("name_voice")
+        assert refusal.startswith("name_voice failed") and "interfaces.voice.enabled" in refusal
+        assert "developer" not in refusal, "the reason is the voice interface, not a developer's install"
+    with _config(**{"interfaces.voice.enabled": True}), \
+            patch.object(Commands, "_integration_monitor", staticmethod(lambda: FakeMonitor())):
+        assert "voices" in Toolkits.names(FakeMonitor()) and commands.refused("name_voice") is None

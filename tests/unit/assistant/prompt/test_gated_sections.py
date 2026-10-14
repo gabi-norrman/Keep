@@ -1,6 +1,7 @@
 """The sections tied to an integration follow the IntegrationMonitor's verdict: built and
 started when it says on, stopped and dropped when it says off, and rendered under their own
 headings in the prompt's one {INTEGRATION_DATA} block while they run."""
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -55,6 +56,20 @@ class BrewSectionGenerator(KettleSectionGenerator):
         self.content = type(self).data
 
 
+class SaunaSectionGenerator(KettleSectionGenerator):
+    """A core section tied to a config key."""
+    __module__ = "tests.sauna"
+    key = "sauna"
+    requires = "sauna.enabled"
+    heading = "## The sauna"
+    intro = ""
+    data = "Sauna: 80°C"
+
+    def __init__(self, prompt_manager):
+        PromptSectionGenerator.__init__(self, prompt_manager, "SaunaState")
+        self.content = type(self).data
+
+
 class FakeMonitor:
     def __init__(self):
         self.folders, self.contracts, self.listeners = {}, {}, []
@@ -95,7 +110,8 @@ def manager(workspace):
     with patch.object(PromptManager, "_monitor", lambda self: monitor), \
             patch.object(PromptSectionGenerator, "start", lambda self: lifecycle.append(("start", self.section_name))), \
             patch.object(PromptSectionGenerator, "stop", lambda self: lifecycle.append(("stop", self.section_name))):
-        pm = PromptManager(section_generators=[KettleSectionGenerator, CarSectionGenerator, BrewSectionGenerator])
+        pm = PromptManager(section_generators=[KettleSectionGenerator, CarSectionGenerator, BrewSectionGenerator,
+                                               SaunaSectionGenerator])
         pm.monitor, pm.lifecycle = monitor, lifecycle
         yield pm
         pm.stop()
@@ -138,6 +154,21 @@ def test_a_core_section_follows_the_contract_it_needs(manager):
     manager.monitor.contracts[Brewing] = None
     manager.monitor.notify()
     assert "brew" not in manager.sections
+
+
+@pytest.mark.unit
+def test_a_core_section_follows_the_config_key_it_requires(manager):
+    import assistant.prompt.PromptSectionGenerator as base
+    keys = {}
+    with patch.object(base, "config", SimpleNamespace(get=lambda key, default=None: keys.get(key, default))):
+        manager.monitor.notify()
+        assert "sauna" not in manager.sections and "sauna" in manager.section_classes()
+        keys["sauna.enabled"] = True
+        manager.monitor.notify()
+        assert "sauna" in manager.sections and "## The sauna\nSauna: 80°C\n" in manager.prompt
+        keys["sauna.enabled"] = False
+        manager.monitor.notify()
+        assert "sauna" not in manager.sections and "The sauna" not in manager.prompt
 
 
 @pytest.mark.unit

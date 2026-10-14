@@ -1740,8 +1740,8 @@ class Commands:
         integration it is and how the setup toolkit turns it on — or, for a toolkit a config
         key gates, which key."""
         if toolkit.requires is not None and not Toolkits.config.get(toolkit.requires, False):
-            return (f"The {toolkit.name} toolkit is for a developer's install only: it needs "
-                    f"`{toolkit.requires}: true` in config.yaml. Users work through the developer toolkit.")
+            return (f"The {toolkit.name} toolkit needs `{toolkit.requires}: true` in config.yaml"
+                    + (f" — {toolkit.requires_note}." if toolkit.requires_note else "."))
         behind = toolkit.behind(monitor)
         if len(behind) == 1:
             return (f"The {toolkit.name} toolkit belongs to the {behind[0].name} integration, which is off — "

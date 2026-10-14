@@ -2,7 +2,7 @@
 `voice_id/candidates/<id>/`. The voice interface's nightly discovery files a candidate when a
 voice matching no enrolled speaker recurs over enough days, with a dozen of its clearest clips, the
 facts the prompt shows (how often, which days and hours, what it says) and the centroid of its
-embedding; the `{VOICES}` section of the prompt lists them, and the owner's answer ends one:
+embedding; the VOICES section of the prompt lists them, and the owner's answer ends one:
 `name_voice` moves the clips into `voice_id/<name>/` — the enrollment the SpeakerIdentifier
 reloads on its own — and `dismiss_voice` drops it, keeping the centroid in `dismissed.json` so
 the discovery does not propose the same voice again. The assistant never imports the voice
@@ -25,7 +25,6 @@ CANDIDATES_DIR = VOICE_ID_DIR / "candidates"
 LOG_DIR = _LOG_DIR / "voice_id"
 DISMISSED_FILE = "dismissed.json"
 FACTS_FILE = "candidate.json"
-EMPTY = "none"
 ID_PREFIX = "voice-"
 MAX_TRANSCRIPTS = 6
 TRANSCRIPT_CHARS = 80
@@ -177,8 +176,9 @@ def _describe(candidate: Candidate, today: date = None) -> str:
 
 
 def render_index(directory: Path = None, today: date = None) -> str:
-    """The `{VOICES}` text: one line per candidate, or `none`."""
-    return "\n".join(_describe(c, today) for c in items(directory)) or EMPTY
+    """The VOICES section's text: one line per candidate, "" when none is open (the section is
+    then left out of the prompt, heading and all)."""
+    return "\n".join(_describe(c, today) for c in items(directory))
 
 
 def _trail(candidate: Candidate, outcome: str, log_dir: Path, extra: dict) -> None:

@@ -50,7 +50,7 @@ def test_the_index_shows_the_facts_the_owner_needs_and_whether_they_were_asked(t
 
 
 def test_the_index_is_empty_without_candidates(store):
-    assert VoiceCandidates.render_index(store["directory"]) == VoiceCandidates.EMPTY
+    assert VoiceCandidates.render_index(store["directory"]) == ""
 
 
 def test_the_most_heard_voice_comes_first(tmp_path, store):

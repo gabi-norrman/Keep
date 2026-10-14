@@ -194,10 +194,6 @@ The procedures you have saved (`load_procedure(name)` loads one):
 What you are keeping an eye on (`load_watch(name)` loads an item in full):
 {WATCHLIST}
 
-# VOICES
-Voices the house keeps hearing that have no name yet. The owner is asked who each one is, and a spoken request headed by one of these ids is that voice speaking — then ask the speaker. A name, or a reason to ignore the voice, goes through the `voices` toolkit, nowhere else:
-{VOICES}
-
 {INTEGRATIONS}
 
 # GENERAL RULES

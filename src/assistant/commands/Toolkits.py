@@ -25,7 +25,9 @@ so a text chat's prompt never carries a word of it.
 A toolkit is offered only while the integration behind it is on (`Toolkit.offered_by`, the
 IntegrationMonitor's verdict): a folder toolkit while its folder's integration is enabled, a
 core toolkit that fronts a contract (`needs` — home automation, the mail and calendar
-sources) while an enabled integration implements it. One that is not offered is out of the
+sources) while an enabled integration implements it, one a config key gates (`requires` —
+self_improvement on a developer's install, voices while the voice interface is on) while the
+key is true. One that is not offered is out of the
 index, `load_toolkit` and the preloads answer that its integration is off, and its commands
 are refused — the LLM never hears of a car the house does not have.
 """
@@ -71,8 +73,11 @@ class Toolkit:
     # A core toolkit that fronts a contract: offered while an enabled integration implements it.
     needs: Optional[type] = None
     # A config.yaml key that must be true for the toolkit to be offered (`is_developer` for the
-    # self_improvement toolkit): read at each verdict, so a flip is in force at the next prompt build.
+    # self_improvement toolkit, the voice interface's switch for the voices toolkit): read at each
+    # verdict, so a flip is in force at the next prompt build. `requires_note` tells the LLM why
+    # the key gates it when it asks for the toolkit anyway.
     requires: Optional[str] = None
+    requires_note: str = ""
 
     @property
     def path(self) -> Path:
@@ -217,12 +222,14 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
             ("self_analysis", "improve_integration", "report_issue", "try_pull_request", "pr_feedback",
              "server_logs", "restart_server")),
     Toolkit("self_improvement", "change any part of your own code base as a PR — a developer's install only",
-            ("self_improvement",), requires="is_developer"),
+            ("self_improvement",), requires="is_developer",
+            requires_note="it is for a developer's install only; users work through the developer toolkit"),
     Toolkit("voice", "how to reply when the user is speaking: spoken style, emotion tags, false positives",
             ("false_positive",), hidden=True),
     Toolkit("voices", "a voice the house keeps hearing that has no name yet (listed under VOICES): name it once the "
                       "owner says who it is, or dismiss it",
-            ("name_voice", "dismiss_voice")),
+            ("name_voice", "dismiss_voice"), requires="interfaces.voice.enabled",
+            requires_note="the voice interface is off, and the voices are heard through its microphones"),
 )
 
 # The order of the index, which is part of the prompt: a toolkit keeps its place wherever its
