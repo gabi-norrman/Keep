@@ -117,7 +117,10 @@ class TestScheduling:
 
     @patch('assistant.agents.CodeQualityMaintainer.time.sleep')
     @patch('assistant.agents.CodeQualityMaintainer.datetime')
-    def test_the_nightly_update_follows_the_run_even_when_the_run_raises(self, mock_dt, mock_sleep, maintainer):
+    def test_the_nightly_update_comes_before_the_run(self, mock_dt, mock_sleep, maintainer):
+        """The run takes an hour or more; an update after it restarted the server inside the
+        memory curation's hour (2026-10-14). The update goes first, and when it does not restart
+        the run follows in the same process."""
         mock_dt.now.return_value = datetime(2026, 2, 19, 3, 0, 0)
         order = []
 
@@ -126,27 +129,38 @@ class TestScheduling:
 
         mock_sleep.side_effect = stop_after_one
 
-        def failing_run():
-            order.append("run")
-            raise RuntimeError("claude fell over")
+        def update():
+            order.append("update")
+            return False
 
-        with patch.object(maintainer, '_execute_nightly_run', side_effect=failing_run), \
-                patch.object(maintainer, '_nightly_update', side_effect=lambda: order.append("update")):
+        with patch.object(maintainer, '_execute_nightly_run', side_effect=lambda: order.append("run")), \
+                patch.object(maintainer, '_nightly_update', side_effect=update):
             maintainer._running = True
             maintainer._run()
-        assert order == ["run", "update"]
+        assert order == ["update", "run"]
 
-    @pytest.mark.parametrize("hour, counts_as_done", [(3, True), (4, False)])
+    @patch('assistant.agents.CodeQualityMaintainer.time.sleep')
+    @patch('assistant.agents.CodeQualityMaintainer.datetime')
+    def test_a_restarting_update_leaves_the_run_to_the_new_process(self, mock_dt, mock_sleep, maintainer):
+        """restart() returns while start.sh kills this process; a Claude Code job started now would
+        die with it, so the loop ends instead."""
+        mock_dt.now.return_value = datetime(2026, 2, 19, 3, 0, 0)
+        mock_sleep.side_effect = lambda *a: setattr(maintainer, '_running', False)
+        with patch.object(maintainer, '_execute_nightly_run') as run, \
+                patch.object(maintainer, '_nightly_update', return_value=True):
+            maintainer._running = True
+            maintainer._run()
+        run.assert_not_called()
+
     @patch('assistant.agents.CodeQualityMaintainer.threading.Thread')
     @patch.object(CodeQualityMaintainer, '_head_commit', return_value="a" * 40)
     @patch('assistant.agents.CodeQualityMaintainer.datetime')
-    def test_a_start_inside_the_run_hour_does_not_run_the_night_again(self, mock_dt, mock_head, mock_thread,
-                                                                    hour, counts_as_done, maintainer):
-        """The nightly update restarts the server while the clock may still say RUN_HOUR; the
-        new process must not start the whole night over."""
-        mock_dt.now.return_value = datetime(2026, 2, 19, hour, 20, 0)
+    def test_a_start_inside_the_run_hour_takes_the_night_over(self, mock_dt, mock_head, mock_thread, maintainer):
+        """The nightly update restarts the server at the top of RUN_HOUR; the new process is the
+        one that runs the night, so booting inside the hour must not count it as done."""
+        mock_dt.now.return_value = datetime(2026, 2, 19, 3, 0, 40)
         maintainer.start()
-        assert (maintainer._last_run_date == date(2026, 2, 19)) is counts_as_done
+        assert maintainer._last_run_date is None
 
 
 BOOT, NEWER = "b" * 40, "c" * 40

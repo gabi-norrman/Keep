@@ -34,8 +34,10 @@ line by flipping the key and restarting. The development machine's `config.yaml`
 pull and the restart `RequirementsChecker.sync` runs pip when the pulled pins no longer match the venv,
 so a release may bump a pin freely; a failed install leaves the old process running and says why. The
 nightly update (`CodeQualityMaintainer._nightly_update`, `nightly_update` config key, on by default) does
-the same checkout and pull at 03:00 — after the nightly code-quality run when that is on — and restarts
-only when HEAD is no longer the commit the process booted on. Never
+the same checkout and pull at 03:00 — before the nightly code-quality run when that is on; a process that
+boots inside that hour takes the night over — and restarts only when HEAD is no longer the commit the
+process booted on. The memory curation is due from 04:00: the first periodic tick after that hour with
+no dream journal written since 04:00 runs it, so a restart never loses the night. Never
 hard-code `master` in a git command — `CodeQualityMaintainer._current_branch()` is the branch to come
 back to after a Claude Code run, `target_branch()` the one to pull.
 

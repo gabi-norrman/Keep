@@ -425,12 +425,14 @@ class CodeQualityMaintainer:
     """Runs the nightly Claude Code jobs on the repo, one after another: bug analysis, test generation,
     test health (flaky and slow tests), then the auto-merge of test-only PRs — one email for the night.
 
-    A daemon thread fires the run at RUN_HOUR while `self_improvement.nightly_runs` is on (off by
-    default, read at each fire); a night without recent commits only auto-merges. Once the run is
-    over — or at RUN_HOUR itself when it is off — the nightly update pulls the branch
+    A daemon thread fires the night at RUN_HOUR. First the nightly update pulls the branch
     `developer_release` names and restarts the server if the code changed (`nightly_update`, on
-    by default). Also exposes the ad-hoc analyze_code / improve_code / restart helpers behind the
-    self_analysis / self_improvement commands.
+    by default); the new process boots inside the same hour and takes the night over — its own
+    update finds nothing new and the run follows. Then the run, while `self_improvement.nightly_runs`
+    is on (off by default, read at each fire); a night without recent commits only auto-merges. What
+    the run itself merges reaches the server at the next night's update or a restart_server. Also
+    exposes the ad-hoc analyze_code / improve_code / restart helpers behind the self_analysis /
+    self_improvement commands.
     """
     def __init__(self):
         self._running = False
@@ -441,12 +443,6 @@ class CodeQualityMaintainer:
     def start(self):
         self._boot_commit = self._head_commit()
         info(f"CodeQualityMaintainer: this process runs commit {self._boot_commit[:8] or 'unknown'}")
-        now = datetime.now()
-        if now.hour == RUN_HOUR:
-            # Most often the nightly update's own restart: without this the new process would
-            # see "RUN_HOUR, nothing ran today" and start the whole night over.
-            self._last_run_date = now.date()
-            info(f"CodeQualityMaintainer: started inside the {RUN_HOUR}:00 hour, tonight's run counts as done")
         self._running = True
         self._thread = threading.Thread(target=self._run, name="CodeQualityMaintainer", daemon=True)
         self._thread.start()
@@ -461,10 +457,11 @@ class CodeQualityMaintainer:
                 now = datetime.now()
                 if now.hour == RUN_HOUR and self._last_run_date != now.date():
                     self._last_run_date = now.date()
-                    try:
-                        self._execute_nightly_run()
-                    finally:
-                        self._nightly_update()
+                    if self._nightly_update():
+                        info("CodeQualityMaintainer: the nightly update is restarting the server, "
+                             "the new process runs the night")
+                        return
+                    self._execute_nightly_run()
             except Exception as e:
                 error(f"CodeQualityMaintainer error: {e}")
             for _ in range(CHECK_INTERVAL):
@@ -579,25 +576,25 @@ class CodeQualityMaintainer:
             info("CodeQualityMaintainer: nothing to report, skipping email.")
         info("CodeQualityMaintainer: nightly run complete.")
 
-    def _nightly_update(self):
-        """After the night's run (at RUN_HOUR itself when that is off or skipped): check out the
-        branch `developer_release` names, pull it, and restart when the code is no longer what
-        this process booted on — commits pulled now, pulled by the night's run, or made locally
-        since the start. No new commit, no restart. `nightly_update: false` turns it off; it is
-        read at each fire."""
+    def _nightly_update(self) -> bool:
+        """The first thing of the night, at RUN_HOUR: check out the branch `developer_release`
+        names, pull it, and restart when the code is no longer what this process booted on —
+        commits pulled now or made locally since the start. No new commit, no restart. True when
+        the restart is under way, so the caller leaves the night to the new process.
+        `nightly_update: false` turns it off; it is read at each fire."""
         from assistant.SystemNote import system_note
         if not ConfigManager().get(NIGHTLY_UPDATE_KEY, True):
             info(f"CodeQualityMaintainer: {NIGHTLY_UPDATE_KEY} is off, no nightly update.")
-            return
+            return False
         if DevelopmentConfig.LOCAL_DEVELOPMENT_MODE:
             info("CodeQualityMaintainer: LOCAL_DEVELOPMENT_MODE is on, no nightly update.")
-            return
+            return False
         if not self._boot_commit:
             info("CodeQualityMaintainer: the commit this process started on is unknown, no nightly update.")
-            return
+            return False
         if not _nightly_lock.acquire(blocking=False):
             info("CodeQualityMaintainer: a nightly run is still going, no nightly update under it.")
-            return
+            return False
         try:
             target = self.target_branch()
             info(f"CodeQualityMaintainer: nightly update — bringing the checkout to the head of {target}...")
@@ -606,15 +603,15 @@ class CodeQualityMaintainer:
                 error(f"CodeQualityMaintainer: nightly update failed, not restarting — {failure}")
                 system_note("server", f"Nightly update failed, the server keeps running the old code: {failure}",
                             push=False)
-                return
+                return False
             head = self._head_commit()
             if not head:
                 error("CodeQualityMaintainer: nightly update could not read HEAD after the pull, not restarting.")
-                return
+                return False
             if head == self._boot_commit:
                 info(f"CodeQualityMaintainer: nightly update — no new commits on {target} since the start "
                      f"({head[:8]}), not restarting.")
-                return
+                return False
             count = self._commits_between(self._boot_commit, head)
             change = f"{count} new commit{'s' if count != 1 else ''}" if count else f"now at {head[:8]}"
             failure, installed = self._sync_requirements()
@@ -622,7 +619,7 @@ class CodeQualityMaintainer:
                 error(f"CodeQualityMaintainer: nightly update pulled {change} but not restarting — {failure}")
                 system_note("server", f"Nightly update pulled {change} on {target} but the server keeps running "
                                       f"the old code: {failure}", push=False)
-                return
+                return False
             if installed:
                 change += f", {installed}"
             note(f"CodeQualityMaintainer: nightly update — {change} on {target} "
@@ -630,6 +627,7 @@ class CodeQualityMaintainer:
             # History only: the startup announcement of the new process is what the chats get.
             system_note("server", f"Nightly update: {change} on {target}, the server is restarting.", push=False)
             self.restart(f"nightly update {self._boot_commit[:8]} → {head[:8]}")
+            return True
         finally:
             _nightly_lock.release()
 
