@@ -33,7 +33,17 @@ class FeedRow(NamedTuple):
     fg: Color
     bg: Color
     progress: Optional[float]   # 0..1 bar fill; None = catching up without a count (sweeping notch)
-    text: str                   # "1234 / 23356 photos ETA: 13h" through a catch-up, "23436 photos" live, else the state
+    count: str                  # the feed's rows, "23 436"; empty when the row shows only its state
+    detail: str                 # what follows the count, "/ 23 356 photos ETA: 13h" or "photos"; else the state
+
+    @property
+    def text(self) -> str:
+        return f"{self.count} {self.detail}" if self.count else self.detail
+
+
+def format_count(n: int) -> str:
+    """Thousands split by a space: "23 436"."""
+    return f"{n:,}".replace(",", " ")
 
 
 class DashboardTab(TabView):
@@ -189,9 +199,10 @@ class DashboardTab(TabView):
         return y + 1
 
     def _summary_height(self) -> int:
-        """Height of the summary tiles: one row per running feed and per local mic, never fewer
-        than the utilization meters, plus the tile's own rows — the chart rows below shrink to fit it."""
-        rows = max(self.SUMMARY_ROWS, len(self._feed_statuses()), len(self._mic_noise_floors()))
+        """Height of the summary tiles: one row per running feed (plus the total) and per local mic,
+        never fewer than the utilization meters, plus the tile's own rows — the chart rows below shrink to fit it."""
+        feeds = len(self._feed_statuses())
+        rows = max(self.SUMMARY_ROWS, feeds + 1 if feeds else 0, len(self._mic_noise_floors()))
         return rows + Tile.CARD_CHROME
 
     def _draw_summary_panel(self, screen: TUIScreen, columns: List[Tuple[int, int]], y: int, panel_h: int):
@@ -274,35 +285,44 @@ class DashboardTab(TabView):
     FEED_MIN_BAR = 6
     FEED_SWEEP_FRAMES = 90      # one bounce of the indeterminate notch: 3 s at 30 fps
     SYMBOL_CATCHING_UP = "◐"    # the FeedStrip draws a bar for a catch-up; the panel has one of its own
+    TOTAL_LABEL = "Total"
 
     def _draw_feeds_panel(self, screen: TUIScreen, x: int, y: int, panel_w: int, panel_h: int):
         """One row per running feed: the name, a state symbol (the FeedStrip's dots and cross, a
         half dot for a catch-up), a bar in the state's
         colour (green live, yellow catching up, red stopped or failed, grey starting; paused fades
         it) and, in that same colour, the feed's rows in the history with its item noun —
-        "1234 / 23356 photos ETA: 13h" through a catch-up (the total is what it will hold once
-        caught up), "23436 messages" once live — or the state word when paused, stopped or
-        failed. A feed catching up without a count gets a notch sweeping the empty bar instead."""
+        "1 234 / 23 356 photos ETA: 13h" through a catch-up (the total is what it will hold once
+        caught up), "23 436 messages" once live — or the state word when paused, stopped or
+        failed. A feed catching up without a count gets a notch sweeping the empty bar instead.
+        Under the feeds a Total row sums the rows of all of them in "items". The counts are
+        right-aligned in one column so their digits line up; a state word starts where they do."""
         Tile.draw_card(screen, self._cards, x, y, panel_w, panel_h, "Feeds")
 
-        rows = [self._feed_row(name, status) for name, status in self._feed_statuses()]
+        statuses = self._feed_statuses()
+        rows = [self._feed_row(name, status) for name, status in statuses]
         if not rows:
             screen.set_color(Theme.COLOR_DIM)
             screen.write_at(x + 2, y + Tile.CARD_TOP, "no feeds running")
             screen.reset_color()
             return
 
-        rows = rows[:panel_h - Tile.CARD_CHROME]
-        label_w = max(len(row.name) for row in rows)
+        rows = rows[:max(0, panel_h - Tile.CARD_CHROME - 1)]
+        total_count = format_count(self._feeds_total(statuses))
+        count_w = max([len(row.count) for row in rows] + [len(total_count)])
+        texts = [self._aligned_text(row.count, row.detail, count_w) for row in rows]
+        total_text = self._aligned_text(total_count, "items", count_w)
+        label_w = max(len(row.name) for row in rows) if rows else 0
+        label_w = max(label_w, len(self.TOTAL_LABEL))
         symbol_x = x + 2 + label_w + 1
         bar_x = symbol_x + 2
         # The bar takes every cell the longest text on screen leaves it.
-        text_w = max(display_width(row.text) for row in rows)
+        text_w = max(display_width(text) for text in texts + [total_text])
         bar_len = max(self.FEED_MIN_BAR, panel_w - (bar_x - x) - text_w - 3)
         text_x = bar_x + bar_len + 1
         text_w = x + panel_w - 2 - text_x     # one cell of air before the right border
 
-        for i, row in enumerate(rows):
+        for i, (row, text) in enumerate(zip(rows, texts)):
             row_y = y + Tile.CARD_TOP + i
             screen.set_color(Theme.COLOR_LABEL)
             screen.write_at(x + 2, row_y, f"{row.name:<{label_w}}")
@@ -316,8 +336,24 @@ class DashboardTab(TabView):
             if text_w > 0:
                 screen.set_color(row.fg)
                 screen.bold()
-                screen.write_at(text_x, row_y, fit(row.text, text_w))
+                screen.write_at(text_x, row_y, fit(text, text_w))
                 screen.reset_color()
+
+        total_y = y + Tile.CARD_TOP + len(rows)
+        screen.set_color(Theme.COLOR_LABEL)
+        screen.write_at(x + 2, total_y, f"{self.TOTAL_LABEL:<{label_w}}")
+        if text_w > 0:
+            screen.bold()
+            screen.write_at(text_x, total_y, fit(total_text, text_w))
+        screen.reset_color()
+
+    @staticmethod
+    def _aligned_text(count: str, detail: str, count_w: int) -> str:
+        return f"{count:>{count_w}} {detail}" if count else detail
+
+    @staticmethod
+    def _feeds_total(statuses: List[Tuple[str, dict]]) -> int:
+        return sum(status.get("stored") or 0 for _, status in statuses)
 
     def _sweep_position(self) -> float:
         """0..1..0 triangle wave over FEED_SWEEP_FRAMES frames."""
@@ -339,28 +375,30 @@ class DashboardTab(TabView):
         state = status["state"]
         items = status.get("items", "items")
         progress: Optional[float] = 0.0
+        count = ""
         if state == FeedState.LIVE.value:
             symbol, fg, bg = SYMBOL_RUNNING, Theme.COLOR_GREEN, Theme.COLOR_GREEN_DIM
             progress = 1.0
-            text = f"{status['stored']} {items}"
+            count, detail = format_count(status["stored"]), items
         elif state == FeedState.CATCHING_UP.value:
             symbol, fg, bg = cls.SYMBOL_CATCHING_UP, Theme.COLOR_YELLOW, Theme.COLOR_YELLOW_DIM
             progress = status.get("progress")
             stored, total = status["stored"], status.get("total")
-            text = f"{stored} {items}" if total in (None, stored) else f"{stored} / {total} {items}"
+            count = format_count(stored)
+            detail = items if total in (None, stored) else f"/ {format_count(total)} {items}"
             if status.get("eta_seconds") is not None:
-                text += f" ETA: {format_eta(status['eta_seconds'])}"
+                detail += f" ETA: {format_eta(status['eta_seconds'])}"
         elif state in (FeedState.STOPPED.value, FeedState.FAILED.value):
             symbol, fg, bg = SYMBOL_FAILED, Theme.COLOR_RED, Theme.COLOR_RED_DIM
-            text = state
+            detail = state
         else:
             symbol, fg, bg = SYMBOL_RUNNING, Theme.COLOR_DIM, Theme.COLOR_GRID
-            text = state
+            detail = state
         if status.get("paused") and symbol != SYMBOL_FAILED:
             symbol = SYMBOL_PAUSED
             fg = Theme.mix(Theme.COLOR_PANEL_BG, fg, 0.5)
-            text = "paused"
-        return FeedRow(symbol, SHORT_NAMES.get(name, name), fg, bg, progress, text)
+            count, detail = "", "paused"
+        return FeedRow(symbol, SHORT_NAMES.get(name, name), fg, bg, progress, count, detail)
 
     def _draw_charts_row(self, screen: TUIScreen, columns: List[Tuple[int, int]], y: int, chart_h: int):
         (gpu_x, gpu_w), (mem_x, mem_w), (cpu_x, cpu_w) = columns
