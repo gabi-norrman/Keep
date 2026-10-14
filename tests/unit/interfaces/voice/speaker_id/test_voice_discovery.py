@@ -202,6 +202,13 @@ def test_settings_fall_back_to_the_defaults(monkeypatch):
     assert vd.settings() == vd.DEFAULTS
 
 
+def test_settings_survive_a_config_without_the_section(monkeypatch):
+    from common.ConfigManager import ConfigManager
+    manager = ConfigManager.get_instance()
+    monkeypatch.setattr(manager, "_config", {"owner_name": "Marcus"})
+    assert vd.settings() == vd.DEFAULTS
+
+
 def test_a_disabled_discovery_does_not_start(tmp_path):
     discovery = Fake(tmp_path).discovery(tmp_path, enabled=False)
     discovery.start()

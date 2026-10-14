@@ -77,7 +77,7 @@ class Clip:
 
 def settings() -> dict:
     """The `voice_discovery` section of config.yaml over the defaults."""
-    section = ConfigManager.get_instance().get(CONFIG_KEY, None)
+    section = ConfigManager.get_instance().get(CONFIG_KEY, {})
     return DEFAULTS | (section if isinstance(section, dict) else {})
 
 
