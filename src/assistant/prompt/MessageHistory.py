@@ -181,8 +181,8 @@ class MessageHistory:
 
     def add_transient_entry(self, role: str, content: str, timestamp: float,
                             source: str | None = None, location: str | None = None,
-                            section: str | None = None):
-        """Add an in-memory-only history entry. NOT persisted to floxy.db.
+                            section: str | None = None) -> dict:
+        """Add an in-memory-only history entry. NOT persisted to floxy.db; returns the entry.
 
         Used by PromptManager to inject section-diff notes (see
         PromptManager._emit_transient_section_update). `section` tags the entry with the
@@ -200,6 +200,23 @@ class MessageHistory:
         })
         trace(f"MessageHistory: transient entry added ({role}, {len(content)} chars, source={source})")
         self._notify_changed()
+        return self.transient_entries[-1]
+
+    def withdraw_unanswered_note(self, entry: dict) -> bool:
+        """Remove `entry` if it is still a transient row with no assistant row after it, and
+        return whether it was removed. Such a row sits in the trailing user turn that no cached
+        request has ended on: a chat request is answered by an assistant row and the autonomous
+        check puts its breakpoint on the last assistant row (ClaudeLLM._message_cache_index), so
+        rewriting it changes no byte the prefix cache holds."""
+        if not any(e is entry for e in self.transient_entries):
+            trace("MessageHistory: the note to withdraw is gone (trimmed or wiped)")
+            return False
+        if any(row["role"] == "assistant" and row["timestamp"] > entry["timestamp"] for row in self.history):
+            trace("MessageHistory: an assistant row stands after the note — it stays")
+            return False
+        self.transient_entries = [e for e in self.transient_entries if e is not entry]
+        self._notify_changed()
+        return True
 
     def _prune_transient_entries_before_cutoff(self):
         """Forget the transient notes the trim left behind the cutoff. They can never render
