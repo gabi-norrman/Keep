@@ -1,4 +1,3 @@
-import threading
 from typing import TYPE_CHECKING, Optional
 from common.logging import info
 from .TabView import TabView
@@ -8,7 +7,6 @@ from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.widgets.ChatPane import ChatPane
 from interfaces.console.widgets.FeedStrip import FeedStrip
 from assistant import FirstRun
-from assistant.agents.AutonomousActionManager import AutonomousActionManager
 
 if TYPE_CHECKING:
     from interfaces.console.TUIFloxyConsole import TUIFloxyConsole
@@ -71,16 +69,10 @@ class HomeTab(TabView):
         return max(0, logo_bottom + 1 + LOGO_MARGIN - TOP_MARGIN)
 
     def handle_input(self, key: str) -> bool:
-        """Ctrl+D / Ctrl+U / Ctrl+T shortcuts; everything else is the chat pane's."""
+        """Ctrl+D toggles show debug; everything else is the chat pane's."""
         if key == '\x04':  # Ctrl+D - toggle show debug
             self.chat_pane.show_debug = not self.chat_pane.show_debug
             info(f"Home tab: show debug turned {'on' if self.chat_pane.show_debug else 'off'}")
             TUIState.save("home", show_debug=self.chat_pane.show_debug)
-            return True
-        if key == '\x15':  # Ctrl+U - run memory curation
-            threading.Thread(target=AutonomousActionManager.get_instance()._run_memory_curation, daemon=True).start()
-            return True
-        if key == '\x14':  # Ctrl+T - activity check
-            threading.Thread(target=AutonomousActionManager.get_instance().activity_check, daemon=True).start()
             return True
         return self.chat_pane.handle_input(key)
