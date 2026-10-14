@@ -137,7 +137,7 @@ def row_text(screen, row: int) -> str:
 class TestFeedRow:
     def test_live_is_a_full_green_bar_with_the_count_and_the_feeds_noun(self):
         row = DashboardTab._feed_row("iMessage", status(items="messages"))
-        assert (row.symbol, row.progress, row.text) == (SYMBOL_RUNNING, 1.0, "23436 messages")
+        assert (row.symbol, row.progress, row.text) == (SYMBOL_RUNNING, 1.0, "23 436 messages")
         assert row.fg == Theme.COLOR_GREEN
         assert DashboardTab._feed_row("Indigo", status(stored=512, items="events")).text == "512 events", \
             "an uncountable feed shows its rows"
@@ -145,24 +145,24 @@ class TestFeedRow:
     def test_a_catch_up_whose_counts_meet_shows_the_count_once(self):
         assert DashboardTab._feed_row("Photos", status("catching_up", stored=10, total=10, remaining=0)).text == "10 items"
 
-    def test_catching_up_with_a_count_shows_done_over_total_without_separators(self):
+    def test_catching_up_with_a_count_shows_done_over_total_split_by_thousands(self):
         row = DashboardTab._feed_row("iCloud Photos", status("catching_up", progress=0.34, stored=1234, total=23356, remaining=22122))
-        assert (row.symbol, row.name, row.progress, row.text) == (DashboardTab.SYMBOL_CATCHING_UP, "Photos", 0.34, "1234 / 23356 items")
+        assert (row.symbol, row.name, row.progress, row.text) == (DashboardTab.SYMBOL_CATCHING_UP, "Photos", 0.34, "1 234 / 23 356 items")
         assert row.fg == Theme.COLOR_YELLOW
 
     def test_catching_up_with_an_eta_appends_it_in_one_rounded_unit(self):
         def text(eta):
             return DashboardTab._feed_row("Photos", status("catching_up", stored=1234, total=22313, remaining=21079, eta_seconds=eta)).text
-        assert text(13 * 3600) == "1234 / 22313 items ETA: 13h"
-        assert text(13 * 60 + 20) == "1234 / 22313 items ETA: 13m"
-        assert text(45) == "1234 / 22313 items ETA: 45s"
-        assert text(3 * 86400) == "1234 / 22313 items ETA: 3d"
-        assert text(47 * 3600) == "1234 / 22313 items ETA: 47h", "days only from two days up"
-        assert text(None) == "1234 / 22313 items"
+        assert text(13 * 3600) == "1 234 / 22 313 items ETA: 13h"
+        assert text(13 * 60 + 20) == "1 234 / 22 313 items ETA: 13m"
+        assert text(45) == "1 234 / 22 313 items ETA: 45s"
+        assert text(3 * 86400) == "1 234 / 22 313 items ETA: 3d"
+        assert text(47 * 3600) == "1 234 / 22 313 items ETA: 47h", "days only from two days up"
+        assert text(None) == "1 234 / 22 313 items"
 
     def test_catching_up_without_a_count_is_indeterminate_and_shows_its_rows(self):
         row = DashboardTab._feed_row("Indigo", status("catching_up", stored=1345))
-        assert (row.progress, row.text) == (None, "1345 items")
+        assert (row.progress, row.text) == (None, "1 345 items")
 
     def test_paused_hollows_the_dot_fades_the_colour_and_says_only_that(self):
         row = DashboardTab._feed_row("Indigo", status("catching_up", progress=0.5, stored=5, total=10, remaining=5, paused=True))
@@ -206,23 +206,40 @@ class TestDrawFeedsPanel:
         })
         assert row_text(screen, 0).strip() == "Feeds"
         assert row_text(screen, 1).startswith(f"  iMessage {SYMBOL_RUNNING} {FULL}")
-        assert row_text(screen, 1).endswith(f"{FULL} 23436 items")
+        assert row_text(screen, 1).endswith(f"{FULL} 23 436 items")
         assert row_text(screen, 2).startswith(f"  Photos   {DashboardTab.SYMBOL_CATCHING_UP} {FULL}")
-        assert "1234 / 23356" in row_text(screen, 2)
+        assert "1 234 / 23 356" in row_text(screen, 2)
         assert row_text(screen, 3).startswith(f"  Telegram {SYMBOL_FAILED}")
         assert row_text(screen, 3).endswith(" stopped") and FULL not in row_text(screen, 3)
+        assert row_text(screen, 4).startswith("  Total ") and row_text(screen, 4).endswith(" 48 106 items")
+
+    def test_the_total_sums_every_feeds_rows_in_items_whatever_their_nouns(self):
+        screen = draw_feeds({"a": status(stored=1000, items="messages"), "b": status("catching_up", stored=500)})
+        assert row_text(screen, 3).endswith(" 1 500 items")
+        assert FULL not in row_text(screen, 3), "the total has no bar"
 
     def test_the_bar_takes_every_cell_the_longest_text_leaves(self):
         screen = draw_feeds({"a": status(stored=5), "b": status(stored=1234567)})
         line = row_text(screen, 2)
-        assert line.endswith(f"{FULL} 1234567 items")
+        assert line.endswith(f"{FULL} 1 234 567 items")
         assert len(line) == PANEL_X + PANEL_W - 3, "the longest text ends one cell of air before the tile's edge"
         assert row_text(screen, 1).rindex(FULL) == line.rindex(FULL), "one text column for every row"
+
+    def test_the_counts_line_up_on_their_last_digit_and_a_state_word_starts_with_them(self):
+        screen = draw_feeds({
+            "a": status(stored=64116, items="messages"),
+            "b": status("catching_up", stored=4022, total=9000, remaining=4978),
+            "c": status("stopped"),
+        })
+        lines = [row_text(screen, row) for row in (1, 2, 4)]
+        ends = {line.index(noun) - 1 for line, noun in zip(lines, ("messages", "/ 9 000", "items"))}
+        assert len(ends) == 1, "the digits of 64 116, 4 022 and the total end in one column"
+        assert row_text(screen, 3).index("stopped") == lines[0].index("64 116")
 
     def test_the_count_is_drawn_in_the_row_colour_not_grey(self):
         screen = draw_feeds({"iMessage": status()})
         line = row_text(screen, 1)
-        cell = panel_row(screen, 1)[line.index("23436")]
+        cell = panel_row(screen, 1)[line.index("23 436")]
         assert cell.style.fg == Theme.COLOR_GREEN
 
     def test_the_bar_fill_follows_the_progress(self):
@@ -246,9 +263,11 @@ class TestDrawFeedsPanel:
         assert line.count(FULL) == DashboardTab.FEED_MIN_BAR
         assert line.endswith("...") and len(line) == PANEL_X + 30 - 3
 
-    def test_more_feeds_than_rows_are_clipped_to_the_box(self):
-        screen = draw_feeds({f"f{i}": status() for i in range(6)})
-        assert row_text(screen, 4).startswith(f"  f3 {SYMBOL_RUNNING}")
+    def test_more_feeds_than_rows_are_clipped_to_the_box_and_keep_the_total(self):
+        screen = draw_feeds({f"f{i}": status(stored=1) for i in range(6)})
+        assert row_text(screen, 3).startswith(f"  f2    {SYMBOL_RUNNING}")
+        assert row_text(screen, 4).startswith("  Total ") and row_text(screen, 4).endswith(" 6 items"), \
+            "the total counts the clipped feeds too"
         assert row_text(screen, 5) == "", "the tile's closing row stays empty"
 
 
@@ -266,8 +285,8 @@ class TestSummaryHeight:
     def test_few_feeds_leave_the_utilization_meters_their_rows(self):
         assert self.height(feeds=0) == self.height(feeds=3) == DashboardTab.SUMMARY_ROWS
 
-    def test_one_row_per_feed_once_they_outnumber_the_meters(self):
-        assert self.height(feeds=6) == 6
+    def test_one_row_per_feed_and_the_total_once_they_outnumber_the_meters(self):
+        assert self.height(feeds=6) == 7
 
     def test_the_mics_count_too(self):
         assert self.height(feeds=2, mics=5) == 5

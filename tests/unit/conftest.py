@@ -40,6 +40,23 @@ _sounddevice = _SoundDeviceStub("sounddevice")
 _sounddevice.PortAudioError = type("PortAudioError", (Exception,), {})
 sys.modules["sounddevice"] = _sounddevice
 
+# No unit test relaunches the server: `bash start.sh <pid>` is how CodeQualityMaintainer.restart
+# relaunches the process it runs in, and a test that reaches it unstubbed (a playback test did,
+# through the stall forensics and AudioRecovery) kills the developer's running server and the
+# pytest worker, then opens a Terminal window. A subclass, so a test patching Popen or checking
+# isinstance sees nothing unusual; the maintainer's own restart tests patch Popen themselves.
+import subprocess
+
+
+class _NoRelaunchPopen(subprocess.Popen):
+    def __init__(self, args, *rest, **kwargs):
+        if isinstance(args, (list, tuple)) and list(map(str, args[:2])) == ["bash", "start.sh"]:
+            raise RuntimeError(f"a unit test tried to relaunch the server: {list(args)}")
+        super().__init__(args, *rest, **kwargs)
+
+
+subprocess.Popen = _NoRelaunchPopen
+
 # openai is imported here, at collection, rather than by the first ChatGPTLLM test on each
 # worker: the import is ~80 ms, and the test that paid it was recorded as slow, moved to the
 # front of the next run's collection and paid it again. anthropic is already imported at module

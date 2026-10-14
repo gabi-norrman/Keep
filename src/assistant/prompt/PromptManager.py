@@ -89,6 +89,12 @@ class PromptManager:
         # rather than read off the history's notes, which stay in the window once sent.
         self._carried_note_chars: dict[str, int] = {}
         self._carried_pointer_out: set[str] = set()
+        # Per section: its newest note while no request has sent it, with the state that note
+        # diffs from and its diff's length. A further change withdraws it and adds one note
+        # diffing that state against the new one, so a car driving to work is one note, not
+        # one a minute: the notes since the last reply ride uncached in every autonomous
+        # check (09:35 on 2026-10-14 sent 23 CarInfo notes, 7.6 KB). get_messages() seals them.
+        self._open_notes: dict[str, tuple[dict, str, int]] = {}
         # Cached {PHOTO_COUNT} value and when it was fetched (see _PHOTO_COUNT_REFRESH_S).
         self._photo_count: int | None = None
         self._photo_count_fetched_at = 0.0
@@ -433,13 +439,18 @@ class PromptManager:
                 # baseline→A→baseline is just another honest A→baseline delta below.)
                 return
             else:
-                # Incremental diff against the previous state. Each note is an
-                # independent, append-only changelog entry — we do NOT clear earlier
-                # notes for this section; they describe real changes the LLM should
-                # keep seeing, stamped at the time they happened.
-                diff = self._compute_section_delta(prev, new_content)
-                if 0 < len(diff) <= self._DIFF_SIZE_THRESHOLD:
-                    self._emit_transient_section_update_locked(section_name, key, diff)
+                # Incremental diff against the previous state. A note a request has sent is
+                # an append-only changelog entry and stays; an unsent one is withdrawn and
+                # this note diffs from the state before it instead.
+                withdrawn = self._withdraw_open_note_locked(key, section_name)
+                base = withdrawn[0] if withdrawn else prev
+                diff = self._compute_section_delta(base, new_content)
+                if not diff and withdrawn:
+                    trace(f"Section '{section_name}' is back where its unsent note started — no note")
+                    self._section_current[key] = new_content
+                    pre_heat_messages = self._resolved_messages_locked()
+                elif 0 < len(diff) <= self._DIFF_SIZE_THRESHOLD:
+                    self._emit_transient_section_update_locked(section_name, key, diff, base)
                     # Advance last-seen state so the next change diffs against this one.
                     self._section_current[key] = new_content
                     # The note extends the request prefix, so pre-heat it too — the
@@ -485,7 +496,7 @@ class PromptManager:
     def _on_carried_section_updated_locked(self, section_name: str, key: str, new_content: str) -> list | None:
         """A section a toolkit carries is never in the prompt: its baseline is what the last
         `load_toolkit` sent (carried_data) and a note goes out only while that toolkit is in
-        the LLM's window. A change too big for one note, or one that would push the section's
+        the LLM's window — any window, a voice preload's row included. A change too big for one note, or one that would push the section's
         notes past _CARRIED_NOTES_BUDGET, becomes a single "load it again" pointer and ends the
         tracking until the next load. Caller holds _prompt_lock; returns the messages to
         pre-heat after a note, else None."""
@@ -498,7 +509,7 @@ class PromptManager:
             # is from before a restart), or a pointer note ended the tracking. Either way the
             # LLM's copy is stale while the reference is in its window, so one pointer note —
             # not one per change — tells it to load again.
-            if toolkit not in self.message_history.loaded_toolkits():
+            if toolkit not in self.message_history.loaded_toolkits(window=None):
                 trace(f"Section '{section_name}' changed but was never sent (no load_toolkit yet) — no delta note")
                 return None
             if key in self._carried_pointer_out:
@@ -510,17 +521,24 @@ class PromptManager:
             return self._resolved_messages_locked()
         if new_content == prev:
             return None
-        if toolkit not in self.message_history.loaded_toolkits():
-            info(f"Section '{section_name}' changed but the {toolkit} toolkit left the window — tracking stops")
+        if toolkit not in self.message_history.loaded_toolkits(window=None):
+            info(f"Section '{section_name}' changed but the {toolkit} toolkit left every window — tracking stops")
             self._section_current.pop(key)
+            self._open_notes.pop(key, None)
             return None
-        diff = self._compute_section_delta(prev, new_content)
+        withdrawn = self._withdraw_open_note_locked(key, section_name)
+        base, withdrawn_chars = withdrawn if withdrawn else (prev, 0)
+        diff = self._compute_section_delta(base, new_content)
+        accumulated = self._carried_note_chars.get(key, 0) - withdrawn_chars
+        self._carried_note_chars[key] = accumulated
         if not diff:
-            return None
-        accumulated = self._carried_note_chars.get(key, 0)
-        if len(diff) <= self._DIFF_SIZE_THRESHOLD and accumulated + len(diff) <= self._CARRIED_NOTES_BUDGET:
+            if not withdrawn:
+                return None
+            trace(f"Section '{section_name}' is back where its unsent note started — no note")
+            self._section_current[key] = new_content
+        elif len(diff) <= self._DIFF_SIZE_THRESHOLD and accumulated + len(diff) <= self._CARRIED_NOTES_BUDGET:
             trace(f"Adding section delta: {section_name} ({len(diff)} chars, {accumulated} chars of notes before it)")
-            self._add_transient_note_locked(key, f"{heading} updated:\n{diff}")
+            self._add_open_note_locked(key, f"{heading} updated:\n{diff}", base, diff)
             self._carried_note_chars[key] = accumulated + len(diff)
             self._section_current[key] = new_content
         else:
@@ -538,7 +556,7 @@ class PromptManager:
     def _reload_pointer(heading: str, toolkit: str) -> str:
         return (f"{heading} has changed since it was sent: run `load_toolkit({toolkit})` for the current state.")
 
-    def _emit_transient_section_update_locked(self, section_name: str, key: str, diff: str):
+    def _emit_transient_section_update_locked(self, section_name: str, key: str, diff: str, base: str):
         """Append an in-memory-only note describing a small section change.
 
         Caller MUST hold self._prompt_lock — keeps the baseline-read / decision /
@@ -552,12 +570,30 @@ class PromptManager:
         (MessageHistory.render_messages collapses role="system" entries that way);
         we phrase the body so the final string reads naturally, e.g.
         "System (10:30): Prompt section `weather` updated:\\n@@ ..."
+
+        `base` is the state the diff starts from, kept while the note is unsent
+        (see _open_notes).
         """
         trace(f"Adding section delta: {section_name} ({len(diff)} chars)")
-        self._add_transient_note_locked(key, f"Prompt section `{section_name}` updated:\n{diff}")
+        self._add_open_note_locked(key, f"Prompt section `{section_name}` updated:\n{diff}", base, diff)
 
-    def _add_transient_note_locked(self, key: str, content: str):
-        self.message_history.add_transient_entry(
+    def _add_open_note_locked(self, key: str, content: str, base: str, diff: str):
+        self._open_notes[key] = (self._add_transient_note_locked(key, content), base, len(diff))
+
+    def _withdraw_open_note_locked(self, key: str, section_name: str) -> tuple[str, int] | None:
+        """Take back `key`'s note if no request has sent it yet: returns the state it diffed
+        from and its diff's length, or None when there is none or it has to stay."""
+        open_note = self._open_notes.pop(key, None)
+        if open_note is None:
+            return None
+        entry, base, chars = open_note
+        if not self.message_history.withdraw_unanswered_note(entry):
+            return None
+        trace(f"Section '{section_name}' changed again before its last note was sent — that note is folded into the next")
+        return base, chars
+
+    def _add_transient_note_locked(self, key: str, content: str) -> dict:
+        return self.message_history.add_transient_entry(
             role="system",
             content=content,
             timestamp=time.time(),
@@ -667,7 +703,8 @@ class PromptManager:
             section = self.sections.get(key)
             name = getattr(section, "section_name", "") or key
             info(f"Section '{name}' lost its notes to a trim — one fresh note restates its current state")
-            self._emit_transient_section_update_locked(name, key, diff)
+            self._withdraw_open_note_locked(key, name)
+            self._emit_transient_section_update_locked(name, key, diff, baseline)
             added = True
         return added
 
@@ -738,6 +775,7 @@ class PromptManager:
             carried = {key: content for key, content in self._section_current.items()
                        if key in Toolkits.CARRIED_SECTIONS}
             self._section_current = dict(new_baselines) | carried
+            self._open_notes = {key: note for key, note in self._open_notes.items() if key in carried}
 
             # Update last assembly time
             self._last_assembly_time = time.time()
@@ -824,6 +862,7 @@ class PromptManager:
                 for key, content in contents.items():
                     self._section_current[key] = content
                     self._carried_note_chars[key] = 0
+                    self._open_notes.pop(key, None)
                     self._carried_pointer_out.discard(key)
         data = Toolkits.render_sections(toolkit, contents)
         info(f"load_toolkit: {toolkit.name} brings its {', '.join(contents) or 'missing'} data ({len(data)} chars"
@@ -879,6 +918,14 @@ class PromptManager:
             if extended_thinking:
                 trace("Using extended thinking mode.")
                 MessageHistory.append_user_turn(messages, THINKING_TAG_INSTRUCTION)
+
+            # A request caches the window up to its trailing turn, so the notes it sends must
+            # stay byte-stable from now on (the autonomous check builds its own messages and
+            # caches only up to the last reply — its notes stay open).
+            if self._open_notes:
+                trace(f"PromptManager: {len(self._open_notes)} unsent section note(s) go out — "
+                      f"later changes add notes of their own")
+                self._open_notes.clear()
 
             return messages
 

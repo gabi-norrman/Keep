@@ -76,6 +76,55 @@ class TestSubscribe:
 
 
 # ===========================================================================
+# TestWithdrawUnansweredNote
+# ===========================================================================
+
+class TestWithdrawUnansweredNote:
+    def test_an_unanswered_note_is_withdrawn_and_the_subscribers_hear_of_it(self):
+        section = _make_history_section()
+        section.history = [{"role": "assistant", "content": "Parked.", "timestamp": 900.0}]
+        note = section.add_transient_entry("system", "car note", 1000.0, section="car_info")
+        calls = []
+        section.subscribe(lambda: calls.append(1))
+
+        assert section.withdraw_unanswered_note(note) is True
+        assert section.transient_entries == []
+        assert calls == [1]
+
+    def test_a_note_an_assistant_row_follows_stays(self):
+        section = _make_history_section()
+        note = section.add_transient_entry("system", "car note", 1000.0, section="car_info")
+        section.history = [{"role": "Marcus", "content": "Where is the car?", "timestamp": 1001.0},
+                           {"role": "assistant", "content": "Driving.", "timestamp": 1002.0}]
+
+        assert section.withdraw_unanswered_note(note) is False
+        assert section.transient_entries == [note]
+
+    def test_a_user_row_after_the_note_does_not_seal_it(self):
+        """Only a reply ends the trailing user turn a cached request could have ended on."""
+        section = _make_history_section()
+        note = section.add_transient_entry("system", "car note", 1000.0, section="car_info")
+        section.history = [{"role": "Marcus", "content": "Hej", "timestamp": 1001.0}]
+
+        assert section.withdraw_unanswered_note(note) is True
+
+    def test_a_note_no_longer_in_the_list_is_not_withdrawn(self):
+        section = _make_history_section()
+        note = section.add_transient_entry("system", "car note", 1000.0, section="car_info")
+        section.transient_entries = []
+
+        assert section.withdraw_unanswered_note(note) is False
+
+    def test_an_equal_note_that_is_not_the_same_entry_stays(self):
+        section = _make_history_section()
+        section.add_transient_entry("system", "car note", 1000.0, section="car_info")
+        lookalike = dict(section.transient_entries[0])
+
+        assert section.withdraw_unanswered_note(lookalike) is False
+        assert len(section.transient_entries) == 1
+
+
+# ===========================================================================
 # TestGetHistoryMessages
 # ===========================================================================
 
@@ -917,6 +966,7 @@ class TestCommandResults:
         assert "lights off" in text and "Done" in text, "the conversation itself is every window's"
         assert set(section.loaded_toolkits("voice")) == {"home", "web"}
         assert set(section.loaded_toolkits("text")) == {"web"}
+        assert set(section.loaded_toolkits(None)) == {"home", "web"}, "any window: the delta tracking's view"
 
     def test_a_carried_delta_note_follows_its_toolkits_reference(self):
         """Home's delta notes diff against the data the last load sent: a window without

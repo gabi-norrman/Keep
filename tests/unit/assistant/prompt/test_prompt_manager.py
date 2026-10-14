@@ -978,6 +978,18 @@ def test_delta_pre_heat_messages_include_the_transient_note(prompt_test_environm
     assert "procedures" in rendered_tail, "pre-heat payload must contain the delta note"
 
 
+def _send(manager):
+    """A request goes out: get_messages() seals the notes it carries, so the next change to
+    their section adds a note of its own instead of folding into them."""
+    manager.get_messages()
+
+
+def _change(manager, sections, key, content):
+    sections[key] = DummySection(content)
+    manager.sections = sections
+    manager.on_section_updated(key)
+
+
 def _trim_away_the_notes(manager):
     """Make the history window evict every transient note: date the notes before a run of
     large turns and set the watermarks so the trim cuts between them. The returned
@@ -1007,9 +1019,8 @@ def test_a_trim_that_evicts_the_delta_notes_leaves_one_note_restating_the_sectio
     manager, sections = _seed_full_rebuild(prompt_test_environment)
     manager.test_suite = False
     for state in ("procedures_rain", "procedures_sun"):
-        sections["procedures"] = DummySection(state)
-        manager.sections = sections
-        manager.on_section_updated("procedures")
+        _change(manager, sections, "procedures", state)
+        _send(manager)
     assert len(manager.message_history.transient_entries) == 2
 
     messages = _trim_away_the_notes(manager)
@@ -1128,13 +1139,13 @@ def test_repeated_small_change_same_section_appends_incremental_notes(prompt_tes
     (v0 → v1 → v2) each change appends its OWN note diffing against the immediately
     preceding state — earlier notes are KEPT (not superseded), so the LLM sees an
     accurate, separately-timestamped history of each change rather than one coalesced
-    diff re-stating every change under the latest timestamp."""
+    diff re-stating every change under the latest timestamp. That holds for notes a request
+    has sent; unsent ones fold together (test_unsent_changes_to_one_section_fold_into_one_note)."""
     manager, sections = _seed_full_rebuild(prompt_test_environment)
 
     for i in range(3):
-        sections["procedures"] = DummySection(f"procedures_content_v{i}")
-        manager.sections = sections
-        manager.on_section_updated("procedures")
+        _change(manager, sections, "procedures", f"procedures_content_v{i}")
+        _send(manager)
 
     entries = manager.message_history.transient_entries
     assert len(entries) == 3, "each change appends its own incremental note"
@@ -1163,6 +1174,7 @@ def test_section_revert_to_baseline_emits_honest_incremental_delta(prompt_test_e
     manager.sections = sections
     manager.on_section_updated("procedures")
     assert len(manager.message_history.transient_entries) == 1, "precondition: one delta emitted"
+    _send(manager)
 
     # Revert to the exact baseline content.
     sections["procedures"] = DummySection("procedures_content")
@@ -1188,6 +1200,7 @@ def test_distinct_sections_keep_independent_incremental_notes(prompt_test_enviro
     sections["procedures"] = DummySection("procedures_content_a")
     manager.sections = sections
     manager.on_section_updated("procedures")
+    _send(manager)
 
     sections["procedures"] = DummySection("procedures_content_b")
     manager.sections = sections
@@ -1207,6 +1220,82 @@ def test_distinct_sections_keep_independent_incremental_notes(prompt_test_enviro
     assert "-procedures_content_a" in procedures_notes[1]["content"]
     assert "+procedures_content_b" in procedures_notes[1]["content"]
     assert "+calendar_content_x" in calendar_notes[0]["content"]
+
+
+@pytest.mark.unit
+def test_unsent_changes_to_one_section_fold_into_one_note(prompt_test_environment):
+    """A car driving to work changes its line every minute; with no request in between, the
+    notes since the last reply ride uncached in every autonomous check. They fold into one
+    note from the state before the first to the latest, stamped at the latest change."""
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+
+    for street in ("Kungsgatan", "Hisingsbron", "Burggrevegatan"):
+        _change(manager, sections, "car_info", f"Driving on {street}")
+
+    entries = manager.message_history.transient_entries
+    assert len(entries) == 1
+    assert entries[0]["content"].endswith("-car_info_content\n+Driving on Burggrevegatan")
+    assert manager._section_current["car_info"] == "Driving on Burggrevegatan"
+
+
+@pytest.mark.unit
+def test_a_sent_note_stays_and_the_next_change_adds_its_own(prompt_test_environment):
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+    _change(manager, sections, "car_info", "Driving on Kungsgatan")
+    _send(manager)
+
+    _change(manager, sections, "car_info", "Parked on Burggrevegatan")
+    _change(manager, sections, "car_info", "Parked on Burggrevegatan, locked")
+
+    notes = [e["content"] for e in manager.message_history.transient_entries]
+    assert len(notes) == 2
+    assert notes[0].endswith("-car_info_content\n+Driving on Kungsgatan"), "the sent note keeps its bytes"
+    assert notes[1].endswith("-Driving on Kungsgatan\n+Parked on Burggrevegatan, locked"), \
+        "the unsent one folds from where the sent one ended"
+
+
+@pytest.mark.unit
+def test_an_assistant_reply_after_a_note_keeps_it(prompt_test_environment):
+    """The autonomous check builds its own messages, so get_messages() never sees its notes —
+    but a reply it leaves in the history ends the turn its next check caches up to."""
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+    _change(manager, sections, "car_info", "Driving on Kungsgatan")
+    note = manager.message_history.transient_entries[0]
+    manager.message_history.history = [{"role": "assistant", "content": "Marcus is on his way.",
+                                         "timestamp": note["timestamp"] + 1}]
+
+    _change(manager, sections, "car_info", "Parked on Burggrevegatan")
+
+    assert len(manager.message_history.transient_entries) == 2
+    assert manager.message_history.transient_entries[0] is note
+
+
+@pytest.mark.unit
+def test_an_unsent_change_undone_leaves_no_note(prompt_test_environment):
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+    received = []
+    manager.on_prompt_assembled(lambda msgs: received.append(msgs))
+    _change(manager, sections, "car_info", "Driving on Kungsgatan")
+
+    _change(manager, sections, "car_info", "car_info_content")
+
+    assert manager.message_history.transient_entries == []
+    assert manager._section_current["car_info"] == "car_info_content"
+    assert len(received) == 2, "the withdrawal changes the window, so it is pre-heated too"
+
+
+@pytest.mark.unit
+def test_folding_one_sections_note_leaves_anothers_alone(prompt_test_environment):
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+    _change(manager, sections, "car_info", "Driving on Kungsgatan")
+    _change(manager, sections, "calendar", "Dentist at 10")
+    calendar_note = manager.message_history.transient_entries[1]
+
+    _change(manager, sections, "car_info", "Parked on Burggrevegatan")
+
+    entries = manager.message_history.transient_entries
+    assert [e["section"] for e in entries] == ["calendar", "car_info"], "the folded note moves to the end"
+    assert entries[0] is calendar_note
 
 
 @pytest.mark.unit
@@ -1690,7 +1779,7 @@ def _carried_manager(prompt_test_environment, in_window=("home",)):
     manager.sections = {"home": DummySection('## LIGHTS\n"Lamp [Kök]": off', section_name="HomeData"),
                         "procedures": DummySection("Sunny", section_name="Procedures")}
     manager._section_positions = manager._compute_section_positions()
-    manager.message_history.loaded_toolkits = lambda: {name: 1.0 for name in in_window}
+    manager.message_history.loaded_toolkits = lambda *_, **__: {name: 1.0 for name in in_window}
     manager._assemble_prompt()
     return manager
 
@@ -1745,6 +1834,7 @@ def test_carried_section_changes_become_notes_while_the_toolkit_is_in_the_window
     manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": on'
     manager.on_section_updated("HomeData")
     manager.on_section_updated("HomeData")      # unchanged since the note: nothing
+    _send(manager)
     manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": 50'
     manager.on_section_updated("HomeData")
 
@@ -1780,6 +1870,26 @@ def test_carried_notes_survive_a_full_rebuild_and_a_new_send_restarts_the_budget
 
 
 @pytest.mark.unit
+def test_a_toolkit_preloaded_for_voice_keeps_its_delta_tracking(prompt_test_environment):
+    """A home preloaded for a spoken request is a `preload:voice` row: in no text window, yet its
+    data was sent. A change must become a delta note there, not end the tracking — which made
+    the next spoken request re-send the whole house instead of a note."""
+    from assistant.commands import Toolkits
+    from assistant.prompt.MessageHistory import MessageHistory
+    manager = _carried_manager(prompt_test_environment)
+    del manager.message_history.loaded_toolkits      # the real one, over the real rows
+    manager.message_history.add_command_result("result: \n# Toolkit: home\nhome text", cap=False,
+                                               source=MessageHistory.preload_source("voice"))
+    assert "home" not in manager.message_history.loaded_toolkits("text")
+    manager.carried_data(Toolkits.by_name("home"))
+    manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": on'
+    manager.on_section_updated("HomeData")
+    assert len(_notes(manager)) == 1 and POINTER not in _notes(manager)
+    assert manager._section_current["home"] == '## LIGHTS\n"Lamp [Kök]": on', "the tracking goes on"
+    assert not manager.untracked_sections(Toolkits.by_name("home")), "the next preload sends no full copy"
+
+
+@pytest.mark.unit
 def test_carried_section_stops_tracking_when_the_toolkit_leaves_the_window(prompt_test_environment):
     from assistant.commands import Toolkits
     manager = _carried_manager(prompt_test_environment)
@@ -1789,7 +1899,7 @@ def test_carried_section_stops_tracking_when_the_toolkit_leaves_the_window(promp
     assert len(_notes(manager)) == 1
 
     notes = _notes(manager)
-    manager.message_history.loaded_toolkits = lambda: {}
+    manager.message_history.loaded_toolkits = lambda *_, **__: {}
     manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": 50'
     manager.on_section_updated("HomeData")
     assert _notes(manager) == notes and "home" not in manager._section_current
@@ -1805,6 +1915,7 @@ def test_carried_section_big_change_becomes_one_pointer_note(prompt_test_environ
     manager.carried_data(Toolkits.by_name("home"))
     manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": on'
     manager.on_section_updated("HomeData")
+    _send(manager)
     manager.sections["home"]._content = "## LIGHTS\n" + "\n".join(f'"Lamp {i} [Kök]": on' for i in range(80))
     manager.on_section_updated("HomeData")
 
@@ -1833,9 +1944,27 @@ def test_carried_notes_budget_ends_in_a_pointer_note(prompt_test_environment, mo
     for level in (10, 20, 30, 40, 50):
         manager.sections["home"]._content = f'## LIGHTS\n"Lamp [Kök]": {level}'
         manager.on_section_updated("HomeData")
+        _send(manager)
     notes = _notes(manager)
     assert notes[-1] == POINTER and POINTER not in notes[:-1]
     assert 1 <= len(notes) - 1 < 5, "the notes that fit the budget were sent and stay; the pointer ends the run"
+
+
+@pytest.mark.unit
+def test_carried_notes_budget_counts_only_the_folded_note(prompt_test_environment, monkeypatch):
+    """Unsent changes fold into one note: the budget is charged for that note alone, so a
+    run of small changes no request saw never ends in a pointer."""
+    from assistant.commands import Toolkits
+    monkeypatch.setattr(PromptManager, "_CARRIED_NOTES_BUDGET", 120)
+    manager = _carried_manager(prompt_test_environment)
+    manager.carried_data(Toolkits.by_name("home"))
+    for level in (10, 20, 30, 40, 50):
+        manager.sections["home"]._content = f'## LIGHTS\n"Lamp [Kök]": {level}'
+        manager.on_section_updated("HomeData")
+
+    notes = _notes(manager)
+    assert notes == ['HOME AUTOMATION DATA updated:\n-"Lamp [Kök]": off\n+"Lamp [Kök]": 50']
+    assert manager._carried_note_chars["home"] == len('-"Lamp [Kök]": off\n+"Lamp [Kök]": 50')
 
 
 @pytest.mark.unit

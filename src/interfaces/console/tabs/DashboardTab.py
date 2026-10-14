@@ -33,7 +33,17 @@ class FeedRow(NamedTuple):
     fg: Color
     bg: Color
     progress: Optional[float]   # 0..1 bar fill; None = catching up without a count (sweeping notch)
-    text: str                   # "1234 / 23356 photos ETA: 13h" through a catch-up, "23436 photos" live, else the state
+    count: str                  # the feed's rows, "23 436"; empty when the row shows only its state
+    detail: str                 # what follows the count, "/ 23 356 photos ETA: 13h" or "photos"; else the state
+
+    @property
+    def text(self) -> str:
+        return f"{self.count} {self.detail}" if self.count else self.detail
+
+
+def format_count(n: int) -> str:
+    """Thousands split by a space: "23 436"."""
+    return f"{n:,}".replace(",", " ")
 
 
 class DashboardTab(TabView):
@@ -82,7 +92,7 @@ class DashboardTab(TabView):
 
         # Anthropic cost data (written by AnthropicCostMonitor)
         self.daily_costs: dict = {}
-        self.cost_models: list = []
+        self.cost_workspaces: list = []
         self.total_cost_30d: float = 0.0
         self.total_cost_7d: float = 0.0
         self.total_cost_1d: float = 0.0
@@ -189,9 +199,10 @@ class DashboardTab(TabView):
         return y + 1
 
     def _summary_height(self) -> int:
-        """Height of the summary tiles: one row per running feed and per local mic, never fewer
-        than the utilization meters, plus the tile's own rows — the chart rows below shrink to fit it."""
-        rows = max(self.SUMMARY_ROWS, len(self._feed_statuses()), len(self._mic_noise_floors()))
+        """Height of the summary tiles: one row per running feed (plus the total) and per local mic,
+        never fewer than the utilization meters, plus the tile's own rows — the chart rows below shrink to fit it."""
+        feeds = len(self._feed_statuses())
+        rows = max(self.SUMMARY_ROWS, feeds + 1 if feeds else 0, len(self._mic_noise_floors()))
         return rows + Tile.CARD_CHROME
 
     def _draw_summary_panel(self, screen: TUIScreen, columns: List[Tuple[int, int]], y: int, panel_h: int):
@@ -274,35 +285,44 @@ class DashboardTab(TabView):
     FEED_MIN_BAR = 6
     FEED_SWEEP_FRAMES = 90      # one bounce of the indeterminate notch: 3 s at 30 fps
     SYMBOL_CATCHING_UP = "◐"    # the FeedStrip draws a bar for a catch-up; the panel has one of its own
+    TOTAL_LABEL = "Total"
 
     def _draw_feeds_panel(self, screen: TUIScreen, x: int, y: int, panel_w: int, panel_h: int):
         """One row per running feed: the name, a state symbol (the FeedStrip's dots and cross, a
         half dot for a catch-up), a bar in the state's
         colour (green live, yellow catching up, red stopped or failed, grey starting; paused fades
         it) and, in that same colour, the feed's rows in the history with its item noun —
-        "1234 / 23356 photos ETA: 13h" through a catch-up (the total is what it will hold once
-        caught up), "23436 messages" once live — or the state word when paused, stopped or
-        failed. A feed catching up without a count gets a notch sweeping the empty bar instead."""
+        "1 234 / 23 356 photos ETA: 13h" through a catch-up (the total is what it will hold once
+        caught up), "23 436 messages" once live — or the state word when paused, stopped or
+        failed. A feed catching up without a count gets a notch sweeping the empty bar instead.
+        Under the feeds a Total row sums the rows of all of them in "items". The counts are
+        right-aligned in one column so their digits line up; a state word starts where they do."""
         Tile.draw_card(screen, self._cards, x, y, panel_w, panel_h, "Feeds")
 
-        rows = [self._feed_row(name, status) for name, status in self._feed_statuses()]
+        statuses = self._feed_statuses()
+        rows = [self._feed_row(name, status) for name, status in statuses]
         if not rows:
             screen.set_color(Theme.COLOR_DIM)
             screen.write_at(x + 2, y + Tile.CARD_TOP, "no feeds running")
             screen.reset_color()
             return
 
-        rows = rows[:panel_h - Tile.CARD_CHROME]
-        label_w = max(len(row.name) for row in rows)
+        rows = rows[:max(0, panel_h - Tile.CARD_CHROME - 1)]
+        total_count = format_count(self._feeds_total(statuses))
+        count_w = max([len(row.count) for row in rows] + [len(total_count)])
+        texts = [self._aligned_text(row.count, row.detail, count_w) for row in rows]
+        total_text = self._aligned_text(total_count, "items", count_w)
+        label_w = max(len(row.name) for row in rows) if rows else 0
+        label_w = max(label_w, len(self.TOTAL_LABEL))
         symbol_x = x + 2 + label_w + 1
         bar_x = symbol_x + 2
         # The bar takes every cell the longest text on screen leaves it.
-        text_w = max(display_width(row.text) for row in rows)
+        text_w = max(display_width(text) for text in texts + [total_text])
         bar_len = max(self.FEED_MIN_BAR, panel_w - (bar_x - x) - text_w - 3)
         text_x = bar_x + bar_len + 1
         text_w = x + panel_w - 2 - text_x     # one cell of air before the right border
 
-        for i, row in enumerate(rows):
+        for i, (row, text) in enumerate(zip(rows, texts)):
             row_y = y + Tile.CARD_TOP + i
             screen.set_color(Theme.COLOR_LABEL)
             screen.write_at(x + 2, row_y, f"{row.name:<{label_w}}")
@@ -316,8 +336,24 @@ class DashboardTab(TabView):
             if text_w > 0:
                 screen.set_color(row.fg)
                 screen.bold()
-                screen.write_at(text_x, row_y, fit(row.text, text_w))
+                screen.write_at(text_x, row_y, fit(text, text_w))
                 screen.reset_color()
+
+        total_y = y + Tile.CARD_TOP + len(rows)
+        screen.set_color(Theme.COLOR_LABEL)
+        screen.write_at(x + 2, total_y, f"{self.TOTAL_LABEL:<{label_w}}")
+        if text_w > 0:
+            screen.bold()
+            screen.write_at(text_x, total_y, fit(total_text, text_w))
+        screen.reset_color()
+
+    @staticmethod
+    def _aligned_text(count: str, detail: str, count_w: int) -> str:
+        return f"{count:>{count_w}} {detail}" if count else detail
+
+    @staticmethod
+    def _feeds_total(statuses: List[Tuple[str, dict]]) -> int:
+        return sum(status.get("stored") or 0 for _, status in statuses)
 
     def _sweep_position(self) -> float:
         """0..1..0 triangle wave over FEED_SWEEP_FRAMES frames."""
@@ -339,28 +375,30 @@ class DashboardTab(TabView):
         state = status["state"]
         items = status.get("items", "items")
         progress: Optional[float] = 0.0
+        count = ""
         if state == FeedState.LIVE.value:
             symbol, fg, bg = SYMBOL_RUNNING, Theme.COLOR_GREEN, Theme.COLOR_GREEN_DIM
             progress = 1.0
-            text = f"{status['stored']} {items}"
+            count, detail = format_count(status["stored"]), items
         elif state == FeedState.CATCHING_UP.value:
             symbol, fg, bg = cls.SYMBOL_CATCHING_UP, Theme.COLOR_YELLOW, Theme.COLOR_YELLOW_DIM
             progress = status.get("progress")
             stored, total = status["stored"], status.get("total")
-            text = f"{stored} {items}" if total in (None, stored) else f"{stored} / {total} {items}"
+            count = format_count(stored)
+            detail = items if total in (None, stored) else f"/ {format_count(total)} {items}"
             if status.get("eta_seconds") is not None:
-                text += f" ETA: {format_eta(status['eta_seconds'])}"
+                detail += f" ETA: {format_eta(status['eta_seconds'])}"
         elif state in (FeedState.STOPPED.value, FeedState.FAILED.value):
             symbol, fg, bg = SYMBOL_FAILED, Theme.COLOR_RED, Theme.COLOR_RED_DIM
-            text = state
+            detail = state
         else:
             symbol, fg, bg = SYMBOL_RUNNING, Theme.COLOR_DIM, Theme.COLOR_GRID
-            text = state
+            detail = state
         if status.get("paused") and symbol != SYMBOL_FAILED:
             symbol = SYMBOL_PAUSED
             fg = Theme.mix(Theme.COLOR_PANEL_BG, fg, 0.5)
-            text = "paused"
-        return FeedRow(symbol, SHORT_NAMES.get(name, name), fg, bg, progress, text)
+            count, detail = "", "paused"
+        return FeedRow(symbol, SHORT_NAMES.get(name, name), fg, bg, progress, count, detail)
 
     def _draw_charts_row(self, screen: TUIScreen, columns: List[Tuple[int, int]], y: int, chart_h: int):
         (gpu_x, gpu_w), (mem_x, mem_w), (cpu_x, cpu_w) = columns
@@ -816,14 +854,14 @@ class DashboardTab(TabView):
 
     # --- Anthropic Cost Chart ---
 
-    MODEL_COLORS_LIST = [Theme.COLOR_CYAN, Theme.COLOR_PURPLE, Theme.COLOR_YELLOW, Theme.COLOR_GREEN, Theme.COLOR_PINK,
-                         Theme.COLOR_ORANGE]
+    WORKSPACE_COLORS = [Theme.COLOR_CYAN, Theme.COLOR_PURPLE, Theme.COLOR_YELLOW, Theme.COLOR_GREEN, Theme.COLOR_PINK,
+                        Theme.COLOR_ORANGE]
 
     def _draw_cost_chart(self, screen: TUIScreen, x: int, y: int, width: int, box_h: int):
         if box_h < 6 or width < 30:
             return
 
-        models = self.cost_models
+        workspaces = self.cost_workspaces
         daily_costs = self.daily_costs
         dates = self.cost_dates
         date_strs = self.cost_date_strs
@@ -867,7 +905,7 @@ class DashboardTab(TabView):
         max_cost = 0.0
         for ds in display_date_strs:
             day_data = daily_costs.get(ds, {})
-            max_cost = max(max_cost, sum(day_data.get(m, 0) for m in models))
+            max_cost = max(max_cost, sum(day_data.get(w, 0) for w in workspaces))
         if max_cost <= 0:
             max_cost = 1.0
         # Round up to a nice number
@@ -895,8 +933,8 @@ class DashboardTab(TabView):
 
             # Build segments for this day (bottom to top)
             segments = []
-            for mi, m in enumerate(models):
-                cost = day_data.get(m, 0)
+            for mi, w in enumerate(workspaces):
+                cost = day_data.get(w, 0)
                 if cost > 0:
                     segments.append((mi, cost))
 
@@ -928,7 +966,7 @@ class DashboardTab(TabView):
                     continue    # the rule drawn under the bars stays
                 elif len(overlapping) == 1:
                     mi, cs, ce = overlapping[0]
-                    color = self._model_shade(mi, grad_t)
+                    color = self._workspace_shade(mi, grad_t)
                     fill = ce - cs
                     if fill >= 0.99:
                         char = '\u2588'
@@ -943,8 +981,8 @@ class DashboardTab(TabView):
                     overlapping.sort(key=lambda s: s[1])
                     mi_low = overlapping[0][0]
                     mi_high = overlapping[-1][0]
-                    color_low = self._model_shade(mi_low, grad_t)
-                    color_high = self._model_shade(mi_high, grad_t)
+                    color_low = self._workspace_shade(mi_low, grad_t)
+                    color_high = self._workspace_shade(mi_high, grad_t)
                     fill_low = overlapping[0][2] - row_bottom
                     fill_total = overlapping[-1][2] - row_bottom
                     if fill_total >= 0.99:
@@ -989,41 +1027,25 @@ class DashboardTab(TabView):
         # Legend row — centered under the chart area
         legend_y = chart_y + chart_h + 1
         entries = []
-        for mi, m in enumerate(models):
-            short_name = self._shorten_model_name(m)
-            entries.append((mi, short_name, len(f"\u2501\u2501 {short_name}   ")))
+        for mi, w in enumerate(workspaces):
+            entries.append((mi, w, len(f"\u2501\u2501 {w}   ")))
         total_legend_w = sum(e[2] for e in entries) - 3 if entries else 0
         lx = chart_x + max(0, (chart_w - total_legend_w) // 2)
-        for mi, short_name, entry_w in entries:
+        for mi, name, entry_w in entries:
             if lx + entry_w > x + box_w - 2:
                 break
-            screen.set_color(self.MODEL_COLORS_LIST[mi % len(self.MODEL_COLORS_LIST)])
+            screen.set_color(self.WORKSPACE_COLORS[mi % len(self.WORKSPACE_COLORS)])
             screen.write_at(lx, legend_y, "\u2501\u2501")
             screen.set_color(Theme.COLOR_LABEL)
-            screen.write_at(lx + 2, legend_y, f" {short_name}")
+            screen.write_at(lx + 2, legend_y, f" {name}")
             lx += entry_w
         screen.reset_color()
 
-    def _model_shade(self, model_index: int, t: float) -> Color:
-        """A model's colour at height `t` (0..1) of the cost chart: the same deep-to-bright
+    def _workspace_shade(self, workspace_index: int, t: float) -> Color:
+        """A workspace's colour at height `t` (0..1) of the cost chart: the same deep-to-bright
         shading the other charts' columns have."""
-        fg = self.MODEL_COLORS_LIST[model_index % len(self.MODEL_COLORS_LIST)]
+        fg = self.WORKSPACE_COLORS[workspace_index % len(self.WORKSPACE_COLORS)]
         return Theme.mix(Theme.mix(Theme.COLOR_PANEL_BG, Theme.deep(fg), 0.8), fg, t)
-
-    @staticmethod
-    def _shorten_model_name(model: str) -> str:
-        # "claude-sonnet-4-20250514" -> "sonnet-4"
-        # "claude-3-5-haiku-20241022" -> "haiku-3.5"
-        name = model.lower()
-        name = name.replace("claude-", "")
-        # Remove date suffix like "-20250514"
-        parts = name.split("-")
-        cleaned = []
-        for p in parts:
-            if len(p) == 8 and p.isdigit():
-                continue
-            cleaned.append(p)
-        return "-".join(cleaned)
 
     @staticmethod
     def _nice_ceil(value: float) -> float:
