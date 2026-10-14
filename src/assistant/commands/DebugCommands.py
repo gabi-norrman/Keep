@@ -367,6 +367,43 @@ class DebugCommands:
         if summary is None:
             info("//memory_curate: skipped, another curation was already running")
 
+    # --- //memory_condense ----------------------------------------------------------------
+
+    def cmd_MEMORY_CONDENSE(self, args: str) -> str:
+        """//memory_condense [words]: the condensing pass alone on the memory bank — the nightly cut when the bank is over the limit, or the given number of words; runs in the background, the bank and its diff land in log/memory/."""
+        from assistant import MemoryFile
+        from assistant.agents.LongTermMemoryCurator import LongTermMemoryCurator, MEMORY_WORD_LIMIT
+        usage = ("Usage: //memory_condense [words] — the words to remove; without a number the nightly cut, "
+                 "which needs the bank over the limit")
+        parts = args.split()
+        if len(parts) > 1 or (parts and not parts[0].isdigit()) or (parts and int(parts[0]) == 0):
+            return usage
+        words = LongTermMemoryCurator.word_count(MemoryFile.read())
+        if parts:
+            cut = int(parts[0])
+        elif words <= MEMORY_WORD_LIMIT:
+            info(f"//memory_condense: the bank is {words} words, within the limit of {MEMORY_WORD_LIMIT} — nothing to do")
+            return (f"The memory bank is {words} words, within the {MEMORY_WORD_LIMIT}-word limit — nothing to "
+                    f"condense. Give a number of words to cut anyway.")
+        else:
+            cut = LongTermMemoryCurator.condense_cut(words)
+        info(f"//memory_condense: starting a condensing pass on {words} words, {cut} to remove, in the background")
+        threading.Thread(target=self._condense_memory, args=(cut, self.history), daemon=True).start()
+        return (f"Condensing the memory bank ({words} words, limit {MEMORY_WORD_LIMIT}) by {cut} words in the "
+                f"background. It takes a few minutes; the bank and its diff land in log/memory/, progress is in the log.")
+
+    @staticmethod
+    def _condense_memory(cut: int, history):
+        """The condensing pass itself, on its own thread; the completion lands in `history` as a system row."""
+        from assistant.agents.LongTermMemoryCurator import LongTermMemoryCurator
+        try:
+            outcome = LongTermMemoryCurator.run_condense(cut, history=history)
+        except Exception as e:
+            error(f"//memory_condense: the condensing pass failed: {e}")
+            return
+        if outcome is None:
+            info("//memory_condense: nothing saved — another curation was running or the pass removed nothing")
+
     # --- //memory_split -------------------------------------------------------------------
 
     def cmd_MEMORY_SPLIT(self, args: str) -> str:

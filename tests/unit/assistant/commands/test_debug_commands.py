@@ -488,6 +488,67 @@ def test_memory_curate_hands_the_history_to_the_curator(curation):
     assert curation.histories == [history, None]
 
 
+# --- //memory_condense ------------------------------------------------------------------
+
+@pytest.fixture
+def condense(monkeypatch):
+    """A bank of a chosen size behind //memory_condense, the cut handed to the curator captured
+    instead of an LLM pass; the thread is joined so the assertion sees the call."""
+    import assistant.agents.LongTermMemoryCurator as curator_mod
+    from assistant import MemoryFile
+    calls, threads = [], []
+
+    def run_condense(cut, history=None):
+        calls.append((cut, history))
+        return {}
+
+    monkeypatch.setattr(curator_mod.LongTermMemoryCurator, "run_condense", staticmethod(run_condense))
+    real_thread = dc_mod.threading.Thread
+
+    class JoinedThread(real_thread):
+        def start(self):
+            super().start()
+            threads.append(self)
+
+    monkeypatch.setattr(dc_mod.threading, "Thread", JoinedThread)
+
+    def run(query, words: int, history=None):
+        monkeypatch.setattr(MemoryFile, "read", lambda path=None: "# Memory\n" + " ".join(["w"] * (words - 2)))
+        reply = DebugCommands(history=history).handle(query)
+        for t in threads:
+            t.join(timeout=5)
+        return reply
+    run.calls = calls
+    return run
+
+
+def test_memory_condense_over_the_limit_asks_the_nightly_cut(condense):
+    from assistant.agents.LongTermMemoryCurator import LongTermMemoryCurator, MEMORY_WORD_LIMIT
+    history = object()
+    reply = condense("//memory_condense", MEMORY_WORD_LIMIT + 300, history=history)
+    assert condense.calls == [(LongTermMemoryCurator.condense_cut(MEMORY_WORD_LIMIT + 300), history)]
+    assert str(MEMORY_WORD_LIMIT + 300) in reply
+
+
+def test_memory_condense_within_the_limit_does_nothing_without_a_number(condense):
+    from assistant.agents.LongTermMemoryCurator import MEMORY_WORD_LIMIT
+    reply = condense("//memory_condense", MEMORY_WORD_LIMIT - 10)
+    assert condense.calls == [] and "nothing to condense" in reply
+
+
+def test_memory_condense_takes_the_words_to_cut(condense):
+    from assistant.agents.LongTermMemoryCurator import MEMORY_WORD_LIMIT
+    condense("//memory_condense 250", MEMORY_WORD_LIMIT - 10)
+    assert condense.calls == [(250, None)]
+
+
+def test_memory_condense_rejects_a_bad_count(condense):
+    from assistant.agents.LongTermMemoryCurator import MEMORY_WORD_LIMIT
+    for args in ("abc", "0", "1 2"):
+        assert "Usage" in condense(f"//memory_condense {args}", MEMORY_WORD_LIMIT + 300)
+    assert condense.calls == []
+
+
 def test_for_assistant_takes_the_history_from_the_prompt_manager():
     from unittest.mock import patch, Mock
     assistant = Mock()
