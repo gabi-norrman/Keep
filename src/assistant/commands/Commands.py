@@ -1420,13 +1420,27 @@ class Commands:
     def cmd_load_watch(self, *names: str):
         self.background_command(self._run_load_watch, list(names))
 
-    @staticmethod
-    def _run_load_watch(*names: str) -> str:
-        """The named watch items in full, splatted like `_run_load_procedure`."""
+    def _run_load_watch(self, *names: str) -> str:
+        """The named watch items in full, splatted like `_run_load_procedure`, with the watch
+        toolkit's reference after them unless the window holds it already: an item is loaded
+        to be answered about or updated, and the commands that update it live in the toolkit
+        (the prompt documents `load_watch` alone). A `load_toolkit("watch")` after this
+        points back at the reference, as after any load."""
         names = [n for n in names if n and n.strip()]
         if not names:
             return "load_watch failed: expected an item's name. Open: " + (", ".join(i.name for i in WatchList.items()) or "none")
-        return "\n".join(WatchList.load(name) for name in names)
+        items = "\n".join(WatchList.load(name) for name in names)
+        return items + self._watch_toolkit_along()
+
+    def _watch_toolkit_along(self) -> str:
+        toolkit = Toolkits.by_name(Toolkits.WATCH_TOOLKIT)
+        prompt_manager = self._prompt_manager()
+        in_window = prompt_manager.message_history.loaded_toolkits(self._current_profile.window) if prompt_manager else {}
+        if toolkit is None or toolkit.name in in_window:
+            trace(f"load_watch: the {Toolkits.WATCH_TOOLKIT} toolkit is in the {self._current_profile.name} window already")
+            return ""
+        info(f"load_watch: the {toolkit.name} toolkit comes along ({self._current_profile.name} window)")
+        return "\n\n" + ToolkitPreloader.render_load(toolkit, prompt_manager, record=self._current_profile is not AUTONOMOUS)
 
     def cmd_save_watch(self, *args: str) -> str:
         return WatchList.run("save_watch", list(args))

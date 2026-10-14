@@ -787,7 +787,7 @@ class RequestProcessor:
             # header would still count it as loaded. A round that batched a load_toolkit with
             # other commands (the prompt encourages batching) goes in uncapped too.
             executed = old_dialog_manager.command_processor.executed_commands
-            loaded_toolkit = any(c.startswith("load_toolkit(") for c in executed)
+            loaded_toolkit = any(c.startswith(("load_toolkit(", "load_watch(")) for c in executed)
             if loaded_toolkit and len(executed) > 1:
                 trace(f"Command result stored uncapped: load_toolkit ran alongside {len(executed) - 1} other command(s)")
             prompt_manager.add_command_result(_command_result_for_history(self.dialog_manager.reply_to_llm),

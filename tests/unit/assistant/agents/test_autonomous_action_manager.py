@@ -23,6 +23,7 @@ from assistant.agents.AutonomousActionManager import (
 FORMATTED_AUTONOMOUS_ACTION_PROMPT = AUTONOMOUS_ACTION_PROMPT.format(
     interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES,
     watch_list=WatchList.NOTHING_DUE,
+    watch_toolkit="",
     destinations=Destinations.NONE_YET,
     thinking_tag_instruction=THINKING_TAG_INSTRUCTION,
 )
@@ -1585,6 +1586,32 @@ class TestThinkingTagInstruction:
     def test_a_bare_mock_counts_as_not_internal(self):
         """Mock().handles_thinking_internally() is a truthy Mock, not True: the paragraph stays."""
         assert "<thinking>" in AutonomousActionManager._action_prompt(Mock())
+
+
+class TestWatchToolkitInTheInstruction:
+    """The prompt documents `load_watch` alone; the commands that stamp or rewrite an item are
+    the watch toolkit's. A check with due items must use them, so its instruction carries the
+    reference — only then, and under the due items."""
+
+    def test_carried_under_the_due_items_when_an_item_is_due(self):
+        from assistant.commands import Toolkits
+        WatchList.save("water-meter", "read it", "2026-10-11 17:00", every="1h")
+        with patch.object(WatchList, "due_for_poll", return_value=True):
+            prompt = AutonomousActionManager._action_prompt(Mock())
+        reference = Toolkits.render(Toolkits.by_name("watch"))
+        assert reference in prompt
+        assert prompt.index("water-meter") < prompt.index(reference) < prompt.index("## Response Format")
+        assert "save_watch(" in reference and "checked_watch(" in reference
+
+    def test_left_out_when_nothing_is_due(self):
+        WatchList.save("water-meter", "read it", "2099-01-01")
+        prompt = AutonomousActionManager._action_prompt(Mock())
+        assert Toolkits_header() not in prompt and "save_watch(name" not in prompt
+
+
+def Toolkits_header() -> str:
+    from assistant.commands import Toolkits
+    return Toolkits.HEADER_PREFIX + "watch"
 
 
     @pytest.mark.parametrize("internal", [True, False])

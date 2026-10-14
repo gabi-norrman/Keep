@@ -206,6 +206,8 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
             ("create_event", "move_event", "delete_event", "load_calendar"), needs=CalendarSource),
     Toolkit("timers", "anything the user wants done LATER, or watched for until it happens",
             ("schedule_wakeup", "caffeinate")),
+    Toolkit("watch", "add, update, stamp or delete a watch item (it comes along with the first `load_watch`)",
+            ("save_watch", "checked_watch", "delete_watch")),
     Toolkit("history", "search everything that ever happened, when long-term memory does not cover it",
             ("search_history", "show_history")),
     Toolkit("vault", "store a secret the user has said, or ask them for one you must never see",
@@ -230,16 +232,17 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
 # The order of the index, which is part of the prompt: a toolkit keeps its place wherever its
 # file lives. A toolkit not named here (a new folder's) comes after these, by name.
 INDEX_ORDER = ("home", "cameras", "web", "browser", "x", "email", "imessage", "whatsapp", "telegram", "music", "photos", "location", "calendar",
-               "reminders", "weather", "timers", "cars", "husdata", "history", "vault", "setup", "developer",
+               "reminders", "weather", "timers", "watch", "cars", "husdata", "history", "vault", "setup", "developer",
                "self_improvement", "voice")
 
 TOOLKITS: tuple[Toolkit, ...] = assemble(CORE_TOOLKITS, discover(), INDEX_ORDER)
 trace(f"Toolkits: {len(CORE_TOOLKITS)} core, {len(TOOLKITS) - len(CORE_TOOLKITS)} from integration folders")
 
 # Documented in the prompt itself, outside any toolkit.
-CORE_COMMANDS = frozenset({"load_toolkit", "remember", "post_message",
-                           "load_watch", "save_watch", "checked_watch", "delete_watch",
+CORE_COMMANDS = frozenset({"load_toolkit", "remember", "post_message", "load_watch",
                            "load_procedure", "save_procedure", "delete_procedure"})
+# The toolkit `load_watch` brings along: its commands are what one loads an item for.
+WATCH_TOOLKIT = "watch"
 # Runnable but deliberately offered nowhere (Commands.py carries the todo asking whether to keep it).
 UNDOCUMENTED = frozenset({"sonos_enqueue_and_play"})
 

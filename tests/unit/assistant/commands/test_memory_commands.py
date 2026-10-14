@@ -61,6 +61,24 @@ class TestWatchCommands:
         assert "parcel" in commands._run_load_watch() and "Alice" not in commands._run_load_watch()
         assert "parcel" in commands._run_load_watch("sofa")
 
+    def test_loading_an_item_brings_the_watch_toolkit_unless_the_window_holds_it(self, commands):
+        """The prompt documents `load_watch` alone: the commands that update an item come with
+        the item. A second load points nowhere — the reference is in the window, and
+        `load_toolkit("watch")` would point back at it."""
+        from assistant.commands import Toolkits
+        WatchList.save("Parcel", "order 4711", "2026-03-12")
+        reference = Toolkits.render(Toolkits.by_name("watch"))
+        history = Mock()
+        history.loaded_toolkits.return_value = {}
+        with patch.object(Commands, "_prompt_manager", return_value=Mock(message_history=history, render_template=lambda t: t)):
+            loaded = commands._run_load_watch("parcel")
+            assert loaded.startswith("# ") and "order 4711" in loaded and loaded.endswith(reference)
+            assert loaded.index("order 4711") < loaded.index(reference)
+            history.loaded_toolkits.return_value = {"watch": 1.0}
+            again = commands._run_load_watch("parcel")
+        assert "order 4711" in again and Toolkits.HEADER_PREFIX not in again
+        assert reference in commands._run_load_watch("parcel"), "without a PromptManager (tests) the reference comes along"
+
     def test_loading_a_calendar_is_a_background_command_and_runs_in_test_suite_mode(self, commands):
         commands.background_command = Mock()
         run(commands, 'load_calendar("Work")')

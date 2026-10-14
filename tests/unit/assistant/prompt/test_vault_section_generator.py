@@ -1,4 +1,5 @@
-"""VaultSectionGenerator: the `{VAULT}` prompt section lists placeholders, never values (VAULT_PLAN §3.7)."""
+"""VaultSectionGenerator: the `{VAULT}` prompt section lists the placeholders no memory file names, never values
+(VAULT_PLAN §3.7)."""
 from unittest.mock import Mock, patch
 
 import pytest
@@ -17,24 +18,59 @@ def vault(tmp_path):
 
 
 @pytest.fixture
+def memory_dir(tmp_path):
+    return tmp_path / "memory"
+
+
+def remember(memory_dir, text: str, name: str = "bank.md"):
+    path = memory_dir / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        f.write(text + "\n")
+
+
+@pytest.fixture
 def stocked(vault):
     vault.add("phone", "Marcus's mobile", PHONE, id="marcus-mobile")
     vault.add("email", "Anna's e-mail", EMAIL, id="anna-mail")
     return vault
 
 
-def section(vault, prompt_manager=None) -> VaultSectionGenerator:
-    return VaultSectionGenerator(prompt_manager, vault=vault)
+def section(vault, prompt_manager=None, memory_dir=None) -> VaultSectionGenerator:
+    return VaultSectionGenerator(prompt_manager, vault=vault, memory_dir=memory_dir or vault.path.parent / "memory")
 
 
 @pytest.mark.unit
 class TestRender:
     def test_lists_placeholder_description_and_kind_sorted_by_id(self, stocked):
         assert section(stocked)._fetch_content() == (
-            "The placeholders that exist, each with its description and kind:\n"
+            "The placeholders your memory does not name, each with its description and kind:\n"
             "- {{secret:anna-mail}} — Anna's e-mail (email)\n"
             "- {{secret:marcus-mobile}} — Marcus's mobile (phone)"
         )
+
+    def test_a_secret_the_bank_names_is_left_out_and_counted(self, stocked, memory_dir):
+        remember(memory_dir, "Anna's e-mail is {{secret:anna-mail}}.")
+        text = section(stocked, memory_dir=memory_dir)._fetch_content()
+        assert "anna-mail" not in text
+        assert "{{secret:marcus-mobile}}" in text
+        assert "the other 1" in text
+
+    def test_a_mention_in_a_procedure_or_watch_item_counts_too(self, stocked, memory_dir):
+        remember(memory_dir, "Log in with {{secret:anna-mail}}.", "procedures/login.md")
+        remember(memory_dir, "Call {{secret:marcus-mobile}} when it lands.", "watchlist/parcel.md")
+        text = section(stocked, memory_dir=memory_dir)._fetch_content()
+        assert "anna-mail" not in text and "marcus-mobile" not in text
+        assert text == "All 2 placeholders are named in your memory; there are no others."
+
+    def test_a_bare_id_in_memory_is_not_a_mention(self, stocked, memory_dir):
+        # Only the placeholder form counts: the slug on its own could be any word.
+        remember(memory_dir, "anna-mail is the account name.")
+        assert "{{secret:anna-mail}}" in section(stocked, memory_dir=memory_dir)._fetch_content()
+
+    def test_missing_memory_dir_lists_everything(self, stocked, tmp_path):
+        text = section(stocked, memory_dir=tmp_path / "nowhere")._fetch_content()
+        assert "{{secret:anna-mail}}" in text and "{{secret:marcus-mobile}}" in text
 
     def test_never_contains_a_value_canonical_or_masked_form(self, stocked):
         text = section(stocked)._fetch_content()
@@ -92,6 +128,15 @@ class TestMonitoring:
         assert "{{secret:marcus-mobile}}" in gen.get_content()
         assert PHONE not in gen.get_content()
         assert gen.last_version == vault.version
+
+    def test_memory_change_re_renders_without_a_vault_change(self, stocked, memory_dir):
+        gen = section(stocked, memory_dir=memory_dir)
+        gen._refresh_if_changed()
+        assert "{{secret:anna-mail}}" in gen.get_content()
+        remember(memory_dir, "Anna's e-mail is {{secret:anna-mail}}.")
+        gen._refresh_if_changed()
+        assert "anna-mail" not in gen.get_content()
+        assert gen.last_version == stocked.version
 
     def test_delete_re_renders_as_empty(self, stocked):
         gen = section(stocked)

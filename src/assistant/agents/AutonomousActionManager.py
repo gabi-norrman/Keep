@@ -139,7 +139,7 @@ No need to inform the user about Telegram or iMessage messages s/he has received
 
 The WATCH LIST above is only an index. These are the items whose poll is due, with their whole notes, cadences and check stamps:
 
-{watch_list}
+{watch_list}{watch_toolkit}
 
 ## Response Format
 
@@ -230,11 +230,26 @@ class AutonomousActionManager:
         internal = llm.handles_thinking_internally() is True
         if internal:
             trace(f"Autonomous prompt without the <thinking> tag paragraph: {llm.name()} thinks on its own")
+        due = WatchList.render_due(tolerance=WATCH_POLL_TOLERANCE)
         return AUTONOMOUS_ACTION_PROMPT.format(
             interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES,
-            watch_list=WatchList.render_due(tolerance=WATCH_POLL_TOLERANCE),
+            watch_list=due,
+            watch_toolkit=AutonomousActionManager._watch_toolkit(due),
             destinations=Destinations.describe(),
             thinking_tag_instruction="" if internal else THINKING_TAG_INSTRUCTION)
+
+    @staticmethod
+    def _watch_toolkit(due: str) -> str:
+        """The watch toolkit's reference, under the due items when there are any: the check
+        must stamp or rewrite each of them, and the prompt documents only `load_watch`. It
+        rides in the instruction — the check's own turn, nothing persisted, no load round —
+        and a check with nothing due loads the toolkit itself if it wants an item saved."""
+        if due == WatchList.NOTHING_DUE:
+            return ""
+        from assistant.commands import Toolkits
+        toolkit = Toolkits.by_name(Toolkits.WATCH_TOOLKIT)
+        trace(f"Autonomous prompt carries the {toolkit.name} toolkit: items are due")
+        return "\n\nThe commands to stamp or rewrite them:\n\n" + Toolkits.render(toolkit)
 
     def _llm_for(self, messages):
         """Pick the vision tier when the outgoing messages carry image blocks
