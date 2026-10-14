@@ -11,14 +11,18 @@ from .ConfigManager import config
 
 
 class AnthropicCostMonitor:
-    """Periodically fetches Anthropic organization spend per model into the DashboardTab.
+    """Periodically fetches Anthropic organization spend per workspace into the DashboardTab.
 
     Requires the `api_keys.anthropic_admin` key; runs on a daemon thread and reports
-    fetch problems through the tab's cost_error rather than raising.
+    fetch problems through the tab's cost_error rather than raising. Every API key belongs
+    to one workspace, so a workspace per machine splits the bill per machine; the cost
+    report reports the default workspace without an id, shown as "Default".
     """
 
     API_URL = "https://api.anthropic.com/v1/organizations/cost_report"
-    MIN_MODEL_COST = 1.0  # Only show models with > $1 total spend
+    WORKSPACES_URL = "https://api.anthropic.com/v1/organizations/workspaces"
+    DEFAULT_WORKSPACE = "Default"
+    MIN_WORKSPACE_COST = 1.0  # Only show workspaces with > $1 total spend
     MAX_PAGES = 10
     MAX_DAYS = 60
     API_PAGE_LIMIT = 31
@@ -76,7 +80,7 @@ class AnthropicCostMonitor:
             "ending_at": ending_at,
             "bucket_width": "1d",
             "limit": self.API_PAGE_LIMIT,
-            "group_by[]": "description",
+            "group_by[]": "workspace_id",
         }
 
         # Collect all day buckets, handling pagination
@@ -104,28 +108,32 @@ class AnthropicCostMonitor:
             else:
                 break
 
-        # Aggregate: {date_str: {model: total_dollars}}
+        workspace_ids = {result.get("workspace_id") for bucket in all_buckets for result in bucket.get("results", [])}
+        names = self._workspace_names(headers) if workspace_ids - {None} else {}
+
+        # Aggregate: {date_str: {workspace: total_dollars}}
         # Response structure: each bucket has starting_at + results[]
-        # Each result has model, amount (cents as decimal string)
+        # Each result has workspace_id (None for the default one), amount (cents as decimal string)
         daily_costs = defaultdict(lambda: defaultdict(float))
-        model_totals = defaultdict(float)
+        workspace_totals = defaultdict(float)
 
         for bucket in all_buckets:
             date_str = bucket.get("starting_at", "")[:10]  # "2026-04-15"
             for result in bucket.get("results", []):
-                model = result.get("model", "unknown")
-                amount_cents = float(result.get("amount", "0"))
-                amount_dollars = amount_cents / 100.0
-                daily_costs[date_str][model] += amount_dollars
-                model_totals[model] += amount_dollars
+                workspace_id = result.get("workspace_id")
+                workspace = names.get(workspace_id, workspace_id) if workspace_id else self.DEFAULT_WORKSPACE
+                amount_dollars = float(result.get("amount", "0")) / 100.0
+                daily_costs[date_str][workspace] += amount_dollars
+                workspace_totals[workspace] += amount_dollars
 
-        # Filter out models with <= $1 total spend
-        significant_models = sorted(m for m, total in model_totals.items() if total > self.MIN_MODEL_COST)
+        significant = sorted(w for w, total in workspace_totals.items() if total > self.MIN_WORKSPACE_COST)
+        if len(significant) < len(workspace_totals):
+            trace(f"AnthropicCostMonitor: left out workspaces at <= ${self.MIN_WORKSPACE_COST:.0f}: "
+                  f"{sorted(set(workspace_totals) - set(significant))}")
 
-        # Rebuild daily_costs with only significant models
         filtered_daily = {}
-        for date_str, models in daily_costs.items():
-            filtered = {m: cost for m, cost in models.items() if m in significant_models}
+        for date_str, workspaces in daily_costs.items():
+            filtered = {w: cost for w, cost in workspaces.items() if w in significant}
             if filtered:
                 filtered_daily[date_str] = filtered
 
@@ -142,7 +150,7 @@ class AnthropicCostMonitor:
             return sum(sum(models.values()) for ds, models in filtered_daily.items() if ds in date_set)
 
         self._dashboard_tab.daily_costs = filtered_daily
-        self._dashboard_tab.cost_models = significant_models
+        self._dashboard_tab.cost_workspaces = significant
         self._dashboard_tab.total_cost_30d = _sum_costs(thirty_day_strs)
         self._dashboard_tab.total_cost_7d = _sum_costs(seven_day_strs)
         self._dashboard_tab.total_cost_1d = _sum_costs(today_str)
@@ -153,6 +161,20 @@ class AnthropicCostMonitor:
         self._dashboard_tab.cost_last_updated = time.time()
 
         trace(f"AnthropicCostMonitor: fetched {len(all_buckets)} day buckets, "
-             f"{len(significant_models)} models > $1, "
+             f"{len(significant)} workspaces > $1 {significant}, "
              f"30d ${self._dashboard_tab.total_cost_30d:.0f} / 7d ${self._dashboard_tab.total_cost_7d:.0f} / "
              f"yesterday ${self._dashboard_tab.total_cost_yesterday:.0f} / 1d ${self._dashboard_tab.total_cost_1d:.0f}")
+
+    def _workspace_names(self, headers: dict) -> dict:
+        """Workspace id -> name, archived ones included so their past spend keeps its name;
+        {} when the list cannot be read, and the chart shows the ids instead."""
+        try:
+            resp = requests.get(self.WORKSPACES_URL, headers=headers, timeout=30,
+                                params={"limit": 1000, "include_archived": "true"})
+            resp.raise_for_status()
+            names = {w["id"]: w["name"] for w in resp.json().get("data", [])}
+            trace(f"AnthropicCostMonitor: {len(names)} workspaces named")
+            return names
+        except Exception as e:
+            trace(f"AnthropicCostMonitor: workspace names unavailable, showing ids: {e}")
+            return {}

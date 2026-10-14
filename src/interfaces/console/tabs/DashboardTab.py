@@ -92,7 +92,7 @@ class DashboardTab(TabView):
 
         # Anthropic cost data (written by AnthropicCostMonitor)
         self.daily_costs: dict = {}
-        self.cost_models: list = []
+        self.cost_workspaces: list = []
         self.total_cost_30d: float = 0.0
         self.total_cost_7d: float = 0.0
         self.total_cost_1d: float = 0.0
@@ -854,14 +854,14 @@ class DashboardTab(TabView):
 
     # --- Anthropic Cost Chart ---
 
-    MODEL_COLORS_LIST = [Theme.COLOR_CYAN, Theme.COLOR_PURPLE, Theme.COLOR_YELLOW, Theme.COLOR_GREEN, Theme.COLOR_PINK,
-                         Theme.COLOR_ORANGE]
+    WORKSPACE_COLORS = [Theme.COLOR_CYAN, Theme.COLOR_PURPLE, Theme.COLOR_YELLOW, Theme.COLOR_GREEN, Theme.COLOR_PINK,
+                        Theme.COLOR_ORANGE]
 
     def _draw_cost_chart(self, screen: TUIScreen, x: int, y: int, width: int, box_h: int):
         if box_h < 6 or width < 30:
             return
 
-        models = self.cost_models
+        workspaces = self.cost_workspaces
         daily_costs = self.daily_costs
         dates = self.cost_dates
         date_strs = self.cost_date_strs
@@ -905,7 +905,7 @@ class DashboardTab(TabView):
         max_cost = 0.0
         for ds in display_date_strs:
             day_data = daily_costs.get(ds, {})
-            max_cost = max(max_cost, sum(day_data.get(m, 0) for m in models))
+            max_cost = max(max_cost, sum(day_data.get(w, 0) for w in workspaces))
         if max_cost <= 0:
             max_cost = 1.0
         # Round up to a nice number
@@ -933,8 +933,8 @@ class DashboardTab(TabView):
 
             # Build segments for this day (bottom to top)
             segments = []
-            for mi, m in enumerate(models):
-                cost = day_data.get(m, 0)
+            for mi, w in enumerate(workspaces):
+                cost = day_data.get(w, 0)
                 if cost > 0:
                     segments.append((mi, cost))
 
@@ -966,7 +966,7 @@ class DashboardTab(TabView):
                     continue    # the rule drawn under the bars stays
                 elif len(overlapping) == 1:
                     mi, cs, ce = overlapping[0]
-                    color = self._model_shade(mi, grad_t)
+                    color = self._workspace_shade(mi, grad_t)
                     fill = ce - cs
                     if fill >= 0.99:
                         char = '\u2588'
@@ -981,8 +981,8 @@ class DashboardTab(TabView):
                     overlapping.sort(key=lambda s: s[1])
                     mi_low = overlapping[0][0]
                     mi_high = overlapping[-1][0]
-                    color_low = self._model_shade(mi_low, grad_t)
-                    color_high = self._model_shade(mi_high, grad_t)
+                    color_low = self._workspace_shade(mi_low, grad_t)
+                    color_high = self._workspace_shade(mi_high, grad_t)
                     fill_low = overlapping[0][2] - row_bottom
                     fill_total = overlapping[-1][2] - row_bottom
                     if fill_total >= 0.99:
@@ -1027,41 +1027,25 @@ class DashboardTab(TabView):
         # Legend row — centered under the chart area
         legend_y = chart_y + chart_h + 1
         entries = []
-        for mi, m in enumerate(models):
-            short_name = self._shorten_model_name(m)
-            entries.append((mi, short_name, len(f"\u2501\u2501 {short_name}   ")))
+        for mi, w in enumerate(workspaces):
+            entries.append((mi, w, len(f"\u2501\u2501 {w}   ")))
         total_legend_w = sum(e[2] for e in entries) - 3 if entries else 0
         lx = chart_x + max(0, (chart_w - total_legend_w) // 2)
-        for mi, short_name, entry_w in entries:
+        for mi, name, entry_w in entries:
             if lx + entry_w > x + box_w - 2:
                 break
-            screen.set_color(self.MODEL_COLORS_LIST[mi % len(self.MODEL_COLORS_LIST)])
+            screen.set_color(self.WORKSPACE_COLORS[mi % len(self.WORKSPACE_COLORS)])
             screen.write_at(lx, legend_y, "\u2501\u2501")
             screen.set_color(Theme.COLOR_LABEL)
-            screen.write_at(lx + 2, legend_y, f" {short_name}")
+            screen.write_at(lx + 2, legend_y, f" {name}")
             lx += entry_w
         screen.reset_color()
 
-    def _model_shade(self, model_index: int, t: float) -> Color:
-        """A model's colour at height `t` (0..1) of the cost chart: the same deep-to-bright
+    def _workspace_shade(self, workspace_index: int, t: float) -> Color:
+        """A workspace's colour at height `t` (0..1) of the cost chart: the same deep-to-bright
         shading the other charts' columns have."""
-        fg = self.MODEL_COLORS_LIST[model_index % len(self.MODEL_COLORS_LIST)]
+        fg = self.WORKSPACE_COLORS[workspace_index % len(self.WORKSPACE_COLORS)]
         return Theme.mix(Theme.mix(Theme.COLOR_PANEL_BG, Theme.deep(fg), 0.8), fg, t)
-
-    @staticmethod
-    def _shorten_model_name(model: str) -> str:
-        # "claude-sonnet-4-20250514" -> "sonnet-4"
-        # "claude-3-5-haiku-20241022" -> "haiku-3.5"
-        name = model.lower()
-        name = name.replace("claude-", "")
-        # Remove date suffix like "-20250514"
-        parts = name.split("-")
-        cleaned = []
-        for p in parts:
-            if len(p) == 8 and p.isdigit():
-                continue
-            cleaned.append(p)
-        return "-".join(cleaned)
 
     @staticmethod
     def _nice_ceil(value: float) -> float:
