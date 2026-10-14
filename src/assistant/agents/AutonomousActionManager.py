@@ -43,6 +43,11 @@ DUE_POLL_SECONDS = 60
 # is told about this cadence (see AUTONOMOUS_ACTION_PROMPT) so it can reason about
 # how long until its next opportunity to act.
 PERIODIC_CHECK_INTERVAL_SECONDS = 55 * 60  # 55 minutes start to start — stays under the 1h cache TTL
+# The nightly memory curation is due from this hour: the first periodic tick after it that finds
+# no dream journal written since then runs it (`LongTermMemoryCurator.last_run_at`), so a
+# restart in the small hours — the nightly update's, say — delays the run to the next tick
+# instead of losing the night. The process-local date keeps one process from starting it twice.
+CURATION_HOUR = 4
 PERIODIC_CHECK_INTERVAL_MINUTES = PERIODIC_CHECK_INTERVAL_SECONDS / 60
 # A watch item is polled by the check nearest its cadence: without the half interval an
 # "every 1h" item is 53 minutes old at the next check, not due, and polled every 110 minutes.
@@ -305,18 +310,14 @@ class AutonomousActionManager:
         while self.running:
             time.sleep(max(0.0, next_check_at - time.time()))
 
-            # Check if it's 04:00 and we haven't run curation today
             now = datetime.now()
-            if now.hour == 4 and last_memory_curation_date != now.date():
-                from assistant import FirstRun
-                if FirstRun.curation_pending():
-                    info("Rem: the first-run pipeline has not built the first memory bank yet — skipping the nightly run")
-                else:
+            if now.hour >= CURATION_HOUR and last_memory_curation_date != now.date():
+                last_memory_curation_date = now.date()
+                if self._nightly_curation_due(now):
                     # On a thread of its own: the batch it waits for can be over an hour away,
                     # and this loop has other things to check meanwhile.
                     threading.Thread(target=self._run_memory_curation, kwargs={'batch': True},
                                      daemon=True, name="MemoryCuration").start()
-                last_memory_curation_date = now.date()
 
             if self.prompt_manager.is_night_mode_active():
                 next_check_at = time.time() + PERIODIC_CHECK_INTERVAL_SECONDS
@@ -783,6 +784,24 @@ class AutonomousActionManager:
                 continue
             self.activity_check()
         info(f"Caffeine wore off after {wakeups} wakeup(s).")
+
+    @staticmethod
+    def _nightly_curation_due(now: datetime) -> bool:
+        """Whether tonight's curation still has to run: not when a dream journal was written
+        since today's CURATION_HOUR (a run before a restart), nor while the first-run pipeline
+        has yet to build the first bank (the nightly run would curate the stub)."""
+        due_since = now.replace(hour=CURATION_HOUR, minute=0, second=0, microsecond=0)
+        last_run = LongTermMemoryCurator.last_run_at()
+        if last_run is not None and last_run >= due_since:
+            info(f"Rem: the bank was curated at {last_run:%H:%M} today — no nightly run")
+            return False
+        from assistant import FirstRun
+        if FirstRun.curation_pending():
+            info("Rem: the first-run pipeline has not built the first memory bank yet — skipping the nightly run")
+            return False
+        if now.hour > CURATION_HOUR:
+            info(f"Rem: no curation since {due_since:%H:%M} today — running it now, {now:%H:%M}")
+        return True
 
     def _run_memory_curation(self, period_start=None, period_end=None, batch: bool = False):
         """Curate the memory bank — nightly over the default lookback, or over an explicit period.

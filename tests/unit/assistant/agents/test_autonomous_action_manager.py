@@ -595,17 +595,18 @@ class TestAutonomousActionManager:
         assert sleeps[1] == PERIODIC_CHECK_INTERVAL_SECONDS
 
     @staticmethod
-    def _run_two_iterations_at_four(mgr, curation_pending: bool):
-        """Two ticks of the periodic loop at 04:05 the same day, night mode on so nothing but
-        the curation slot runs; returns how often the nightly curation ran and how often the
-        first-run stage was consulted."""
+    def _run_two_iterations_at_four(mgr, curation_pending: bool, now=None, last_run=None):
+        """Two ticks of the periodic loop at `now` (04:05 by default) the same day, night mode
+        on so nothing but the curation slot runs, the newest dream journal dated `last_run`;
+        returns how often the nightly curation ran and how often the first-run stage was
+        consulted."""
         from datetime import datetime as real_datetime
-        four_am = real_datetime(2026, 9, 15, 4, 5)
+        frozen = now or real_datetime(2026, 9, 15, 4, 5)
 
         class FrozenDatetime:
             @staticmethod
             def now():
-                return four_am
+                return frozen
 
         iteration = [0]
 
@@ -617,6 +618,8 @@ class TestAutonomousActionManager:
         with patch('assistant.agents.AutonomousActionManager.datetime', FrozenDatetime), \
              patch('assistant.FirstRun.curation_pending', return_value=curation_pending) as pending, \
              patch('assistant.agents.AutonomousActionManager.time.sleep', side_effect=patched_sleep), \
+             patch('assistant.agents.AutonomousActionManager.LongTermMemoryCurator.last_run_at',
+                   return_value=last_run), \
              patch.object(mgr, '_run_memory_curation') as curation:
             mgr._run_periodic_check()
             for thread in threading.enumerate():
@@ -630,6 +633,42 @@ class TestAutonomousActionManager:
         mock_claude.return_value = Mock()
         mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(night=True), test_mode=True)
         assert self._run_two_iterations_at_four(mgr, curation_pending=False) == (1, 1)
+
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_a_restart_after_four_still_curates_the_night(self, mock_claude):
+        """Regression for 2026-10-14: the nightly update restarted the server at 04:05, the old
+        process's tick in the 4 o'clock hour never came and the new one's first tick was at
+        05:00 — with an hour-equals-four trigger the night was lost. Yesterday's journal is
+        what a process that boots after the hour finds, and it runs the curation."""
+        from datetime import datetime as real_datetime
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(night=True), test_mode=True)
+        ran, _ = self._run_two_iterations_at_four(mgr, curation_pending=False, now=real_datetime(2026, 9, 15, 5, 0),
+                                                  last_run=real_datetime(2026, 9, 14, 4, 31))
+        assert ran == 1
+
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_a_restart_after_the_night_s_curation_does_not_curate_again(self, mock_claude):
+        """The journal written at 04:31 says the night is done; a process booting at 05:00 leaves
+        the bank alone instead of curating the same period twice."""
+        from datetime import datetime as real_datetime
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(night=True), test_mode=True)
+        ran, pending = self._run_two_iterations_at_four(mgr, curation_pending=False,
+                                                        now=real_datetime(2026, 9, 15, 5, 0),
+                                                        last_run=real_datetime(2026, 9, 15, 4, 31))
+        assert (ran, pending) == (0, 0)
+
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_a_curation_before_four_does_not_count_for_the_night(self, mock_claude):
+        """A journal from 02:00 is an explicit run over some period, not the night's: the 04:00
+        slot still runs."""
+        from datetime import datetime as real_datetime
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(night=True), test_mode=True)
+        ran, _ = self._run_two_iterations_at_four(mgr, curation_pending=False,
+                                                  last_run=real_datetime(2026, 9, 15, 2, 0))
+        assert ran == 1
 
     @patch('assistant.agents.AutonomousActionManager.create_llm')
     def test_nightly_curation_waits_for_the_first_run_pipeline(self, mock_claude):
