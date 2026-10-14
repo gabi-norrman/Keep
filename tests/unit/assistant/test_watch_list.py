@@ -247,19 +247,28 @@ class TestIndex:
     def test_empty_list_says_so(self, wl):
         assert WatchList.render_index(wl) == WatchList.EMPTY
 
-    def test_one_line_per_item_with_its_name_due_and_the_start_of_its_note(self, wl, log):
+    def test_one_line_per_item_with_its_name_and_the_start_of_its_note(self, wl, log):
         long_note = "order 4711 with the courier, " + "tracking page shows no movement yet, " * 4 + "door code needed"
         WatchList.save("Parcel from shop.example", long_note, "2026-03-12", wl, log)
         WatchList.save("Dentist for Charlotte", "12:30\nbring the referral", None, wl, log)
         lines = {line.split("`")[1]: line for line in WatchList.render_index(wl, TODAY).splitlines()}
         parcel, dentist = lines["parcel-from-shop-example"], lines["dentist-for-charlotte"]
-        assert "2026-03-12" in parcel and "order 4711" in parcel
-        assert "door code needed" not in parcel and len(parcel) < len(long_note)
+        assert "order 4711" in parcel and "door code needed" not in parcel and len(parcel) < len(long_note)
         assert "12:30" in dentist and "referral" not in dentist and "due" not in dentist
 
-    def test_a_stale_item_is_marked(self, wl, log):
-        WatchList.save("Old parcel", "x", (date.today() - timedelta(days=9)).isoformat(), wl, log)
-        assert "STALE" in WatchList.render_index(wl)
+    def test_a_date_still_ahead_is_not_shown_a_reached_one_is(self, wl, log):
+        WatchList.save("Sofa", "x", (TODAY + timedelta(days=2)).isoformat(), wl, log)
+        WatchList.save("Plumber", "x", f"{TODAY.isoformat()} 17:30", wl, log)
+        WatchList.save("Invoice", "x", (TODAY - timedelta(days=3)).isoformat(), wl, log)
+        lines = {line.split("`")[1]: line for line in WatchList.render_index(wl, TODAY).splitlines()}
+        assert "due" not in lines["sofa"] and "2026" not in lines["sofa"]
+        assert "due today 17:30" in lines["plumber"]
+        assert "overdue 3 d" in lines["invoice"] and "STALE" not in lines["invoice"]
+
+    def test_an_item_nobody_touched_is_marked_stale(self, wl, log):
+        WatchList.save("Forgotten", "x", None, wl, log)
+        backdate(wl, "forgotten", "Updated", TODAY - timedelta(days=30))
+        assert "STALE" in WatchList.render_index(wl, TODAY)
 
     def test_a_poll_that_only_stamps_leaves_the_index_as_it_was(self, wl, log):
         WatchList.save("Tickets", "not yet", None, wl, log, every="1d")

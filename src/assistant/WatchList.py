@@ -51,7 +51,7 @@ NOTHING_DUE = "No item is due for a poll."
 # The header of a loaded item, as `load_watch(name)` returns it.
 HEADER_PREFIX = "# Watch item: "
 # How much of an item's note its index line carries.
-INDEX_NOTE_CHARS = 80
+INDEX_NOTE_CHARS = 48
 
 lock = threading.RLock()
 
@@ -368,14 +368,28 @@ def _note_start(note: str) -> str:
     return first[:INDEX_NOTE_CHARS].rsplit(" ", 1)[0].rstrip(" ,;:—-(") + "…"
 
 
+def _due_fact(item: Item, today: date) -> str:
+    """'due today', 'due today 17:30' or 'overdue 3 d' — and '' for an item whose day has not
+    come, so the index says nothing about a date the assistant need not act on yet."""
+    days = _days_since(item.due, today)
+    if days is None or days < 0:
+        return ""
+    if days == 0:
+        clock = item.due.strip()[10:].strip()
+        return f"due today {clock}".rstrip()
+    return f"overdue {days} d"
+
+
 def render_index(directory: Path = None, today: date = None) -> str:
-    """The `{WATCHLIST}` text: one line per open item — its name, due date, staleness and the
-    start of its note. Neither the cadence nor the check stamp, so a poll that only stamps an
-    item leaves the prompt as it was."""
+    """The `{WATCHLIST}` text: one line per open item — its name, whether it is due today or
+    overdue (a date still ahead is not shown), the idle-staleness mark and the start of its
+    note. Neither the cadence nor the check stamp, so a poll that only stamps an item leaves
+    the prompt as it was."""
+    today = today or date.today()
     lines = []
     for item in items(directory):
-        facts = ([f"due {item.due}"] if item.due else [])
-        if stale := staleness(item, today):
+        facts = [fact for fact in (_due_fact(item, today),) if fact]
+        if (stale := staleness(item, today)) and "due date" not in stale:
             facts.append(stale)
         start = _note_start(item.note)
         lines.append(f"- `{item.name}`" + (f" ({', '.join(facts)})" if facts else "") + (f" — {start}" if start else ""))

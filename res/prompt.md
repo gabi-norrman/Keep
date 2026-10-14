@@ -80,7 +80,7 @@ procedure), nor for what merely happened today.
 What you are expected to act on later — notify, remind, check: a delivery you are following, an order you placed, a
 reminder someone asked for, a task of yours for another day. Not an appointment the calendar already holds, not the
 family's own to-dos and plans you merely heard about, nothing that ends today. The open items are listed under WATCH
-LIST below, each with its name and the start of its note.
+LIST below, each with its name and the start of its note; one that is due today or overdue says so.
 
 `load_watch(name: str, ...)` — the whole item: its full note, its check cadence and when it was last checked. Load an
 item before you answer a question about it or update it.
