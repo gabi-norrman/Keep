@@ -351,6 +351,20 @@ class LongTermMemoryCurator:
         return f"Long term memory condensed from {outcome['from']} to {outcome['to']} words."
 
     @classmethod
+    def last_run_at(cls) -> datetime | None:
+        """When the bank was last curated, read from the newest dream journal's name
+        (`save_debug_log` writes `<YYYYMMDD_HHMMSS>_<guid>_memory.md`): the one record of a run
+        that survives a restart, so the nightly trigger does not depend on the process that fired
+        it still being alive. None when no journal exists."""
+        stamps = []
+        for path in MEMORY_LOG_DIR.glob("*_memory.md"):
+            try:
+                stamps.append(datetime.strptime(path.name[:15], "%Y%m%d_%H%M%S"))
+            except ValueError:
+                continue
+        return max(stamps) if stamps else None
+
+    @classmethod
     def run_span(cls, start: date, end: date, history=None, curator: 'LongTermMemoryCurator' = None,
                  on_chunk=None, first_chunk: int = 0) -> dict | None:
         """Curate the days start..end (end inclusive) in `CURATION_CHUNK_DAYS` chunks, in
@@ -807,7 +821,6 @@ class LongTermMemoryCurator:
             Path to debug log file
         """
         try:
-            # Create log directory if it doesn't exist
             log_dir = MEMORY_LOG_DIR
             log_dir.mkdir(parents=True, exist_ok=True)
 

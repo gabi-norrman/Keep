@@ -14,6 +14,7 @@ from .sections.MemorySectionGenerator import MemorySectionGenerator
 from .sections.ProceduresSectionGenerator import ProceduresSectionGenerator
 from .sections.TrialSectionGenerator import TrialSectionGenerator
 from .sections.WatchListSectionGenerator import WatchListSectionGenerator
+from .sections.VoicesSectionGenerator import VoicesSectionGenerator
 from .sections.IntegrationsSectionGenerator import IntegrationsSectionGenerator
 from .sections.VaultSectionGenerator import VaultSectionGenerator
 from .sections.HomeSectionGenerator import HomeSectionGenerator
@@ -148,7 +149,7 @@ class PromptManager:
     # Where each section stands in `self.sections`: the order they are started and stopped in,
     # and the order of the {INTEGRATION_DATA} block. A section a new folder brings comes after
     # these, by key.
-    SECTION_ORDER = ("memory", "memory_recent", "procedures", "watchlist", "integrations", "trial", "vault", "weather",
+    SECTION_ORDER = ("memory", "memory_recent", "procedures", "watchlist", "integrations", "trial", "vault", "voices", "weather",
                      "precipitation", "home", "web", "calendar", "sonos", "music_zones", "car_info", "pool", "heat_pump", "phones")
     # The placeholder the data sections of the integrations fill, each under its own heading.
     DATA_BLOCK = "{INTEGRATION_DATA}"
@@ -156,9 +157,9 @@ class PromptManager:
     def _build_sections(self, generator_classes) -> dict:
         """The core's generators, plus one of each integration folder's under the key the
         class declares. A generator tied to an integration — a folder's, or a core one with
-        `needs` — is not built here but noted in `_gated` for _on_integrations_changed. A key
-        with two owners is an error naming both; a generator without a key, or whose
-        constructor raises, is logged and left out."""
+        `needs` — or to a config key (`requires`) is not built here but noted in `_gated` for
+        _on_integrations_changed. A key with two owners is an error naming both; a generator
+        without a key, or whose constructor raises, is logged and left out."""
         memory = MemorySectionGenerator(self)
         sections = {
             'memory': memory,
@@ -171,7 +172,7 @@ class PromptManager:
             'web': WebSectionGenerator(self),
         }
         gated: dict[str, type] = {'home': HomeSectionGenerator, 'calendar': CalendarSectionGenerator,
-                                  'car_info': CarSectionGenerator}
+                                  'car_info': CarSectionGenerator, 'voices': VoicesSectionGenerator}
         for cls in generator_classes:
             if not cls.key:
                 error(f"Section generator {cls.__module__}.{cls.__name__} declares no key, left out")
@@ -180,7 +181,7 @@ class PromptManager:
                 owner = gated[cls.key] if cls.key in gated else type(sections[cls.key])
                 raise ValueError(f"Prompt section '{cls.key}' has two owners: "
                                  f"{owner.__module__}.{owner.__name__} and {cls.__module__}.{cls.__name__}")
-            if cls.folder() is not None or cls.needs is not None:
+            if cls.folder() is not None or cls.needs is not None or cls.requires is not None:
                 gated[cls.key] = cls
                 continue
             try:

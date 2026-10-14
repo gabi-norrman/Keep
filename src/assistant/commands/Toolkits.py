@@ -12,7 +12,7 @@ the reference, found by globbing the folders — no Python of the folder is impo
 it. `TOOLKITS` is the two together, in `INDEX_ORDER`.
 
 A toolkit can carry prompt sections (`Toolkit.sections`; home carries the house's state, weather
-the forecasts, music the zones and playlists): their
+the forecasts, music the zones and playlists, voice the unnamed voices): their
 placeholder is not in the prompt template, so the prompt never holds the data — `load_toolkit`
 sends them, current, after the reference, and again on a pointer-back, since the reference is
 static but the data is not. While the toolkit is in the LLM's window, later changes follow as
@@ -25,7 +25,8 @@ so a text chat's prompt never carries a word of it.
 A toolkit is offered only while the integration behind it is on (`Toolkit.offered_by`, the
 IntegrationMonitor's verdict): a folder toolkit while its folder's integration is enabled, a
 core toolkit that fronts a contract (`needs` — home automation, the mail and calendar
-sources) while an enabled integration implements it. One that is not offered is out of the
+sources) while an enabled integration implements it, one a config key gates (`requires` —
+self_improvement on a developer's install) while the key is true. One that is not offered is out of the
 index, `load_toolkit` and the preloads answer that its integration is off, and its commands
 are refused — the LLM never hears of a car the house does not have.
 """
@@ -71,8 +72,10 @@ class Toolkit:
     # A core toolkit that fronts a contract: offered while an enabled integration implements it.
     needs: Optional[type] = None
     # A config.yaml key that must be true for the toolkit to be offered (`is_developer` for the
-    # self_improvement toolkit): read at each verdict, so a flip is in force at the next prompt build.
+    # self_improvement toolkit): read at each verdict, so a flip is in force at the next prompt
+    # build. `requires_note` tells the LLM why the key gates it when it asks for the toolkit anyway.
     requires: Optional[str] = None
+    requires_note: str = ""
 
     @property
     def path(self) -> Path:
@@ -217,9 +220,11 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
             ("self_analysis", "improve_integration", "report_issue", "try_pull_request", "pr_feedback",
              "server_logs", "restart_server")),
     Toolkit("self_improvement", "change any part of your own code base as a PR — a developer's install only",
-            ("self_improvement",), requires="is_developer"),
-    Toolkit("voice", "how to reply when the user is speaking: spoken style, emotion tags, false positives",
-            ("false_positive",), hidden=True),
+            ("self_improvement",), requires="is_developer",
+            requires_note="it is for a developer's install only; users work through the developer toolkit"),
+    Toolkit("voice", "how to reply when the user is speaking: spoken style, emotion tags, false positives, a speaker "
+                     "whose voice has no name yet",
+            ("false_positive", "name_voice"), sections=("voices",), hidden=True),
 )
 
 # The order of the index, which is part of the prompt: a toolkit keeps its place wherever its
@@ -243,7 +248,8 @@ _BY_NAME = {t.name: t for t in TOOLKITS}
 CARRIED_SECTIONS: dict[str, str] = {key: t.name for t in TOOLKITS for key in t.sections}
 # The heading a carried section is sent under; the prompt's own heading for it, once.
 SECTION_HEADINGS = {"home": "HOME AUTOMATION DATA", "web": "WEB BROWSER", "weather": "WEATHER FORECAST",
-                    "precipitation": "SHORT TERM PRECIPITATION", "sonos": "MUSIC", "music_zones": "SONOS ZONES"}
+                    "precipitation": "SHORT TERM PRECIPITATION", "sonos": "MUSIC", "music_zones": "SONOS ZONES",
+                    "voices": "VOICES"}
 
 
 def offered(monitor=None) -> list[Toolkit]:

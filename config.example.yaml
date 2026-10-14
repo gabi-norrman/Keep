@@ -186,6 +186,10 @@ local_outposts:
   auto_recovery: true       # restart a mic whose audio stream stalls
   usb_power_cycle: true     # power-cycle the USB port as the last recovery step
 
+# System for automatic speaker identification
+voice_discovery:
+  enabled: true
+
 vault:                      # secrets the LLM never sees — the console's Vault tab (VAULT_PLAN.md)
   key: CHANGE_ME            # passphrase that encrypts vault.bin. Lose it and the vault is lost; change it and the
                             # existing vault.bin can no longer be opened. Unset = vault disabled.
@@ -222,8 +226,8 @@ developer_release: false
 # Read at each prompt build, no restart needed.
 is_developer: false
 
-# The nightly update: at 03:00 — after the nightly code-quality run when self_improvement.nightly_runs
-# is on — the server checks out the branch developer_release names, pulls it and restarts if that
+# The nightly update: at 03:00, before the nightly code-quality run when self_improvement.nightly_runs
+# is on, the server checks out the branch developer_release names, pulls it and restarts if that
 # left it on other code than it is running. No new commits, no restart. false: the code only
 # changes on a restart_server. Read at each fire, no restart needed.
 nightly_update: true

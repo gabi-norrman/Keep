@@ -4,6 +4,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from functools import lru_cache
+from common.ConfigManager import config
 from common.logging import error, trace, info
 
 MODULE_SUFFIX = "SectionGenerator"
@@ -26,7 +27,9 @@ class PromptSectionGenerator(ABC):
 
     A folder's generator runs only while the folder's integration is on; a core generator may
     tie itself to a contract the same way with `needs` (the calendar section to the calendar
-    sources). PromptManager starts and stops them as the IntegrationMonitor's verdict changes.
+    sources), or to a config.yaml key with `requires` (the voices section to the voice
+    interface's `interfaces.voice.enabled`). PromptManager starts and stops them as the
+    IntegrationMonitor's verdict changes; the config key is read at each verdict.
     """
     key: str = ""
     # The heading line the section stands under in the {INTEGRATION_DATA} block, hashes
@@ -36,6 +39,8 @@ class PromptSectionGenerator(ABC):
     intro: str = ""
     # A core generator's contract: it runs while an enabled integration implements it.
     needs: type | None = None
+    # A config.yaml key that must be true for the generator to run, read at each verdict.
+    requires: str | None = None
 
     @classmethod
     def folder(cls) -> str | None:
@@ -46,8 +51,11 @@ class PromptSectionGenerator(ABC):
     @classmethod
     def enabled_by(cls, monitor) -> bool:
         """Whether the IntegrationMonitor says the generator's integration is on: its folder's
-        (`folder_enabled`), or the contract it `needs` (`contract_enabled`). A generator tied to
-        neither is always on; one whose integration is not registered yet is not."""
+        (`folder_enabled`), or the contract it `needs` (`contract_enabled`) — and not while the
+        config key it `requires` is off. A generator tied to none of these is always on; one
+        whose integration is not registered yet is not."""
+        if cls.requires is not None and not config.get(cls.requires, False):
+            return False
         if cls.folder() is not None:
             return monitor.folder_enabled(cls.folder()) is True
         if cls.needs is not None:
