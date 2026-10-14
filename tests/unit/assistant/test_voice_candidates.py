@@ -37,16 +37,14 @@ def test_a_filed_candidate_keeps_its_samples_and_facts(tmp_path, store):
     assert c.id.startswith(VoiceCandidates.ID_PREFIX)
     assert len(c.samples) == 3 and all(p.read_bytes().startswith(b"RIFF") for p in c.samples)
     (again,) = VoiceCandidates.items(store["directory"])
-    assert (again.id, again.clips, again.days, again.asked, again.centroid) == (c.id, 120, 4, None, [1.0, 0.0])
+    assert (again.id, again.clips, again.days, again.centroid) == (c.id, 120, 4, [1.0, 0.0])
 
 
-def test_the_index_shows_the_facts_the_owner_needs_and_whether_they_were_asked(tmp_path, store):
+def test_the_index_shows_the_facts_that_tell_the_voices_apart(tmp_path, store):
     c = _file(tmp_path, store)
     text = VoiceCandidates.render_index(store["directory"])
     assert c.id in text and "120 clips over 4 days" in text and "2026-10-08 to 2026-10-11" in text
-    assert "what s for dinner" in text and "not been asked" in text
-    VoiceCandidates.mark_asked(c, date(2026, 10, 13))
-    assert "asked on 2026-10-13" in VoiceCandidates.render_index(store["directory"])
+    assert "what s for dinner" in text
 
 
 def test_the_index_is_empty_without_candidates(store):
@@ -86,30 +84,13 @@ def test_naming_an_enrolled_person_adds_to_their_folder(tmp_path, store):
     assert len(list((store["voice_id_dir"] / "charlotte").glob("*.wav"))) == 4
 
 
-def test_dismissing_keeps_the_centroid_so_the_voice_is_not_proposed_again(tmp_path, store):
-    c = _file(tmp_path, store, centroid=(0.6, 0.8))
-    assert VoiceCandidates.dismiss(c.id, "the kitchen radio", directory=store["directory"], log_dir=store["log_dir"]) == ""
-    (entry,) = VoiceCandidates.dismissed(store["directory"])
-    assert entry["centroid"] == [0.6, 0.8] and entry["reason"] == "the kitchen radio"
-    assert VoiceCandidates.items(store["directory"]) == []
-    assert (store["log_dir"] / "dismissed" / c.id / f"{c.id}-01.wav").exists()
-
-
 def test_run_refuses_a_missing_voice_or_argument_and_names_the_open_ones(tmp_path, store):
     c = _file(tmp_path, store)
     assert "expected" in VoiceCandidates.run("name_voice", [c.id], **store)
-    assert "expected" in VoiceCandidates.run("dismiss_voice", [], directory=store["directory"], log_dir=store["log_dir"])
     refused = VoiceCandidates.run("name_voice", ["voice-nope", "Bob"], **store)
     assert "no voice" in refused and c.id in refused
     assert "letters or digits" in VoiceCandidates.run("name_voice", [c.id, "???"], **store)
     assert VoiceCandidates.run("name_voice", [f" `{c.id}` ", "Bob"], **store) == ""
-
-
-def test_run_joins_an_under_quoted_dismiss_reason(tmp_path, store):
-    c = _file(tmp_path, store)
-    assert VoiceCandidates.run("dismiss_voice", [c.id, "a visitor", "last weekend"],
-                               directory=store["directory"], log_dir=store["log_dir"]) == ""
-    assert VoiceCandidates.dismissed(store["directory"])[0]["reason"] == "a visitor, last weekend"
 
 
 @pytest.mark.parametrize("filename, text", [

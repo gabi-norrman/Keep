@@ -1,5 +1,5 @@
 """The nightly voice discovery on synthetic voices: the clustering, the household rule, the known
-and dismissed voices, the asking, and the embedding cache."""
+voices, the enrollment refresh and the embedding cache."""
 import os
 import time
 from datetime import datetime, timedelta
@@ -76,7 +76,6 @@ class Fake:
         self.audio.mkdir()
         self.table = {}
         self.calls = 0
-        self.asked = []
         self.rng = np.random.default_rng(7)
         self.centres = _centres(self.rng, 4)
 
@@ -95,36 +94,31 @@ class Fake:
         self.calls += 1
         return self.table[path.name]
 
-    def ask(self, text):
-        self.asked.append(text)
-        return ""
-
-    def discovery(self, tmp_path, enrolled=None, **config):
-        cfg = {"enabled": True, "hour": 5, "days": 7, "min_clips": 30, "min_days": 3, "refresh_enrollment": True,
-               "samples_per_person": 10} | config
-        return VoiceDiscovery(embedder=self.embed, enrolled=lambda: enrolled or {}, ask=self.ask,
+    def discovery(self, tmp_path, enrolled=None, **overrides):
+        settings = {"enabled": True, "min_clips": 30, "samples_per_person": 10} | overrides
+        return VoiceDiscovery(embedder=self.embed, enrolled=lambda: enrolled or {},
                               audio_dir=self.audio, cache_file=tmp_path / "cache" / "emb.npz",
-                              candidates_dir=tmp_path / "candidates", config=cfg, voice_id_dir=tmp_path / "voice_id",
-                              sample_embedder=lambda path: self.centres[0], replaced_dir=tmp_path / "replaced")
+                              candidates_dir=tmp_path / "candidates", voice_id_dir=tmp_path / "voice_id",
+                              sample_embedder=lambda path: self.centres[0], replaced_dir=tmp_path / "replaced",
+                              **settings)
 
 
-def test_a_recurring_unknown_voice_is_filed_and_the_owner_is_asked(tmp_path):
+def test_a_recurring_unknown_voice_is_filed_with_its_clearest_clips(tmp_path):
     fake = Fake(tmp_path)
     fake.voice(0, 40, days=[1, 2, 3, 4])
     summary = fake.discovery(tmp_path).run(NOW)
-    assert summary["filed"] == 1 and summary["asked"] == 1 and summary["known"] == 0
+    assert summary["filed"] == 1 and summary["known"] == 0
     (candidate,) = VoiceCandidates.items(tmp_path / "candidates")
-    assert candidate.clips == 40 and candidate.days == 4 and candidate.asked == "2026-10-14"
+    assert candidate.clips == 40 and candidate.days == 4
     assert len(candidate.samples) == vd.SAMPLES_KEPT and candidate.transcripts
-    assert candidate.id in fake.asked[0] and "40 times" in fake.asked[0]
 
 
-def test_a_one_day_voice_is_a_visitor_and_is_not_asked_about(tmp_path):
+def test_a_one_day_voice_is_a_visitor_and_is_not_filed(tmp_path):
     fake = Fake(tmp_path)
     fake.voice(0, 40, days=[2])
     fake.voice(1, 40, days=[1, 2, 3, 4])
     summary = fake.discovery(tmp_path).run(NOW)
-    assert summary["too_small"] == 1 and summary["filed"] == 1 and len(fake.asked) == 1
+    assert summary["too_small"] == 1 and summary["filed"] == 1
 
 
 def test_an_enrolled_voice_is_known_and_skipped(tmp_path):
@@ -132,18 +126,7 @@ def test_an_enrolled_voice_is_known_and_skipped(tmp_path):
     centre = fake.voice(0, 40, days=[1, 2, 3, 4])
     enrolled = {"charlotte": _voice(fake.rng, 6, centre)}
     summary = fake.discovery(tmp_path, enrolled=enrolled).run(NOW)
-    assert summary["known"] == 1 and summary["filed"] == 0 and fake.asked == []
-
-
-def test_a_voice_the_owner_dismissed_is_not_proposed_again(tmp_path):
-    fake = Fake(tmp_path)
-    fake.voice(0, 40, days=[1, 2, 3, 4])
-    discovery = fake.discovery(tmp_path)
-    discovery.run(NOW)
-    (candidate,) = VoiceCandidates.items(tmp_path / "candidates")
-    assert VoiceCandidates.dismiss(candidate.id, "the radio", directory=tmp_path / "candidates", log_dir=tmp_path / "log") == ""
-    summary = discovery.run(NOW)
-    assert summary["dismissed"] == 1 and summary["filed"] == 0 and len(fake.asked) == 1
+    assert summary["known"] == 1 and summary["filed"] == 0
 
 
 def test_a_second_run_refreshes_the_open_candidate_instead_of_filing_it_again(tmp_path):
@@ -153,7 +136,7 @@ def test_a_second_run_refreshes_the_open_candidate_instead_of_filing_it_again(tm
     discovery.run(NOW)
     fake.voice(0, 20, days=[5, 6], prefix="later")
     summary = discovery.run(NOW)
-    assert summary["refreshed"] == 1 and summary["filed"] == 0 and len(fake.asked) == 1
+    assert summary["refreshed"] == 1 and summary["filed"] == 0
     (candidate,) = VoiceCandidates.items(tmp_path / "candidates")
     assert candidate.clips == 60 and candidate.days == 6
 
@@ -177,36 +160,20 @@ def test_clips_outside_the_window_and_unusable_ones_are_not_clustered(tmp_path):
     assert summary["clips"] == 40 and summary["usable"] == 0 and summary["buckets"] == 0
 
 
-def test_an_unanswered_ask_is_retried_next_run(tmp_path):
-    fake = Fake(tmp_path)
-    fake.voice(0, 40, days=[1, 2, 3, 4])
-    discovery = fake.discovery(tmp_path)
-    discovery._ask = lambda text: "post_message failed: unknown destination"
-    assert discovery.run(NOW)["asked"] == 0
-    (candidate,) = VoiceCandidates.items(tmp_path / "candidates")
-    assert candidate.asked is None
-    discovery._ask = fake.ask
-    assert discovery.run(NOW)["asked"] == 1
-
-
 def test_transcripts_skip_fragments_and_repeats():
     names = ["Huh_.wav", "Thank_you_.wav", "what_s_for_dinner_1.wav", "what_s_for_dinner_2.wav", "turn_off_the_lights_please.wav"]
     assert VoiceDiscovery._transcripts(names) == ["what s for dinner", "turn off the lights please"]
 
 
-def test_settings_fall_back_to_the_defaults(monkeypatch):
-    from common.ConfigManager import ConfigManager
-    monkeypatch.setattr(ConfigManager.get_instance(), "get", lambda key, default=None: {"hour": 3})
-    assert vd.settings() == vd.DEFAULTS | {"hour": 3}
-    monkeypatch.setattr(ConfigManager.get_instance(), "get", lambda key, default=None: "not a section")
-    assert vd.settings() == vd.DEFAULTS
-
-
-def test_settings_survive_a_config_without_the_section(monkeypatch):
+def test_the_discovery_is_on_unless_the_config_turns_it_off(monkeypatch):
     from common.ConfigManager import ConfigManager
     manager = ConfigManager.get_instance()
     monkeypatch.setattr(manager, "_config", {"owner_name": "Marcus"})
-    assert vd.settings() == vd.DEFAULTS
+    assert vd.enabled()
+    monkeypatch.setattr(manager, "get", lambda key, default=None: "not a section")
+    assert vd.enabled()
+    monkeypatch.setattr(manager, "get", lambda key, default=None: {"enabled": False})
+    assert not vd.enabled()
 
 
 def test_a_disabled_discovery_does_not_start(tmp_path):
@@ -226,15 +193,6 @@ def test_a_known_voice_with_a_clear_margin_refreshes_the_persons_samples(tmp_pat
     summary = fake.discovery(tmp_path, enrolled=enrolled).run(NOW)
     assert summary["known"] == 1 and summary["enrollment_refreshed"] == 1
     assert len(list(folder.glob("*.wav"))) == 5 and (folder / "samples.json").exists()
-
-
-def test_the_refresh_can_be_switched_off(tmp_path):
-    fake = Fake(tmp_path)
-    centre = fake.voice(0, 40, days=[1, 2, 3, 4])
-    folder = tmp_path / "voice_id" / "charlotte"
-    folder.mkdir(parents=True)
-    summary = fake.discovery(tmp_path, enrolled={"charlotte": _voice(fake.rng, 6, centre)}, refresh_enrollment=False).run(NOW)
-    assert summary["known"] == 1 and summary["enrollment_refreshed"] == 0 and list(folder.iterdir()) == []
 
 
 def test_two_buckets_of_one_person_make_one_refresh_within_the_nightly_cap(tmp_path):

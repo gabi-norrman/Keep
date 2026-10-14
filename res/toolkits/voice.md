@@ -29,3 +29,15 @@ just unrelated or made-up words that don't form a recognizable sentence, questio
 false positive. The same goes for a bare topic fragment with no question or request attached (a stray name, place or
 phrase like "Texas Highway Patrol" — likely overheard from a TV or nearby conversation): do NOT search the web for it,
 respond with `false_positive()`. Do not attempt to map random words to home automation commands.
+
+### VOICE IDENTIFICATION
+The house learns its users voices by listening: a voice heard often that matches nobody enrolled is filed with an id and
+listed under VOICES below; no list, no open voice. When the person speaking is one of these, the turn note says so with
+the id. Ask who they are when it fits the conversation, and once they say their name, register the voice:
+
+`name_voice(id: str, name: str)` — the voice is this person: its sample clips become the person's voice enrollment and
+the speaker is recognised by name from then on. Use the first name they give; a name that is enrolled already gets the
+samples added. `name_voice("voice-kfmq", "Charlotte")`
+
+Never guess a name from what the voice says; it comes from the speaker, or from the owner when they tell you who a
+voice is. With several voices open, the facts under VOICES (the days, the hours, what it says) tell them apart.

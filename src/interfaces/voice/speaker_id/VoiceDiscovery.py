@@ -1,9 +1,9 @@
-"""Finds the voices the house keeps hearing that match no enrolled speaker and asks the owner who
-they are. Once a night it embeds the week's `log/audio` clips with the SpeakerIdentifier's model,
-clusters them by voice, and files every voice that recurs over enough days as a candidate in
-`voice_id/candidates/` (`assistant.VoiceCandidates`), posting the owner a question with what the
-voice says; the answer, `name_voice`, turns the candidate into an enrollment the identifier
-reloads by itself.
+"""Finds the voices the house keeps hearing that match no enrolled speaker. Once a night it
+embeds the week's `log/audio` clips with the SpeakerIdentifier's model, clusters them by voice,
+and files every voice that recurs over enough days as a candidate in `voice_id/candidates/`
+(`assistant.VoiceCandidates`). The identifier enrolls a candidate under its id, so the next time
+the voice speaks the turn note says whose name is missing and the assistant asks; `name_voice`
+then turns the candidate into an enrollment the identifier reloads by itself.
 
 The numbers were measured on a week of a real household (32,519 clips, ~/Desktop/voice_clusters
 on the maintainer's machine, 2026-10-13): clips under 2 s or quieter than RMS 0.003 carry no
@@ -30,19 +30,19 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from assistant import Destinations, VoiceCandidates
+from assistant import VoiceCandidates
 from common.ConfigManager import ConfigManager
 from common.Paths import CACHE_DIR, LOG_DIR, VOICE_ID_DIR
 from interfaces.voice.speaker_id import EnrollmentRefresh
 from common.logging import error, info, trace
-from common.vault.Redactor import redact_for_storage
 
-CONFIG_KEY = "voice_discovery"
-DEFAULTS = {"enabled": True, "hour": 5, "days": 7, "min_clips": 100, "min_days": 3,
-            "refresh_enrollment": True, "samples_per_person": EnrollmentRefresh.SIZE}
+CONFIG_KEY = "voice_discovery"   # the one config section: `enabled` (default true); the rest is tuned here
+HOUR = 5              # the hour of the nightly run
+DAYS = 7              # how many days of recordings a run looks at
+MIN_CLIPS = 100       # a voice is filed once it has this many clips...
+MIN_DAYS = 3          # ...spread over at least this many days; a one-day voice is a visitor
 AUDIO_DIR = LOG_DIR / "audio"
 CACHE_FILE = CACHE_DIR / "voice_discovery" / "embeddings.npz"
-ASK_DESTINATION = "owner"
 CHECK_INTERVAL = 60
 
 CUT = 0.65            # cosine distance the clustering is cut at
@@ -51,7 +51,7 @@ OUTLIER_SIM = 0.35    # a clip further than this from its cluster's centroid is 
 MIN_CLUSTER = 10
 KNOWN_SIM = 0.45      # a bucket this close to an enrolled speaker (top-3 mean)...
 KNOWN_MARGIN = 0.10   # ...and this far ahead of the runner-up is that speaker
-SAME_VOICE_SIM = 0.60 # a bucket this close to an open or dismissed candidate is that voice again
+SAME_VOICE_SIM = 0.60 # a bucket this close to an open candidate is that voice again
 REFRESH_OFFER = 200   # the most central clips of a known bucket offered to the person's enrollment refresh
 MAX_CHUNK = 6000      # clips clustered at once: linkage needs n²/2 float64 (6k -> 150 MB, 20k -> 3 GB measured)
 SAMPLES_KEPT = 12
@@ -75,10 +75,10 @@ class Clip:
         return datetime.fromtimestamp(self.mtime).date()
 
 
-def settings() -> dict:
-    """The `voice_discovery` section of config.yaml over the defaults."""
+def enabled() -> bool:
+    """`voice_discovery.enabled` of config.yaml, on unless the key says otherwise."""
     section = ConfigManager.get_instance().get(CONFIG_KEY, {})
-    return DEFAULTS | (section if isinstance(section, dict) else {})
+    return bool(section.get("enabled", True)) if isinstance(section, dict) else True
 
 
 def cluster(X: np.ndarray, cut: float = CUT, merge: float = MERGE_SIM, outlier: float = OUTLIER_SIM,
@@ -163,43 +163,43 @@ class VoiceDiscovery:
     """The nightly run and its hour loop; see the module doc for what it does and why."""
 
     def __init__(self, embedder: Embedder = None, enrolled: Callable[[], dict[str, np.ndarray]] = None,
-                 ask: Callable[[str], str] = None, audio_dir: Path = None, cache_file: Path = None,
-                 candidates_dir: Path = None, config: dict = None, voice_id_dir: Path = None,
-                 sample_embedder: Callable[[Path], Optional[np.ndarray]] = None, replaced_dir: Path = None):
+                 audio_dir: Path = None, cache_file: Path = None,
+                 candidates_dir: Path = None, voice_id_dir: Path = None,
+                 sample_embedder: Callable[[Path], Optional[np.ndarray]] = None, replaced_dir: Path = None,
+                 enabled: bool = None, hour: int = HOUR, min_clips: int = MIN_CLIPS, min_days: int = MIN_DAYS,
+                 samples_per_person: int = EnrollmentRefresh.SIZE):
+        """The keyword arguments after *replaced_dir* let a test shrink the thresholds; the server
+        runs on the module constants and the config's `enabled`."""
         self._embedder = embedder
         self._enrolled = enrolled
         self._sample_embedder = sample_embedder
         self.voice_id_dir = voice_id_dir or VOICE_ID_DIR
         self.replaced_dir = replaced_dir
-        self._ask = ask or (lambda text: Destinations.send(ASK_DESTINATION, redact_for_storage(text)))
         self.audio_dir = audio_dir or AUDIO_DIR
         self.cache_file = cache_file or CACHE_FILE
         self.candidates_dir = candidates_dir
-        self._config = config
+        self._enabled = enabled
+        self.hour, self.min_clips, self.min_days, self.samples_per_person = hour, min_clips, min_days, samples_per_person
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_run_date: Optional[date] = None
 
-    @property
-    def config(self) -> dict:
-        return DEFAULTS | (self._config if self._config is not None else settings())
-
     # --- the hour loop -------------------------------------------------------------------
 
     def start(self) -> None:
-        if not self.config["enabled"]:
+        if not (self._enabled if self._enabled is not None else enabled()):
             info("Voice discovery is off (voice_discovery.enabled)")
             return
         now = datetime.now()
-        if now.hour == int(self.config["hour"]):
+        if now.hour == self.hour:
             # A boot inside the run hour: the speaker identifier is still loading and a run now
             # would embed nothing, and a restart after tonight's run must not run it twice.
             self._last_run_date = now.date()
-            info(f"Voice discovery: started inside the {int(self.config['hour']):02d}:00 hour, tonight counts as done")
+            info(f"Voice discovery: started inside the {self.hour:02d}:00 hour, tonight counts as done")
         self._running = True
         self._thread = threading.Thread(target=self._loop, name="VoiceDiscovery", daemon=True)
         self._thread.start()
-        info(f"Voice discovery started: runs at {int(self.config['hour']):02d}:00 over the last {self.config['days']} days")
+        info(f"Voice discovery started: runs at {self.hour:02d}:00 over the last {DAYS} days")
 
     def stop(self) -> None:
         self._running = False
@@ -208,7 +208,7 @@ class VoiceDiscovery:
         while self._running:
             try:
                 now = datetime.now()
-                if now.hour == int(self.config["hour"]) and self._last_run_date != now.date():
+                if now.hour == self.hour and self._last_run_date != now.date():
                     self._last_run_date = now.date()
                     self.run(now)
             except Exception as e:
@@ -221,18 +221,17 @@ class VoiceDiscovery:
     # --- one run ------------------------------------------------------------------------
 
     def run(self, now: datetime = None) -> dict:
-        """Embed the window's new clips, cluster, file and ask. Returns the counts, for the log
-        and the tests."""
+        """Embed the window's new clips, cluster and file. Returns the counts, for the log and
+        the tests."""
         now = now or datetime.now()
-        cfg = self.config
         summary = {"clips": 0, "usable": 0, "buckets": 0, "known": 0, "filed": 0, "refreshed": 0,
-                   "dismissed": 0, "asked": 0, "too_small": 0, "enrollment_refreshed": 0}
-        clips = self._embed_window(now - timedelta(days=int(cfg["days"])))
+                   "too_small": 0, "enrollment_refreshed": 0}
+        clips = self._embed_window(now - timedelta(days=DAYS))
         usable = [c for c in clips if c.reason == "ok" and c.embedding is not None]
         summary["clips"], summary["usable"] = len(clips), len(usable)
-        if len(usable) < int(cfg["min_clips"]):
+        if len(usable) < self.min_clips:
             info(f"Voice discovery: {len(usable)} usable clips of {len(clips)} in the window, fewer than "
-                 f"min_clips {cfg['min_clips']} — nothing to do")
+                 f"the {self.min_clips} a voice needs — nothing to do")
             return summary
         X = np.stack([c.embedding for c in usable])
         buckets = cluster_by_day(X, [c.day for c in usable], [c.duration for c in usable])
@@ -241,14 +240,13 @@ class VoiceDiscovery:
         enrolled = self._enrolled_embeddings()
         offers: dict[str, list[EnrollmentRefresh.Sample]] = {}
         open_candidates = VoiceCandidates.items(self.candidates_dir)
-        dismissed = VoiceCandidates.dismissed(self.candidates_dir)
         for idx in buckets:
             members = [usable[i] for i in idx]
             days = sorted({c.day for c in members})
-            if len(members) < int(cfg["min_clips"]) or len(days) < int(cfg["min_days"]):
+            if len(members) < self.min_clips or len(days) < self.min_days:
                 summary["too_small"] += 1
                 trace(f"Voice discovery: a bucket of {len(members)} clips over {len(days)} day(s) is below "
-                      f"min_clips {cfg['min_clips']} / min_days {cfg['min_days']} — a visitor or noise, skipped")
+                      f"{self.min_clips} clips / {self.min_days} days — a visitor or noise, skipped")
                 continue
             c = centroid(X, idx)
             who, sim, margin = match_enrolled(c, enrolled)
@@ -256,15 +254,10 @@ class VoiceDiscovery:
                 summary["known"] += 1
                 info(f"Voice discovery: a bucket of {len(members)} clips over {len(days)} days sounds like "
                      f"{who!r} ({sim:.2f}, margin {margin:.2f}) — known")
-                if cfg["refresh_enrollment"]:
-                    order = idx[np.argsort(-(X[idx] @ c))[:REFRESH_OFFER]]
-                    offers.setdefault(who, []).extend(
-                        EnrollmentRefresh.Sample(self.audio_dir / usable[i].name, X[i], usable[i].mtime,
-                                                 EnrollmentRefresh.ORIGIN_DISCOVERY) for i in order)
-                continue
-            if any(_similar(c, d.get("centroid")) for d in dismissed):
-                summary["dismissed"] += 1
-                info(f"Voice discovery: a bucket of {len(members)} clips is a voice the owner dismissed — skipped")
+                order = idx[np.argsort(-(X[idx] @ c))[:REFRESH_OFFER]]
+                offers.setdefault(who, []).extend(
+                    EnrollmentRefresh.Sample(self.audio_dir / usable[i].name, X[i], usable[i].mtime,
+                                             EnrollmentRefresh.ORIGIN_DISCOVERY) for i in order)
                 continue
             sims = X[idx] @ c
             order = idx[np.argsort(-sims)]
@@ -282,13 +275,10 @@ class VoiceDiscovery:
                                                    directory=self.candidates_dir, today=now.date())
                 open_candidates.append(candidate)
                 summary["filed"] += 1
-            if candidate.asked is None and self._ask_about(candidate):
-                VoiceCandidates.mark_asked(candidate, now.date())
-                summary["asked"] += 1
         # One refresh per person a night, whatever the number of buckets that sounded like them:
         # the turnover cap is a night's, not a bucket's.
         for person, offered in offers.items():
-            outcome = self._refresh_enrollment(person, offered, enrolled, now, int(cfg["samples_per_person"]))
+            outcome = self._refresh_enrollment(person, offered, enrolled, now, self.samples_per_person)
             if outcome and (outcome["added"] or outcome["dropped"]):
                 summary["enrollment_refreshed"] += 1
         info(f"Voice discovery done: {summary}")
@@ -308,21 +298,6 @@ class VoiceDiscovery:
         others = {name: E for name, E in enrolled.items() if name != person}
         return EnrollmentRefresh.refresh(person, folder, current, offered, others, size=size,
                                          now=now.timestamp(), replaced_dir=self.replaced_dir)
-
-    def _ask_about(self, candidate: VoiceCandidates.Candidate) -> bool:
-        says = ", ".join(f"“{t}”" for t in candidate.transcripts[:3])
-        span = candidate.first_day if candidate.first_day == candidate.last_day else f"{candidate.first_day} to {candidate.last_day}"
-        text = (f"I keep hearing a voice I can't place: {candidate.clips} times over {candidate.days} days "
-                f"({span}){', ' + candidate.hours if candidate.hours else ''}."
-                + (f" It says things like {says}." if says else "")
-                + " Who is it? Tell me the name and I'll know the voice from now on — or say it's a TV, a radio or a "
-                  f"visitor and I'll let it be. (voice {candidate.id})")
-        failure = self._ask(text)
-        if failure:
-            info(f"Voice discovery: the owner could not be asked about {candidate.id}: {failure} — asked again next run")
-            return False
-        info(f"Voice discovery: asked the owner about {candidate.id}")
-        return True
 
     @staticmethod
     def _transcripts(names_by_centrality: list[str]) -> list[str]:
