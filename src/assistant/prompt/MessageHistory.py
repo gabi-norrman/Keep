@@ -248,22 +248,18 @@ class MessageHistory:
         does not hold (the note diffs against data the LLM was never sent). A note always
         comes after the reference it belongs to, so one forward pass decides."""
         from assistant.commands.Toolkits import CARRIED_SECTIONS
-        kept, held, hidden = [], set(), 0
+        kept, held = [], set()
         for row in rows:
             entry = row[0]
             preloaded_for = cls.preload_window(entry)
             if preloaded_for is not None and preloaded_for != window:
-                hidden += 1
                 continue
             if entry.get("source") == cls.SOURCE_PROMPT_DELTA:
                 toolkit = CARRIED_SECTIONS.get(entry.get("section"))
                 if toolkit is not None and toolkit not in held:
-                    hidden += 1
                     continue
             held.update(cls._toolkit_names(entry))
             kept.append(row)
-        if hidden:
-            trace(f"MessageHistory: {hidden} row(s) of the window are not the {window} window's — left out")
         return kept
 
     def get_history_messages(self, max_bytes: int | None = None, window: str = WINDOW_TEXT) -> list[dict]:
