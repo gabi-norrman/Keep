@@ -228,9 +228,9 @@ def _bank(words: int) -> str:
 
 
 class TestCondensingPass:
-    """A bank well over the limit is condensed by a pass of its own before the curation (the
-    MemoryCondenser, the bank alone, no interactions): the curation prompt only rewords an
-    oversize bank."""
+    """A curated bank well over the limit is condensed by a pass of its own after the curation
+    (the MemoryCondenser, the bank alone, no interactions): the curation prompt only rewords an
+    oversize bank, and a pass before it would leave the period's additions on top of the limit."""
 
     def _curator(self, replies: list[str]):
         llm = Mock()
@@ -246,43 +246,107 @@ class TestCondensingPass:
         assert not LongTermMemoryCurator.needs_condensing(MEMORY_WORD_LIMIT + 1)
         assert LongTermMemoryCurator.needs_condensing(int(MEMORY_WORD_LIMIT * (1 + CONDENSE_TRIGGER)) + 1)
 
-    def test_over_the_trigger_condenses_then_curates_the_condensed_bank(self):
-        oversize = _bank(int(MEMORY_WORD_LIMIT * 1.3))
-        condensed = _bank(MEMORY_WORD_LIMIT - 100)
-        curated = _bank(MEMORY_WORD_LIMIT - 90)
-        curator = self._curator([f"<section>{condensed}</section>", f"<memory>{curated}</memory>"])
-        memory, metadata = curator.curate_memory_with_data("the period's history", "", oversize)
+    def test_a_curated_bank_over_the_trigger_is_condensed_and_the_condensed_bank_returned(self):
+        loaded = _bank(MEMORY_WORD_LIMIT - 100)
+        curated = _bank(int(MEMORY_WORD_LIMIT * 1.3))
+        condensed = _bank(MEMORY_WORD_LIMIT - 90)
+        curator = self._curator([f"<memory>{curated}</memory>", f"<section>{condensed}</section>"])
+        memory, metadata = curator.curate_memory_with_data("the period's history", "", loaded)
         first, second = [c.kwargs['system_message'] for c in curator.llm.think.call_args_list]
-        assert "the period's history" not in first and oversize in first      # one section: one condensing call
-        assert "the period's history" in second and condensed in second and oversize not in second
-        assert "headroom" in second
-        assert memory == curated
-        assert metadata['condense']['from'] == curator.word_count(oversize)
+        assert "the period's history" in first and loaded in first and "headroom" in first
+        assert "the period's history" not in second and curated in second      # one section: one condensing call
+        assert memory.rstrip("\n") == condensed
+        assert metadata['condense']['from'] == curator.word_count(curated)
         assert metadata['condense']['to'] == curator.word_count(condensed)
-        assert metadata['old_memory'] == oversize  # the append carry-over compares with the bank as loaded
+        assert metadata['old_memory'] == loaded  # the append carry-over compares with the bank as loaded
+        assert metadata['new_memory_size'] == len(memory)
 
-    def test_under_the_trigger_is_one_call(self):
+    def test_a_loaded_bank_over_the_trigger_is_curated_as_it_is(self):
+        # The curation sees the whole bank, size note included; the cut comes after
+        oversize = _bank(int(MEMORY_WORD_LIMIT * 1.3))
         curator = self._curator([f"<memory>{_bank(3000)}</memory>"])
-        _, metadata = curator.curate_memory_with_data("history", "", _bank(MEMORY_WORD_LIMIT + 10))
+        _, metadata = curator.curate_memory_with_data("history", "", oversize)
+        assert curator.llm.think.call_count == 1
+        prompt = curator.llm.think.call_args.kwargs['system_message']
+        assert oversize in prompt and "REQUIRED" in prompt
+        assert metadata['condense'] is None
+
+    def test_a_curated_bank_under_the_trigger_is_not_condensed(self):
+        curator = self._curator([f"<memory>{_bank(MEMORY_WORD_LIMIT + 10)}</memory>"])
+        _, metadata = curator.curate_memory_with_data("history", "", _bank(3000))
         assert curator.llm.think.call_count == 1
         assert metadata['condense'] is None
 
-    def test_a_condensing_pass_that_removed_nothing_curates_the_bank_as_it_was(self):
+    def test_a_rejected_curation_is_not_condensed(self):
         oversize = _bank(int(MEMORY_WORD_LIMIT * 1.3))
-        curated = _bank(3000)
-        curator = self._curator(["no section here", f"<memory>{curated}</memory>"])
+        curator = self._curator(["<memory># Memory\ntoo short</memory>"])
         memory, metadata = curator.curate_memory_with_data("history", "", oversize)
-        assert oversize in curator.llm.think.call_args_list[1].kwargs['system_message']
+        assert memory is oversize and curator.llm.think.call_count == 1
+        assert metadata['condense'] is None
+
+    def test_a_condensing_pass_that_removed_nothing_keeps_the_curated_bank(self):
+        curated = _bank(int(MEMORY_WORD_LIMIT * 1.3))
+        curator = self._curator([f"<memory>{curated}</memory>", "no section here"])
+        memory, metadata = curator.curate_memory_with_data("history", "", _bank(3000))
         assert memory == curated and not metadata['truncated']
         assert metadata['condense']['to'] == metadata['condense']['from']
 
     def test_the_condensing_pass_never_waits_for_a_batch(self):
-        curator = self._curator([f"<section>{_bank(3000)}</section>", f"<memory>{_bank(3000)}</memory>"])
+        curator = self._curator([f"<section>{_bank(3000)}</section>"])
         curator.batch = True
-        curator.llm.think_batched.return_value = None
-        curator.curate_memory_with_data("history", "", _bank(int(MEMORY_WORD_LIMIT * 1.3)))
+        curator.llm.think_batched.return_value = f"<memory>{_bank(int(MEMORY_WORD_LIMIT * 1.3))}</memory>"
+        curator.curate_memory_with_data("history", "", _bank(3000))
         assert curator.llm.think_batched.call_count == 1     # the curation; the condensing went straight through
         assert "<section>" in curator.llm.think.call_args_list[0].kwargs['user_message']
+
+
+class TestRunCondense:
+    """The condensing pass on its own (`//memory_condense`): the live bank cut, saved with a
+    journal and a history row, under the curation lock."""
+
+    def _curator(self, tmp_path, reply: str, bank: str):
+        path = tmp_path / "bank.md"
+        path.write_text(bank)
+        llm = Mock()
+        llm.last_stop_reason = None
+        llm.think.return_value = reply
+        return LongTermMemoryCurator(llm=llm, test_mode=True, memory_file_path=str(path)), path
+
+    def test_saves_the_condensed_bank_and_records_the_completion(self, tmp_path, monkeypatch):
+        import assistant.agents.LongTermMemoryCurator as curator_mod
+        monkeypatch.setattr(curator_mod, "MEMORY_LOG_DIR", tmp_path / "log")
+        condensed = _bank(MEMORY_WORD_LIMIT - 500)
+        curator, path = self._curator(tmp_path, f"<section>{condensed}</section>", _bank(MEMORY_WORD_LIMIT + 300))
+        history = Mock()
+        outcome = LongTermMemoryCurator.run_condense(history=history, curator=curator)
+        assert outcome['to'] == curator.word_count(condensed) < outcome['from']
+        assert path.read_text().rstrip("\n") == condensed
+        journals = list((tmp_path / "log").glob("*_memory.md"))
+        assert len(journals) == 1 and "Condensing pass" in journals[0].read_text()
+        note = history.add_context_message.call_args.args[1]
+        assert str(outcome['from']) in note and str(outcome['to']) in note
+
+    def test_the_given_cut_reaches_the_condenser(self, tmp_path):
+        curator, _ = self._curator(tmp_path, f"<section>{_bank(100)}</section>", _bank(500))
+        LongTermMemoryCurator.run_condense(cut=123, curator=curator)
+        assert "123" in curator.llm.think.call_args.kwargs['user_message']
+
+    def test_a_pass_that_removed_nothing_leaves_the_bank_alone(self, tmp_path):
+        bank = _bank(MEMORY_WORD_LIMIT + 300)
+        curator, path = self._curator(tmp_path, "no section", bank)
+        history = Mock()
+        assert LongTermMemoryCurator.run_condense(history=history, curator=curator) is None
+        assert path.read_text() == bank
+        history.add_context_message.assert_not_called()
+
+    def test_skipped_while_another_curation_holds_the_lock(self, tmp_path):
+        curator, _ = self._curator(tmp_path, "<section>x</section>", _bank(500))
+        LongTermMemoryCurator._curation_lock.acquire()
+        try:
+            assert LongTermMemoryCurator.run_condense(curator=curator) is None
+        finally:
+            LongTermMemoryCurator._curation_lock.release()
+        curator.llm.think.assert_not_called()
 
 
 def _mock_curator() -> Mock:

@@ -28,13 +28,17 @@ CURATION_CHUNK_DAYS = 4
 # The size the curator is told to keep the bank under. The LLM cannot count words in a 40 KB
 # document, so the prompt also states the measured count ({MEMORY_SIZE}) rather than trusting it to.
 MEMORY_WORD_LIMIT = 4000
-# A bank more than CONDENSE_TRIGGER over the limit gets a condensing pass before the curation
-# (`MemoryCondenser`, section by section), asked to cut CONDENSE_CUT of the limit or the whole
-# excess, whichever is more (`condense_cut`). The curation prompt cannot do it: with the
+# A curated bank more than CONDENSE_TRIGGER over the limit gets a condensing pass after the
+# curation (`MemoryCondenser`, section by section), asked to cut CONDENSE_CUT of the limit or the
+# whole excess, whichever is more (`condense_cut`). The curation prompt cannot do it: with the
 # period's interactions and the "never drop a fact" rules in front of it the model rewords an
 # oversize bank at the same length however plainly the size note demands a cut — three nights
-# at ~5000 words, and a test pass with the full prompt cut 8 words of 992 asked. Trigger above
-# the cut: a hysteresis, so a bank hovers under the trigger instead of being condensed every night.
+# at ~5000 words, and a test pass with the full prompt cut 8 words of 992 asked. After, not
+# before: a pass before the curation lands the bank on the limit and the curation then adds the
+# period's facts on top of it (a 5269-word bank condensed to 4020 came back at 4357), so the bank
+# saved was over the limit every night; condensed last, what is saved is the condensed bank.
+# Trigger above the cut: a hysteresis, so a bank hovers under the trigger instead of being
+# condensed every night.
 CONDENSE_TRIGGER = 0.10
 CONDENSE_CUT = 0.20
 # How long a nightly run waits for its batch before it makes the ordinary full-price call
@@ -313,6 +317,40 @@ class LongTermMemoryCurator:
             cls._curation_lock.release()
 
     @classmethod
+    def run_condense(cls, cut: int = None, history=None, curator: 'LongTermMemoryCurator' = None) -> dict | None:
+        """The condensing pass alone on the live bank (`//memory_condense`): `cut` words asked
+        off it, `condense_cut` when not given. The bank and a journal are saved as after a
+        curation and the completion left in `history`; under the curation lock like a run.
+        Returns the pass's outcome, None when another curation held the lock or the pass
+        removed nothing (the bank is then untouched)."""
+        if not cls._curation_lock.acquire(blocking=False):
+            info("Rem: already dreaming — skipping the condensing pass.")
+            return None
+        try:
+            curator = curator or cls()
+            bank = curator._load_memory()
+            condensed, outcome = curator._condense(bank, cut)
+            if condensed is bank:
+                return None
+            condensed = redact_for_storage(condensed)
+            metadata = {'old_memory': bank, 'old_memory_size': len(bank), 'new_memory_size': len(condensed),
+                        'condense': outcome, 'llm_duration_seconds': outcome['llm_duration_seconds'],
+                        'timestamp': time.time()}
+            curator.save_memory(condensed, metadata)
+            curator.save_debug_log(condensed, metadata)
+            info(f"Rem: condensing pass complete — memory bank now {len(condensed)} bytes.")
+            if history is not None:
+                history.add_context_message("system", cls.condense_note(outcome), time.time(), source=HISTORY_SOURCE)
+            return outcome
+        finally:
+            cls._curation_lock.release()
+
+    @staticmethod
+    def condense_note(outcome: dict) -> str:
+        """The system row a condensing pass run on its own leaves in the dialog history."""
+        return f"Long term memory condensed from {outcome['from']} to {outcome['to']} words."
+
+    @classmethod
     def last_run_at(cls) -> datetime | None:
         """When the bank was last curated, read from the newest dream journal's name
         (`save_debug_log` writes `<YYYYMMDD_HHMMSS>_<guid>_memory.md`): the one record of a run
@@ -572,19 +610,19 @@ class LongTermMemoryCurator:
         of the limit — so one pass brings a bank far over the limit back to it."""
         return max(int(MEMORY_WORD_LIMIT * CONDENSE_CUT), word_count - MEMORY_WORD_LIMIT)
 
-    def _condense(self, bank: str) -> tuple[str, dict]:
+    def _condense(self, bank: str, cut: int = None) -> tuple[str, dict]:
         """The condensing pass (`MemoryCondenser`): the bank back shorter, with what happened
-        for the journal. Never a batch — a handful of small calls, a few minutes of work."""
+        for the journal. `cut` is the words asked off it, `condense_cut` when not given. Never
+        a batch — a handful of small calls, a few minutes of work."""
         words = self.word_count(bank)
-        cut = self.condense_cut(words)
-        info(f"Rem: {words} words is more than {CONDENSE_TRIGGER:.0%} over the limit — a condensing pass first, "
-             f"asked to remove {cut} words")
+        cut = self.condense_cut(words) if cut is None else cut
+        info(f"Rem: condensing pass on {words} words (limit {MEMORY_WORD_LIMIT}), asked to remove {cut} words")
         condensed, outcome = MemoryCondenser(self.llm, MEMORY_WORD_LIMIT).condense(bank, cut)
         if self.word_count(condensed) >= words:
-            info("Rem: the condensing pass removed nothing — curating the bank as it was")
+            info("Rem: the condensing pass removed nothing — the bank stays as it was")
             return bank, outcome
         info(f"Rem: condensed to {outcome['to']} words (was {words})"
-             + (" — still over the limit" if outcome['to'] > MEMORY_WORD_LIMIT else "") + " — now the curation")
+             + (" — still over the limit" if outcome['to'] > MEMORY_WORD_LIMIT else ""))
         return condensed, outcome
 
     @staticmethod
@@ -650,10 +688,6 @@ class LongTermMemoryCurator:
             .replace("{PERIOD}", period_text) \
             .replace("{STT_NOTE}", STT_NOTE if voice_enabled else "") \
             .replace("{TIPS}", self._tips_prompt())
-        loaded_memory, condense = current_memory, None
-        if self.needs_condensing(word_count):
-            current_memory, condense = self._condense(current_memory)
-            word_count = self.word_count(current_memory)
         full_prompt = prompt.replace("{CURRENT_MEMORY}", current_memory) \
             .replace("{MEMORY_SIZE}", self.memory_size_note(word_count))
 
@@ -666,8 +700,14 @@ class LongTermMemoryCurator:
 
         response, commands = self._split_commands(response)
         new_memory, truncated = self._accept(response, current_memory)
+        condense = None
         if new_memory is current_memory:
             commands = ""
+        elif self.needs_condensing(self.word_count(new_memory)):
+            info(f"Rem: the curated bank is more than {CONDENSE_TRIGGER:.0%} over the limit — condensing it")
+            new_memory, condense = self._condense(new_memory)
+        else:
+            trace("Rem: the curated bank is within the condense trigger — no condensing pass")
 
         # Build metadata
         metadata = {
@@ -675,13 +715,13 @@ class LongTermMemoryCurator:
             'period_end': period[1].isoformat(timespec='minutes') if period else '',
             'interaction_count': interaction_count,
             'calendar_events_count': calendar_events_count,
-            'old_memory_size': len(loaded_memory),
+            'old_memory_size': len(current_memory),
             'new_memory_size': len(new_memory),
             'llm_duration_seconds': llm_duration,
             'truncated': truncated,
             'condense': condense,
             'timestamp': time.time(),
-            'old_memory': loaded_memory,
+            'old_memory': current_memory,
             'full_prompt': full_prompt,
             'commands': commands,
         }
