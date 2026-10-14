@@ -80,11 +80,11 @@ NIGHTLY_UPDATE_KEY = "nightly_update"
 RELEASE_BRANCH = "release"
 DEVELOPER_BRANCH = "master"
 NIGHTLY_OFF_MESSAGE = f"{NIGHTLY_RUNS_KEY} is off"
-NIGHTLY_STEPS = ("bugs", "logs", "fix", "tests", "health", "merge")   # what //nightly takes to run one step alone
-FIX_STEP_INPUTS = ("bugs", "logs")       # the reports the fix step reads, under the headings REPORT_TITLES gives them
+NIGHTLY_STEPS = ("tests", "bugs", "logs", "fix", "health", "merge")   # what //nightly takes to run one step alone
+FIX_STEP_INPUTS = ("bugs", "logs", "tests")   # the reports the fix step reads, under the headings REPORT_TITLES gives them
 FIX_SEVERITIES = ("critical", "major")   # the findings the nightly fix step takes on
 LOG_TRIAGE_HOURS = 24                    # how far back the log triage reads
-REPORT_TITLES = dict(zip(NIGHTLY_STEPS, ("Bug Analysis", "Log Triage", "Bug Fixes", "Test Generation", "Test Health",
+REPORT_TITLES = dict(zip(NIGHTLY_STEPS, ("Test Generation", "Bug Analysis", "Log Triage", "Bug Fixes", "Test Health",
                                          "Auto-Merge Test PRs")))   # the headings of the night's email
 GH_NOT_LOGGED_IN_MESSAGE = (
     "GitHub CLI is not logged in on the server, so nothing can be filed on the repository. "
@@ -211,15 +211,23 @@ def claude_status() -> ClaudeStatus:
 
 
 GENERATE_TESTS_PROMPT = """
-Look over the commits from the last two days. 
+Look over the commits from the last two days.
 Has something been added without adding proper unit tests (tests that will actually ADD VALUE and not bloat)?
-If you find missing tests that will ADD VALUE, create them. 
+If you find missing tests that will ADD VALUE, create them.
 Test data is fictional (see "Test data" in CLAUDE.md): use the standing cast, never values from logs, config or the database.
 Follow "Tests not to write" in CLAUDE.md: no pinned constants, stored-argument checks, mock-in-mock-out or byte-for-byte
 string tests — every assertion must be a derived expectation.
+
+Do not fix the code — your pull request changes files under tests/ only; it is merged right after you are done when it
+touches nothing else, and a fix step runs after you with your report. If a test you write fails because the code is
+wrong, keep the test and mark it `@pytest.mark.xfail(strict=True, reason="<the bug>")`: the suite stays green and the
+bug is pinned until the fix removes the marker.
 Then create a pull request and push it (check rules for commits in the /commit skill).
 
-IMPORTANT: The user will only see your final message so keep the entire analysis in your last message.
+IMPORTANT: The user will only see your final message so keep the entire analysis in your last message. Its last table is
+the fix list: the bugs your tests pinned, one row each, with the columns Severity (critical/major/minor/nit), Where
+(file:line), What (name the xfail test) and Proposed fix. An automated fix step reads this table and takes on the
+critical and major rows. When no test pinned a bug, say so plainly and leave the table empty.
 """
 
 BUG_ANALYSIS_PROMPT = """
@@ -270,10 +278,12 @@ IMPORTANT: Your entire analysis must be in your final message. Do not ask follow
 """
 
 FIX_BUGS_PROMPT = """
-The nightly reviews of this code base just finished — the bug analysis of the day's commits and the triage of the
-server's logs, whichever ran tonight; their reports are below, each under its own heading. Your job is to fix the
-items of each report's fix list (its last table, what the report itself says needs fixing) whose finding is tagged
-Critical or Major — and only those. Leave every Minor and Nit item alone.
+The nightly reviews of this code base just finished — the bug analysis of the day's commits, the triage of the
+server's logs and the generation of the tests the day's commits lacked, whichever ran tonight; their reports are
+below, each under its own heading. Your job is to fix the items of each report's fix list (its last table, what the
+report itself says needs fixing) whose finding is tagged Critical or Major — and only those. Leave every Minor and
+Nit item alone. A bug the test generation pinned has a strict-xfail test already on master: fixing it means making
+the code right and removing the marker, so that test runs green.
 
 Steps:
 1. Prepare for PR: create a branch.
@@ -592,15 +602,16 @@ class CodeQualityMaintainer:
         note(f"CodeQualityMaintainer: starting nightly run{f' ({only} only)' if only else ''}...")
         self._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
         reports = {}
-        steps = dict(zip(NIGHTLY_STEPS, [self._step_bug_analysis,
+        steps = dict(zip(NIGHTLY_STEPS, [self._step_generate_tests,
+                                         self._step_bug_analysis,
                                          self._step_log_triage,
                                          lambda: self._step_fix_bugs(self.fix_input(reports)),
-                                         self._step_generate_tests,
                                          self._step_test_health,
                                          self._step_auto_merge]))
         if only == "fix":
-            info("CodeQualityMaintainer: the fix step reads the bug analysis and the log triage, so those run first.")
-            keys = [*FIX_STEP_INPUTS, "fix"]
+            info("CodeQualityMaintainer: the fix step reads the bug analysis and the log triage, so those run first "
+                 "(the test generation, whose report it also reads, is a step of its own).")
+            keys = ["bugs", "logs", "fix"]
         elif only:
             keys = [only]
         elif self._has_recent_commits():
@@ -633,11 +644,12 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def fix_input(reports: dict) -> str:
-        """What the fix step reads: the night's bug analysis and log triage, each under the heading
-        the email gives it, the ones that produced nothing left out — "" when neither did."""
+        """What the fix step reads: the night's bug analysis, log triage and test generation, each
+        under the heading the email gives it, the ones that produced nothing left out — "" when
+        none did."""
         present = [(REPORT_TITLES[key], reports.get(key, "")) for key in FIX_STEP_INPUTS if reports.get(key)]
         if not present:
-            trace("CodeQualityMaintainer: neither the bug analysis nor the log triage left a report for the fix step")
+            trace("CodeQualityMaintainer: no report of the night is there for the fix step to read")
         return "\n\n".join(f"# {title}\n\n{body}" for title, body in present)
 
     def _nightly_update(self):
@@ -825,10 +837,21 @@ class CodeQualityMaintainer:
         """Last step of the night, so the test-only PRs the earlier steps opened are merged with it.
         Plain code, no Claude Code run: a PR qualifies when every path it touches is under tests/."""
         info("CodeQualityMaintainer: auto-merge of test-only PRs...")
+        merged, skipped = self._merge_test_prs()
+        if merged is None:
+            return ""
+        return "\n\n".join(f"## {heading}\n\n" + ("\n".join(lines) or "None.")
+                           for heading, lines in (("Merged PRs", merged), ("Skipped PRs", skipped)))
+
+    def _merge_test_prs(self) -> tuple[list[str] | None, list[str]]:
+        """Merges every open PR of a trusted author that touches nothing outside tests/ and returns
+        the report lines of the merged and the skipped ones — (None, []) when no PR was there to
+        look at. The test generation step calls it for the PR it just opened, the auto-merge step
+        for whatever is left at the end of the night."""
         candidates = self._auto_merge_candidates()
         if not candidates:
             info("CodeQualityMaintainer: no open PRs from trusted authors, skipping the auto-merge.")
-            return ""
+            return None, []
         tests_path = self._tests_path()
         merge_strategy = ConfigManager().get('self_improvement.merge_strategy', 'rebase')
         info(f"CodeQualityMaintainer: auto-merge covers {tests_path} with --{merge_strategy}")
@@ -863,8 +886,7 @@ class CodeQualityMaintainer:
         finally:
             self._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
         info(f"CodeQualityMaintainer: auto-merge complete, {len(merged)} merged, {len(skipped)} skipped.")
-        return "\n\n".join(f"## {heading}\n\n" + ("\n".join(lines) or "None.")
-                           for heading, lines in (("Merged PRs", merged), ("Skipped PRs", skipped)))
+        return merged, skipped
 
     @staticmethod
     def _run_subprocess(cmd, label, timeout):
@@ -984,20 +1006,29 @@ class CodeQualityMaintainer:
         lowered = (text or "").lower()
         return any(marker in lowered for marker in NOT_LOGGED_IN_MARKERS)
 
-    @staticmethod
-    def _step_generate_tests() -> str:
+    def _step_generate_tests(self) -> str:
+        """First step of the night: the tests the last days' commits lack, as a tests-only PR
+        that is merged on the spot, so the fix step after it starts from a master that holds
+        them. A bug the new tests expose is pinned with a strict xfail and listed in the
+        report's fix list, which the fix step reads; the step itself never touches the code."""
         branch = CodeQualityMaintainer._current_branch()
         try:
             info("CodeQualityMaintainer: generating missing tests for recent commits...")
             trace("Starting Claude Code in the background...")
             report = CodeQualityMaintainer._run_claude(GENERATE_TESTS_PROMPT, "generate-tests")
             info("CodeQualityMaintainer: test generation complete.")
-            return report
         except Exception as e:
             error(f"CodeQualityMaintainer: test generation failed: {e}")
             return ""
         finally:
             CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+        info("CodeQualityMaintainer: merging the test PR before the fix step...")
+        merged, _ = self._merge_test_prs()
+        if merged:
+            report += "\n\n## Merged into master\n\n" + "\n".join(merged)
+        else:
+            info("CodeQualityMaintainer: no test-only PR to merge after the test generation.")
+        return report
 
     @staticmethod
     def _step_test_health() -> str:
@@ -1052,16 +1083,16 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def _step_fix_bugs(analysis: str) -> str:
-        """Fixes the Critical and Major items of the fix lists of *analysis* — the bug analysis and
-        the log triage as `fix_input` joins them — as one PR, through `_pr_job`; the auto-merge
-        leaves that PR alone, since it touches more than tests/."""
+        """Fixes the Critical and Major items of the fix lists of *analysis* — the bug analysis, the
+        log triage and the test generation as `fix_input` joins them — as one PR, through
+        `_pr_job`; the auto-merge leaves that PR alone, since it touches more than tests/."""
         if not analysis:
-            info("CodeQualityMaintainer: no bug analysis or log triage to fix from, skipping the fix step.")
+            info("CodeQualityMaintainer: no report of the night to fix from, skipping the fix step.")
             return ""
         severities = CodeQualityMaintainer.fixable_severities(analysis)
         if not severities:
             info("CodeQualityMaintainer: the reports name nothing Critical or Major, nothing to fix.")
-            return "The bug analysis and the log triage name nothing Critical or Major — nothing to fix tonight."
+            return "The night's reports name nothing Critical or Major — nothing to fix tonight."
         reason = CodeQualityMaintainer._github_unavailable()
         if reason:
             return reason

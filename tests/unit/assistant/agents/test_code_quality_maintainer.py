@@ -513,6 +513,11 @@ class TestStepTestHealth:
 
 @pytest.mark.unit
 class TestStepGenerateTests:
+    @pytest.fixture(autouse=True)
+    def merge(self):
+        with patch.object(CodeQualityMaintainer, '_merge_test_prs', return_value=(None, [])) as merge:
+            yield merge
+
     @patch.object(CodeQualityMaintainer, '_run_claude', return_value="")
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
     def test_reads_the_branch_then_claude_then_checks_it_out_again(self, mock_run, mock_claude, maintainer):
@@ -524,12 +529,37 @@ class TestStepGenerateTests:
         assert mock_run.call_args[1]["cwd"] == WORKING_DIR
         mock_claude.assert_called_once_with(GENERATE_TESTS_PROMPT, "generate-tests")
 
+    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="Eight tests added. PR #70.")
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_the_test_pr_is_merged_once_the_checkout_is_back_and_the_report_says_so(
+            self, mock_run, mock_claude, merge, maintainer):
+        """The fix step after it branches from master, so the tests must be there by then."""
+        events = []
+        mock_run.side_effect = lambda cmd, **_: events.append(cmd[:2]) or Mock(stdout="master\n", returncode=0)
+        merge.side_effect = lambda: events.append("merge") or (["- #70 test: eight tests"], ["- #65 feat — outside"])
+        report = maintainer._step_generate_tests()
+        assert events.index(["git", "checkout"]) < events.index("merge")
+        assert "- #70 test: eight tests" in report and "#65" not in report, "the skipped PRs are the night's end's to list"
+        assert report.startswith("Eight tests added")
+
+    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="Nothing to add.")
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_no_test_pr_to_merge_leaves_the_report_as_claude_wrote_it(self, mock_run, mock_claude, merge, maintainer):
+        mock_run.return_value = Mock(stdout="master\n", returncode=0)
+        assert maintainer._step_generate_tests() == "Nothing to add."
+
+    def test_the_prompt_forbids_fixing_and_asks_for_the_fix_list_the_fix_step_reads(self):
+        lowered = GENERATE_TESTS_PROMPT.lower()
+        assert "do not fix" in lowered and "xfail" in lowered and "strict=true" in lowered
+        assert "fix list" in lowered and "critical and major rows" in lowered
+
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude failed"))
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
-    def test_returns_empty_on_error(self, mock_run, mock_claude, maintainer):
+    def test_returns_empty_on_error_and_merges_nothing(self, mock_run, mock_claude, merge, maintainer):
         mock_run.return_value = Mock(stdout="", returncode=0)
         result = maintainer._step_generate_tests()
         assert result == ""
+        merge.assert_not_called()
 
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude timed out"))
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
@@ -567,9 +597,11 @@ class TestStepLogTriage:
 
 @pytest.mark.unit
 class TestFixInput:
-    def test_both_reports_stand_under_their_headings_in_the_nights_order(self):
-        text = CodeQualityMaintainer.fix_input({"bugs": "B", "logs": "L", "tests": "ignored"})
-        assert text.index("# Bug Analysis") < text.index("B") < text.index("# Log Triage") < text.index("L")
+    def test_the_three_reports_stand_under_their_headings_with_the_tests_last(self):
+        text = CodeQualityMaintainer.fix_input({"tests": "pinned", "bugs": "off by one", "logs": "a stall",
+                                                "health": "ignored"})
+        assert (text.index("# Bug Analysis") < text.index("off by one") < text.index("# Log Triage")
+                < text.index("a stall") < text.index("# Test Generation") < text.index("pinned"))
         assert "ignored" not in text
 
     def test_a_missing_report_leaves_only_the_other_and_none_leaves_nothing(self):
@@ -1189,7 +1221,7 @@ class TestExecuteNightlyRun:
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_runs_the_six_steps_in_order_with_the_fix_after_both_reviews_and_the_auto_merge_last(
+    def test_runs_the_six_steps_in_order_with_the_tests_first_the_fix_after_the_reviews_and_the_auto_merge_last(
             self, mock_sub, mock_commits, maintainer):
         call_order = []
         self.logs.side_effect = lambda: call_order.append('logs') or ''
@@ -1200,8 +1232,19 @@ class TestExecuteNightlyRun:
             with patch.object(CodeQualityMaintainer, '_step_generate_tests', side_effect=lambda: call_order.append('tests') or ''):
                 with patch.object(CodeQualityMaintainer, '_send_email'):
                     maintainer._execute_nightly_run()
-        assert call_order == ['bugs', 'logs', 'fix', 'tests', 'health', 'merge']
+        assert call_order == ['tests', 'bugs', 'logs', 'fix', 'health', 'merge']
         assert list(NIGHTLY_STEPS) == call_order   # //nightly names them the same way
+
+    @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_the_fix_step_reads_the_bugs_the_new_tests_pinned(self, mock_sub, mock_commits, maintainer):
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value="| Major | foo.py:3 | off by one |"), \
+                patch.object(CodeQualityMaintainer, '_step_generate_tests',
+                             return_value="| Major | baz.py:7 | test_x pins it |"), \
+                patch.object(CodeQualityMaintainer, '_send_email'):
+            maintainer._execute_nightly_run()
+        text = self.fix.call_args[0][0]
+        assert text.index("| Major | foo.py:3 |") < text.index("# Test Generation") < text.index("| Major | baz.py:7 |")
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
