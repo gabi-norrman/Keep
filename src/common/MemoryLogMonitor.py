@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from common.logging import trace
+from common.logging import fine, trace
 
 
 class MemoryLogMonitor:
@@ -33,7 +33,7 @@ class MemoryLogMonitor:
         self._thread = threading.Thread(target=self._monitor_loop, args=(self._stop_event,), daemon=True,
                                         name="MemoryLogMonitor")
         self._thread.start()
-        trace("MemoryLogMonitor started")
+        fine("MemoryLogMonitor started")
 
     def stop(self):
         """Returns at once — a tab switch calls it on the TUI's input thread, and a join here
@@ -67,7 +67,7 @@ class MemoryLogMonitor:
             match = self.FILENAME_RE.match(entry.name)
             if not match:
                 skipped += 1
-                trace(f"MemoryLogMonitor: skipping malformed name {entry.name}")
+                fine(f"MemoryLogMonitor: skipping malformed name {entry.name}")
                 continue
             try:
                 day = datetime.strptime(match.group(1), "%Y%m%d").date()
@@ -104,5 +104,5 @@ class MemoryLogMonitor:
             trace(f"MemoryLogMonitor: cannot read {self.MEMORY_FILE}: {e}")
             return 0
         words = sum(1 for token in text.split() if any(c.isalnum() for c in token))
-        trace(f"MemoryLogMonitor: {self.MEMORY_FILE} holds {words} words")
+        fine(f"MemoryLogMonitor: {self.MEMORY_FILE} holds {words} words")
         return words

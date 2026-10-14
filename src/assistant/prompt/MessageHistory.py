@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Callable
 
 from assistant.ChannelProfile import WINDOW_TEXT
-from common.logging import info, trace
+from common.logging import fine, info, trace
 from common.FloxyDatabase import FloxyDatabase, ROLE_COMMAND as DB_ROLE_COMMAND
 from ..tools.MessageFormatter import MessageFormatter
 from .HistoryCompressor import HistoryCompressor
@@ -709,7 +709,7 @@ class MessageHistory:
                 continue
             for name in self._toolkit_names(entry):
                 loaded[name] = entry["timestamp"]
-        trace(f"MessageHistory: toolkits in the {window or 'any'} window: {sorted(loaded) or 'none'}")
+        fine(f"MessageHistory: toolkits in the {window or 'any'} window: {sorted(loaded) or 'none'}")
         return loaded
 
     def add_command_result(self, result: str, cap: bool = True, source: str | None = None):

@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from common.logging import info, trace
+from common.logging import fine, info, trace
 from common.Paths import LOG_DIR
 
 
@@ -57,7 +57,7 @@ class CacheHitLogMonitor:
         self._thread = threading.Thread(target=self._monitor_loop, args=(self._stop_event,), daemon=True,
                                         name="CacheHitLogMonitor")
         self._thread.start()
-        trace("CacheHitLogMonitor started")
+        fine("CacheHitLogMonitor started")
 
     def stop(self):
         """Returns at once; the loop ends by itself at its next look at its event."""

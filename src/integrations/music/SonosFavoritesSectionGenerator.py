@@ -1,7 +1,7 @@
 import threading
 import time
 from assistant.prompt.PromptSectionGenerator import PromptSectionGenerator
-from common.logging import trace, info, error
+from common.logging import trace, fine, info, error
 from integrations.music.MusicIntegration import MusicManager
 
 
@@ -94,18 +94,18 @@ class SonosFavoritesSectionGenerator(PromptSectionGenerator):
             if self._stop_event.is_set():
                 break
             if self._has_data():
-                trace("Sonos: checking the cached lists for the prompt")
+                fine("Sonos: checking the cached lists for the prompt")
                 self._update_content()
             else:
                 trace("Sonos: still no favorites or playlists, section left empty")
 
     def _fetch_content(self) -> str:
         """Fetch Sonos favorites and playlists."""
-        trace("Fetching Sonos data...")
+        fine("Fetching Sonos data...")
         res = self._fetch_sonos_favorites()
         res = self._fetch_sonos_playlists(res)
         res = self._fetch_spotify_playlists(res)
-        trace(f"Successfully fetched {len(res.splitlines())} lines of Sonos favorites and playlists.")
+        fine(f"Successfully fetched {len(res.splitlines())} lines of Sonos favorites and playlists.")
         return res.strip()
 
     def _fetch_spotify_playlists(self, res) -> str:
@@ -122,28 +122,28 @@ class SonosFavoritesSectionGenerator(PromptSectionGenerator):
             if total > len(playlists):
                 res += (f"(the {total - len(playlists)} older playlists of the library are not listed; "
                         "search_music finds a public one by name)\n")
-            trace(f"Listed {len(playlists)} of the signed-in user's {total} Spotify playlists")
+            fine(f"Listed {len(playlists)} of the signed-in user's {total} Spotify playlists")
         except Exception as e:
             error(f"Error listing the user's Spotify playlists: {e}")
         return res
 
     def _fetch_sonos_playlists(self, res) -> str:
         """Fetch Sonos playlists and append to result."""
-        trace("Fetching Sonos playlists...")
+        fine("Fetching Sonos playlists...")
         try:
             playlists = self._playlists()
             index = 0
             for playlist_name in playlists:
                 res += playlist_name + ' (ID: P-' + str(index) + ')\n'
                 index += 1
-            trace(f"Found {len(playlists)} Sonos playlists")
+            fine(f"Found {len(playlists)} Sonos playlists")
         except Exception as e:
             error(f"Error fetching Sonos playlists: {e}")
         return res
 
     def _fetch_sonos_favorites(self) -> str:
         """Fetch Sonos favorites."""
-        trace("Fetching Sonos favorites...")
+        fine("Fetching Sonos favorites...")
         res = ""
         try:
             favorites = self._favorites()
@@ -151,7 +151,7 @@ class SonosFavoritesSectionGenerator(PromptSectionGenerator):
             for favorite_name in favorites:
                 res += favorite_name + ' (ID: F-' + str(index) + ')\n'
                 index += 1
-            trace(f"Found {len(favorites)} Sonos favorites")
+            fine(f"Found {len(favorites)} Sonos favorites")
         except Exception as e:
             error(f"Error fetching Sonos favorites: {e}")
         return res

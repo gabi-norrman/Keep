@@ -116,6 +116,6 @@ def test_a_wake_landing_while_a_frame_is_being_finished_is_not_lost(running, mon
         if len(idle_at_each_log) == 1:
             srv.wake()
 
-    monkeypatch.setattr(module, "trace", log_and_wake_once)
+    monkeypatch.setattr(module, "fine", log_and_wake_once)
     assert wait_until(lambda: len(idle_at_each_log) >= 2), "the wake was erased: the loop stayed idle"
     assert idle_at_each_log[:2] == [True, False], "the first thing after turning idle is the woken frame"

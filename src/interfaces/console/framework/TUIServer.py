@@ -9,7 +9,7 @@ from typing import Set, Optional, Callable, Dict
 from .TUIScreen import TUIScreen
 from .LinkProbe import LinkProbe, LinkStatus, NO_LINK_STATUS
 from . import Curtain
-from common.logging import trace, info, error, note
+from common.logging import trace, fine, info, error, note
 
 ACCEPT_TIMEOUT = 1.0      # how long a stopping server waits for its accept loop to notice
 FRAME_INTERVAL = 1 / 30   # the animation runs at 30 fps; a frame sleeps only what is left of its slot
@@ -359,12 +359,12 @@ class TUIServer:
                 still_since = None
                 if self.idle:
                     self.idle = False
-                    trace("TUI Server: the picture moves again — back to 30 fps")
+                    fine("TUI Server: the picture moves again — back to 30 fps")
             elif still_since is None:
                 still_since = now
             elif not self.idle and now - still_since >= IDLE_AFTER:
                 self.idle = True
-                trace(f"TUI Server: nothing changed for {IDLE_AFTER:.0f}s — drawing {1 / IDLE_INTERVAL:.0f} fps until it does")
+                fine(f"TUI Server: nothing changed for {IDLE_AFTER:.0f}s — drawing {1 / IDLE_INTERVAL:.0f} fps until it does")
 
             frame += 1
             due = self._next_frame(due, IDLE_INTERVAL if self.idle else FRAME_INTERVAL)
@@ -517,7 +517,7 @@ class TUIServer:
                                             self.client_dimensions[client_socket] = (cols, rows)
                                             self.last_resized_client = client_socket
                                         self.wake()
-                                        trace(f"TUI Client {addr} resized to {cols} x {rows}")
+                                        fine(f"TUI Client {addr} resized to {cols} x {rows}")
                                 except (ValueError, IndexError) as e:
                                     trace(f"Invalid resize command from {addr}: {line} ({e})")
                             else:

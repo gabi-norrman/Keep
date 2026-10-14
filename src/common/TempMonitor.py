@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from common.logging import info, trace
+from common.logging import fine, info, trace
 
 
 class TempMonitor:
@@ -56,7 +56,7 @@ class TempMonitor:
         self._thread = threading.Thread(target=self._monitor_loop, args=(self._stop_event,), daemon=True,
                                         name="TempMonitor")
         self._thread.start()
-        trace("TempMonitor started")
+        fine("TempMonitor started")
 
     def stop(self):
         """Returns at once — a tab switch calls it on the TUI's input thread, and a join here

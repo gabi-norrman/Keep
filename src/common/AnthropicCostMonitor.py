@@ -6,7 +6,7 @@ from typing import Optional
 
 import requests
 
-from common.logging import trace
+from common.logging import fine, trace
 from .ConfigManager import config
 
 
@@ -43,7 +43,7 @@ class AnthropicCostMonitor:
         self._thread = threading.Thread(target=self._monitor_loop, args=(self._stop_event,), daemon=True,
                                         name="AnthropicCostMonitor")
         self._thread.start()
-        trace("AnthropicCostMonitor started")
+        fine("AnthropicCostMonitor started")
 
     def stop(self):
         """Returns at once — a tab switch calls it on the TUI's input thread, and a join here
@@ -160,7 +160,7 @@ class AnthropicCostMonitor:
         self._dashboard_tab.cost_error = ""
         self._dashboard_tab.cost_last_updated = time.time()
 
-        trace(f"AnthropicCostMonitor: fetched {len(all_buckets)} day buckets, "
+        fine(f"AnthropicCostMonitor: fetched {len(all_buckets)} day buckets, "
              f"{len(significant)} workspaces > $1 {significant}, "
              f"30d ${self._dashboard_tab.total_cost_30d:.0f} / 7d ${self._dashboard_tab.total_cost_7d:.0f} / "
              f"yesterday ${self._dashboard_tab.total_cost_yesterday:.0f} / 1d ${self._dashboard_tab.total_cost_1d:.0f}")

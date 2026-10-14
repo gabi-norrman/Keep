@@ -510,7 +510,7 @@ class PromptManager:
             # LLM's copy is stale while the reference is in its window, so one pointer note —
             # not one per change — tells it to load again.
             if toolkit not in self.message_history.loaded_toolkits(window=None):
-                trace(f"Section '{section_name}' changed but was never sent (no load_toolkit yet) — no delta note")
+                fine(f"Section '{section_name}' changed but was never sent (no load_toolkit yet) — no delta note")
                 return None
             if key in self._carried_pointer_out:
                 trace(f"Section '{section_name}' changed, its pointer note is already out — nothing to add")

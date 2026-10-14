@@ -4,7 +4,7 @@ import threading
 import time
 from typing import Optional
 
-from common.logging import trace
+from common.logging import fine, trace
 
 
 class GpuMonitor:
@@ -35,7 +35,7 @@ class GpuMonitor:
         self._thread = threading.Thread(target=self._monitor_loop, args=(self._stop_event,), daemon=True,
                                         name="GpuMonitor")
         self._thread.start()
-        trace("GpuMonitor started")
+        fine("GpuMonitor started")
 
     def stop(self):
         """Returns at once — a tab switch calls it on the TUI's input thread, and a join here
