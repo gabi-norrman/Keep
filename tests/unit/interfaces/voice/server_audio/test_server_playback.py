@@ -68,6 +68,7 @@ class TestStop:
         playback.audio_thread = wedged
 
         with patch.object(playback, "_close_audio_stream") as mock_close, \
+             patch.object(playback, "_start_stall_forensics"), \
              patch(f"{MOD}.error"):
             playback.stop()
 
