@@ -71,7 +71,7 @@ class MessageHistory:
     # evicted toolkits, at the newest evicted row's timestamp and exempt from the cutoff, so
     # the LLM knows the commands it saw there are gone — without it the model keeps using
     # the toolkit from memory and guesses at names (a live run emitted browse_go for
-    # browse_open). The prompt's toolkit section explains the note; the stub is only the
+    # browse_open). The stub carries the rule itself in one line and otherwise only the
     # names, since a voice day evicts a dozen at once (12 one-line stubs, 2.2KB, 2026-10-12).
     # A name leaves the stub when its toolkit is loaded again; the stub goes at the next
     # trim, with the day's wipe, or when its last name leaves.
