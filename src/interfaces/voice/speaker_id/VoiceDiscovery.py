@@ -136,6 +136,42 @@ def cluster_by_day(X: np.ndarray, days: list[date], durations: list[float] = Non
     return sorted((np.concatenate(ps) for ps in buckets.values()), key=len, reverse=True)
 
 
+def assign(X: np.ndarray, buckets: list[np.ndarray], candidates: list) -> list[tuple]:
+    """Which candidate each unknown bucket is, as (candidate or None, the buckets that are that
+    voice), largest first. A candidate of an earlier night is claimed by the one bucket closest to
+    it (SAME_VOICE_SIM: its centroid is a week older than tonight's); any other bucket joins a
+    candidate, claimed or filed tonight, only at the clustering's own MERGE_SIM — the clustering
+    already ruled those buckets different voices, and two sisters sit between the two thresholds
+    (measured 0.63 on 2026-10-15, when the looser one folded a daughter into her sister)."""
+    centroids = [centroid(X, b) for b in buckets]
+    groups: list[list[int]] = []        # the buckets of each voice, first one leads
+    owner: list = []                    # the earlier-night candidate of each group, or None
+    taken: set[int] = set()
+    for cand in candidates:
+        if cand.centroid is None or not centroids or len(cand.centroid) != len(centroids[0]):
+            continue
+        c = np.asarray(cand.centroid, dtype=float)
+        sims = [(float(centroids[k] @ c), k) for k in range(len(buckets)) if k not in taken]
+        if not sims:
+            break
+        sim, k = max(sims)
+        if sim >= SAME_VOICE_SIM:
+            groups.append([k]); owner.append(cand); taken.add(k)
+            trace(f"Voice discovery: a bucket of {len(buckets[k])} clips is {cand.id} again ({sim:.2f})")
+    for k in range(len(buckets)):
+        if k in taken:
+            continue
+        sims = [(float(centroids[k] @ centroids[g[0]]), n) for n, g in enumerate(groups)]
+        sim, n = max(sims) if sims else (0.0, -1)
+        if sim >= MERGE_SIM:
+            groups[n].append(k)
+            trace(f"Voice discovery: a bucket of {len(buckets[k])} clips joins the voice of a bucket of "
+                  f"{len(buckets[groups[n][0]])} ({sim:.2f})")
+        else:
+            groups.append([k]); owner.append(None)
+    return [(owner[n], [buckets[k] for k in g]) for n, g in enumerate(groups)]
+
+
 def centroid(X: np.ndarray, idx) -> np.ndarray:
     c = X[idx].mean(0)
     return c / (np.linalg.norm(c) or 1.0)
@@ -239,7 +275,7 @@ class VoiceDiscovery:
         info(f"Voice discovery: {len(usable)} usable clips of {len(clips)} -> {len(buckets)} voice bucket(s)")
         enrolled = self._enrolled_embeddings()
         offers: dict[str, list[EnrollmentRefresh.Sample]] = {}
-        open_candidates = VoiceCandidates.items(self.candidates_dir)
+        unknown: list[np.ndarray] = []
         for idx in buckets:
             members = [usable[i] for i in idx]
             days = sorted({c.day for c in members})
@@ -259,21 +295,24 @@ class VoiceDiscovery:
                     EnrollmentRefresh.Sample(self.audio_dir / usable[i].name, X[i], usable[i].mtime,
                                              EnrollmentRefresh.ORIGIN_DISCOVERY) for i in order)
                 continue
-            sims = X[idx] @ c
-            order = idx[np.argsort(-sims)]
+            unknown.append(idx)
+        open_candidates = VoiceCandidates.items(self.candidates_dir)
+        for existing, group in assign(X, unknown, open_candidates):
+            idx = np.concatenate(group)
+            lead = centroid(X, group[0])
+            order = idx[np.argsort(-(X[idx] @ lead))]
+            members = [usable[i] for i in idx]
+            days = sorted({c.day for c in members})
             facts = dict(clips=len(members), days=len(days), first_day=days[0].isoformat(), last_day=days[-1].isoformat(),
                          hours=describe_hours([datetime.fromtimestamp(c.mtime).hour for c in members]),
                          transcripts=self._transcripts([usable[i].name for i in order]))
-            existing = next((cand for cand in open_candidates if _similar(c, cand.centroid)), None)
             if existing is not None:
                 VoiceCandidates.update(existing, **facts)
                 summary["refreshed"] += 1
-                candidate = existing
             else:
                 samples = [self.audio_dir / usable[i].name for i in order[:SAMPLES_KEPT]]
-                candidate = VoiceCandidates.create(**facts, centroid=c.tolist(), samples=samples,
-                                                   directory=self.candidates_dir, today=now.date())
-                open_candidates.append(candidate)
+                VoiceCandidates.create(**facts, centroid=lead.tolist(), samples=samples,
+                                       directory=self.candidates_dir, today=now.date())
                 summary["filed"] += 1
         # One refresh per person a night, whatever the number of buckets that sounded like them:
         # the turnover cap is a night's, not a bucket's.
@@ -401,8 +440,3 @@ class VoiceDiscovery:
         identifier = self._identifier()
         return identifier.enrolled_embeddings() if identifier is not None else {}
 
-
-def _similar(c: np.ndarray, other) -> bool:
-    if other is None or len(other) != len(c):
-        return False
-    return float(c @ np.asarray(other, dtype=float)) >= SAME_VOICE_SIM

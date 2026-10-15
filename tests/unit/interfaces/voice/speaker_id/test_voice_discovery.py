@@ -12,7 +12,8 @@ import scipy.cluster.hierarchy  # noqa: F401
 
 from assistant import VoiceCandidates
 from interfaces.voice.speaker_id import VoiceDiscovery as vd
-from interfaces.voice.speaker_id.VoiceDiscovery import VoiceDiscovery, cluster, cluster_by_day, match_enrolled, describe_hours
+from interfaces.voice.speaker_id.VoiceDiscovery import (VoiceDiscovery, assign, cluster, cluster_by_day,
+                                                        match_enrolled, describe_hours)
 
 DIM = 32
 NOW = datetime(2026, 10, 14, 5, 0)
@@ -142,6 +143,44 @@ def test_a_second_run_refreshes_the_open_candidate_instead_of_filing_it_again(tm
     assert summary["refreshed"] == 1 and summary["filed"] == 0
     (candidate,) = VoiceCandidates.items(tmp_path / "candidates")
     assert candidate.clips == 60 and candidate.days == 6
+
+
+def _at_cosine(u: np.ndarray, cosine: float, axis: int) -> np.ndarray:
+    """A unit vector at the given cosine from the unit vector u, leaning along the given axis
+    (two vectors leaning along the same axis would be close to each other)."""
+    w = np.zeros_like(u)
+    w[axis] = 1.0
+    w -= (w @ u) * u
+    w /= np.linalg.norm(w)
+    return cosine * u + np.sqrt(1 - cosine ** 2) * w
+
+
+def _buckets(*centres: np.ndarray, size: int = 5):
+    """One bucket of identical rows per centre, so each bucket's centroid is its centre."""
+    X = np.concatenate([np.repeat(c[None], size, axis=0) for c in centres])
+    return X, [np.arange(size) + size * k for k in range(len(centres))]
+
+
+def test_two_sisters_the_clustering_kept_apart_stay_two_voices():
+    """A bucket joins another's voice only at the clustering's own merge threshold: the sisters sit
+    between that and the looser one that recognises an earlier night's candidate."""
+    u = np.zeros(DIM); u[0] = 1.0
+    sister = _at_cosine(u, (vd.SAME_VOICE_SIM + vd.MERGE_SIM) / 2, axis=1)
+    fragment = _at_cosine(u, vd.MERGE_SIM + 0.1, axis=2)
+    X, buckets = _buckets(u, sister, fragment)
+    groups = assign(X, buckets, candidates=[])
+    assert [(owner, len(parts)) for owner, parts in groups] == [(None, 2), (None, 1)]
+    assert groups[0][1][0] is buckets[0] and groups[0][1][1] is buckets[2]
+
+
+def test_an_earlier_candidate_goes_to_its_closest_bucket_and_the_sister_is_filed():
+    from types import SimpleNamespace
+    u = np.zeros(DIM); u[0] = 1.0
+    sister = _at_cosine(u, (vd.SAME_VOICE_SIM + vd.MERGE_SIM) / 2, axis=1)
+    X, buckets = _buckets(sister, u)   # the sister's bucket is the larger one and comes first
+    charlotte = SimpleNamespace(id="voice-aaaa", centroid=u.tolist())
+    groups = assign(X, buckets, candidates=[charlotte])
+    assert [(owner, parts[0] is buckets[1]) for owner, parts in groups] == [(charlotte, True), (None, False)]
 
 
 def test_the_cache_spares_the_clips_embedded_before(tmp_path):
