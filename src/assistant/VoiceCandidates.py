@@ -55,8 +55,7 @@ def unnamed_speaker_note(candidate_id: str) -> str:
     system's words, so the LLM asks the name and files it (name_voice, in the voice toolkit)
     instead of treating the id as a name."""
     return (f"The person speaking is a voice heard often in the house whose name is not known yet: `{candidate_id}` "
-            f"under VOICES. When it fits the conversation, ask who they are; once they say their name, name the voice "
-            f"with it (name_voice).")
+            f"under VOICES. Ask who they are; once they say their name, name the voice with it (name_voice).")
 
 
 def transcript_of(filename: str) -> str:
