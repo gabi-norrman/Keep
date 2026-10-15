@@ -188,3 +188,38 @@ class TestAccountLock:
         assert "iforgot.apple.com" in notify.call_args.args[0]
         status = api.get_auth_status()
         assert status["status"] == "error" and "locked" in status["message"]
+
+    def test_a_rejected_automatic_reauth_parks_the_hourly_retry(self, api):
+        """Hourly retries against a locked account are the pattern that earned the lock."""
+        service = _service(exc=_reauth_wanted())
+        service.authenticate.side_effect = self._locked_login()
+        api._api = service
+        api.FIND_MY_REAUTH_COOLDOWN_SECONDS = 0
+        with patch(NOTIFY_PATH):
+            assert api.check_health() is False
+            assert api.check_health() is False
+        service.authenticate.assert_called_once(), "the cooldown is over, the rejection still parks it"
+
+    def test_manual_refresh_lifts_the_park(self, api):
+        service = _service(exc=_reauth_wanted())
+        service.authenticate.side_effect = self._locked_login()
+        api._api = service
+        with patch(NOTIFY_PATH):
+            assert api.check_health() is False
+            with patch.object(api, "_ensure_authenticated", side_effect=lambda: setattr(api, "_api", service)):
+                api.refresh_connection()
+        assert service.authenticate.call_count == 2
+
+    def test_a_successful_reauth_after_the_backoff_clears_the_park(self, api):
+        service = _service([])
+        service.session.post.side_effect = [_reauth_wanted(), _reauth_wanted(),
+                                            Mock(json=Mock(return_value={"content": [_record("fmip-dad")]}))]
+        service.authenticate.side_effect = [self._locked_login(), None]
+        api._api = service
+        api.FIND_MY_REAUTH_COOLDOWN_SECONDS = 0
+        with patch(NOTIFY_PATH):
+            assert api.check_health() is False
+        api._auto_reauth_failed_at -= api.FIND_MY_REAUTH_FAILURE_BACKOFF_SECONDS
+        api._find_my_probe = None                   # a day later the cached verdict is long gone too
+        assert api.check_health() is True
+        assert api._auto_reauth_failed_at is None

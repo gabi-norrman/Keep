@@ -234,6 +234,10 @@ class ICloudIntegration(Integration):
     # account.
     FIND_MY_PROBE_TTL_SECONDS = 5 * 60
     FIND_MY_REAUTH_COOLDOWN_SECONDS = 60 * 60
+    # After Apple rejects an automatic re-sign-in (a locked account, a throttle) the next one
+    # waits this long: hourly retries against a locked account are the Oct 6-13 pattern that
+    # earned the lock, only slower. Ctrl-R and a restart try at once.
+    FIND_MY_REAUTH_FAILURE_BACKOFF_SECONDS = 24 * 60 * 60
     FAMILY_POLLS = 3            # refreshClient rounds a complete listing waits for family devices
     FAMILY_POLL_DELAY_SECONDS = 0.5
     # Blocks only the user can clear, by the text Apple's answer carries, and what to tell them.
@@ -259,6 +263,7 @@ class ICloudIntegration(Integration):
         self._find_my_probe: Optional[FindMyProbe] = None
         self._probe_lock = threading.Lock()
         self._last_auto_reauth_at: Optional[float] = None
+        self._auto_reauth_failed_at: Optional[float] = None
         self._api: Optional[PyiCloudService] = None
         self._auth_error: Optional[str] = None
         self._blocks_notified: set = set()
@@ -570,11 +575,18 @@ class ICloudIntegration(Integration):
             isinstance(m, dict) and m.get("deviceFetchStatus") == "LOADING" for m in members.values())
 
     def _auto_reauth_due(self) -> bool:
+        now = time.time()
+        failed = self._auto_reauth_failed_at
+        if failed is not None and now - failed < self.FIND_MY_REAUTH_FAILURE_BACKOFF_SECONDS:
+            trace(f"iCloud: Find My wants a fresh sign-in, but Apple rejected the automatic one "
+                  f"{(now - failed) / 3600:.1f} h ago — parked until Ctrl-R in the iCloud tab, a restart, "
+                  f"or {self.FIND_MY_REAUTH_FAILURE_BACKOFF_SECONDS // 3600} h have passed")
+            return False
         last = self._last_auto_reauth_at
-        due = last is None or time.time() - last >= self.FIND_MY_REAUTH_COOLDOWN_SECONDS
+        due = last is None or now - last >= self.FIND_MY_REAUTH_COOLDOWN_SECONDS
         if not due:
             trace(f"iCloud: Find My wants a fresh sign-in, but the last automatic one was "
-                  f"{(time.time() - last) / 60:.0f} min ago — waiting (Ctrl-R in the iCloud tab does it now)")
+                  f"{(now - last) / 60:.0f} min ago — waiting (Ctrl-R in the iCloud tab does it now)")
         return due
 
     def _reauthenticate_find_my(self, why: str, automatic: bool) -> FindMyProbe:
@@ -592,13 +604,17 @@ class ICloudIntegration(Integration):
             api.authenticate(force_refresh=True)
         except (PyiCloudFailedLoginException, PyiCloudConnectionException) as e:
             self._auth_error = _brief(e)
-            error(f"iCloud: re-authentication for Find My failed: {_brief(e)}")
+            if automatic:
+                self._auto_reauth_failed_at = time.time()
+            error(f"iCloud: re-authentication for Find My failed: {_brief(e)}"
+                  + (" — automatic retries parked" if automatic else ""))
             self._notify_apple_block(e)
             self._find_my_probe = probe = FindMyProbe("error", _brief(e))
             return probe
         finally:
             self._signin_sms_wanted = False
         self._auth_error = None
+        self._auto_reauth_failed_at = None
         self._challenge_from_fresh_signin = self._arm_auto_sent_code(started_at)
         if api.requires_2fa:
             info("iCloud: the re-authentication ended in a 2FA challenge — the auto-2FA flow completes it")
@@ -1280,6 +1296,7 @@ class ICloudIntegration(Integration):
         password sign-in on top), do that too — now, cooldown or not."""
         self._api = None
         self._auth_error = None
+        self._auto_reauth_failed_at = None
         # New signin = new auth challenge; any SMS code in flight for the old
         # session is dead, so don't let the poller submit it.
         self._sms_requested_at = None
