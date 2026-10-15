@@ -46,11 +46,11 @@ def normalize_llm_escapes(text: str) -> str:
 NO_NOTIFICATION_CHANNEL = "failed: no notification channel configured (no chat interface running), nothing was delivered to the user."
 
 # What server_logs() hands the LLM: a window of the main log (cwd-relative, the server runs from the root) —
-# the last SERVER_LOG_TAIL_LINES lines, or the first that many from a given time.
+# the last SERVER_LOG_TAIL_LINES lines at info() and above, or the first that many from a given time.
 SERVER_LOG_PATH = "log/floxy.out"
 # Opens every server_logs result; is_reference_result knows the dumps by it.
 SERVER_LOG_HEADER = "# Keep AI Server Logs"
-SERVER_LOG_TAIL_LINES = 400
+SERVER_LOG_TAIL_LINES = 200
 # The tail is read backwards in blocks of this size: the log runs to hundreds of MB and reading it
 # whole for 400 lines took seconds and a GB of memory (the mics dropped audio while it was freed).
 SERVER_LOG_TAIL_BLOCK = 1 << 20
@@ -71,8 +71,20 @@ def is_reference_result(body: str) -> bool:
             or ToolkitPreloader.is_preface(body))
 
 
-# A log line's timestamp; the ANSI colour codes around it never match this shape, so the raw line is searched.
+# A log line's timestamp.
 _LOG_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+_ANSI_CODE = re.compile(r"\x1b\[[0-9;]*m")
+# The level letter `logging.log` opens every line with (I, N, E, T, F). TRACE and FINE are the detail below
+# info() and stay out of the window; a line without a letter is raw process output (a traceback) and is kept.
+_LOG_LEVEL_LETTER = re.compile(r"^([A-Z])│")
+_HIDDEN_LOG_LEVELS = {"T", "F"}
+
+
+def server_log_line(raw: str) -> Optional[str]:
+    """The log line as the LLM gets it — colour codes gone — or None for a trace / fine line."""
+    line = _ANSI_CODE.sub("", raw)
+    match = _LOG_LEVEL_LETTER.match(line)
+    return None if match and match.group(1) in _HIDDEN_LOG_LEVELS else line
 # What server_logs(from) accepts: a full timestamp (space or T), a date (midnight) or a clock time (today).
 _LOG_TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
                      "%Y-%m-%d", "%H:%M:%S", "%H:%M")
@@ -249,39 +261,43 @@ class Commands:
         except FileNotFoundError:
             error(f"Server log {SERVER_LOG_PATH} not found")
             return f"{SERVER_LOG_HEADER}\nLog file not found."
-        text = re.sub(r'\x1b\[[0-9;]*m', '', "".join(chunk))
+        text = "".join(chunk)
         info(f"Server logs fetched: {window}, {len(text)} chars")
         return f"{SERVER_LOG_HEADER} ({window})\n{text}"
 
     @staticmethod
     def _tail_log_lines(path: str, count: int) -> list[str]:
-        """The last `count` lines, read backwards block by block from the end, so the cost is
-        the tail's and never the file's. The log is redirected process output; a stray
-        non-UTF-8 byte must not take the assistant's own diagnostics down with it."""
-        blocks, newlines = [], 0
+        """The last `count` lines at info() and above, read backwards block by block from the
+        end, so the cost is the tail's and never the file's. The log is redirected process
+        output; a stray non-UTF-8 byte must not take the assistant's own diagnostics down
+        with it."""
+        blocks, lines = [], []
         with open(path, "rb") as f:
             position = f.seek(0, os.SEEK_END)
-            # count + 1 newlines guarantee `count` whole lines before the trailing one.
-            while position > 0 and newlines <= count:
+            # The first line of the text read so far may be cut at the block boundary and is
+            # not counted: the loop goes on until `count` whole lines stand after it.
+            while position > 0 and len(lines) - 1 < count:
                 size = min(SERVER_LOG_TAIL_BLOCK, position)
                 position -= size
                 f.seek(position)
-                block = f.read(size)
-                blocks.append(block)
-                newlines += block.count(b"\n")
-        text = b"".join(reversed(blocks)).decode("utf-8", errors="replace")
-        return io.StringIO(text).readlines()[-count:]
+                blocks.append(f.read(size))
+                text = b"".join(reversed(blocks)).decode("utf-8", errors="replace")
+                lines = [line for line in map(server_log_line, io.StringIO(text).readlines()) if line is not None]
+        return lines[-count:]
 
     @staticmethod
     def _log_lines_from(path: str, start, count: int) -> tuple[list[str], Optional[int], int]:
         """Stream the log and return (window, first line number, lines read): the first `count`
-        lines from the first one stamped at or after `start`. Continuation lines (tracebacks)
-        carry no stamp and are skipped when seeking but kept in the window. Nothing but the
-        window is held, and the read stops as soon as it is full."""
+        lines at info() and above from the first one stamped at or after `start`. Continuation
+        lines (tracebacks) carry no stamp and are skipped when seeking but kept in the window.
+        Nothing but the window is held, and the read stops as soon as it is full."""
         key = start.strftime("%Y-%m-%d %H:%M:%S")
         window, first, total = [], None, 0
         with open(path, "r", errors="replace") as f:
-            for total, line in enumerate(f, 1):
+            for total, raw in enumerate(f, 1):
+                line = server_log_line(raw)
+                if line is None:
+                    continue
                 if first is None:
                     match = _LOG_TIMESTAMP.search(line)
                     if not (match and match.group() >= key):

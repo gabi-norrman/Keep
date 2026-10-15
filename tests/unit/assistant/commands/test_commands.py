@@ -545,15 +545,13 @@ class TestCmdServerLogs:
         assert "line1" in result and "line2" in result
         mock_home.error_logs.assert_not_called()
 
-    def test_tail_is_limited_to_400_lines(self, tmp_path):
-        from assistant.commands.Commands import SERVER_LOG_TAIL_LINES
-        assert SERVER_LOG_TAIL_LINES == 400
+    def test_tail_is_limited_to_200_lines(self, tmp_path):
         log_file = tmp_path / "floxy.out"
         log_file.write_text("".join(f"line{i}\n" for i in range(500)))
         with patch("assistant.commands.Commands.SERVER_LOG_PATH", str(log_file)):
             result = Commands._fetch_server_logs(None)
-        assert "line99\n" not in result
-        assert "line100\n" in result
+        assert "line299\n" not in result
+        assert "line300\n" in result
         assert "line499\n" in result
 
     def test_missing_log_file(self, tmp_path):
@@ -582,7 +580,7 @@ class TestCmdServerLogs:
              patch("builtins.open", counting_open):
             result = Commands._fetch_server_logs(None)
         body = result.split("\n", 1)[1]
-        assert body == "".join(f"rad{i} å{'x' * (i % 7)}\n" for i in range(100, 500))
+        assert body == "".join(f"rad{i} å{'x' * (i % 7)}\n" for i in range(300, 500))
         assert reads and all(size == 100 for size in reads)
         assert sum(reads) < log_file.stat().st_size
 
@@ -609,6 +607,44 @@ class TestCmdServerLogs:
             result = Commands._fetch_server_logs(None)
         assert "line1\n" in result and "line3\n" in result
 
+    @staticmethod
+    def _levelled(letter, i):
+        return f"\x1b[2m\x1b[90m{letter}\x1b[38;2;80;80;80m│\x1b[2m2026-03-01 08:00:00.000 +0.000 │ main │ {letter}{i}\n"
+
+    def test_trace_and_fine_lines_are_left_out_and_the_window_is_200_kept_lines(self, tmp_path):
+        # Three trace lines after every info line: the tail must read past them to fill the
+        # window with 200 info lines, and the window must carry nothing but those.
+        log_file = tmp_path / "floxy.out"
+        log_file.write_text("".join(self._levelled("I", i) + self._levelled("T", i) * 2 + self._levelled("F", i)
+                                    for i in range(500)))
+        with patch("assistant.commands.Commands.SERVER_LOG_PATH", str(log_file)), \
+             patch("assistant.commands.Commands.SERVER_LOG_TAIL_BLOCK", 1000):
+            result = Commands._fetch_server_logs(None)
+        body = result.split("\n", 1)[1]
+        assert "(last 200 lines)" in result
+        assert body.count("\n") == 200
+        assert "T│" not in body and "F│" not in body
+        assert "│ I299\n" not in body and "│ I300\n" in body and "│ I499\n" in body
+
+    def test_lines_without_a_level_letter_are_kept(self, tmp_path):
+        # A traceback is raw process output with no level letter and is what one reads the log for.
+        log_file = tmp_path / "floxy.out"
+        log_file.write_text(self._levelled("E", 1) + "Traceback (most recent call last):\n  File x\n"
+                            + self._levelled("T", 2) + "ValueError: boom\n")
+        with patch("assistant.commands.Commands.SERVER_LOG_PATH", str(log_file)):
+            result = Commands._fetch_server_logs(None)
+        assert "Traceback" in result and "  File x" in result and "ValueError: boom" in result
+        assert "T2" not in result
+
+    def test_from_time_window_skips_trace_lines(self, tmp_path):
+        from datetime import datetime
+        log_file = tmp_path / "floxy.out"
+        log_file.write_text("".join(
+            f"\x1b[2m{'T' if i % 2 else 'I'}│2026-03-01 08:{i:02d}:00.000 +0.000 │ main │ line{i}\n" for i in range(40)))
+        lines, first, read = Commands._log_lines_from(str(log_file), datetime(2026, 3, 1, 8, 10), 5)
+        assert first == 11 and [line.split()[-1] for line in lines] == ["line10", "line12", "line14", "line16", "line18"]
+        assert read == 19
+
     def test_ansi_codes_stripped(self, tmp_path):
         log_file = tmp_path / "floxy.out"
         log_file.write_text("\x1b[31mred text\x1b[0m\n")
@@ -625,13 +661,13 @@ class TestCmdServerLogs:
             f"\x1b[2mI│2026-03-01 {8 + i // 60:02d}:{i % 60:02d}:30.000 +0.000 │ main │ line{i}\n" for i in range(count)))
         return patch("assistant.commands.Commands.SERVER_LOG_PATH", str(log_file))
 
-    def test_from_time_returns_the_first_400_lines_at_or_after_it(self, tmp_path):
+    def test_from_time_returns_the_first_200_lines_at_or_after_it(self, tmp_path):
         with self._stamped_log(tmp_path):
             result = Commands._fetch_server_logs("2026-03-01 09:40")
         assert "line99\n" not in result
         assert "line100\n" in result
-        assert "line499\n" in result
-        assert "line500\n" not in result
+        assert "line299\n" in result
+        assert "line300\n" not in result
 
     def test_from_time_with_seconds_and_t_separator(self, tmp_path):
         # 09:40:30 is line 100's own stamp; 09:40:31 is past it
@@ -1374,7 +1410,7 @@ class TestReferenceResults:
         Procedures.HEADER_PREFIX + "vklass-login\n# vklass-login\nWhen: …",
         ToolkitPreloader.preface(Toolkits.Toolkit(name="home", summary="", commands=()), "voice"),
         ToolkitPreloader.refresh_preface(Toolkits.Toolkit(name="home", summary="", commands=()), "Telegram"),
-        "# Keep AI Server Logs (last 400 lines)\n2026-10-08 23:18:50.614 [INFO] …",
+        "# Keep AI Server Logs (last 200 lines)\n2026-10-08 23:18:50.614 [INFO] …",
         "Network log — 40 of 53 matching entries (53 captured this session), oldest first…",
     ])
     def test_reference_text_is_dropped(self, body):
