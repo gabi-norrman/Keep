@@ -17,7 +17,7 @@ beautifulsoup4==4.15.0   # hyundai_kia_connect_api needs 4.15 or newer
 googlesearch-python==1.3.0
 Hypercorn[trio,uvloop]==0.17.3
 Quart==0.20.0
-pyicloud==2.6.5
+pyicloud==2026.10.0
 cryptography==45.0.4
 anthropic==0.81.0
 google-genai==1.56.0

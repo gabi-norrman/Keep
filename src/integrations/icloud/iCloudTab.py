@@ -21,6 +21,7 @@ class iCloudTab(AuthTab):
         **AuthTab.STATUS_LABELS,
         "partial_auth": ("Partly verified", Theme.COLOR_GREEN),
         "needs_2fa": ("2FA Required", Theme.COLOR_YELLOW),
+        "needs_reauth": ("Needs sign-in", Theme.COLOR_YELLOW),
     }
 
     def __init__(self):
@@ -82,6 +83,8 @@ class iCloudTab(AuthTab):
             return "Auto-2FA on standby — Ctrl-E to verify with an SMS code now (optional)", Theme.COLOR_GREEN
         if self.status == "needs_2fa":
             return "Auto-2FA in progress — Ctrl-E to enter the code manually", Theme.COLOR_YELLOW
+        if self.status == "needs_reauth":
+            return "Find My wants a fresh sign-in — Ctrl-R does it now (the monitor retries hourly)", Theme.COLOR_YELLOW
         return None
 
     def _begin_entry(self):

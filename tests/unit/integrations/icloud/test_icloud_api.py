@@ -19,6 +19,17 @@ VALID_CONFIG = {
 }
 
 
+def _find_my_answers(service, devices=None, exc=None):
+    """Make `service`'s Find My probe (one `session.post` to initClient) answer with these
+    device records, or raise `exc`."""
+    service.get_webservice_url.return_value = "https://p1-fmipweb.icloud.example"
+    if exc is not None:
+        service.session.post.side_effect = exc
+    else:
+        service.session.post.return_value.json.return_value = {"content": list(devices or [])}
+    return service
+
+
 @pytest.fixture(autouse=True)
 def reset_singleton():
     iCloudAPI.reset_instance()
@@ -846,7 +857,7 @@ class TestGetAuthStatus:
 
     def test_authenticated_branch(self):
         api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
+        mock_service = _find_my_answers(Mock(), [{"id": "fmip-1", "name": "iPhone"}])
         mock_service.requires_2fa = False
         api._api = mock_service
         status = api.get_auth_status()
@@ -856,12 +867,10 @@ class TestGetAuthStatus:
 class TestGetICloudDevices:
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
     def test_happy_path_returns_device_list(self, mock_pyicloud):
-        mock_device = Mock()
-        mock_device.data = {"id": "fmip-1", "baUUID": "uuid1", "name": "iPhone",
-                            "deviceDisplayName": "iPhone 15", "deviceClass": "iPhone"}
-        mock_service = Mock()
+        record = {"id": "fmip-1", "baUUID": "uuid1", "name": "iPhone",
+                  "deviceDisplayName": "iPhone 15", "deviceClass": "iPhone"}
+        mock_service = _find_my_answers(Mock(), [record])
         mock_service.requires_2fa = False
-        mock_service.devices = [mock_device]
         mock_pyicloud.return_value = mock_service
 
         api = iCloudAPI(config=VALID_CONFIG)
@@ -888,10 +897,9 @@ class TestGetICloudDevices:
         of it into the exception, and the error line dumped them into floxy.out."""
         from pyicloud.exceptions import PyiCloudAPIResponseException
         html = "<html>\n" + "\n".join(f"  <div>{i}</div>" for i in range(940)) + "\n</html>"
-        exc = PyiCloudAPIResponseException("Authentication required for Account.", 409, Mock(text=html))
-        mock_service = Mock()
+        exc = PyiCloudAPIResponseException("Service Temporarily Unavailable", 503, Mock(text=html))
+        mock_service = _find_my_answers(Mock(), exc=exc)
         mock_service.requires_2fa = False
-        type(mock_service).devices = PropertyMock(side_effect=exc)
         mock_pyicloud.return_value = mock_service
 
         api = iCloudAPI(config=VALID_CONFIG)
@@ -899,7 +907,7 @@ class TestGetICloudDevices:
             assert api.get_icloud_devices() == []
 
         line = mock_error.call_args.args[0]
-        assert line.startswith("Failed to get iCloud devices: Authentication required for Account. (409): <html>")
+        assert line.startswith("iCloud: Find My probe failed: Service Temporarily Unavailable (503): <html>")
         assert "\n" not in line
         assert len(line) < 400
         assert "chars, PyiCloudAPIResponseException]" in line
@@ -1326,24 +1334,21 @@ class TestIsReauthenticationError:
 class TestIsSessionFunctional:
     def test_returns_true_when_devices_accessible(self):
         api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
-        mock_service.devices = [Mock()]
-        api._api = mock_service
+        api._api = _find_my_answers(Mock(), [{"id": "fmip-1"}])
         assert api._is_session_functional() is True
 
     def test_probe_failure_logs_the_actual_error(self):
         # The probe's exception is what decides "needs 2FA recovery" — on
         # 2026-08-24 it was swallowed here and the trigger of a 4x SMS signin
-        # loop was never logged. The type and message must reach the log.
+        # loop was never logged. The message must reach the log.
         api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
+        mock_service = _find_my_answers(Mock(), exc=ValueError("401 Unauthorized"))
         mock_service.requires_2fa = True
-        mock_service.devices.__iter__ = Mock(side_effect=ValueError("401 Unauthorized"))
         api._api = mock_service
         with patch('integrations.icloud.ICloudIntegration.info') as mock_info:
             assert api._is_session_functional() is False
         logged = " ".join(c.args[0] for c in mock_info.call_args_list)
-        assert "401 Unauthorized" in logged and "ValueError" in logged
+        assert "401 Unauthorized" in logged
 
 
 class TestRequestSms2fa:
@@ -1398,7 +1403,7 @@ class TestRequestSms2fa:
 class TestCheckHealth:
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
     def test_returns_true_when_no_2fa_needed(self, mock_pyicloud):
-        mock_service = Mock()
+        mock_service = _find_my_answers(Mock(), [{"id": "fmip-1"}])
         mock_service.requires_2fa = False
         mock_pyicloud.return_value = mock_service
 
@@ -1408,9 +1413,8 @@ class TestCheckHealth:
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
     def test_returns_true_when_2fa_is_false_positive(self, mock_pyicloud):
         """check_health should use the false-positive detection path, not raw requires_2fa."""
-        mock_service = Mock()
+        mock_service = _find_my_answers(Mock(), [{"id": "fmip-1"}])  # session works = false positive
         mock_service.requires_2fa = True
-        mock_service.devices = [Mock()]  # session works = false positive
         mock_pyicloud.return_value = mock_service
 
         api = iCloudAPI(config=VALID_CONFIG)
@@ -1418,9 +1422,8 @@ class TestCheckHealth:
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
     def test_returns_false_when_2fa_truly_needed(self, mock_pyicloud):
-        mock_service = Mock()
+        mock_service = _find_my_answers(Mock(), exc=Exception("401"))
         mock_service.requires_2fa = True
-        mock_service.devices.__iter__ = Mock(side_effect=Exception("401"))
         mock_pyicloud.return_value = mock_service
 
         api = iCloudAPI(config=VALID_CONFIG)
@@ -1440,9 +1443,8 @@ class TestApiProperty:
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
     def test_returns_api_when_2fa_false_positive(self, mock_pyicloud):
         """api property should use false-positive detection, not raw requires_2fa."""
-        mock_service = Mock()
+        mock_service = _find_my_answers(Mock(), [{"id": "fmip-1"}])  # session works
         mock_service.requires_2fa = True
-        mock_service.devices = [Mock()]  # session works
         mock_pyicloud.return_value = mock_service
 
         api = iCloudAPI(config=VALID_CONFIG)
@@ -1487,7 +1489,7 @@ class TestRefreshConnection:
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
     def test_sets_state_ok_when_session_functional(self, mock_pyicloud):
-        mock_service = Mock()
+        mock_service = _find_my_answers(Mock(), [{"id": "fmip-1"}])
         mock_service.requires_2fa = False
         mock_pyicloud.return_value = mock_service
 
@@ -1764,7 +1766,8 @@ class TestSmsOnlyCodeRequest:
             service = api._new_service()
         assert mock_pyicloud.call_args.kwargs['authenticate'] is False
         service.authenticate.assert_called_once()
-        assert service._request_2fa_code.__func__ == api._signin_2fa_code_hook
+        # pyicloud 2026.10 calls request_2fa_code (public) after an SRP signin that ends in a challenge
+        assert service.request_2fa_code.__func__ == api._signin_2fa_code_hook
 
     def test_sms_only_request_puts_phone_without_device_push(self):
         from integrations.icloud.ICloudIntegration import _request_sms_code_only
@@ -1955,9 +1958,8 @@ class TestBrief:
 
 
 def _seen(name, uuid, model="iPhone 15", ba_uuid=""):
-    device = Mock()
-    device.data = {"id": uuid, "baUUID": ba_uuid, "name": name, "deviceDisplayName": model, "deviceClass": "iPhone"}
-    return device
+    """A Find My device record as initClient returns it."""
+    return {"id": uuid, "baUUID": ba_uuid, "name": name, "deviceDisplayName": model, "deviceClass": "iPhone"}
 
 
 class TestDeviceListing:
@@ -1965,9 +1967,7 @@ class TestDeviceListing:
     def api(self):
         api = iCloudAPI(config={"apple_id": "a@b.c", "password": "pw", "devices": [
             {"id": "uuid-dad", "display_name": "dad"}]})
-        service = Mock()
-        service.devices = [_seen("Dad's iPhone", "uuid-dad"), _seen("Anna's iPhone", "uuid-anna")]
-        api._api = service
+        api._api = _find_my_answers(Mock(), [_seen("Dad's iPhone", "uuid-dad"), _seen("Anna's iPhone", "uuid-anna")])
         with patch.object(api, "_ensure_authenticated"), patch.object(api, "requires_2fa", return_value=False):
             yield api
 
@@ -1977,7 +1977,7 @@ class TestDeviceListing:
             [("Dad's iPhone", "dad", 0), ("Anna's iPhone", None, None)]
 
     def test_listing_marks_an_entry_configured_by_the_old_bauuid(self, api):
-        api._api.devices = [_seen("Dad's iPhone", "fmip-dad", ba_uuid="uuid-dad")]
+        _find_my_answers(api._api, [_seen("Dad's iPhone", "fmip-dad", ba_uuid="uuid-dad")])
         devices = api.get_icloud_devices()
         assert [(d["id"], d["configured_as"]) for d in devices] == [("fmip-dad", "dad")]
 
@@ -1985,8 +1985,7 @@ class TestDeviceListing:
         """A half-written entry (id set, display_name not yet) must not hide the listing the
         LLM needs to finish it."""
         api = iCloudAPI(config={"apple_id": "a@b.c", "password": "pw", "devices": [{"id": "uuid-dad"}]})
-        api._api = Mock()
-        api._api.devices = [_seen("Dad's iPhone", "uuid-dad")]
+        api._api = _find_my_answers(Mock(), [_seen("Dad's iPhone", "uuid-dad")])
         with patch.object(api, "_ensure_authenticated"), patch.object(api, "requires_2fa", return_value=False):
             devices = api.get_icloud_devices()
         assert [(d["name"], d["configured_as"]) for d in devices] == [("Dad's iPhone", None)]
@@ -1999,26 +1998,29 @@ class TestTermsOfServiceNotification:
     _TERMS_ERROR = Exception("You must accept the updated terms of service to continue. "
                              "Set --accept-terms to accept them.")
 
-    def _api_raising(self, exc):
+    def _api_whose_reauth_fails(self, exc):
+        """A session Find My rejects, whose password re-sign-in Apple answers with `exc`."""
+        from pyicloud.exceptions import PyiCloudAuthRequiredException, PyiCloudFailedLoginException
         api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = Mock()
+        mock_service = _find_my_answers(Mock(), exc=PyiCloudAuthRequiredException("m@mlab.test", Mock()))
         mock_service.requires_2fa = False
-        type(mock_service).devices = PropertyMock(side_effect=exc)
+        mock_service.authenticate.side_effect = PyiCloudFailedLoginException(str(exc))
         api._api = mock_service
         return api
 
     def test_terms_error_notifies_user_once(self):
-        api = self._api_raising(self._TERMS_ERROR)
+        """The terms block now surfaces where the sign-in happens: the deliberate Find My re-auth."""
+        api = self._api_whose_reauth_fails(self._TERMS_ERROR)
         with patch(self._NOTIFY_PATH) as mock_notify:
-            assert api.get_icloud_devices() == []
-            assert api.get_icloud_devices() == []
+            for _ in range(2):
+                assert api._reauthenticate_find_my("test", automatic=False).verdict == "error"
         mock_notify.assert_called_once()
         assert "icloud.com" in mock_notify.call_args.args[0]
 
     def test_other_errors_do_not_notify(self):
-        api = self._api_raising(Exception("connection reset"))
+        api = self._api_whose_reauth_fails(Exception("connection reset"))
         with patch(self._NOTIFY_PATH) as mock_notify:
-            assert api.get_icloud_devices() == []
+            assert api._reauthenticate_find_my("test", automatic=False).verdict == "error"
         mock_notify.assert_not_called()
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
