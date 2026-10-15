@@ -179,7 +179,7 @@ source .venv/bin/activate && python -m pytest tests/ --override-ini="log_cli=fal
 - `requirements.txt` - Python dependencies (it includes each integration folder's own `requirements.txt`)
 - `log/floxy.out` - Log file from latest run on the server GREAT for DEBUGGING!
 - `res/prompt.md` - The prompt template send to the AI; the command references are the toolkits — `res/toolkits/<name>.md` for the ones more than one integration is behind (or none), `src/integrations/<folder>/toolkit.md` for the one an integration owns (shared by both prompts) — only the core commands are in the template, and the integrations' data stands in its one `{INTEGRATION_DATA}` block (each section brings its own heading), never under a heading of the template's own
-- `testsuite_prompt.md` - (private, present only when linked) the prompt the prompt test suite runs against. When it is present, MIRROR any change you make to prompt.md into it (its `# COMMAND SYSTEM` block must match byte for byte — `tests/unit/private/test_testsuite_prompt_mirror.py` checks)
+- `testsuite_prompt.md` - (private, present only when linked) the prompt the prompt test suite runs against; it is generated, so a change to `prompt.md` is not copied into it by hand
 
 ## Architecture Atlas
 
