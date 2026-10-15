@@ -17,14 +17,14 @@ A self-hosted personal AI assistant for you and your family
 ### Keep
 Keep knows you and your family. It has analyzed your messages and every photo you’ve taken, so it remembers all the names, all the places, all the plans and everything you need to do, without you explaining anything.
 
-Runs on a Mac you own, talks to you by Telegram, terminal and voice, and does things — not just chat: shopping, calendars, cameras, the cars.
+Runs on a Mac you own, talks to you by Telegram, terminal and voice, and does things — not just chat: shopping, calendars, cameras, the car.
 
 Keep stores everything on your Mac and thinks on Anthropic’s servers. That’s a deliberate trade-off until local models are good enough. Passwords and card numbers go in the Keep Vault, encrypted on your Mac: the model never sees them. Read the privacy section before you install.
 
-Refined over two years of daily use in real homes.
+Refined over two years of daily use in a real home.
 
 ### Requirements
-Apple Silicon Mac connected to your personal iCloud that runs the Keep server.
+An Apple Silicon Mac, signed in to your personal iCloud, to run the Keep server.
 
 Everything else — email, smart home, cameras, cars — is optional, and Keep walks you through setting it up.
 
@@ -51,7 +51,7 @@ gh auth login && gh api -H "Accept: application/vnd.github.raw" "repos/maciekd/K
 <table>
 <tr><td width="190">⌨️&nbsp;<b>Terminal&nbsp;UI</b></td><td><img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">Text chat in a Claude Code-style terminal UI.</td></tr>
 <tr><td><img src="docs/images/telegram.svg" width="18" height="18" alt="" valign="middle">&nbsp;<b>Telegram</b></td><td>The same chat on your phone, with images and voice messages.</td></tr>
-<tr><td>🎙️&nbsp;<b>Voice</b></td><td>Keep hears, thinks and answers in her own voice, fast enough to feel like a human conversation.</td></tr>
+<tr><td>🎙️&nbsp;<b>Voice</b></td><td>Keep hears, thinks and answers in its own voice, fast enough to feel like a real conversation.</td></tr>
 
 </table>
 
