@@ -14,6 +14,10 @@
 #                           leave these released commits out of the what's new (a change
 #                           the household should not be told about, or one a later commit
 #                           undid); the commits are released all the same
+#   ./release.sh [<commit>] <guidance for the note…>
+#                           any words that are not a commit go to Claude as guidance for the
+#                           what's new, e.g. `./release.sh dont talk about icloud accounts
+#                           being blocked`
 #
 # Before tagging, Claude Code (`claude -p`) reads the released commits and writes a "what's
 # new" for the household, which becomes the body of the annotated tag. An install's pull
@@ -45,6 +49,11 @@ whats_new() {  # $1..$2: the released commits — prints Claude's user-facing su
   [ ${#ignored[@]} -gt 0 ] && left_out="
 Some commits of the release were deliberately left out of the list; write only about the ones listed and do not
 go looking for others."
+  local guided=""
+  [ -n "$guidance" ] && guided="
+
+Guidance from the maintainer for this note, which overrides the rules above where they conflict:
+$guidance"
   local prompt
   prompt="You are writing the release note for a home assistant called Keep, sent to the users of the system.
 The release is $version. Below are the commits it brings, oldest first, as '<hash> <subject>' followed by the body.
@@ -58,7 +67,7 @@ title or the version: the message that carries the note already says which relea
 The readers are not developers. Describe what they will notice — what Keep can now do, what got better, what
 was fixed and why — never how it was built. Leave out refactors, tests, tooling, docs and anything with no visible
 effect (if appropriate add a line about general performance/bug/stability fixes); if nothing visible changed, say so
-in one friendly line. Group related commits into one item. Output only the note, nothing before or after it.
+in one friendly line. Group related commits into one item. Output only the note, nothing before or after it.$guided
 
 Commits:
 $log"
@@ -82,7 +91,10 @@ while [ $# -gt 0 ]; do
 done
 
 git fetch -q origin
-target="${1:-origin/master}"
+# The first word is the commit to release when it names one; every other word is guidance for the note.
+target=origin/master
+if [ $# -gt 0 ] && git rev-parse -q --verify "$1^{commit}" >/dev/null; then target="$1"; shift; fi
+guidance="$*"
 commit=$(git rev-parse --verify "$target^{commit}")
 short=$(git rev-parse --short "$commit")
 version="v$(git log -1 --format=%cd --date=format:%Y.%m "$commit").$(git rev-list --count "$commit")"
