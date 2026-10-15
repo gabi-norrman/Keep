@@ -13,11 +13,11 @@ from common.logging import trace, info
 WORKSPACE_CONFIG_KEY = "api_keys.anthropic_workspace"
 WORKSPACE_HEADER = "anthropic-workspace-id"
 WORKSPACE_REQUIRED = (
-    "The Anthropic key in config.yaml is not tied to a workspace, so Anthropic needs to be told "
-    "which one to use. Either create a key at https://platform.claude.com/settings/keys and pick a "
-    "workspace in the Create key dialog (the Default Workspace is fine), then put it in "
-    f"api_keys.anthropic — or keep this key and set {WORKSPACE_CONFIG_KEY} to the id of a workspace "
-    "(wrkspc_…, the ID column at https://platform.claude.com/settings/workspaces).")
+    "The Anthropic key in config.yaml has its Scope set to Organization, so Anthropic needs to be "
+    "told which workspace to use. Either create a key at https://platform.claude.com/settings/keys "
+    "with Scope set to Default workspace (and Expires to Never), then put it in api_keys.anthropic — "
+    f"or keep this key and set {WORKSPACE_CONFIG_KEY} to the id of a workspace (wrkspc_…, the ID "
+    "column at https://platform.claude.com/settings/workspaces).")
 
 
 class WorkspaceRequiredError(RuntimeError):

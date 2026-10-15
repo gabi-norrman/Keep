@@ -581,9 +581,9 @@ verify_api_key() {
 }
 
 explain_workspace() {
-  warn "This key is not tied to a workspace, so Anthropic needs to be told which one to use."
-  note "The easy fix: create a new key at ${C_BOLD}$KEYS_URL${C_RESET} and, in the"
-  note "Create key dialog, pick a workspace (the Default Workspace is fine). Then paste the new key here."
+  warn "This key's Scope is Organization, so Anthropic needs to be told which workspace to use."
+  note "The easy fix: create a new key at ${C_BOLD}$KEYS_URL${C_RESET} with Scope set to"
+  note "Default workspace (and Expires to Never). Then paste the new key here."
   note "Or keep this key and paste a workspace id instead: it starts with wrkspc_ and is in the"
   note "ID column at ${C_BOLD}$WORKSPACES_URL${C_RESET}."
   printf '\n'
@@ -596,8 +596,9 @@ obtain_api_key() {
     dim "Using ANTHROPIC_API_KEY from the environment."
   else
     note "Keep runs on Claude. An API key is the only way to use it without breaking Anthropic's terms of service."
-    note "Create one at ${C_BOLD}$KEYS_URL${C_RESET} (it starts with sk-ant-)."
-    note "In the Create key dialog, pick a workspace - the Default Workspace is fine."
+    note "Create one at ${C_BOLD}$KEYS_URL${C_RESET} (it starts with sk-ant-). In the dialog:"
+    note "  Expires: choose Never - a key that expires stops Keep after 30 days."
+    note "  Scope:   Default workspace, not Organization."
     note "The key is stored only in $KEEP_DIR/config.yaml. Typing is hidden."
     printf '\n'
   fi
@@ -624,13 +625,13 @@ obtain_api_key() {
         else warn "Anthropic does not know workspace $WORKSPACE_ID, or this key cannot use it. Check the ID column at $WORKSPACES_URL."; fi
         workspace_attempt=$((workspace_attempt + 1))
         [ "$workspace_attempt" -le 3 ] || fail "No usable workspace id after 3 attempts." \
-          "Create a key for one workspace at $KEYS_URL and re-run the installer, or pass ANTHROPIC_WORKSPACE_ID=wrkspc_... in the environment."
+          "Create a key with Scope set to Default workspace at $KEYS_URL and re-run the installer, or pass ANTHROPIC_WORKSPACE_ID=wrkspc_... in the environment."
         ask "Workspace id (or press Enter to paste a new key instead):" WORKSPACE_ID
         WORKSPACE_ID=$(printf '%s' "$WORKSPACE_ID" | tr -d '[:space:]')
         case "$WORKSPACE_ID" in
           wrkspc_*) continue ;;
           "") [ -z "${ANTHROPIC_API_KEY:-}" ] || fail "ANTHROPIC_API_KEY from the environment is not tied to a workspace." \
-                "Pass ANTHROPIC_WORKSPACE_ID=wrkspc_... as well, or create a key for one workspace at $KEYS_URL."
+                "Pass ANTHROPIC_WORKSPACE_ID=wrkspc_... as well, or create a key with Scope set to Default workspace at $KEYS_URL."
               API_KEY=""; continue ;;
           *) warn "That does not look like a workspace id (they start with wrkspc_)."; WORKSPACE_ID=""; continue ;;
         esac ;;

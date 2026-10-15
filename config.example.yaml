@@ -19,9 +19,9 @@ enabled_integrations: []
 api_keys:
   openai: YOUR_OPENAI_API_KEY_HERE
   anthropic: YOUR_ANTHROPIC_API_KEY_HERE
-  # Only for a key that is not tied to one workspace - Anthropic then answers every request with
+  # Only for a key whose Scope is Organization - Anthropic then answers every request with
   # "anthropic-workspace-id is required": the id of the workspace to use (wrkspc_..., the ID column at
-  # https://platform.claude.com/settings/workspaces). A key created for one workspace needs nothing here.
+  # https://platform.claude.com/settings/workspaces). A key with Scope Default workspace needs nothing here.
   anthropic_workspace: ""
   anthropic_admin: YOUR_ANTHROPIC_ADMIN_API_KEY_HERE  # For cost monitoring, create at console.anthropic.com > Settings > Admin Keys. Note that cost comes in with a days delay.
   gemini: YOUR_GEMINI_API_KEY_HERE  # voice replies run on the ai.fast tier (Gemini by default): no key, no voice answers; also photos/video processing

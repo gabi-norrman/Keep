@@ -196,7 +196,7 @@ class TestObtainApiKey:
         result = harness.run('obtain_api_key; printf "%s %s" "$API_KEY" "$WORKSPACE_ID"')
         assert result.returncode == 0, result.stdout
         assert result.stdout.endswith('sk-ant-typed-47L wrkspc_01TEST')
-        assert 'not tied to a workspace' in result.stdout
+        assert 'Scope' in result.stdout and 'Organization' in result.stdout   # names the dialog's own field
         assert 'platform.claude.com/settings/keys' in result.stdout
         assert 'platform.claude.com/settings/workspaces' in result.stdout
         assert len(harness.prompts) == 2 and 'Workspace id' in harness.prompts[1]
