@@ -45,7 +45,8 @@ class MessageFormatter:
         # One casing whatever the caller has: the request formats the speaker as the client
         # spells it, the history renders the lowercase the database stores — and the two
         # must be the same bytes for the persisted turn to re-render the request's prefix.
-        name = (user or "User").title()
+        # "felicia or isabelle" (two voices the identifier cannot split) keeps its "or".
+        name = " ".join(word if word == "or" else word.title() for word in (user or "User").split())
 
         parts = []
         if timestamp is not None:

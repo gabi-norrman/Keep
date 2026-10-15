@@ -70,6 +70,10 @@ class TestMessageFormatterHeader:
         result = MessageFormatter.format_header("Marcus", None, None, None)
         assert result == "Marcus"
 
+    def test_either_of_two_voices_keeps_its_or(self):
+        result = MessageFormatter.format_header("charlotte or frances", None, None, None)
+        assert result == "Charlotte or Frances"
+
     def test_user_and_timestamp(self):
         result = MessageFormatter.format_header("Marcus", self._ts, None, None)
         assert result == "Marcus (14:40)"

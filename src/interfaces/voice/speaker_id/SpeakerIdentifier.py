@@ -65,6 +65,11 @@ class SpeakerIdentifier:
     VOICE_ID_DIR = _VOICE_ID_DIR
     MODEL_DIR = Path(__file__).parent / "pretrained_models"
     UNKNOWN_THRESHOLD = 0.35  # lower than around 31% gives false identifications
+    # A best score this close to the runner-up's is a coin flip between two alike voices (the
+    # sisters: 0.52 against each other's clips, 0.8 against their own — measured 2026-10-15),
+    # so the verdict names both: "felicia or isabelle".
+    AMBIGUITY_MARGIN = 0.10
+    EITHER = " or "
     K_NEAREST = 3
     IDENTIFICATION_VOTE_WINDOW = 30.0  # seconds to consider for voting
     # The discovery's candidates live under voice_id/ too (VoiceCandidates); not an enrollment.
@@ -315,7 +320,9 @@ class SpeakerIdentifier:
                 (recorded later via record_identification()).
 
         Returns:
-            Tuple of (username, confidence). Returns ("unknown", 0.0) if no match.
+            Tuple of (username, confidence). Returns ("unknown", 0.0) if no match, and
+            "a or b" (see either_of) with the best score when two voices are within
+            AMBIGUITY_MARGIN of each other.
         """
         self._reload_if_changed()
         enrolled_users = self._enrolled_users   # one set for the whole call, a reload swaps the reference
@@ -332,22 +339,17 @@ class SpeakerIdentifier:
         embedding = F.normalize(embedding.unsqueeze(0), p=2, dim=-1).squeeze()
 
         # Compare to all enrolled users using k-NN (top-k average similarity)
-        best_match = "unknown"
-        best_score = -1.0
-
+        scores = {}
         for username, enrolled_embs in enrolled_users.items():
-            # Compute similarity to all embeddings for this user
             similarities = [
                 F.cosine_similarity(embedding.unsqueeze(0), emb.unsqueeze(0)).item()
                 for emb in enrolled_embs
             ]
-            # Average top-k similarities
             top_k = sorted(similarities, reverse=True)[:self.K_NEAREST]
-            score = sum(top_k) / len(top_k)
+            scores[username] = sum(top_k) / len(top_k)
 
-            if score > best_score:
-                best_score = score
-                best_match = username
+        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        best_match, best_score = ranked[0]
 
         if best_score < self.UNKNOWN_THRESHOLD:
             # Runs speculatively on every utterance (incl. background speech with no wake
@@ -355,9 +357,26 @@ class SpeakerIdentifier:
             fine(f"Could not identify speaker reliably ({best_match} {best_score:.2f}).")
             return "unknown", best_score
 
+        if len(ranked) > 1 and best_score - ranked[1][1] < self.AMBIGUITY_MARGIN:
+            runner_up, runner_score = ranked[1]
+            trace(f"Speaker is {best_match} ({best_score:.2f}) or {runner_up} ({runner_score:.2f}): "
+                  f"too close to call")
+            best_match = self.either_of(best_match, runner_up)
+
         if record:
             self.record_identification(best_match, best_score)
         return best_match, best_score
+
+    @classmethod
+    def either_of(cls, *names: str) -> str:
+        """The verdict for voices the model cannot tell apart, one spelling whichever scored
+        higher: "felicia or isabelle". The LLM reads it as what it says."""
+        return cls.EITHER.join(sorted(names))
+
+    @classmethod
+    def names_of(cls, verdict: str) -> list[str]:
+        """The people a verdict names: one, or both of an either_of."""
+        return verdict.split(cls.EITHER)
 
     def record_identification(self, username: str, confidence: float):
         """Add a confident identification to the voting history that
@@ -384,7 +403,9 @@ class SpeakerIdentifier:
         Return the identified user based on voting over recent identifications.
 
         Uses all identifications within the vote window (30 seconds) to determine
-        the most likely user. Returns None if there's a tie or no recent identifications.
+        the most likely user. An "a or b" verdict is half a vote for each; the two tied with
+        only such verdicts between them stay "a or b". Returns None if there's a tie
+        otherwise or no recent identifications.
 
         Args:
             max_age_seconds: Only consider identifications within this time window
@@ -397,18 +418,23 @@ class SpeakerIdentifier:
         if not recent:
             return None
 
-        vote_counts = Counter(recent)
+        vote_counts = Counter()
+        for verdict in recent:
+            names = self.names_of(verdict)
+            for name in names:
+                vote_counts[name] += 1 / len(names)
         most_common = vote_counts.most_common(2)
 
-        if len(most_common) == 1:
+        if len(most_common) == 1 or most_common[0][1] > most_common[1][1]:
             return most_common[0][0]
 
-        # Check for tie
-        if most_common[0][1] == most_common[1][1]:
-            fine(f"Speaker identification tie: {most_common[0][0]} vs {most_common[1][0]} ({most_common[0][1]} votes each)")
-            return None
-
-        return most_common[0][0]
+        tied = {most_common[0][0], most_common[1][0]}
+        if any(set(self.names_of(verdict)) == tied for verdict in recent):
+            either = self.either_of(*tied)
+            trace(f"Speaker identification cannot split {either}: {most_common[0][1]:g} votes each")
+            return either
+        fine(f"Speaker identification tie: {most_common[0][0]} vs {most_common[1][0]} ({most_common[0][1]:g} votes each)")
+        return None
 
     def clear_last_identified_user(self):
         trace("Clearing last identified user")

@@ -100,6 +100,40 @@ class TestGetLastIdentifiedUser:
         assert result is None
 
     @patch('interfaces.voice.speaker_id.SpeakerIdentifier.time')
+    def test_only_either_verdicts_keep_both_names(self, mock_time):
+        mock_time.time.return_value = 1000.0
+        si = make_speaker_identifier()
+        si._identification_history = [
+            ("charlotte or frances", 0.5, 999.0),
+            ("charlotte or frances", 0.45, 998.0),
+        ]
+        result = si.get_last_identified_user(max_age_seconds=10.0)
+        assert set(SpeakerIdentifier.names_of(result)) == {"charlotte", "frances"}
+
+    @patch('interfaces.voice.speaker_id.SpeakerIdentifier.time')
+    def test_one_clear_vote_settles_an_either(self, mock_time):
+        mock_time.time.return_value = 1000.0
+        si = make_speaker_identifier()
+        si._identification_history = [
+            ("charlotte or frances", 0.5, 999.0),
+            ("frances", 0.7, 998.0),
+            ("charlotte or frances", 0.45, 997.0),
+        ]
+        result = si.get_last_identified_user(max_age_seconds=10.0)
+        assert result == "frances"
+
+    @patch('interfaces.voice.speaker_id.SpeakerIdentifier.time')
+    def test_either_cannot_outvote_a_third_name(self, mock_time):
+        mock_time.time.return_value = 1000.0
+        si = make_speaker_identifier()
+        si._identification_history = [
+            ("charlotte or frances", 0.5, 999.0),
+            ("marcus", 0.7, 998.0),
+        ]
+        result = si.get_last_identified_user(max_age_seconds=10.0)
+        assert result == "marcus"
+
+    @patch('interfaces.voice.speaker_id.SpeakerIdentifier.time')
     def test_respects_max_age_seconds(self, mock_time):
         mock_time.time.return_value = 1000.0
         si = make_speaker_identifier()
@@ -221,6 +255,32 @@ class TestIdentify:
         result = si.identify(b'\x00' * 100)
 
         assert result == ("alice", 0.8)
+
+    @patch('interfaces.voice.speaker_id.SpeakerIdentifier.time')
+    def test_two_voices_within_the_margin_are_named_together(self, mock_time, mock_ml_globals):
+        mock_time.time.return_value = 1000.0
+        si = make_speaker_identifier()
+
+        mock_embedding = Mock()
+        mock_embedding.unsqueeze = Mock(return_value=mock_embedding)
+        mock_embedding.squeeze = Mock(return_value=mock_embedding)
+        si._extract_embedding_from_pcm = Mock(return_value=mock_embedding)
+
+        embs = {}
+        for name in ("frances", "charlotte", "marcus"):
+            embs[name] = Mock()
+            embs[name].unsqueeze = Mock(return_value=embs[name])
+        si._enrolled_users = {name: [emb] for name, emb in embs.items()}
+
+        # frances 0.62, charlotte 0.55 (within the margin), marcus 0.20 (far below)
+        mock_F.normalize.return_value = mock_embedding
+        mock_F.cosine_similarity.return_value = Mock(item=Mock(side_effect=[0.62, 0.55, 0.20]))
+
+        speaker, score = si.identify(b'\x00' * 100)
+
+        assert set(SpeakerIdentifier.names_of(speaker)) == {"frances", "charlotte"}
+        assert score == 0.62
+        assert si._identification_history[0][0] == speaker
 
     @patch('interfaces.voice.speaker_id.SpeakerIdentifier.time')
     def test_records_identification_in_history(self, mock_time, mock_ml_globals):
