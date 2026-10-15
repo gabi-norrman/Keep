@@ -17,16 +17,16 @@ A self-hosted personal AI assistant for you and your family
 ### Keep
 Keep knows you and your family. It has analyzed your messages and every photo you’ve taken, so it remembers all the names, all the places, all the plans and everything you need to do, without you explaining anything.
 
-Runs on a Mac you own, talks to you by Telegram, terminal and voice, and does things — not just chat: shopping, calendars, cameras, the car.
+Runs on a Mac you own, talks to you by Telegram, terminal and voice, and does things — not just chat: shopping, calendars, cameras, the cars.
 
 Keep stores everything on your Mac and thinks on Anthropic’s servers — a deliberate trade-off until local models are good enough. Passwords and card numbers go in the Keep Vault, encrypted on your Mac: the model never sees them. Read the privacy section before you install.
 
-Refined over two years of daily use in a real homes.
+Refined over two years of daily use in real homes.
 
 ### Requirements
 Apple Silicon Mac connected to your personal iCloud that runs the Keep server.
 
-Everything else — email, smart home, cameras, car — is optional, and Keep walks you through setting it up.
+Everything else — email, smart home, cameras, cars — is optional, and Keep walks you through setting it up.
 
 <img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">
 </td>
@@ -215,7 +215,7 @@ Every integration is off until you turn it on, and Keep walks you through the se
 <tr><td>📅&nbsp;<b>Calendars</b></td><td>CalDAV calendars — iCloud, Fastmail, Nextcloud — plus Google and Microsoft 365 calendars, from several accounts in one week view; Keep adds, moves and deletes events in the calendar you name</td></tr>
 <tr><td>🏠&nbsp;<b>Home</b></td><td>Home Assistant, Indigo, Philips Hue and Plejd for lights, switches, locks, sensors and scenes</td></tr>
 <tr><td>📹&nbsp;<b>Cameras</b></td><td>Arlo, Ring and UniFi Protect</td></tr>
-<tr><td>🚗&nbsp;<b>Car</b></td><td>Tesla, through tessie.com</td></tr>
+<tr><td>🚗&nbsp;<b>Cars</b></td><td>Tesla, Volvo, Hyundai, Kia and Genesis; the whole family's cars as one fleet</td></tr>
 <tr><td>🏊&nbsp;<b>Pool</b></td><td>Aseko pool units, through aseko.cloud</td></tr>
 <tr><td>🎵&nbsp;<b>Music</b></td><td>Sonos and Spotify</td></tr>
 <tr><td>🌦️&nbsp;<b>Weather</b></td><td>YR forecasts and rain radar</td></tr>
