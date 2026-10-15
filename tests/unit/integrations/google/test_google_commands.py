@@ -7,7 +7,7 @@ import pytest
 
 from assistant.commands.Commands import Commands
 from assistant.integration.OAuthPaste import SignIn
-from integrations.google.GoogleAuth import REDIRECT_URI
+from integrations.google.GoogleAuth import REDIRECT_URI, SCOPE_CALENDAR, SCOPE_DRIVE_READONLY, SCOPE_MAIL
 
 MODULE = "integrations.google.GoogleCommands"
 URL = "https://accounts.google.com/o/oauth2/v2/auth?client_id=cid&state=st-1"
@@ -96,6 +96,20 @@ class TestCmdGoogleLoginCode:
         integration.login_finish.assert_called_once_with(PASTED)
         assert "signed in" in reply and "marcus@example.com" in reply and note.call_args.args[1] == reply
         monitor.check_now.assert_called_once_with("Google")
+
+    def test_the_reply_names_what_the_consent_granted_not_every_kind_of_data(self, commands_instance):
+        integration = _integration()
+        integration.account.return_value.auth.has_scope.side_effect = lambda scope: scope == SCOPE_DRIVE_READONLY
+        with patch.object(Commands, "_integration_monitor", return_value=_monitor(integration)), patch(f"{MODULE}.system_note"):
+            reply = commands_instance._owner("google_login_code")._run_google_login_code(PASTED, from_chat=True)
+        assert "documents" in reply and "mail" not in reply and "calendar" not in reply
+
+    def test_a_token_granting_mail_and_calendar_says_both(self, commands_instance):
+        integration = _integration()
+        integration.account.return_value.auth.has_scope.side_effect = lambda scope: scope in (SCOPE_MAIL, SCOPE_CALENDAR)
+        with patch.object(Commands, "_integration_monitor", return_value=_monitor(integration)), patch(f"{MODULE}.system_note"):
+            reply = commands_instance._owner("google_login_code")._run_google_login_code(PASTED, from_chat=True)
+        assert "mail and calendars" in reply and "documents" not in reply
 
     def test_a_chat_that_finished_the_sign_in_reads_the_outcome_in_the_reply_alone(self, commands_instance):
         integration = _integration()

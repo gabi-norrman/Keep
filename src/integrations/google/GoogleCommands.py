@@ -2,9 +2,21 @@
 from assistant.commands.CommandSet import CommandSet
 from assistant.SystemNote import system_note
 from common.logging import info, trace
+from integrations.google.GoogleAuth import SCOPE_CALENDAR, SCOPE_DRIVE_READONLY, SCOPE_MAIL
 
 INTEGRATION = "Google"
 NOTE_SOURCE = "Google"
+# What a scope on the token stands for, in the words of the sign-in reply.
+GRANTS = ((SCOPE_MAIL, "mail"), (SCOPE_CALENDAR, "calendars"), (SCOPE_DRIVE_READONLY, "documents"))
+
+
+def granted(auth) -> list[str]:
+    """What the consent actually gave, by the scopes on the token — never more than was asked for."""
+    return [what for scope, what in GRANTS if auth.has_scope(scope)]
+
+
+def _listed(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
 class GoogleCommands(CommandSet):
@@ -73,8 +85,11 @@ class GoogleCommands(CommandSet):
             info(f"google_login_code: {name} not signed in — {failure}")
             return f"Google sign-in for {name} did not complete: {failure}"
         signed_in_as = account.auth.signed_in_as()
-        text = (f"Google: {name} is signed in" + (f" as {signed_in_as}" if signed_in_as else "")
-                + ". Its mail and calendars are available from the next request.")
+        grants = granted(account.auth)
+        info(f"google_login_code: {name} signed in, the token grants {', '.join(grants) or 'no known scope'}")
+        text = f"Google: {name} is signed in" + (f" as {signed_in_as}" if signed_in_as else "") + "."
+        if grants:
+            text += f" Its {_listed(grants)} are available from the next request."
         if from_chat:
             trace("google_login_code: a chat asked, the reply says it — no note pushed")
         else:
