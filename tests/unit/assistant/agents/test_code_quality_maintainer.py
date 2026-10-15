@@ -1251,6 +1251,25 @@ class TestExecuteNightlyRun:
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_the_email_puts_the_findings_first_the_fixes_after_them_and_the_tests_last(
+            self, mock_sub, mock_commits, maintainer):
+        self.logs.return_value = "a stall"
+        self.fix.return_value = "PR #12"
+        self.health.return_value = "test_slow"
+        self.merge.return_value = "merged #11"
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value="off by one"), \
+                patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value="pinned"), \
+                patch.object(CodeQualityMaintainer, '_markdown_to_html', side_effect=lambda md: md), \
+                patch.object(CodeQualityMaintainer, '_send_email') as send:
+            maintainer._execute_nightly_run()
+        text = send.call_args[0][1]
+        headings = [line[2:] for line in text.splitlines() if line.startswith("# ")]
+        assert headings == ["Bug Analysis", "Log Triage", "Bug Fixes", "Test Generation", "Test Health",
+                            "Auto-Merge Test PRs"]
+        assert text.index("off by one") < text.index("a stall") < text.index("PR #12") < text.index("pinned")
+
+    @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_the_fix_step_reads_the_bugs_the_new_tests_pinned(self, mock_sub, mock_commits, maintainer):
         with patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value="| Major | foo.py:3 | off by one |"), \
                 patch.object(CodeQualityMaintainer, '_step_generate_tests',

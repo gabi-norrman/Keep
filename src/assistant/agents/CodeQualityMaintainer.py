@@ -86,6 +86,9 @@ FIX_SEVERITIES = ("critical", "major")   # the findings the nightly fix step tak
 LOG_TRIAGE_HOURS = 24                    # how far back the log triage reads
 REPORT_TITLES = dict(zip(NIGHTLY_STEPS, ("Test Generation", "Bug Analysis", "Log Triage", "Bug Fixes", "Test Health",
                                          "Auto-Merge Test PRs")))   # the headings of the night's email
+# The order of the email's sections: the findings first, what was done about them, then the tests.
+# The steps run in NIGHTLY_STEPS order (the fix step reads the three reports before it), the email reads better this way.
+REPORT_ORDER = ("bugs", "logs", "fix", "tests", "health", "merge")
 GH_NOT_LOGGED_IN_MESSAGE = (
     "GitHub CLI is not logged in on the server, so nothing can be filed on the repository. "
     "Run `gh auth login` in a terminal on the server machine with an account that has write access "
@@ -624,14 +627,15 @@ class CodeQualityMaintainer:
                 report = step()
                 reports[key] = report
                 if report:
-                    sections.append((title, report))
+                    sections.append((key, report))
                 else:
                     info(f"CodeQualityMaintainer: {title} produced no report.")
             except Exception as e:
                 error(f"CodeQualityMaintainer: {title} exception: {e}")
         if sections:
+            sections.sort(key=lambda section: REPORT_ORDER.index(section[0]))
             combined_md = "\n\n---\n\n".join(
-                f"# {title}\n\n{body}" for title, body in sections
+                f"# {REPORT_TITLES[key]}\n\n{body}" for key, body in sections
             )
             html_report = self._markdown_to_html(combined_md)
             self._send_email("Keep Nightly Code Quality Report", html_report)
