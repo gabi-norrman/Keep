@@ -20,6 +20,7 @@ A command returns a human-readable string that is relayed back as the reply.
     //first_run [stage <name>|reset] - the first-run pipeline's state; force a stage or delete the state (FTUE testing)
     //toolkits      - the toolkits with their size and whether each is in the LLM's history window
     //toolkit <name> - the reference of one toolkit as the LLM receives it
+    //voice_discover - run the nightly voice discovery now (the voice interface hands over its run)
 """
 
 import os
@@ -27,10 +28,12 @@ import shutil
 import signal
 import sqlite3
 import threading
+import time
 import zipfile
 from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Callable
 
 from assistant import FirstRun
 from common.logging import info, error
@@ -170,6 +173,12 @@ class DebugCommands:
     """Handles the `//NAME` debug queries that are intercepted before they reach the LLM.
     `history` is the assistant's MessageHistory, for the commands that leave a system row
     in the dialog (//memory_curate's completion); None when there is no assistant."""
+    # The voice interface's `VoiceDiscovery.run` while the discovery is on (the assistant never
+    # imports the interfaces, so the interface hands it over, as it does the false-positive
+    # reporter); None when the voice interface is off, in testsuite mode or the discovery disabled.
+    voice_discovery: Callable[[], dict] | None = None
+    _voice_discovery_lock = threading.Lock()
+
     def __init__(self, history=None):
         self.history = history
 
@@ -403,6 +412,37 @@ class DebugCommands:
             return
         if outcome is None:
             info("//memory_condense: nothing saved — another curation was running or the pass removed nothing")
+
+    # --- //voice_discover -----------------------------------------------------------------
+
+    def cmd_VOICE_DISCOVER(self, args: str) -> str:
+        """//voice_discover: run the nightly voice discovery now — the week's clips clustered, the recurring unknown voices filed as candidates, the known ones offered to the enrollments; runs in the background, the summary lands in the log and the dialog."""
+        if DebugCommands.voice_discovery is None:
+            info("//voice_discover: no voice discovery to run (voice interface off, testsuite mode or voice_discovery.enabled false)")
+            return "The voice discovery is not running: the voice interface is off, in testsuite mode, or voice_discovery.enabled is false."
+        if not DebugCommands._voice_discovery_lock.acquire(blocking=False):
+            info("//voice_discover: a run is already in progress")
+            return "A voice discovery run is already in progress; its summary lands in the log and the dialog."
+        info("//voice_discover: starting the voice discovery in the background")
+        threading.Thread(target=self._discover_voices, args=(self.history,), daemon=True).start()
+        return ("Running the voice discovery in the background, as the nightly run does. Embedding a week of new clips "
+                "takes up to 20 minutes, cached ones seconds; the summary lands in the log ('Voice discovery done') "
+                "and in the dialog.")
+
+    @classmethod
+    def _discover_voices(cls, history):
+        """The run itself, on its own thread; the summary lands in `history` as a system row."""
+        try:
+            summary = cls.voice_discovery()
+        except Exception as e:
+            error(f"//voice_discover: the voice discovery failed: {e}")
+            summary = None
+        finally:
+            cls._voice_discovery_lock.release()
+        if history is not None:
+            note = (f"The voice discovery run finished: {summary}" if summary is not None
+                    else "The voice discovery run failed; see the log.")
+            history.add_context_message("system", note, time.time(), source="voice_discover")
 
     # --- //memory_split -------------------------------------------------------------------
 

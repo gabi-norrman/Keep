@@ -842,3 +842,45 @@ def test_nightly_does_not_start_a_second_run(monkeypatch):
     with cqm._nightly_lock:
         reply, runs = _nightly(monkeypatch, "//nightly")
     assert runs == [] and "already" in reply
+
+
+# --- //voice_discover -------------------------------------------------------------------
+
+def test_voice_discover_without_a_discovery_says_so(monkeypatch):
+    monkeypatch.setattr(DebugCommands, "voice_discovery", None)
+    reply = DebugCommands().handle("//voice_discover")
+    assert "not running" in reply
+
+
+def test_voice_discover_runs_the_handed_over_run_and_leaves_the_summary_in_the_history(monkeypatch):
+    """The voice interface hands its run over; the command runs it on a thread and the summary
+    lands in the dialog as a system row. A second call after the first finished runs again."""
+    runs, rows, threads = [], [], []
+
+    def run():
+        runs.append(1)
+        return {"filed": 4}
+
+    class History:
+        def add_context_message(self, role, text, when, source=None):
+            rows.append((role, text, source))
+
+    real_thread = dc_mod.threading.Thread
+
+    class JoinedThread(real_thread):
+        def start(self):
+            super().start()
+            threads.append(self)
+
+    monkeypatch.setattr(dc_mod.threading, "Thread", JoinedThread)
+    monkeypatch.setattr(DebugCommands, "voice_discovery", staticmethod(run))
+    commands = DebugCommands(history=History())
+    reply = commands.handle("//voice_discover")
+    for t in threads:
+        t.join(timeout=5)
+    assert "background" in reply and runs == [1]
+    assert rows and rows[0][0] == "system" and "'filed': 4" in rows[0][1]
+    commands.handle("//voice_discover")
+    for t in threads:
+        t.join(timeout=5)
+    assert runs == [1, 1]

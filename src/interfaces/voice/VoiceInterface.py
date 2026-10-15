@@ -73,6 +73,7 @@ class VoiceInterface(Interface):
 
     def start(self, assistant, app) -> None:
         from assistant.commands.Commands import Commands
+        from assistant.commands.DebugCommands import DebugCommands
         from common.Language import configured_languages
         from interfaces.voice.ios.routes import register as register_ios_routes
         from interfaces.voice.microphones.routes import MicrophoneDeps, register as register_microphone_routes
@@ -88,6 +89,7 @@ class VoiceInterface(Interface):
             threading.Thread(target=self._init_speaker_identifier, name="SpeakerIdInit", daemon=True).start()
             self.voice_discovery = VoiceDiscovery()
             self.voice_discovery.start()
+            DebugCommands.voice_discovery = self.voice_discovery.run
             self.volume_controller.start()
             self._register_tts_integrations()
 
@@ -154,6 +156,7 @@ class VoiceInterface(Interface):
         """Stop all audio streams before Python teardown to prevent CoreAudio callback crashes."""
         if self.voice_discovery is not None:
             self.voice_discovery.stop()
+            DebugCommands.voice_discovery = None
         if self.announcer is not None:
             self.announcer.stop()
         unregister_room(self._room)
