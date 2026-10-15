@@ -54,6 +54,8 @@ SERVER_LOG_TAIL_LINES = 200
 # The tail is read backwards in blocks of this size: the log runs to hundreds of MB and reading it
 # whole for 400 lines took seconds and a GB of memory (the mics dropped audio while it was freed).
 SERVER_LOG_TAIL_BLOCK = 1 << 20
+# How close the seek for a from-time gets before the forward read takes over.
+SERVER_LOG_SEEK_BLOCK = 1 << 16
 
 
 def is_reference_result(body: str) -> bool:
@@ -74,6 +76,7 @@ def is_reference_result(body: str) -> bool:
 # A log line's timestamp.
 _LOG_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 _ANSI_CODE = re.compile(r"\x1b\[[0-9;]*m")
+_ANSI_CODE_BYTES = re.compile(rb"\x1b\[[0-9;]*m")
 # The level letter `logging.log` opens every line with (I, N, E, T, F). TRACE and FINE are the detail below
 # info() and stay out of the window; a line without a letter is raw process output (a traceback) and is kept.
 _LOG_LEVEL_LETTER = re.compile(r"^([A-Z])│")
@@ -253,11 +256,14 @@ class Commands:
                 chunk = Commands._tail_log_lines(SERVER_LOG_PATH, SERVER_LOG_TAIL_LINES)
                 window = f"last {len(chunk)} lines"
             else:
-                chunk, first, total = Commands._log_lines_from(SERVER_LOG_PATH, start, SERVER_LOG_TAIL_LINES)
-                if first is None:
-                    info(f"Server logs: nothing logged at or after {start} ({total} lines)")
-                    return f"{SERVER_LOG_HEADER}\nNothing logged at or after {start}; the log has {total} lines."
-                window = f"{len(chunk)} lines from {start} (line {first})"
+                chunk = Commands._log_lines_from(SERVER_LOG_PATH, start, SERVER_LOG_TAIL_LINES)
+                if not chunk:
+                    last = Commands._tail_log_lines(SERVER_LOG_PATH, 1)
+                    ends = _LOG_TIMESTAMP.search(last[0]) if last else None
+                    ends = f" {ends.group()}" if ends else ""
+                    info(f"Server logs: nothing logged at or after {start} (the log ends{ends})")
+                    return f"{SERVER_LOG_HEADER}\nNothing logged at or after {start}; the last line is stamped{ends}."
+                window = f"{len(chunk)} lines from {start}"
         except FileNotFoundError:
             error(f"Server log {SERVER_LOG_PATH} not found")
             return f"{SERVER_LOG_HEADER}\nLog file not found."
@@ -286,27 +292,56 @@ class Commands:
         return lines[-count:]
 
     @staticmethod
-    def _log_lines_from(path: str, start, count: int) -> tuple[list[str], Optional[int], int]:
-        """Stream the log and return (window, first line number, lines read): the first `count`
-        lines at info() and above from the first one stamped at or after `start`. Continuation
-        lines (tracebacks) carry no stamp and are skipped when seeking but kept in the window.
-        Nothing but the window is held, and the read stops as soon as it is full."""
-        key = start.strftime("%Y-%m-%d %H:%M:%S")
-        window, first, total = [], None, 0
-        with open(path, "r", errors="replace") as f:
-            for total, raw in enumerate(f, 1):
-                line = server_log_line(raw)
+    def _log_lines_from(path: str, start, count: int) -> list[str]:
+        """The first `count` lines at info() and above from the first one stamped at or after
+        `start`, or nothing when the log ends before it. Continuation lines (tracebacks) carry
+        no stamp and are skipped when seeking but kept in the window. The log is one process's
+        output, so the stamps grow with the offset and a binary search on them finds the place
+        in a few dozen small reads; scanning the file from the top held the GIL for five
+        seconds on a 700 MB prod log and starved every microphone callback meanwhile
+        (2026-10-15). The forward read then covers at most a block before the window."""
+        key = start.strftime("%Y-%m-%d %H:%M:%S").encode()
+        window = []
+        with open(path, "rb") as f:
+            offset = Commands._seek_log_time(f, key)
+            f.seek(offset)
+            if offset:
+                f.readline()
+            for raw in f:
+                line = server_log_line(raw.decode("utf-8", errors="replace"))
                 if line is None:
                     continue
-                if first is None:
+                if not window:
                     match = _LOG_TIMESTAMP.search(line)
-                    if not (match and match.group() >= key):
+                    if not (match and match.group().encode() >= key):
                         continue
-                    first = total
                 window.append(line)
                 if len(window) >= count:
                     break
-        return window, first, total
+        return window
+
+    @staticmethod
+    def _seek_log_time(f, key: bytes) -> int:
+        """An offset at most a block before the first line stamped at or after `key`: a
+        binary search over the file, each probe reading the first stamped line after the
+        midpoint (an unstamped one is a continuation line, so the probe reads on)."""
+        low, high = 0, f.seek(0, os.SEEK_END)
+        while high - low > SERVER_LOG_SEEK_BLOCK:
+            middle = (low + high) // 2
+            f.seek(middle)
+            f.readline()
+            stamp = None
+            while stamp is None:
+                raw = f.readline()
+                if not raw or f.tell() > high:
+                    break
+                match = _LOG_TIMESTAMP.search(_ANSI_CODE_BYTES.sub(b"", raw).decode("utf-8", errors="replace"))
+                stamp = match and match.group().encode()
+            if stamp is None or stamp >= key:
+                high = middle
+            else:
+                low = middle
+        return low
 
     @staticmethod
     def _parse_log_time(text: str):

@@ -592,12 +592,24 @@ class TestCmdServerLogs:
             result = Commands._fetch_server_logs(None)
         assert result.endswith("(last 2 lines)\nonly\ntwo lines")
 
-    def test_from_time_stops_reading_once_the_window_is_full(self, tmp_path):
+    def test_from_time_seeks_to_the_same_place_a_scan_finds(self, tmp_path):
+        """The binary search lands where a line-by-line scan would, whichever block size it
+        narrows down to and wherever the probes cut a line: tracebacks between the stamped
+        lines, a time between two stamps, and a time before the first line."""
         from datetime import datetime
-        self._stamped_log(tmp_path, count=2000)
-        lines, first, read = Commands._log_lines_from(str(tmp_path / "floxy.out"), datetime(2026, 3, 1, 8, 10), 5)
-        assert first == 11 and len(lines) == 5
-        assert read == 15
+        log_file = tmp_path / "floxy.out"
+        text = "".join(f"I│2026-03-01 {8 + i // 60:02d}:{i % 60:02d}:30.000 +0.000 │ main │ line{i}\n"
+                       + ("Traceback (most recent call last):\n  File x, line 1\n" if i % 7 == 0 else "")
+                       for i in range(3000))
+        log_file.write_text(text)
+        for when in (datetime(2026, 3, 1, 8, 10), datetime(2026, 3, 1, 8, 10, 45), datetime(2026, 3, 1, 7, 0)):
+            key = when.strftime("%Y-%m-%d %H:%M:%S")
+            lines = text.splitlines(keepends=True)
+            first = next(i for i, line in enumerate(lines) if "│" in line and line[2:21] >= key)
+            scanned = lines[first:first + 5]
+            for block in (1 << 16, 300, 1):
+                with patch("assistant.commands.Commands.SERVER_LOG_SEEK_BLOCK", block):
+                    assert Commands._log_lines_from(str(log_file), when, 5) == scanned, (when, block)
 
     def test_a_stray_non_utf8_byte_does_not_break_the_command(self, tmp_path):
         # floxy.out is redirected process output; a subprocess can write anything into it.
@@ -641,9 +653,8 @@ class TestCmdServerLogs:
         log_file = tmp_path / "floxy.out"
         log_file.write_text("".join(
             f"\x1b[2m{'T' if i % 2 else 'I'}│2026-03-01 08:{i:02d}:00.000 +0.000 │ main │ line{i}\n" for i in range(40)))
-        lines, first, read = Commands._log_lines_from(str(log_file), datetime(2026, 3, 1, 8, 10), 5)
-        assert first == 11 and [line.split()[-1] for line in lines] == ["line10", "line12", "line14", "line16", "line18"]
-        assert read == 19
+        lines = Commands._log_lines_from(str(log_file), datetime(2026, 3, 1, 8, 10), 5)
+        assert [line.split()[-1] for line in lines] == ["line10", "line12", "line14", "line16", "line18"]
 
     def test_ansi_codes_stripped(self, tmp_path):
         log_file = tmp_path / "floxy.out"
