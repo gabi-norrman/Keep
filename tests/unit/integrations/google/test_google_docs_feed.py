@@ -236,12 +236,13 @@ class TestFetch:
         with _config(_entries()), patch(REQUEST, drive):
             feed = self._feed(drive)
             feed.docs()[0].cache("A")
+            interval = feed.poll_interval   # the patched config's, which fetch() reads too — not config.yaml's
             cursor = json.dumps({DOC_ID: now - 7200})
             assert feed.remaining(cursor) == 0
             batch = feed.fetch(cursor, backfill=False)
             assert batch.entries == [] and batch.exhausted and json.loads(batch.cursor) == json.loads(cursor)
             assert not [c for c in drive.calls if "revision=" in c.path]
-        drive = FakeDrive(now - 2 * feed.poll_interval, [_revision(1, now - 7200), _revision(2, now - 2 * feed.poll_interval)], {"1": "A", "2": "A\nB"})
+        drive = FakeDrive(now - 2 * interval, [_revision(1, now - 7200), _revision(2, now - 2 * interval)], {"1": "A", "2": "A\nB"})
         with _config(_entries()), patch(REQUEST, drive):
             batch = feed.fetch(cursor, backfill=False)
             assert len(batch.entries) == 1
