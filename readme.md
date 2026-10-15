@@ -59,7 +59,7 @@ gh auth login && gh api -H "Accept: application/vnd.github.raw" "repos/maciekd/K
 
 ## Features
 
-I asked Keep to pick her own highlights from the past year. **All events are real.**
+I asked my Keep to pick its own highlights from the past year. **All events are real.**
 
 <table>
 <tr>
