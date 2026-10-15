@@ -166,30 +166,11 @@ class TestVehicleState:
         api = self._api({"state": "online", "drive_state": {"timestamp": 1_700_000_000_000}, "charge_state": {}})
         assert api.vehicle_state(family(api)).data_time is None
 
-    def test_the_cabin_temperature_holds_until_it_has_moved_a_full_degree(self):
-        session = FakeSession()
-        api = TeslaIntegration(config=build_default_config(), session=session)
-        reported = []
-        for inside_temp in (21.5, 21.9, 22.4, 22.5, 22.0, 21.5, None, 21.5):
-            session.queue_response("GET", f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/state",
-                                   DummyResponse(200, {"climate_state": {"inside_temp": inside_temp}}))
-            reported.append(api.vehicle_state(family(api)).cabin_temp_c)
-        assert reported == [21.5, 21.5, 21.5, 22.5, 22.5, 21.5, None, 21.5]
-
-    def test_each_car_holds_its_own_cabin_temperature(self):
-        # The hold is per car: a second car's first reading is reported as it is, not held at
-        # what the first car reported, and each car's later readings are held against its own.
-        session = FakeSession()
-        config = build_default_config()
-        config["vehicles"].append({"name": "work", "vin": "VIN456"})
-        api = TeslaIntegration(config=config, session=session)
-        specs = {spec.id: spec for spec in api.vehicles()}
-        reported = []
-        for car, inside_temp in (("family", 21.5), ("work", 21.9), ("family", 21.9), ("work", 21.5)):
-            session.queue_response("GET", f"{TeslaIntegration.TESSIE_API_BASE}/{specs[car].handle}/state",
-                                   DummyResponse(200, {"climate_state": {"inside_temp": inside_temp}}))
-            reported.append(api.vehicle_state(specs[car]).cabin_temp_c)
-        assert reported == [21.5, 21.9, 21.5, 21.9]
+    def test_a_car_taking_charge_is_charging_and_a_plugged_in_full_one_is_not(self):
+        charging = self._api({"charge_state": {"charging_state": "Charging", "usable_battery_level": 40}})
+        complete = self._api({"charge_state": {"charging_state": "Complete", "usable_battery_level": 90}})
+        assert charging.vehicle_state(family(charging)).charging
+        assert not complete.vehicle_state(family(complete)).charging
 
     def test_missing_blocks_leave_every_field_unset(self):
         state = self._api({}).vehicle_state(family(self._api({})))

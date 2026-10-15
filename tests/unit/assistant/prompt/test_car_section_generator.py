@@ -56,7 +56,7 @@ class TestRender:
     def test_parked_at_home(self, section):
         line = section._render(CAR, VehicleState(latitude=HOME[0], longitude=HOME[1], battery_percent=80))
         assert line.startswith("Family Model Y (vehicle_id: family): Parked Home")
-        assert "(80% battery)" in line
+        assert "(~80% battery)" in line
         assert not section._any_car_driving
 
     def test_driving_away_shows_speed_and_the_address(self, section, no_lookups):
@@ -84,8 +84,8 @@ class TestRender:
         assert "Location unknown" in section._render(CAR, VehicleState(battery_percent=50))
 
     def test_cabin_fuel_and_range(self, section):
-        line = section._render(CAR, VehicleState(latitude=HOME[0], longitude=HOME[1], cabin_temp_c=22, fuel_percent=40, range_km=312.4))
-        assert "Cabin 22°C" in line and "(40% fuel)" in line and "312 km range" in line
+        line = section._render(CAR, VehicleState(latitude=HOME[0], longitude=HOME[1], cabin_temp_c=22.4, fuel_percent=40, range_km=312.4))
+        assert "Cabin 22°C" in line and "(~40% fuel)" in line and "312 km range" in line
         assert "battery" not in line
 
     def test_no_charge_at_all_is_said(self, section):
@@ -94,7 +94,7 @@ class TestRender:
     def test_an_asleep_car_carries_the_time_of_its_data(self, section):
         data_time = time.time() - 3600
         line = section._render(CAR, VehicleState(connectivity="asleep", latitude=HOME[0], longitude=HOME[1], data_time=data_time))
-        assert f"[car is asleep, data from {datetime.fromtimestamp(data_time).strftime('%H:%M')}]" in line
+        assert f"[car is asleep, data from ~{datetime.fromtimestamp(data_time).strftime('%H:00')}]" in line
 
     def test_an_offline_car_without_a_timestamp_is_flagged_stale(self, section):
         line = section._render(CAR, VehicleState(connectivity="offline", latitude=HOME[0], longitude=HOME[1]))
@@ -103,6 +103,48 @@ class TestRender:
     def test_an_online_car_has_no_staleness_note(self, section):
         line = section._render(CAR, VehicleState(connectivity="online", latitude=HOME[0], longitude=HOME[1]))
         assert "online" not in line and "stale" not in line
+
+
+@pytest.mark.unit
+class TestRoundedAndHeld:
+    """A parked car's line must not change while the readings drift inside a step: the cabin in
+    whole degrees, the charge in 5% steps, each held until the reading is a full step away."""
+
+    @staticmethod
+    def _parked(section, **state):
+        return section._render(CAR, VehicleState(latitude=HOME[0], longitude=HOME[1], **state))
+
+    def test_the_cabin_holds_at_its_whole_degree_until_the_reading_is_a_degree_away(self, section):
+        shown = [self._parked(section, cabin_temp_c=t).split("Cabin ")[1].split("°")[0]
+                 for t in (25.4, 25.9, 26.3, 26.4, 24.5, 26.5, 20.0)]
+        assert shown == ["25", "25", "26", "26", "24", "26", "20"]
+
+    def test_a_parked_charge_is_shown_in_five_percent_steps_and_held(self, section):
+        shown = [self._parked(section, battery_percent=p).split("(")[2].split("%")[0]
+                 for p in (88, 91, 94, 95, 96, 91, 90)]
+        assert shown == ["~90", "~90", "~90", "~95", "~95", "~95", "~90"]
+
+    def test_a_charging_or_driving_car_shows_its_exact_charge(self, section, no_lookups):
+        assert "(88% battery)" in self._parked(section, battery_percent=88, charging=True)
+        line = section._render(CAR, VehicleState(latitude=AWAY[0], longitude=AWAY[1], speed_kmh=50, in_gear=True, battery_percent=88))
+        assert "(88% battery)" in line
+
+    def test_unplugging_starts_the_held_charge_afresh_from_the_exact_one(self, section):
+        self._parked(section, battery_percent=70)
+        self._parked(section, battery_percent=73, charging=True)
+        assert "(~75% battery)" in self._parked(section, battery_percent=73)
+
+    def test_each_car_is_held_on_its_own(self, section):
+        other = VehicleSpec("work", "Work Model 3", "VIN2")
+        section._render(CAR, VehicleState(latitude=HOME[0], longitude=HOME[1], cabin_temp_c=25.4))
+        line = section._render(other, VehicleState(latitude=HOME[0], longitude=HOME[1], cabin_temp_c=25.9))
+        assert "Cabin 26°C" in line
+        assert "Cabin 25°C" in self._parked(section, cabin_temp_c=25.9)
+
+    def test_a_lost_reading_clears_the_hold(self, section):
+        self._parked(section, cabin_temp_c=25.4)
+        assert "Cabin" not in self._parked(section, cabin_temp_c=None)
+        assert "Cabin 26°C" in self._parked(section, cabin_temp_c=25.9)
 
 
 @pytest.mark.unit
@@ -278,7 +320,7 @@ class TestPlacingTheCar:
 
     def test_a_plug_in_hybrid_shows_its_battery_not_its_fuel(self, section):
         line = section._render(CAR, VehicleState(latitude=HOME[0], longitude=HOME[1], battery_percent=64, fuel_percent=40))
-        assert "(64% battery)" in line and "fuel" not in line
+        assert "(~65% battery)" in line and "fuel" not in line
 
 
 @pytest.mark.unit

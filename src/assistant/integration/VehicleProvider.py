@@ -52,6 +52,7 @@ class VehicleState:
     longitude: Optional[float] = None
     battery_percent: Optional[int] = None
     fuel_percent: Optional[int] = None
+    charging: bool = False                  # plugged in and taking charge, when the brand can tell
     range_km: Optional[float] = None
     cabin_temp_c: Optional[float] = None
     destination: Optional[str] = None       # the active route's destination, with its ETA

@@ -1,7 +1,8 @@
 """The CURRENT CAR INFO section: one line per car of every ready VehicleProvider — Tesla
 beside whatever other brand the house has — with the car's vehicle_id, whether it is parked or
 driving, where it is (Home, or an address), its route or how far from home it is, the cabin
-temperature and the charge. Refreshed every five minutes while every car is parked and every
+temperature and the charge — both rounded and held, so a parked car's line stays the same
+text for hours and the prompt's cache with it. Refreshed every five minutes while every car is parked and every
 minute while one is driving; a parked car's minutes from home are asked for every ten minutes
 and held through a one-minute traffic wobble; a brand that fails gets an error on its car's
 line and the others stay. Without a ready provider the section is the setup hint."""
@@ -21,6 +22,15 @@ from common.logging import info, trace
 from ..PromptSectionGenerator import PromptSectionGenerator
 
 
+@dataclass
+class _Shown:
+    """The rounded cabin temperature and charge a car's line last showed. Each is held until the
+    fresh reading is a full step away from it, so a reading hovering at a rounding boundary
+    never flips the line back and forth."""
+    cabin_c: Optional[int] = None
+    energy: Optional[int] = None
+
+
 @dataclass(frozen=True)
 class _ParkedEta:
     """The ETA to home shown for a parked car, with when and where it was fetched."""
@@ -35,7 +45,7 @@ class CarSectionGenerator(PromptSectionGenerator):
     key = "car_info"
     heading = "# CURRENT CAR INFO"
     intro = ("The family's cars, every brand together. `vehicle_id` is what the `cars` toolkit's commands take. "
-             "A car marked asleep or offline shows the brand's last cached data.")
+             "A parked car's charge is rounded to 5%; a car marked asleep or offline shows the brand's last cached data.")
     needs = VehicleProvider
 
     HOME_RADIUS_METERS = 500
@@ -49,6 +59,12 @@ class CarSectionGenerator(PromptSectionGenerator):
     PARKED_ETA_REFRESH_S = 600
     PARKED_ETA_DEAD_BAND_MIN = 2
     PARKED_ETA_SAME_SPOT_M = 100
+    # The brands report the cabin in tenths and the charge in percents — a parked car in the
+    # sun or on a charger would rewrite its line every poll. The line shows whole degrees and,
+    # while the car is parked and not charging, 5% steps of charge; a driving or charging car's
+    # charge is exact, its line changes anyway.
+    CABIN_STEP_C = 1
+    PARKED_ENERGY_STEP = 5
 
     def __init__(self, prompt_manager):
         super().__init__(prompt_manager, "CarInfo")
@@ -58,6 +74,7 @@ class CarSectionGenerator(PromptSectionGenerator):
         self._any_car_driving = False
         self._ready = False
         self._parked_etas: dict[str, _ParkedEta] = {}
+        self._shown: dict[str, _Shown] = {}
 
     def _start_monitoring(self):
         while not self._stop_event.is_set():
@@ -123,13 +140,19 @@ class CarSectionGenerator(PromptSectionGenerator):
         else:
             eta_text = ""
 
-        cabin_text = f"Cabin {state.cabin_temp_c}°C" if state.cabin_temp_c is not None else ""
-        if state.battery_percent is not None:
-            energy_text = f"({state.battery_percent}% battery)"
-        elif state.fuel_percent is not None:
-            energy_text = f"({state.fuel_percent}% fuel)"
-        else:
+        shown = self._shown.setdefault(spec.id, _Shown())
+        shown.cabin_c = self._held(shown.cabin_c, state.cabin_temp_c, self.CABIN_STEP_C)
+        cabin_text = f"Cabin {shown.cabin_c}°C" if shown.cabin_c is not None else ""
+        energy, unit = (state.battery_percent, "battery") if state.battery_percent is not None else (state.fuel_percent, "fuel")
+        if energy is None:
+            shown.energy = None
             energy_text = "Battery unknown"
+        elif is_driving or state.in_gear or state.charging:
+            shown.energy = None
+            energy_text = f"({energy}% {unit})"
+        else:
+            shown.energy = self._held(shown.energy, energy, self.PARKED_ENERGY_STEP)
+            energy_text = f"(~{shown.energy}% {unit})"
         range_text = f"{round(state.range_km)} km range" if state.range_km is not None else ""
 
         # The brand serves a cached snapshot while the car sleeps — flag it so the LLM knows
@@ -137,13 +160,24 @@ class CarSectionGenerator(PromptSectionGenerator):
         asleep_text = ""
         if state.connectivity is not None and state.connectivity != "online":
             if state.data_time:
-                asleep_text = f"[car is {state.connectivity}, data from {datetime.fromtimestamp(state.data_time).strftime('%H:%M')}]"
+                # To the hour: the snapshot's minute would rewrite the line each time the car stirs.
+                asleep_text = f"[car is {state.connectivity}, data from ~{datetime.fromtimestamp(state.data_time).strftime('%H:00')}]"
             else:
                 asleep_text = f"[car is {state.connectivity}, data may be stale]"
 
         parts = [f"{spec.label} (vehicle_id: {spec.id}):", status, speed_text, location_text, eta_text,
                  cabin_text, energy_text, range_text, asleep_text]
         return " ".join(p for p in parts if p)
+
+    @staticmethod
+    def _held(shown: Optional[int], fresh: Optional[float], step: int) -> Optional[int]:
+        """The value to show: `fresh` rounded to the nearest `step` once it is a full step away
+        from what is shown, else what is shown."""
+        if fresh is None:
+            return None
+        if shown is None or abs(fresh - shown) >= step:
+            return int(round(fresh / step)) * step
+        return shown
 
     def _eta_to_home(self, spec: VehicleSpec, state: VehicleState) -> Optional[int]:
         """The minutes from home for the line: live for a moving car, held for a parked one
