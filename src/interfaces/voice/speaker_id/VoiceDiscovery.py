@@ -54,6 +54,8 @@ KNOWN_MARGIN = 0.10   # ...and this far ahead of the runner-up is that speaker
 SAME_VOICE_SIM = 0.60 # a bucket this close to an open candidate is that voice again
 REFRESH_OFFER = 200   # the most central clips of a known bucket offered to the person's enrollment refresh
 MAX_CHUNK = 6000      # clips clustered at once: linkage needs n²/2 float64 (6k -> 150 MB, 20k -> 3 GB measured)
+UTTERANCE_GAP = 2.5   # clips saved this close together by the house's microphones...
+DUPLICATE_SIM = 0.60  # ...and this alike are one utterance heard by several mics
 SAMPLES_KEPT = 12
 TRANSCRIPTS_SHOWN = 6
 MIN_TRANSCRIPT_WORDS = 3
@@ -79,6 +81,28 @@ def enabled() -> bool:
     """`voice_discovery.enabled` of config.yaml, on unless the key says otherwise."""
     section = ConfigManager.get_instance().get(CONFIG_KEY, {})
     return bool(section.get("enabled", True)) if isinstance(section, dict) else True
+
+
+def one_per_utterance(clips: list, gap: float = UTTERANCE_GAP, alike: float = DUPLICATE_SIM) -> list:
+    """The clips with the microphones' duplicates folded: every mic of the house records the
+    same utterance, each naming its file after its own transcript, so clips saved within *gap*
+    seconds of each other whose embeddings agree are one utterance — the longest recording
+    stands for it. Two people answering each other within the gap are kept apart by the
+    embeddings (two mics hearing one voice agree far more than two voices do)."""
+    kept: list = []
+    for clip in sorted(clips, key=lambda c: c.mtime):
+        same = None
+        for n in range(len(kept) - 1, -1, -1):
+            if clip.mtime - kept[n].mtime > gap:
+                break
+            if float(clip.embedding @ kept[n].embedding) >= alike:
+                same = n
+                break
+        if same is None:
+            kept.append(clip)
+        elif clip.duration > kept[same].duration:
+            kept[same] = Clip(clip.name, clip.embedding, clip.reason, clip.duration, kept[same].mtime)
+    return kept
 
 
 def cluster(X: np.ndarray, cut: float = CUT, merge: float = MERGE_SIM, outlier: float = OUTLIER_SIM,
@@ -136,40 +160,50 @@ def cluster_by_day(X: np.ndarray, days: list[date], durations: list[float] = Non
     return sorted((np.concatenate(ps) for ps in buckets.values()), key=len, reverse=True)
 
 
-def assign(X: np.ndarray, buckets: list[np.ndarray], candidates: list) -> list[tuple]:
-    """Which candidate each unknown bucket is, as (candidate or None, the buckets that are that
-    voice), largest first. A candidate of an earlier night is claimed by the one bucket closest to
-    it (SAME_VOICE_SIM: its centroid is a week older than tonight's); any other bucket joins a
-    candidate, claimed or filed tonight, only at the clustering's own MERGE_SIM — the clustering
-    already ruled those buckets different voices, and two sisters sit between the two thresholds
-    (measured 0.63 on 2026-10-15, when the looser one folded a daughter into her sister)."""
+def assign(X: np.ndarray, buckets: list[np.ndarray], candidates: list) -> tuple[list[tuple], list[np.ndarray]]:
+    """Which candidate each unknown bucket is: the groups (candidate or None, the buckets that are
+    that voice), largest first, and the buckets that are a mix of voices. A candidate of an earlier
+    night is claimed by the one bucket closest to it (SAME_VOICE_SIM: its centroid is a week older
+    than tonight's); any other bucket joins a candidate, claimed or filed tonight, only at the
+    clustering's own MERGE_SIM — the clustering already ruled those buckets different voices, and
+    two sisters sit between the two thresholds (measured 0.63 on 2026-10-15, when the looser one
+    folded a daughter into her sister). A bucket about as close to two voices (both within
+    SAME_VOICE_SIM, less than KNOWN_MARGIN apart — 0.67 and 0.64 measured the same day, the
+    parents' evening talk over each other) is a mix: filed, it would be a fifth voice of the house."""
     centroids = [centroid(X, b) for b in buckets]
     groups: list[list[int]] = []        # the buckets of each voice, first one leads
     owner: list = []                    # the earlier-night candidate of each group, or None
     taken: set[int] = set()
-    for cand in candidates:
-        if cand.centroid is None or not centroids or len(cand.centroid) != len(centroids[0]):
-            continue
-        c = np.asarray(cand.centroid, dtype=float)
-        sims = [(float(centroids[k] @ c), k) for k in range(len(buckets)) if k not in taken]
-        if not sims:
+    # The best pairs first, so a leftover candidate never takes a bucket from its own candidate.
+    pairs = sorted(((float(centroids[k] @ np.asarray(cand.centroid, dtype=float)), k, n)
+                    for n, cand in enumerate(candidates) for k in range(len(buckets))
+                    if cand.centroid is not None and len(cand.centroid) == len(centroids[k])), reverse=True)
+    claimed: set[int] = set()
+    for sim, k, n in pairs:
+        if sim < SAME_VOICE_SIM:
             break
-        sim, k = max(sims)
-        if sim >= SAME_VOICE_SIM:
-            groups.append([k]); owner.append(cand); taken.add(k)
-            trace(f"Voice discovery: a bucket of {len(buckets[k])} clips is {cand.id} again ({sim:.2f})")
+        if k in taken or n in claimed:
+            continue
+        groups.append([k]); owner.append(candidates[n]); taken.add(k); claimed.add(n)
+        trace(f"Voice discovery: a bucket of {len(buckets[k])} clips is {candidates[n].id} again ({sim:.2f})")
+    mixed: list[int] = []
     for k in range(len(buckets)):
         if k in taken:
             continue
-        sims = [(float(centroids[k] @ centroids[g[0]]), n) for n, g in enumerate(groups)]
-        sim, n = max(sims) if sims else (0.0, -1)
-        if sim >= MERGE_SIM:
+        sims = sorted(((float(centroids[k] @ centroids[g[0]]), n) for n, g in enumerate(groups)), reverse=True)
+        sim, n = sims[0] if sims else (0.0, -1)
+        second = sims[1][0] if len(sims) > 1 else 0.0
+        if second >= SAME_VOICE_SIM and sim - second < KNOWN_MARGIN:
+            mixed.append(k)
+            info(f"Voice discovery: a bucket of {len(buckets[k])} clips is about as close to two voices "
+                 f"({sim:.2f} and {second:.2f}) — a mix, skipped")
+        elif sim >= MERGE_SIM:
             groups[n].append(k)
             trace(f"Voice discovery: a bucket of {len(buckets[k])} clips joins the voice of a bucket of "
                   f"{len(buckets[groups[n][0]])} ({sim:.2f})")
         else:
             groups.append([k]); owner.append(None)
-    return [(owner[n], [buckets[k] for k in g]) for n, g in enumerate(groups)]
+    return [(owner[n], [buckets[k] for k in g]) for n, g in enumerate(groups)], [buckets[k] for k in mixed]
 
 
 def centroid(X: np.ndarray, idx) -> np.ndarray:
@@ -260,11 +294,15 @@ class VoiceDiscovery:
         """Embed the window's new clips, cluster and file. Returns the counts, for the log and
         the tests."""
         now = now or datetime.now()
-        summary = {"clips": 0, "usable": 0, "buckets": 0, "known": 0, "filed": 0, "refreshed": 0,
-                   "too_small": 0, "enrollment_refreshed": 0}
+        summary = {"clips": 0, "usable": 0, "utterances": 0, "buckets": 0, "known": 0, "mixed": 0, "filed": 0,
+                   "refreshed": 0, "too_small": 0, "enrollment_refreshed": 0}
         clips = self._embed_window(now - timedelta(days=DAYS))
         usable = [c for c in clips if c.reason == "ok" and c.embedding is not None]
         summary["clips"], summary["usable"] = len(clips), len(usable)
+        usable = one_per_utterance(usable)
+        summary["utterances"] = len(usable)
+        info(f"Voice discovery: {summary['usable']} usable clips of {len(clips)} are {len(usable)} utterances "
+             f"(the microphones' duplicates folded)")
         if len(usable) < self.min_clips:
             info(f"Voice discovery: {len(usable)} usable clips of {len(clips)} in the window, fewer than "
                  f"the {self.min_clips} a voice needs — nothing to do")
@@ -272,7 +310,7 @@ class VoiceDiscovery:
         X = np.stack([c.embedding for c in usable])
         buckets = cluster_by_day(X, [c.day for c in usable], [c.duration for c in usable])
         summary["buckets"] = len(buckets)
-        info(f"Voice discovery: {len(usable)} usable clips of {len(clips)} -> {len(buckets)} voice bucket(s)")
+        info(f"Voice discovery: {len(usable)} utterances -> {len(buckets)} voice bucket(s)")
         enrolled = self._enrolled_embeddings()
         offers: dict[str, list[EnrollmentRefresh.Sample]] = {}
         unknown: list[np.ndarray] = []
@@ -295,9 +333,16 @@ class VoiceDiscovery:
                     EnrollmentRefresh.Sample(self.audio_dir / usable[i].name, X[i], usable[i].mtime,
                                              EnrollmentRefresh.ORIGIN_DISCOVERY) for i in order)
                 continue
+            if sim >= KNOWN_SIM:
+                summary["mixed"] += 1
+                info(f"Voice discovery: a bucket of {len(members)} clips over {len(days)} days is close to {who!r} "
+                     f"({sim:.2f}) and another enrolled voice (margin {margin:.2f}) — a mix, skipped")
+                continue
             unknown.append(idx)
         open_candidates = VoiceCandidates.items(self.candidates_dir)
-        for existing, group in assign(X, unknown, open_candidates):
+        groups, mixed = assign(X, unknown, open_candidates)
+        summary["mixed"] += len(mixed)
+        for existing, group in groups:
             idx = np.concatenate(group)
             lead = centroid(X, group[0])
             order = idx[np.argsort(-(X[idx] @ lead))]

@@ -12,8 +12,8 @@ import scipy.cluster.hierarchy  # noqa: F401
 
 from assistant import VoiceCandidates
 from interfaces.voice.speaker_id import VoiceDiscovery as vd
-from interfaces.voice.speaker_id.VoiceDiscovery import (VoiceDiscovery, assign, cluster, cluster_by_day,
-                                                        match_enrolled, describe_hours)
+from interfaces.voice.speaker_id.VoiceDiscovery import (Clip, VoiceDiscovery, assign, cluster, cluster_by_day,
+                                                        match_enrolled, describe_hours, one_per_utterance)
 
 DIM = 32
 NOW = datetime(2026, 10, 14, 5, 0)
@@ -89,7 +89,8 @@ class Fake:
             name = f"{prefix}_{index}_{i}_what_a_lovely_day_{i}.wav"
             path = self.audio / name
             path.write_bytes(b"RIFF")
-            when = (NOW - timedelta(days=days[i % len(days)], hours=12)).timestamp()
+            # Spaced out like real speech: clips of one voice saved within UTTERANCE_GAP are one utterance.
+            when = (NOW - timedelta(days=days[i % len(days)], hours=12)).timestamp() + 10 * i
             os.utime(path, (when, when))
             self.table[name] = (X[i] if reason == "ok" else None, reason, 3.0)
         return self.centres[index]
@@ -168,8 +169,8 @@ def test_two_sisters_the_clustering_kept_apart_stay_two_voices():
     sister = _at_cosine(u, (vd.SAME_VOICE_SIM + vd.MERGE_SIM) / 2, axis=1)
     fragment = _at_cosine(u, vd.MERGE_SIM + 0.1, axis=2)
     X, buckets = _buckets(u, sister, fragment)
-    groups = assign(X, buckets, candidates=[])
-    assert [(owner, len(parts)) for owner, parts in groups] == [(None, 2), (None, 1)]
+    groups, mixed = assign(X, buckets, candidates=[])
+    assert [(owner, len(parts)) for owner, parts in groups] == [(None, 2), (None, 1)] and not mixed
     assert groups[0][1][0] is buckets[0] and groups[0][1][1] is buckets[2]
 
 
@@ -179,8 +180,44 @@ def test_an_earlier_candidate_goes_to_its_closest_bucket_and_the_sister_is_filed
     sister = _at_cosine(u, (vd.SAME_VOICE_SIM + vd.MERGE_SIM) / 2, axis=1)
     X, buckets = _buckets(sister, u)   # the sister's bucket is the larger one and comes first
     charlotte = SimpleNamespace(id="voice-aaaa", centroid=u.tolist())
-    groups = assign(X, buckets, candidates=[charlotte])
+    groups, _ = assign(X, buckets, candidates=[charlotte])
     assert [(owner, parts[0] is buckets[1]) for owner, parts in groups] == [(charlotte, True), (None, False)]
+
+
+def test_a_leftover_candidate_does_not_take_a_bucket_from_the_candidate_it_matches_best():
+    from types import SimpleNamespace
+    u = np.zeros(DIM); u[0] = 1.0
+    near = _at_cosine(u, vd.SAME_VOICE_SIM + 0.05, axis=1)
+    X, buckets = _buckets(u)
+    leftover = SimpleNamespace(id="voice-aaaa", centroid=near.tolist())   # listed first, matches at 0.65
+    own = SimpleNamespace(id="voice-bbbb", centroid=u.tolist())            # matches at 1.0
+    groups, _ = assign(X, buckets, candidates=[leftover, own])
+    assert [owner for owner, _ in groups] == [own]
+
+
+def test_a_bucket_about_as_close_to_two_voices_is_a_mix_and_is_neither_filed_nor_joined():
+    """Both parents' evening talk over each other: 0.67 to one and 0.64 to the other, measured."""
+    u = np.zeros(DIM); u[0] = 1.0
+    other = _at_cosine(u, 0.1, axis=1)
+    mix = (u + other) / np.linalg.norm(u + other)     # ~0.74 to each
+    X, buckets = _buckets(u, other, mix)
+    groups, mixed = assign(X, buckets, candidates=[])
+    assert [len(parts) for _, parts in groups] == [1, 1]
+    assert len(mixed) == 1 and mixed[0] is buckets[2]
+
+
+def test_one_per_utterance_folds_the_microphones_recordings_but_not_a_quick_exchange():
+    """Three mics save the same sentence within a second, each under its own transcript; the
+    longest recording stands for it. Two people answering each other within the gap stay two."""
+    u = np.zeros(DIM); u[0] = 1.0
+    v = _at_cosine(u, 0.1, axis=1)
+    clips = [Clip("kitchen.wav", u, "ok", 3.0, 100.0), Clip("hall.wav", u, "ok", 3.4, 100.6),
+             Clip("office.wav", u, "ok", 2.9, 101.1),
+             Clip("reply.wav", v, "ok", 2.0, 101.5),             # another voice, within the gap
+             Clip("later.wav", u, "ok", 3.0, 100.0 + vd.UTTERANCE_GAP + 0.1)]
+    kept = one_per_utterance(clips)
+    assert [c.name for c in kept] == ["hall.wav", "reply.wav", "later.wav"]
+    assert kept[0].mtime == 100.0
 
 
 def test_the_cache_spares_the_clips_embedded_before(tmp_path):
