@@ -80,15 +80,18 @@ NIGHTLY_UPDATE_KEY = "nightly_update"
 RELEASE_BRANCH = "release"
 DEVELOPER_BRANCH = "master"
 NIGHTLY_OFF_MESSAGE = f"{NIGHTLY_RUNS_KEY} is off"
-NIGHTLY_STEPS = ("tests", "bugs", "logs", "fix", "health", "merge")   # what //nightly takes to run one step alone
+NIGHTLY_STEPS = ("tests", "bugs", "logs", "fix", "health", "merge", "pins")   # what //nightly takes to run one step alone
 FIX_STEP_INPUTS = ("bugs", "logs", "tests")   # the reports the fix step reads, under the headings REPORT_TITLES gives them
 FIX_SEVERITIES = ("critical", "major")   # the findings the nightly fix step takes on
 LOG_TRIAGE_HOURS = 24                    # how far back the log triage reads
 REPORT_TITLES = dict(zip(NIGHTLY_STEPS, ("Test Generation", "Bug Analysis", "Log Triage", "Bug Fixes", "Test Health",
-                                         "Auto-Merge Test PRs")))   # the headings of the night's email
-# The order of the email's sections: the findings first, what was done about them, then the tests.
+                                         "Auto-Merge Test PRs", "Open Pins")))   # the headings of the night's email
+# The order of the email's sections: the findings first, what was done about them, then the tests, and last the
+# pins — every strict xfail of the suite, the bugs waiting for the maintainer's verdict (fix, or `wontfix`).
 # The steps run in NIGHTLY_STEPS order (the fix step reads the three reports before it), the email reads better this way.
-REPORT_ORDER = ("bugs", "logs", "fix", "tests", "health", "merge")
+REPORT_ORDER = ("bugs", "logs", "fix", "tests", "health", "merge", "pins")
+# The pattern of a pinned bug in tests/unit: the open-pins step runs Claude Code only when the tree holds one.
+STRICT_XFAIL_PATTERN = r"pytest\.mark\.xfail\(\s*strict\s*=\s*True"
 GH_NOT_LOGGED_IN_MESSAGE = (
     "GitHub CLI is not logged in on the server, so nothing can be filed on the repository. "
     "Run `gh auth login` in a terminal on the server machine with an account that has write access "
@@ -224,7 +227,8 @@ string tests — every assertion must be a derived expectation.
 Do not fix the code — your pull request changes files under tests/ only; it is merged right after you are done when it
 touches nothing else, and a fix step runs after you with your report. If a test you write fails because the code is
 wrong, keep the test and mark it `@pytest.mark.xfail(strict=True, reason="<the bug>")`: the suite stays green and the
-bug is pinned until the fix removes the marker.
+bug is pinned until the fix removes the marker. A test marked `@pytest.mark.wontfix` is a bug the maintainer has
+looked at and decided to leave: do not pin that bug again, and never add that marker yourself.
 Then create a pull request and push it (check rules for commits in the /commit skill).
 
 IMPORTANT: The user will only see your final message so keep the entire analysis in your last message. Its last table is
@@ -286,7 +290,9 @@ server's logs and the generation of the tests the day's commits lacked, whicheve
 below, each under its own heading. Your job is to fix the items of each report's fix list (its last table, what the
 report itself says needs fixing) whose finding is tagged Critical or Major — and only those. Leave every Minor and
 Nit item alone. A bug the test generation pinned has a strict-xfail test already on master: fixing it means making
-the code right and removing the marker, so that test runs green.
+the code right and removing the marker, so that test runs green. A test marked `@pytest.mark.wontfix` is a bug the
+maintainer has decided to leave: do not touch it, and never add that marker yourself — leaving a bug is the
+maintainer's call, not yours.
 
 Steps:
 1. Prepare for PR: create a branch.
@@ -346,6 +352,9 @@ Fix — change files under tests/ ONLY, never the code under test:
   can be faked or made cheaper). When a test cannot get under {slow_ms} ms and what it checks is not worth
   that time, delete it. No test over {slow_ms} ms stays.
 - Follow "Test data" and "Tests not to write" in CLAUDE.md in anything you rewrite.
+- A test marked `@pytest.mark.wontfix` documents a bug the maintainer has decided to leave; it runs as a
+  non-strict xfail. When one passed in every run, the bug it documents is gone: remove the marker so the test
+  runs as an ordinary one, and list it in the report. Never add that marker yourself.
 - Verify: measure every test you touched {runs} more times, then run the whole suite once.
 
 If you changed anything, create a branch, commit (check rules for commits in the /commit skill), push it and
@@ -354,11 +363,27 @@ create ONE pull request with all of it. If nothing was flaky or slow, change not
 Final report:
 - Flaky tests: name, cause, fix
 - Slow tests made faster: name, before -> after
+- wontfix markers removed: every test by name
 - Tests REMOVED: every one by name, with why it was not worth keeping
 - Bugs in the code under test that a flaky test exposed: the test, the file and line, what goes wrong
 - Anything left undone (broken tests, flaky or slow ones you could not fix), and the pull request
 
 IMPORTANT: The user will only see your final message so keep the entire report in your last message.
+"""
+
+OPEN_PINS_PROMPT = """
+List the bugs pinned in the unit suite. A pin is a test under tests/unit marked `@pytest.mark.xfail(strict=True, ...)`:
+the test generation wrote it, it fails because the code is wrong, and it stays until the bug is fixed or the maintainer
+decides to leave the bug. A test marked `@pytest.mark.wontfix` is such a decision, already taken: leave those out.
+
+For each pin, read the test and the code it pins and rate the fix: trivial (a line), small (one function, no design
+change), medium (a few places, or new tests), large (a design change, or a risk to the normal code paths).
+
+Change nothing: no edits, no branch, no PR.
+
+IMPORTANT: The user will only see your final message. Make it the table alone, one row per pin, numbered from 1, with
+the columns #, Test (file::name), Reason (the marker's reason in one line), Fix complexity. The maintainer answers it
+with "fix 1, 3; wontfix the rest", so the numbers matter. When there is no pin, say so in one line.
 """
 
 SELF_IMPROVEMENT_PROMPT = """
@@ -484,15 +509,17 @@ class CodeQualityMaintainer:
     """Runs the nightly Claude Code jobs on the repo, one after another: bug analysis of the day's
     commits, triage of the server's logs (what actually went wrong, and whether a commit fixed it
     since), a PR fixing the Critical and Major items of both, test generation, test health (flaky
-    and slow tests), then the auto-merge of test-only PRs — one email for the night.
+    and slow tests), the auto-merge of test-only PRs, then the open pins — every bug a strict-xfail
+    test holds, with its fix complexity, for the maintainer to fix or mark `wontfix` — one email for
+    the night.
 
     A daemon thread fires the night at RUN_HOUR. First the nightly update pulls the branch
     `developer_release` names and restarts the server if the code changed (`nightly_update`, on
     by default); the new process boots inside the same hour and takes the night over — its own
     update finds nothing new and the run follows. Then the run, while `self_improvement.nightly_runs`
     is on (off by default, read at each fire); a night without recent commits skips the steps about
-    the commits (bug analysis, test generation, test health) and keeps the log triage, the fix and
-    the auto-merge. What the run itself merges reaches the server at the next night's update or a
+    the commits (bug analysis, test generation, test health) and keeps the log triage, the fix,
+    the auto-merge and the open pins. What the run itself merges reaches the server at the next night's update or a
     restart_server. Also
     exposes the ad-hoc analyze_code / improve_code / restart helpers behind the self_analysis /
     self_improvement commands.
@@ -607,7 +634,8 @@ class CodeQualityMaintainer:
                                          self._step_log_triage,
                                          lambda: self._step_fix_bugs(self.fix_input(reports)),
                                          self._step_test_health,
-                                         self._step_auto_merge]))
+                                         self._step_auto_merge,
+                                         self._step_open_pins]))
         if only == "fix":
             info("CodeQualityMaintainer: the fix step reads the bug analysis and the log triage, so those run first "
                  "(the test generation, whose report it also reads, is a step of its own).")
@@ -617,9 +645,9 @@ class CodeQualityMaintainer:
         elif self._has_recent_commits():
             keys = list(steps)
         else:
-            info("CodeQualityMaintainer: no recent commits — the log triage, the fix step and the auto-merge "
-                 "run tonight, the steps about the commits are skipped.")
-            keys = ["logs", "fix", "merge"]
+            info("CodeQualityMaintainer: no recent commits — the log triage, the fix step, the auto-merge and the "
+                 "open pins run tonight, the steps about the commits are skipped.")
+            keys = ["logs", "fix", "merge", "pins"]
         sections = []
         for key in keys:
             title, step = REPORT_TITLES[key], steps[key]
@@ -1082,6 +1110,37 @@ class CodeQualityMaintainer:
             return report
         except Exception as e:
             error(f"CodeQualityMaintainer: log triage failed: {e}")
+            return ""
+
+    @staticmethod
+    def pinned_tests() -> int:
+        """How many strict xfails the unit tests hold — a cheap screen so a suite without a pin
+        costs no Claude Code run. Counts markers, not tests; a `wontfix` is not one."""
+        pattern = re.compile(STRICT_XFAIL_PATTERN)
+        count = 0
+        for path in (_AISERVER_PATH / "tests" / "unit").rglob("test_*.py"):
+            try:
+                count += len(pattern.findall(path.read_text()))
+            except OSError as e:
+                trace(f"CodeQualityMaintainer: could not read {path} for pins: {e}")
+        return count
+
+    @staticmethod
+    def _step_open_pins() -> str:
+        """Last step of the night: every bug a strict xfail pins, numbered, with the fix complexity
+        Claude Code rates — the whole list every night, however old a pin is, so a list that grows
+        says the maintainer has verdicts to give (fix, or mark `wontfix`). Nothing is changed."""
+        pins = CodeQualityMaintainer.pinned_tests()
+        if not pins:
+            info("CodeQualityMaintainer: the unit suite holds no pinned bug, nothing to list.")
+            return "No bug is pinned in the unit suite."
+        try:
+            info(f"CodeQualityMaintainer: open pins — {pins} strict xfail(s) in the unit suite, rating the fixes...")
+            report = CodeQualityMaintainer._run_claude(OPEN_PINS_PROMPT, "open-pins")
+            info("CodeQualityMaintainer: open pins complete.")
+            return report
+        except Exception as e:
+            error(f"CodeQualityMaintainer: open pins failed: {e}")
             return ""
 
     @staticmethod

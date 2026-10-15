@@ -1229,24 +1229,26 @@ class TestExecuteNightlyRun:
         with patch.object(CodeQualityMaintainer, '_step_log_triage', return_value="") as logs, \
                 patch.object(CodeQualityMaintainer, '_step_fix_bugs', return_value="") as fix, \
                 patch.object(CodeQualityMaintainer, '_step_test_health', return_value="") as health, \
-                patch.object(CodeQualityMaintainer, '_step_auto_merge', return_value="") as merge:
-            self.logs, self.fix, self.health, self.merge = logs, fix, health, merge
+                patch.object(CodeQualityMaintainer, '_step_auto_merge', return_value="") as merge, \
+                patch.object(CodeQualityMaintainer, '_step_open_pins', return_value="") as pins:
+            self.logs, self.fix, self.health, self.merge, self.pins = logs, fix, health, merge, pins
             yield
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_runs_the_six_steps_in_order_with_the_tests_first_the_fix_after_the_reviews_and_the_auto_merge_last(
+    def test_runs_the_seven_steps_in_order_with_the_tests_first_the_fix_after_the_reviews_and_the_pins_last(
             self, mock_sub, mock_commits, maintainer):
         call_order = []
         self.logs.side_effect = lambda: call_order.append('logs') or ''
         self.fix.side_effect = lambda analysis: call_order.append('fix') or ''
         self.health.side_effect = lambda: call_order.append('health') or ''
         self.merge.side_effect = lambda: call_order.append('merge') or ''
+        self.pins.side_effect = lambda: call_order.append('pins') or ''
         with patch.object(CodeQualityMaintainer, '_step_bug_analysis', side_effect=lambda: call_order.append('bugs') or ''):
             with patch.object(CodeQualityMaintainer, '_step_generate_tests', side_effect=lambda: call_order.append('tests') or ''):
                 with patch.object(CodeQualityMaintainer, '_send_email'):
                     maintainer._execute_nightly_run()
-        assert call_order == ['tests', 'bugs', 'logs', 'fix', 'health', 'merge']
+        assert call_order == ['tests', 'bugs', 'logs', 'fix', 'health', 'merge', 'pins']
         assert list(NIGHTLY_STEPS) == call_order   # //nightly names them the same way
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
@@ -1257,6 +1259,7 @@ class TestExecuteNightlyRun:
         self.fix.return_value = "PR #12"
         self.health.return_value = "test_slow"
         self.merge.return_value = "merged #11"
+        self.pins.return_value = "| 1 | test_x | a word is lost | trivial |"
         with patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value="off by one"), \
                 patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value="pinned"), \
                 patch.object(CodeQualityMaintainer, '_markdown_to_html', side_effect=lambda md: md), \
@@ -1265,8 +1268,9 @@ class TestExecuteNightlyRun:
         text = send.call_args[0][1]
         headings = [line[2:] for line in text.splitlines() if line.startswith("# ")]
         assert headings == ["Bug Analysis", "Log Triage", "Bug Fixes", "Test Generation", "Test Health",
-                            "Auto-Merge Test PRs"]
+                            "Auto-Merge Test PRs", "Open Pins"]
         assert text.index("off by one") < text.index("a stall") < text.index("PR #12") < text.index("pinned")
+        assert text.index("merged #11") < text.index("| 1 | test_x |")
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
@@ -1398,8 +1402,8 @@ class TestExecuteNightlyRun:
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=False)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_a_night_without_recent_commits_skips_the_steps_about_the_commits(self, mock_sub, mock_commits, maintainer):
-        """The logs are about the running system, so the triage, the fix it feeds and the
-        auto-merge still run; the review, the tests and the test health of the commits do not."""
+        """The logs are about the running system, so the triage, the fix it feeds, the auto-merge
+        and the open pins still run; the review, the tests and the test health of the commits do not."""
         self.logs.return_value = "| Major | bar.py:9 | a feed stalled |"
         with patch.object(CodeQualityMaintainer, '_step_bug_analysis') as mock_bugs, \
                 patch.object(CodeQualityMaintainer, '_step_generate_tests') as mock_tests, \
@@ -1411,6 +1415,7 @@ class TestExecuteNightlyRun:
         self.logs.assert_called_once()
         assert "| Major | bar.py:9 |" in self.fix.call_args[0][0]
         self.merge.assert_called_once()
+        self.pins.assert_called_once()
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=False)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
@@ -1877,3 +1882,51 @@ class TestNightlyUpdateFailures:
         with patch.object(CodeQualityMaintainer, '_merge_test_prs', side_effect=hung):
             report = maintainer._step_generate_tests()
         assert "baz.py:7" in report
+
+
+@pytest.mark.unit
+class TestOpenPins:
+    """The last step of the night lists every strict xfail of the unit suite — the pinned bugs
+    waiting for the maintainer's verdict — rated by Claude Code; a `wontfix` is a verdict given."""
+
+    @pytest.fixture
+    def tests_root(self, tmp_path):
+        unit = tmp_path / "tests" / "unit" / "assistant"
+        unit.mkdir(parents=True)
+        with patch('assistant.agents.CodeQualityMaintainer._AISERVER_PATH', tmp_path):
+            yield unit
+
+    def test_counts_the_strict_xfails_and_leaves_the_wontfix_and_the_plain_xfail_out(self, tests_root):
+        (tests_root / "test_a.py").write_text(
+            '@pytest.mark.xfail(strict=True, reason="a word ending at the limit is dropped")\n'
+            'def test_one(): ...\n'
+            '@pytest.mark.xfail(\n    strict=True,\n    reason="two groups with one title")\n'
+            'def test_two(): ...\n'
+            '@pytest.mark.wontfix(reason="harmless, the fix would cost more than the bug")\n'
+            'def test_three(): ...\n'
+            '@pytest.mark.xfail(reason="flaky upstream")\n'
+            'def test_four(): ...\n')
+        (tests_root / "helper.py").write_text('@pytest.mark.xfail(strict=True, reason="not a test file")\n')
+        assert CodeQualityMaintainer.pinned_tests() == 2
+
+    def test_a_suite_without_a_pin_costs_no_claude_run_and_still_reports(self, tests_root):
+        (tests_root / "test_a.py").write_text('def test_one(): ...\n')
+        with patch.object(CodeQualityMaintainer, '_run_claude') as run:
+            report = CodeQualityMaintainer._step_open_pins()
+        run.assert_not_called()
+        assert report   # the email still says there is nothing waiting
+
+    def test_a_pinned_suite_is_rated_by_claude_and_the_table_is_the_report(self, tests_root):
+        (tests_root / "test_a.py").write_text(
+            '@pytest.mark.xfail(strict=True, reason="a word ending at the limit is dropped")\ndef test_one(): ...\n')
+        table = "| 1 | tests/unit/assistant/test_a.py::test_one | a word is dropped | trivial |"
+        with patch.object(CodeQualityMaintainer, '_run_claude', return_value=table) as run:
+            assert CodeQualityMaintainer._step_open_pins() == table
+        run.assert_called_once()
+        assert "wontfix" in run.call_args[0][0]   # the prompt tells the run which pins are verdicts already
+
+    def test_a_crashed_rating_leaves_the_night_its_other_sections(self, tests_root):
+        (tests_root / "test_a.py").write_text(
+            '@pytest.mark.xfail(strict=True, reason="a bug")\ndef test_one(): ...\n')
+        with patch.object(CodeQualityMaintainer, '_run_claude', side_effect=RuntimeError("claude down")):
+            assert CodeQualityMaintainer._step_open_pins() == ""

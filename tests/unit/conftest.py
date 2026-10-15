@@ -262,6 +262,20 @@ SLOW_TEST_SECONDS = 0.05
 _durations = {}
 
 
+WONTFIX_MARKER = "wontfix"
+
+
+def pytest_itemcollected(item):
+    """A `wontfix` test is a non-strict xfail: the test documents a bug the maintainer has decided
+    not to fix, so neither the bug staying nor its going away may fail the suite. The agents never
+    add the marker (the nightly prompts say so); the test health audit removes it from a test that
+    passes, so the record does not outlive the bug."""
+    marker = item.get_closest_marker(WONTFIX_MARKER)
+    if marker is not None:
+        reason = marker.kwargs.get("reason") or (marker.args[0] if marker.args else WONTFIX_MARKER)
+        item.add_marker(pytest.mark.xfail(strict=False, reason=f"{WONTFIX_MARKER}: {reason}"))
+
+
 def pytest_collection_modifyitems(session, config, items):
     """Spread the previous run's slow tests through the collection, longest first, each placed
     where its share of the slow time falls. xdist hands every worker a contiguous slice of the

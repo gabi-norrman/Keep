@@ -444,7 +444,7 @@ class DebugCommands:
     # --- //nightly ------------------------------------------------------------------------
 
     def cmd_NIGHTLY(self, args: str) -> str:
-        """//nightly [bugs|logs|fix|tests|health|merge]: run the nightly code-quality run now (bug analysis, log triage, a PR fixing the Critical and Major findings of both, test generation, test health, auto-merge), or one step alone (fix runs the bug analysis and the log triage first, it reads from them) — in the background, also with self_improvement.nightly_runs off; the report is emailed."""
+        """//nightly [bugs|logs|fix|tests|health|merge|pins]: run the nightly code-quality run now (bug analysis, log triage, a PR fixing the Critical and Major findings of both, test generation, test health, auto-merge, the open pins — the strict xfails with their fix complexity), or one step alone (fix runs the bug analysis and the log triage first, it reads from them) — in the background, also with self_improvement.nightly_runs off; the report is emailed."""
         from assistant.agents import CodeQualityMaintainer as cqm
         only = args.strip().lower() or None
         if only and only not in cqm.NIGHTLY_STEPS:
