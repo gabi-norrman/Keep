@@ -19,7 +19,7 @@ Keep knows you and your family. It has analyzed your messages and every photo yo
 
 Runs on a Mac you own, talks to you by Telegram, terminal and voice, and does things — not just chat: shopping, calendars, cameras, the cars.
 
-Keep stores everything on your Mac and thinks on Anthropic’s servers — a deliberate trade-off until local models are good enough. Passwords and card numbers go in the Keep Vault, encrypted on your Mac: the model never sees them. Read the privacy section before you install.
+Keep stores everything on your Mac and thinks on Anthropic’s servers. That’s a deliberate trade-off until local models are good enough. Passwords and card numbers go in the Keep Vault, encrypted on your Mac: the model never sees them. Read the privacy section before you install.
 
 Refined over two years of daily use in real homes.
 
