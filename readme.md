@@ -220,7 +220,7 @@ Every integration is off until you turn it on, and Keep walks you through the se
 <tr><td>🎵&nbsp;<b>Music</b></td><td>Sonos and Spotify</td></tr>
 <tr><td>🌦️&nbsp;<b>Weather</b></td><td>YR forecasts and rain radar</td></tr>
 <tr><td>🌐&nbsp;<b>Web</b></td><td>Search, page reading, a real headless browser for sites that need clicking, and X</td></tr>
-<tr><td>💬&nbsp;<b>Chat</b></td><td>Telegram, with a feed of the family's group chats</td></tr>
+<tr><td>💬&nbsp;<b>Chat</b></td><td>Telegram and WhatsApp, with a feed of the family's group chats; Keep reads along and can send on your behalf</td></tr>
 <tr><td>🎙️&nbsp;<b>Voice</b></td><td>Fusion of local Whisper transcription and ElevenLabs, for <i>low latency</i> combined with <i>high accuracy</i></td></tr>
 <tr><td>🛠️&nbsp;<b>Self&nbsp;Improvement</b></td><td>Keep reads its own logs and code through Claude Code, finds bugs and sends you the pull request</td></tr>
 </table>
