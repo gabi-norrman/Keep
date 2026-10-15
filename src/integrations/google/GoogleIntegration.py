@@ -10,7 +10,8 @@ from assistant.integration.mail.MailSource import MailSource
 from common.ConfigManager import ConfigManager
 from common.logging import info, trace
 from assistant.integration.OAuthPaste import SignIn, parse_pasted
-from integrations.google.GoogleAuth import (SCOPE_CALENDAR, SCOPE_MAIL, GoogleAuth, NotSignedIn, delete_all_token_files, not_signed_in_hint, sign_in_again_hint)
+from integrations.google.GoogleAuth import (SCOPE_CALENDAR, SCOPE_DRIVE_READONLY, SCOPE_MAIL, GoogleAuth, NotSignedIn,
+                                            delete_all_token_files, not_signed_in_hint, sign_in_again_hint)
 from integrations.google.GoogleCalendarAccount import GoogleCalendarAccount
 
 SECTION = "google"
@@ -19,6 +20,33 @@ CLIENT_ID_KEY = f"{SECTION}.oauth.client_id"
 CLIENT_SECRET_KEY = f"{SECTION}.oauth.client_secret"
 DEFAULT_CALENDAR = "primary"
 MAIL_PRESET = "gmail"
+
+
+def flag(entry: dict, key: str) -> bool:
+    value = entry.get(key, True)
+    return str(value).strip().lower() not in ("false", "no", "0", "off") if value is not None else True
+
+
+def docs_of(entry: dict) -> list[dict]:
+    """The `docs` list of an account entry: the `{name, id}` sections with an id, the rest logged and left out."""
+    docs = entry.get("docs") or []
+    if not isinstance(docs, list):
+        info(f"Google: account '{entry.get('name')}' has docs that is not a list, no documents from it")
+        return []
+    kept = []
+    for doc in docs:
+        if isinstance(doc, dict) and str(doc.get("id") or "").strip():
+            kept.append({"id": str(doc["id"]).strip(), "name": str(doc.get("name") or "").strip()})
+        else:
+            info(f"Google: account '{entry.get('name')}' lists a doc without an id, skipped: {doc!r}")
+    return kept
+
+
+def account_scopes(entry: dict) -> list[str]:
+    """The scopes an account's entry asks for: mail, calendar, and Drive read-only for the docs
+    it lists. The one place that decides them — the sign-in link and the feed read the same."""
+    return [s for s, on in ((SCOPE_MAIL, flag(entry, "mail")), (SCOPE_CALENDAR, flag(entry, "calendar")),
+                            (SCOPE_DRIVE_READONLY, bool(docs_of(entry)))) if on]
 
 
 class GoogleAccount:
@@ -193,11 +221,6 @@ class GoogleIntegration(AccountHealth, Integration, MailSource, CalendarSource):
             return entries[index]
         return {}
 
-    @staticmethod
-    def _flag(entry: dict, key: str) -> bool:
-        value = entry.get(key, True)
-        return str(value).strip().lower() not in ("false", "no", "0", "off") if value is not None else True
-
     @classmethod
     def _build_accounts(cls) -> list[GoogleAccount]:
         config = ConfigManager.get_instance()
@@ -206,13 +229,12 @@ class GoogleIntegration(AccountHealth, Integration, MailSource, CalendarSource):
         accounts = []
         for (index, entry), prefix in zip(entries, prefixes):
             name = str(entry["name"]).strip()
-            mail, calendar = cls._flag(entry, "mail"), cls._flag(entry, "calendar")
-            if not mail and not calendar:
-                info(f"Google: account '{name}' has neither mail nor calendar on, skipped")
+            mail, calendar, docs = flag(entry, "mail"), flag(entry, "calendar"), len(docs_of(entry))
+            if not mail and not calendar and not docs:
+                info(f"Google: account '{name}' has neither mail, calendar nor docs on, skipped")
                 continue
             address = lambda i=index: str(cls._entry(i).get("address") or "")
-            scopes = lambda m=mail, c=calendar: [s for s, on in ((SCOPE_MAIL, m), (SCOPE_CALENDAR, c)) if on]
-            auth = GoogleAuth(name, cls._client_settings, scopes, address)
+            auth = GoogleAuth(name, cls._client_settings, lambda e=entry: account_scopes(e), address)
             mail_account = ImapMailAccount(
                 name, prefix, lambda a=address: (a(), ""), preset=MAIL_PRESET,
                 auth_help=sign_in_again_hint(name), oauth_token=auth.token) if mail else None
@@ -223,7 +245,7 @@ class GoogleIntegration(AccountHealth, Integration, MailSource, CalendarSource):
                 timezone=lambda: ConfigManager.get_instance().get_home_timezone(),
                 address=address) if calendar else None
             account = GoogleAccount(name, address, auth, mail_account, calendar_account)
-            trace(f"Google: account '{name}' ({prefix}) mail={mail} calendar={calendar} "
+            trace(f"Google: account '{name}' ({prefix}) mail={mail} calendar={calendar} docs={docs} "
                   f"{'signed in' if account.signed_in() else 'not signed in'}")
             accounts.append(account)
         info(f"Google: {len(accounts)} account(s): {', '.join(a.name for a in accounts) or 'none'}")

@@ -74,6 +74,9 @@ def _set_pending(name: str, flow: Optional[PendingSignIn]) -> None:
             _pending[name] = flow
 SCOPE_MAIL = "https://mail.google.com/"          # IMAP XOAUTH2 accepts nothing narrower
 SCOPE_CALENDAR = "https://www.googleapis.com/auth/calendar"
+# The narrowest scope that exports a revision: drive.file sees only what the app created, and
+# the Docs API (documents.readonly) has no revisions.
+SCOPE_DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly"
 REFRESH_MARGIN = 60
 TIMEOUT = 30
 
@@ -169,6 +172,12 @@ class GoogleAuth:
         with self._lock:
             return str(self._load().get("address") or "")
 
+    def has_scope(self, scope: str) -> bool:
+        """Whether the sign-in on file granted `scope` — an account signed in before a flag was
+        added to its entry has a token without the flag's scope, and must sign in again."""
+        with self._lock:
+            return scope in str(self._load().get("scope") or "").split()
+
     def expires_at(self) -> Optional[datetime]:
         """When the access token on file runs out (the next call refreshes it); None without one."""
         expiry = self._load().get("expiry")
@@ -228,7 +237,7 @@ class GoogleAuth:
             raise RuntimeError("google.oauth.client_id is not set")
         scopes = self._scopes()
         if not scopes:
-            raise RuntimeError(f"account '{self.name}' asks for neither mail nor calendar")
+            raise RuntimeError(f"account '{self.name}' asks for neither mail, calendar nor docs")
         address = self._address()
         with self._lock:
             flow = PendingSignIn(state=secrets.token_urlsafe(16), client_id=client_id, started_at=time.time())

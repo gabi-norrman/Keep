@@ -7,7 +7,7 @@
 # `# >> section: path` stands where it belongs, and config_help(section) shows the section whole.
 
 # Every integration is off until it is listed here (Web Access and ElevenLabs TTS are on regardless).
-# Use the names list_integrations shows: Arlo, Aseko Pool, CalDAV, Google, iCloud, IMAP Mail, iMessage, Indigo,
+# Use the names list_integrations shows: Arlo, Aseko Pool, CalDAV, Google, Google Docs, iCloud, IMAP Mail, iMessage, Indigo,
 # Microsoft 365, Philips Hue, Photos, Plejd, Reminders, Ring, Self Improvement, Sonos & Spotify, Telegram Feed, Tesla, X, YR Weather.
 # The TTS engines voice speaks through are integrations too — ElevenLabs TTS (on by default), Gemini TTS,
 # Chirp 3 HD, Cartesia Sonic TTS, Fish Audio TTS, Grok TTS, Supertonic TTS: a request speaks through the
@@ -150,6 +150,11 @@ telegram_bot:
 feeds:
   imessage: { backfill_months: 60 }   # five years; chat.db rows are cheap
   telegram_feed: { backfill_months: 1 }
+  # The edits of the Google Docs listed under google.accounts[].docs. poll_seconds is how often each doc's
+  # modifiedTime is checked (one small call per doc; the export only runs when it moved) and how long a
+  # doc has to be quiet before its session counts as over, so a row lands one to two intervals after the
+  # last edit. Read live: a change is in force at the next poll.
+  google_docs: { backfill_months: 1, poll_seconds: 600 }
   whatsapp: { backfill_months: 36 }    # read at linking time: the phone uploads that much history once, when the device links
   photos: { backfill_months: 1, backfill_batch: false }   # one LLM call per photo or video, on the ai.photo_indexing tier (Gemini 3.8 Flash by default)
   # On a fresh install the first-run pipeline raises photos to 36 once the first memory bank is curated

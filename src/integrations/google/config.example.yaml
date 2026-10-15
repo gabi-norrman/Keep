@@ -13,7 +13,11 @@
 # tab). The tokens are kept in cache/oauth/. `name` is what the assistant calls the account, what
 # mail.send_from and the account argument of send_email name, where the id prefix of its mails in a
 # listing (PE-AB) comes from, and what `Account/Calendar` names in load_calendar and create_event; names
-# must be unique. Add a second account as google.accounts[1].name.
+# must be unique. Add a second account as google.accounts[1].name. An account that lists `docs` also
+# needs the Google Drive API enabled in the same Cloud project and the "Google Docs" integration on: each
+# editing session of a listed document lands in the history as a diff (the feed `google_docs`). The
+# sign-in asks for the Drive read-only scope only when docs are listed, so an account signed in before
+# its docs were added signs in again with google_login to grant it.
 google:
   oauth:
     client_id: YOUR_CLIENT_ID.apps.googleusercontent.com
@@ -27,3 +31,7 @@ google:
       # Calendars whose events are always in the prompt, e.g. [primary, Family]. The others are only
       # listed by name and the assistant loads one when it needs it. Empty shows every calendar.
       shown_calendars: []
+      # Google Docs whose edits land in the history (the "Google Docs" integration in enabled_integrations):
+      # each editing session becomes one row with who changed what, as a diff. `id` is the part of the
+      # doc's URL between /d/ and /edit; `name` is what the rows call the document (its title when empty).
+      docs: []        # e.g. [{ name: Family plan, id: 1AbCdEf... }]
