@@ -37,21 +37,22 @@ class PromptManager:
     """Assembles the live system prompt from its template and sections and builds the LLM message list.
 
     Section updates are folded in as small transient history notes where possible so the cached
-    system-prompt bytes stay stable; a full rebuild happens only on cold start, large diffs or
-    once per cache TTL.
+    system-prompt bytes stay stable; a full rebuild happens only on cold start or a large diff.
     """
 
     # When a section updates: if the unified diff against the baseline (the bytes
     # baked into the currently-active prompt) is small enough, emit it as a
     # transient history note instead of rebuilding the prompt. Keeps the cached
     # system prompt bytes stable so Anthropic's 1h ephemeral cache stays warm.
-    _DIFF_SIZE_THRESHOLD = 600
-    # Hard ceiling on how long we'll keep delta-patching before forcing a full rebuild.
-    # A rebuild changes the system prompt bytes, and with them the prefix of every cached
-    # history turn behind it, so it must come rarer than the hourly autonomous check for
-    # that check (and a chat resumed within the hour) to read its history instead of
-    # re-writing it; the notes carry the section changes in between.
-    _FULL_REBUILD_INTERVAL_S = 3 * 3600
+    # The diff is line-based, so a moved calendar event costs its line twice — a
+    # 410-char event title made an 841-char diff on 2026-10-14 and rebuilt the prompt.
+    # A rebuild re-writes the system blocks and every cached history turn behind them
+    # (20–30K tokens at the cache-write rate, ~$0.50); a note of this size is ~300 tokens.
+    # There is no time ceiling on delta-patching: a window trim restates a section whose
+    # notes it dropped (_restate_trimmed_sections_locked), so the notes never pile up unbounded.
+    # A 3h forced rebuild used to exist and fired at arbitrary moments — four times in
+    # the 21 hours to 2026-10-15 13:40 on prod, twice right before a periodic check.
+    _DIFF_SIZE_THRESHOLD = 1000
     # A carried section (Toolkits.CARRIED_SECTIONS) is never re-baked into the prompt, so its
     # notes accumulate until the LLM loads the toolkit again; past this many chars of notes
     # one pointer note replaces them and tracking stops until the next load.
@@ -379,15 +380,15 @@ class PromptManager:
 
         For each update we choose between two paths to keep the LLM's prompt cache warm:
           - Small diff against the section's LAST-SEEN state (the +side of the most
-            recent note, or the baseline if untouched) and we're still inside the 1h
-            window → append a transient "section updated" note to MessageHistory and
-            keep the prompt bytes unchanged. Notes accumulate as an append-only
-            changelog: each is stamped at the moment its change happened and diffs
-            only against the immediately preceding state, so a later change to the
-            same section adds a fresh note instead of re-stating earlier changes.
-          - Large diff, missing baseline, or expired window → full rebuild (which
-            re-snapshots all baselines, resets last-seen state, and drops the
-            now-obsolete transient notes).
+            recent note, or the baseline if untouched) → append a transient "section
+            updated" note to MessageHistory and keep the prompt bytes unchanged. Notes
+            accumulate as an append-only changelog: each is stamped at the moment its
+            change happened and diffs only against the immediately preceding state, so
+            a later change to the same section adds a fresh note instead of re-stating
+            earlier changes.
+          - Large diff or missing baseline → full rebuild (which re-snapshots all
+            baselines, resets last-seen state, and drops the now-obsolete transient
+            notes).
 
         The state read + diff decision + transient emission all happen under
         _prompt_lock so we can't race with a parallel _assemble_prompt and end up
@@ -425,14 +426,11 @@ class PromptManager:
             # if it hasn't changed since the last rebuild.
             prev = self._section_current.get(key, baseline)
             new_content = section.get_content()
-            window_expired = time.time() - self._last_assembly_time >= self._FULL_REBUILD_INTERVAL_S
 
             do_full_rebuild = False
             pre_heat_messages = None
 
-            if baseline is None or window_expired:
-                if baseline is not None:
-                    info(f"Full prompt rebuild — section={section_name} reason={self._FULL_REBUILD_INTERVAL_S // 3600}h window expired")
+            if baseline is None:
                 do_full_rebuild = True
             elif new_content == prev:
                 # Nothing changed since the last state the LLM saw — no-op. (A revert

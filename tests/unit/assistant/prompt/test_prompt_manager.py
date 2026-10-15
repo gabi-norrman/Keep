@@ -1075,21 +1075,22 @@ def test_large_change_forces_full_rebuild_and_keeps_the_notes(prompt_test_enviro
 
 
 @pytest.mark.unit
-def test_expired_rebuild_window_forces_full_rebuild_even_for_small_change(prompt_test_environment, monkeypatch):
+def test_a_small_change_long_after_the_last_assembly_is_still_a_note(prompt_test_environment, monkeypatch):
+    """No time ceiling forces a rebuild: a rebuild re-writes every cached block, so only
+    the diff's size decides. A 3h ceiling once fired right before periodic checks."""
     manager, sections = _seed_full_rebuild(prompt_test_environment)
     received = []
     manager.on_prompt_assembled(lambda msgs: received.append(msgs))
+    prompt_before = manager.prompt
+    manager._last_assembly_time = time.time() - 24 * 3600
 
-    # Pretend we are well past the rebuild window since baselines were snapshotted.
-    manager._last_assembly_time = time.time() - (PromptManager._FULL_REBUILD_INTERVAL_S + 10)
-
-    sections["procedures"] = DummySection("procedures_content_x")  # would otherwise be a tiny delta
+    sections["procedures"] = DummySection("procedures_content_x")
     manager.sections = sections
     manager.on_section_updated("procedures")
 
-    assert "procedures_content_x" in manager.prompt, "expired window must trigger full rebuild"
-    assert len(received) == 1
-    assert manager.message_history.transient_entries == []
+    assert manager.prompt == prompt_before, "a small change must not touch the cached prompt"
+    assert len(manager.message_history.transient_entries) == 1
+    assert "procedures_content_x" in manager.message_history.transient_entries[0]["content"]
 
 
 @pytest.mark.unit
