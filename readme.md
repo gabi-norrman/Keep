@@ -1,7 +1,7 @@
 <p align="center"><img src="docs/images/banner.svg" width="100%" alt="Keep — personal AI done right"></p>
 <br>
 <p align="center">
-  A self-hosted personal AI assistant that <b>just works</b>.
+A self-hosted personal AI assistant for you and your family
 </p>
 <br>
 
@@ -15,12 +15,16 @@
 <td>
 
 ### Keep
-Built for users in the <b>Apple ecosystem</b>, runs on an <b>Apple Silicon Mac</b> and is powered by <b>Fable from Anthropic</b>.
+Keep knows you and your family. It has analyzed your messages and every photo you’ve taken, so it remembers all the names, all the places, all the plans and everything you need to do, without you explaining anything.
 
-Refined over two years of daily use in a real home: it's robust and <b><i>just works</i></b>.
+Runs on a Mac you own, talks to you by Telegram, terminal and voice, and does things — not just chat: shopping, calendars, cameras, the car.
+
+Keep stores everything on your Mac and thinks on Anthropic’s servers — a deliberate trade-off until local models are good enough. Passwords and card numbers go in the Keep Vault, encrypted on your Mac: the model never sees them. Read the privacy section before you install.
+
+Refined over two years of daily use in a real homes.
 
 ### Requirements
-Apple Silicon Mac connected to your personal iCloud.
+Apple Silicon Mac connected to your personal iCloud that runs the Keep server.
 
 Everything else — email, smart home, cameras, car — is optional, and Keep walks you through setting it up.
 
@@ -32,13 +36,24 @@ Everything else — email, smart home, cameras, car — is optional, and Keep wa
 <br>
 
 ## Try it out!
-
+You can have Keep running in minutes:
 ```bash
 gh auth login && gh api -H "Accept: application/vnd.github.raw" "repos/maciekd/Keep/contents/install.sh?ref=release" | bash
 ```
 
 > [!NOTE]
 > Keep is in closed beta: the install only works for GitHub accounts invited as collaborators. `brew install gh` if you do not have `gh`. The installer is self-contained, it won't touch anything else on your Mac.
+
+<br>
+
+## Interfaces
+
+<table>
+<tr><td width="190">⌨️&nbsp;<b>Terminal&nbsp;UI</b></td><td><img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">Text chat in a Claude Code-style terminal UI.</td></tr>
+<tr><td><img src="docs/images/telegram.svg" width="18" height="18" alt="" valign="middle">&nbsp;<b>Telegram</b></td><td>The same chat on your phone, with images and voice messages.</td></tr>
+<tr><td>🎙️&nbsp;<b>Voice</b></td><td>Keep hears, thinks and answers in her own voice, fast enough to feel like a human conversation.</td></tr>
+
+</table>
 
 <br>
 
@@ -186,16 +201,6 @@ Gaggenau service was booked while the house stood empty. I sorted the two time w
 
 </td>
 </tr>
-</table>
-
-<br>
-
-## Interfaces
-
-<table>
-<tr><td width="190">⌨️&nbsp;<b>Terminal&nbsp;UI</b></td><td><img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">Text chat in a Claude Code-style terminal UI.</td></tr>
-<tr><td><img src="docs/images/telegram.svg" width="18" height="18" alt="" valign="middle">&nbsp;<b>Telegram</b></td><td>The same chat on your phone, with images and voice messages.</td></tr>
-<tr><td>🎙️&nbsp;<b>Voice&#8209;to&#8209;voice</b></td><td>A highly optimized interface for talking to your home.</td></tr>
 </table>
 
 <br>
