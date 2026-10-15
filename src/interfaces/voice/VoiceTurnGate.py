@@ -145,7 +145,7 @@ class VoiceTurnGate:
             # like the phones. The completeness model only ever judges what arrived, so on
             # an outpost phrase it can do nothing but add a needless hold. Treat every
             # outpost utterance as complete and skip the model entirely.
-            info(f"Outpost STT ({engine}) — treating phrase as complete, lets go!")
+            trace(f"Outpost STT ({engine}) — treating phrase as complete, lets go!")
             target_time = VoiceTurnGate.MINIMUM_SECONDS_TO_WAIT_BEFORE_SPEAKING
         elif len(reply_text.split()) > 1:
             if FloxyDatabase.get_instance().is_query_common(reply_text):

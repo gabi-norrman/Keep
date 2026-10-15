@@ -151,7 +151,7 @@ class HistoryFeed(AssistantObserver):
             entry = self._pane.insert(KIND_SYSTEM, html.escape(text, quote=False), time.time(), header=header)
             if rejected:
                 self._pane.set_detail(entry, f"rejected: {rejected}")
-        info(f"HistoryFeed: showed the incoming voice request{who} ({len(context.user_input or '')} chars"
+        trace(f"HistoryFeed: showed the incoming voice request{who} ({len(context.user_input or '')} chars"
              f"{', rejected: ' + rejected if rejected else ''})")
 
     # --- from MessageHistory (any thread) ---------------------------------------------------

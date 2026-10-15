@@ -177,7 +177,7 @@ class DialogManager:
         self.voice.set_request_language(ctx.lang)
         # The night voice is for the house speakers; a client playing the reply itself (the apps) never whispers.
         self.voice.set_whisper_allowed(ctx.server_sound)
-        info(f"Voice for lang={ctx.lang}: {type(self.voice).__name__}, "
+        trace(f"Voice for lang={ctx.lang}: {type(self.voice).__name__}, "
              f"night voice {'allowed' if ctx.server_sound else 'off (the client plays the reply)'}")
 
     # Per-request reply-language directive, written in the target language. Folded onto the

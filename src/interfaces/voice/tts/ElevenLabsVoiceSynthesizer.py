@@ -129,7 +129,7 @@ class ElevenLabsVoiceSynthesizer(WebSocketVoiceSynthesizer, Integration):
 
         if self.uses_dialogue_socket:
             self.session_voice_id = self.voice_id()
-            info(f"ElevenLabs dialogue socket open: model {self.model_id}, voice {self.session_voice_id}")
+            trace(f"ElevenLabs dialogue socket open: model {self.model_id}, voice {self.session_voice_id}")
             ws.send(json.dumps({
                 "voices": [self.session_voice_id],
                 "xi_api_key": self.api_key,

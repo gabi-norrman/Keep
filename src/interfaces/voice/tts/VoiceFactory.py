@@ -1,6 +1,6 @@
 from common.ConfigManager import config
 from common.Language import language_code
-from common.logging import info
+from common.logging import info, trace
 from .CachedVoiceSynthesizer import CachedVoiceSynthesizer
 from .CartesiaSonicVoiceSynthesizer import CartesiaSonicVoiceSynthesizer
 from .Chirp3VoiceSynthesizer import Chirp3VoiceSynthesizer
@@ -57,7 +57,7 @@ def create_voice(lang: str | None) -> VoiceSynthesizer | None:
         if missing:
             skipped.append(f"{name} missing {', '.join(missing)}")
             continue
-        info(f"Voice for lang={lang} ({code}): {type(impl).__name__}"
+        trace(f"Voice for lang={lang} ({code}): {type(impl).__name__}"
              + (f" (skipped: {'; '.join(skipped)})" if skipped else ""))
         return CachedVoiceSynthesizer(impl)
     info(f"No TTS engine can speak lang={lang} ({code}), the reply is text-only: {'; '.join(skipped)}")
