@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock, Mock
 from anthropic import APIStatusError
 
 from assistant.llm.AbstractLLM import LLMRefusalError
-from assistant.llm.ClaudeLLM import ClaudeLLM
+from assistant.llm.ClaudeLLM import ClaudeLLM, WorkspaceRequiredError, WORKSPACE_CONFIG_KEY, WORKSPACE_HEADER, claude_workspace_id
 
 
 def _make_api_status_error(status_code: int, message: str = "error") -> APIStatusError:
@@ -554,3 +554,68 @@ class TestBatchedCompletion:
         llm.speed = "fast"
         assert llm.create_batched_completion(MESSAGES) is None
         llm.client.messages.batches.create.assert_not_called()
+
+
+WORKSPACE_REQUIRED_MESSAGE = ("anthropic-workspace-id is required when authenticating with an identity-linked "
+                              "API key; send the id of the workspace this request acts in.")
+
+
+def _make_400(message: str) -> APIStatusError:
+    response = MagicMock()
+    response.status_code = 400
+    response.headers = {}
+    body = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
+    return APIStatusError(f"Error code: 400 - {body}", response=response, body=body)
+
+
+def _bare_llm() -> ClaudeLLM:
+    llm = ClaudeLLM.__new__(ClaudeLLM)
+    llm.client = Mock()
+    llm.model = "claude-sonnet-4-5"
+    llm.speed = None
+    llm.prompt_cache = True
+    return llm
+
+
+@patch("assistant.llm.ClaudeLLM.config")
+class TestWorkspace:
+    """The 2026-10 beta tester: a key the Console's Create key dialog left unscoped is refused
+    on every request until the workspace id travels along as a header."""
+
+    def test_configured_workspace_rides_on_every_request_as_the_header(self, mock_config):
+        mock_config.missing_required.return_value = []
+        mock_config.get.return_value = " wrkspc_01TEST "
+        with patch("assistant.llm.ClaudeLLM.Anthropic") as client_cls:
+            llm = ClaudeLLM("claude-sonnet-4-5")
+            llm.initialize()
+        assert client_cls.call_args.kwargs["default_headers"] == {WORKSPACE_HEADER: "wrkspc_01TEST"}
+
+    def test_a_key_tied_to_one_workspace_sends_no_header(self, mock_config):
+        mock_config.missing_required.return_value = [WORKSPACE_CONFIG_KEY]
+        with patch("assistant.llm.ClaudeLLM.Anthropic") as client_cls:
+            llm = ClaudeLLM("claude-sonnet-4-5")
+            llm.initialize()
+        assert client_cls.call_args.kwargs["default_headers"] is None
+        assert claude_workspace_id() is None
+
+    def test_streaming_refusal_for_a_missing_workspace_says_what_to_configure(self, mock_config):
+        llm = _bare_llm()
+        llm.client.messages.create = Mock(side_effect=_make_400(WORKSPACE_REQUIRED_MESSAGE))
+        with pytest.raises(WorkspaceRequiredError) as excinfo:
+            list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
+        assert WORKSPACE_CONFIG_KEY in str(excinfo.value)
+        assert "platform.claude.com/settings/keys" in str(excinfo.value)
+
+    def test_completion_refusal_for_a_missing_workspace_says_what_to_configure(self, mock_config):
+        llm = _bare_llm()
+        llm.client.messages.create = Mock(side_effect=_make_400(WORKSPACE_REQUIRED_MESSAGE))
+        with pytest.raises(WorkspaceRequiredError):
+            llm.create_completion([{"role": "user", "content": "hi"}])
+
+    def test_any_other_400_is_passed_through_untouched(self, mock_config):
+        llm = _bare_llm()
+        error = _make_400("Your credit balance is too low to access the Anthropic API.")
+        llm.client.messages.create = Mock(side_effect=error)
+        with pytest.raises(APIStatusError) as excinfo:
+            llm.create_completion([{"role": "user", "content": "hi"}])
+        assert excinfo.value is error

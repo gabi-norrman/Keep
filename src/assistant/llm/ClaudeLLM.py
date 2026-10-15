@@ -3,11 +3,45 @@ from typing import Generator
 
 import httpx
 
-from .AbstractLLM import AbstractLLM, LLMRefusalError
+from .AbstractLLM import AbstractLLM, LLMRefusalError, api_error_message
 from anthropic import Anthropic, APIConnectionError, APIStatusError
 from common.ConfigManager import config
 from common.DevelopmentConfig import BYTE_PREFIX_TAIL, CLAUDE_STATIC_CACHE_TTL, CLAUDE_HISTORY_CACHE_TTL
 from common.logging import trace, info
+
+
+WORKSPACE_CONFIG_KEY = "api_keys.anthropic_workspace"
+WORKSPACE_HEADER = "anthropic-workspace-id"
+WORKSPACE_REQUIRED = (
+    "The Anthropic key in config.yaml is not tied to a workspace, so Anthropic needs to be told "
+    "which one to use. Either create a key at https://platform.claude.com/settings/keys and pick a "
+    "workspace in the Create key dialog (the Default Workspace is fine), then put it in "
+    f"api_keys.anthropic — or keep this key and set {WORKSPACE_CONFIG_KEY} to the id of a workspace "
+    "(wrkspc_…, the ID column at https://platform.claude.com/settings/workspaces).")
+
+
+class WorkspaceRequiredError(RuntimeError):
+    """Anthropic refused every request because the key names no workspace — WORKSPACE_REQUIRED
+    says what to do, where the server's own line only names the missing header."""
+
+
+def claude_workspace_id() -> str | None:
+    """The workspace a key not tied to one acts in, or None: a key created for one workspace
+    needs nothing, and the config key then stays empty."""
+    if config.missing_required((WORKSPACE_CONFIG_KEY,)):
+        return None
+    return config.get(WORKSPACE_CONFIG_KEY).strip()
+
+
+def claude_default_headers() -> dict[str, str] | None:
+    """The headers every Anthropic client of ours sends: the workspace id when one is configured."""
+    workspace = claude_workspace_id()
+    return {WORKSPACE_HEADER: workspace} if workspace else None
+
+
+def workspace_required(e: Exception) -> bool:
+    """Whether *e* is Anthropic's 400 for a key not tied to a workspace sent without the header."""
+    return getattr(e, "status_code", None) == 400 and WORKSPACE_HEADER in (api_error_message(e) or "")
 
 
 class ClaudeLLM(AbstractLLM):
@@ -157,7 +191,10 @@ class ClaudeLLM(AbstractLLM):
 
     def initialize(self):
         """Initialize the Anthropic client"""
-        self.client = Anthropic(api_key=self.api_key)
+        headers = claude_default_headers()
+        if headers:
+            info(f"Claude client sends {WORKSPACE_HEADER} {headers[WORKSPACE_HEADER]} on every request")
+        self.client = Anthropic(api_key=self.api_key, default_headers=headers)
 
     def _convert_messages(self, messages: list[dict]) -> tuple[str | None, list[dict]]:
         """Convert OpenAI message format to Anthropic format.
@@ -348,6 +385,13 @@ class ClaudeLLM(AbstractLLM):
     EMPTY_REPLY_RETRIES = 2
 
     @staticmethod
+    def _raise_if_workspace_required(e: APIStatusError):
+        """The one 400 whose fix is in config.yaml, not in the request: reworded into what to do."""
+        if workspace_required(e):
+            info(f"Claude refused the request: the key names no workspace and {WORKSPACE_CONFIG_KEY} is not set")
+            raise WorkspaceRequiredError(WORKSPACE_REQUIRED) from e
+
+    @staticmethod
     def _is_retryable(e: APIStatusError) -> bool:
         if e.status_code in (500, 529):
             return True
@@ -419,10 +463,14 @@ class ClaudeLLM(AbstractLLM):
         api_params = self._build_api_params(messages, thinking, stream=True)
         for attempt in range(self.EMPTY_REPLY_RETRIES + 1):
             produced_text = False
-            for chunk in self._stream_with_status_retry(api_params):
-                if chunk.strip():
-                    produced_text = True
-                yield chunk
+            try:
+                for chunk in self._stream_with_status_retry(api_params):
+                    if chunk.strip():
+                        produced_text = True
+                    yield chunk
+            except APIStatusError as e:
+                self._raise_if_workspace_required(e)
+                raise
             if produced_text:
                 return
             # The safety classifier is deterministic on identical input: re-sending only
@@ -472,7 +520,11 @@ class ClaudeLLM(AbstractLLM):
         api_params = self._build_api_params(messages, thinking, stream=False, volatile_tail=volatile_tail)
         text = ""
         for attempt in range(self.EMPTY_REPLY_RETRIES + 1):
-            text = self._complete_once(api_params)
+            try:
+                text = self._complete_once(api_params)
+            except APIStatusError as e:
+                self._raise_if_workspace_required(e)
+                raise
             if text.strip():
                 return text
             # Same rule as the streaming path: the classifier is deterministic, so the

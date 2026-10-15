@@ -9,7 +9,8 @@
 # for, and the clone reuses that login through gh's git credential helper.
 #
 # Checks the Mac, finds or installs Python 3.12 without touching anything else on the
-# machine, clones the repository, builds the venv, asks for the Anthropic API key, writes
+# machine, clones the repository, builds the venv, asks for the Anthropic API key (and the
+# workspace it acts in, when the key is not tied to one), writes
 # config.yaml and hands the terminal to start.sh. Every step is idempotent: re-run the same
 # command to resume after a failure or to upgrade an existing install.
 #
@@ -17,6 +18,8 @@
 #   KEEP_DIR           where to install            (default: ~/Keep); the variable must
 #                      reach bash, not gh:  gh api ... | KEEP_DIR=~/somewhere bash
 #   ANTHROPIC_API_KEY  skips the API key prompt
+#   ANTHROPIC_WORKSPACE_ID  the workspace (wrkspc_...) a key not tied to one workspace acts in;
+#                      skips that prompt. A key created for one workspace needs none.
 #   KEEP_NO_START=1    stop after installing instead of launching start.sh
 #   KEEP_REPO          repository URL              (default: https://github.com/maciekd/Keep.git)
 #   KEEP_BRANCH        branch to install           (default: release — what release.sh publishes;
@@ -42,6 +45,9 @@ main() {
   CHILD_PID=""
   PY=""
   API_KEY=""
+  WORKSPACE_ID=""
+  VERIFY_CODE=""
+  ANTHROPIC_SAID=""
 
   init_ui
   trap on_error ERR
@@ -545,17 +551,57 @@ pip_status() {
 
 # ------------------------------------------------------------ 7. API key ----
 
+KEYS_URL="https://platform.claude.com/settings/keys"
+WORKSPACES_URL="https://platform.claude.com/settings/workspaces"
+
+verify_api_key() {
+  # Leaves in VERIFY_CODE what Anthropic made of the key: an HTTP status, or "workspace" when
+  # the key is not tied to one workspace and Anthropic wants to be told which to use, or
+  # "bad-workspace" when the id given for it is not one the key can act in; Anthropic's own
+  # words in ANTHROPIC_SAID. A free count_tokens call: it takes the same path as a real
+  # message, so it fails the way the server would.
+  local body="$LOG.verify" code
+  local -a workspace_header=()
+  [ -z "$WORKSPACE_ID" ] || workspace_header=(-H "anthropic-workspace-id: $WORKSPACE_ID")
+  code=$(curl -sS -o "$body" --max-time 20 -w '%{http_code}' \
+    -H "x-api-key: $API_KEY" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+    ${workspace_header[@]+"${workspace_header[@]}"} \
+    -d '{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}]}' \
+    https://api.anthropic.com/v1/messages/count_tokens 2>>"$LOG" || true)
+  ANTHROPIC_SAID=$(sed -n 's/.*"message":"\([^"]*\)".*/\1/p' "$body" 2>/dev/null | head -n 1 || true)
+  log "key check: HTTP ${code:-none} ${ANTHROPIC_SAID:+- $ANTHROPIC_SAID}"
+  case "$code" in
+    400) case "$ANTHROPIC_SAID" in
+           *anthropic-workspace-id*required*) code=workspace ;;
+           *workspace*) [ -z "$WORKSPACE_ID" ] || code=bad-workspace ;;
+         esac ;;
+    404) case "$ANTHROPIC_SAID" in *[Ww]orkspace*) [ -z "$WORKSPACE_ID" ] || code=bad-workspace ;; esac ;;
+  esac
+  VERIFY_CODE=$code
+}
+
+explain_workspace() {
+  warn "This key is not tied to a workspace, so Anthropic needs to be told which one to use."
+  note "The easy fix: create a new key at ${C_BOLD}$KEYS_URL${C_RESET} and, in the"
+  note "Create key dialog, pick a workspace (the Default Workspace is fine). Then paste the new key here."
+  note "Or keep this key and paste a workspace id instead: it starts with wrkspc_ and is in the"
+  note "ID column at ${C_BOLD}$WORKSPACES_URL${C_RESET}."
+  printf '\n'
+}
+
 obtain_api_key() {
   API_KEY="${ANTHROPIC_API_KEY:-}"
+  WORKSPACE_ID="${ANTHROPIC_WORKSPACE_ID:-}"
   if [ -n "$API_KEY" ]; then
     dim "Using ANTHROPIC_API_KEY from the environment."
   else
     note "Keep runs on Claude. An API key is the only way to use it without breaking Anthropic's terms of service."
-    note "Create one at ${C_BOLD}https://console.anthropic.com/settings/keys${C_RESET} (it starts with sk-ant-)."
+    note "Create one at ${C_BOLD}$KEYS_URL${C_RESET} (it starts with sk-ant-)."
+    note "In the Create key dialog, pick a workspace - the Default Workspace is fine."
     note "The key is stored only in $KEEP_DIR/config.yaml. Typing is hidden."
     printf '\n'
   fi
-  local attempt=0 code
+  local attempt=0 workspace_attempt=0
   while :; do
     if [ -z "$API_KEY" ]; then
       attempt=$((attempt + 1))
@@ -569,13 +615,26 @@ obtain_api_key() {
       "")  warn "Nothing entered."; continue ;;
       *)   warn "That does not look like an Anthropic key (they start with sk-ant-)."; API_KEY=""; continue ;;
     esac
-    code=$(curl -sS -o /dev/null --max-time 20 -w '%{http_code}' \
-      -H "x-api-key: $API_KEY" -H "anthropic-version: 2023-06-01" \
-      https://api.anthropic.com/v1/models 2>>"$LOG" || true)
-    case "$code" in
-      200) ok "Key verified with the Anthropic API"; return ;;
-      401|403) warn "Anthropic rejected that key (HTTP $code). Check for a typo or create a new one."; API_KEY="" ;;
-      *) warn "Could not verify the key right now (HTTP ${code:-none}); keeping it, the server will tell you if it is wrong."; return ;;
+    verify_api_key
+    case "$VERIFY_CODE" in
+      200) ok "Key verified with the Anthropic API${WORKSPACE_ID:+ (workspace $WORKSPACE_ID)}"; return ;;
+      401|403) warn "Anthropic rejected that key (HTTP $VERIFY_CODE). Check for a typo or create a new one."; API_KEY="" ;;
+      workspace|bad-workspace)
+        if [ "$VERIFY_CODE" = workspace ]; then explain_workspace
+        else warn "Anthropic does not know workspace $WORKSPACE_ID, or this key cannot use it. Check the ID column at $WORKSPACES_URL."; fi
+        workspace_attempt=$((workspace_attempt + 1))
+        [ "$workspace_attempt" -le 3 ] || fail "No usable workspace id after 3 attempts." \
+          "Create a key for one workspace at $KEYS_URL and re-run the installer, or pass ANTHROPIC_WORKSPACE_ID=wrkspc_... in the environment."
+        ask "Workspace id (or press Enter to paste a new key instead):" WORKSPACE_ID
+        WORKSPACE_ID=$(printf '%s' "$WORKSPACE_ID" | tr -d '[:space:]')
+        case "$WORKSPACE_ID" in
+          wrkspc_*) continue ;;
+          "") [ -z "${ANTHROPIC_API_KEY:-}" ] || fail "ANTHROPIC_API_KEY from the environment is not tied to a workspace." \
+                "Pass ANTHROPIC_WORKSPACE_ID=wrkspc_... as well, or create a key for one workspace at $KEYS_URL."
+              API_KEY=""; continue ;;
+          *) warn "That does not look like a workspace id (they start with wrkspc_)."; WORKSPACE_ID=""; continue ;;
+        esac ;;
+      *) warn "Could not verify the key right now (HTTP ${VERIFY_CODE:-none}${ANTHROPIC_SAID:+: $ANTHROPIC_SAID}); keeping it, the server will tell you if it is wrong."; return ;;
     esac
     [ -z "${ANTHROPIC_API_KEY:-}" ] || fail "ANTHROPIC_API_KEY from the environment was rejected."
   done
@@ -599,6 +658,7 @@ write_config() {
 # every setting; the assistant sets up the optional integrations itself once it runs.
 api_keys:
   anthropic: $API_KEY
+${WORKSPACE_ID:+  anthropic_workspace: $WORKSPACE_ID   # the key is not tied to one workspace, so every request names this one}
 $(if [ "$BRANCH" = master ]; then echo "developer_release: true   # installed from master, the development line; restart_server keeps following it"
    else echo "developer_release: false  # restart_server follows the release branch; true: master, the development line"; fi)
 vault:

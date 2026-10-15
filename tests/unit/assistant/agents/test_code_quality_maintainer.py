@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeStatus, API_KEY_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -798,6 +798,17 @@ class TestRunClaude:
         assert env[API_KEY_ENV] == "sk-ant-test-key"
         assert "PATH" in env                                   # the server's own environment, plus the key
         assert "sk-ant-test-key" not in " ".join(mock_popen.call_args[0][0])   # never on the command line
+
+    @patch('assistant.agents.CodeQualityMaintainer.claude_workspace_id', return_value="wrkspc_01TEST")
+    @patch('assistant.agents.CodeQualityMaintainer.claude_api_key', return_value="sk-ant-test-key")
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_a_key_not_tied_to_a_workspace_names_it_to_the_cli_as_a_header(self, mock_popen, _key, _workspace):
+        """Contract with the Claude Code CLI: ANTHROPIC_CUSTOM_HEADERS holds "Name: Value" lines."""
+        mock_popen.return_value = _mock_popen()
+        with patch('assistant.agents.CodeQualityMaintainer.claude_status',
+                   return_value=ClaudeStatus(CLAUDE_PATH, True, "no login, using api_keys.anthropic", api_key=True)):
+            CodeQualityMaintainer._run_claude("test prompt", "label")
+        assert mock_popen.call_args[1]["env"][CUSTOM_HEADERS_ENV] == "anthropic-workspace-id: wrkspc_01TEST"
 
     @patch('assistant.agents.CodeQualityMaintainer.claude_api_key', return_value="sk-ant-test-key")
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')

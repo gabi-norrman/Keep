@@ -15,6 +15,7 @@ from email.mime.text import MIMEText
 import common.DevelopmentConfig as DevelopmentConfig
 from common.logging import info, error, trace, note
 from ..llm import parse_llm_config
+from ..llm.ClaudeLLM import WORKSPACE_HEADER, claude_workspace_id
 from common.ConfigManager import ConfigManager
 from common.Paths import REPO_DIR, AISERVER_DIR as _AISERVER_PATH
 from common.RequirementsChecker import RequirementsChecker
@@ -33,6 +34,7 @@ CHECK_INTERVAL = 900
 
 API_KEY_CONFIG_KEY = "api_keys.anthropic"   # stands in for a Claude Code login, billed per token
 API_KEY_ENV = "ANTHROPIC_API_KEY"            # how the CLI takes a key: its environment, never argv
+CUSTOM_HEADERS_ENV = "ANTHROPIC_CUSTOM_HEADERS"  # "Name: Value" lines the CLI adds to every request
 NOT_LOGGED_IN_MARKERS = ("not logged in", "please run /login", "invalid api key")
 CREDENTIALS_HINT = (
     f"Either put an Anthropic API key in config.yaml ({API_KEY_CONFIG_KEY}; the runs are then billed "
@@ -173,7 +175,11 @@ class ClaudeStatus:
         billing — the variable would shadow it."""
         if not self.api_key:
             return None
-        return {**os.environ, API_KEY_ENV: claude_api_key() or ""}
+        env = {**os.environ, API_KEY_ENV: claude_api_key() or ""}
+        workspace = claude_workspace_id()
+        if workspace:
+            env[CUSTOM_HEADERS_ENV] = f"{WORKSPACE_HEADER}: {workspace}"
+        return env
 
 
 def claude_status() -> ClaudeStatus:

@@ -22,6 +22,10 @@ from common.ConfigManager import REQUIRED_KEYS
 from .git_sandbox import History, empty_repo, git, git_env, spawn
 
 INSTALL_SH = Path(__file__).resolve().parents[2] / 'install.sh'
+WORKSPACE_REQUIRED_BODY = (
+    '{"type":"error","error":{"type":"invalid_request_error","message":"anthropic-workspace-id is required '
+    'when authenticating with an identity-linked API key; send the id of the workspace this request acts in."},'
+    '"request_id":"req_test_0000000000000000"}')
 BAR_RE = re.compile(r'^\[(.*)\] (.*)$')
 
 
@@ -35,13 +39,19 @@ class InstallShHarness:
         self.keep_dir = tmp_path / 'Keep'
         self.log = tmp_path / 'install.log'
         self.curl_calls = tmp_path / 'curl_calls'
-        self.curl_code = tmp_path / 'curl_code'
-        self.curl_code.write_text('200')
         self.asked = tmp_path / 'asked'
         self.answers = None
+        self.set_curl(('200', ''))
+
+    def set_curl(self, *responses: tuple[str, str]):
+        """What successive curl calls answer, as (status, body) pairs; the last one repeats."""
+        for n, (code, body) in enumerate(responses, 1):
+            (self.dir / f'curl_{n}.code').write_text(code)
+            (self.dir / f'curl_{n}.body').write_text(body)
+        (self.dir / 'curl_count').write_text(str(len(responses)))
 
     def set_curl_code(self, code: str):
-        self.curl_code.write_text(code)
+        self.set_curl((code, ''))
 
     def set_answers(self, *lines: str):
         """What the user types at successive prompts; the prompt is recorded in `asked`."""
@@ -52,9 +62,15 @@ class InstallShHarness:
         prelude = (
             f'source "{self.fns}"\n'
             f'KEEP_DIR="{self.keep_dir}"; LOG="{self.log}"; REPO_URL="{repo_url}"; BRANCH=master\n'
-            'STEP_NAME=test; API_KEY=""; PY=""; CHILD_PID=""; SPINNER_PID=""; SPINNER_STATUS=""\n'
+            'STEP_NAME=test; API_KEY=""; WORKSPACE_ID=""; VERIFY_CODE=""; ANTHROPIC_SAID=""\n'
+            'PY=""; CHILD_PID=""; SPINNER_PID=""; SPINNER_STATUS=""\n'
             'init_ui; TTY=""\n'
-            f'curl() {{ echo "$*" >> "{self.curl_calls}"; cat "{self.curl_code}"; }}\n')
+            # The n-th call answers with curl_<n>.code and, for its -o target, curl_<n>.body.
+            f'curl() {{ echo "$*" >> "{self.curl_calls}"; local n prev="" a\n'
+            f'  n=$(( $(cat "{self.dir}/curl_n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "{self.dir}/curl_n"\n'
+            f'  [ "$n" -le "$(cat "{self.dir}/curl_count")" ] || n=$(cat "{self.dir}/curl_count")\n'
+            f'  for a in "$@"; do [ "$prev" = -o ] && cat "{self.dir}/curl_$n.body" > "$a"; prev=$a; done\n'
+            f'  cat "{self.dir}/curl_$n.code"; }}\n')
         if self.answers:
             prelude += (
                 f'exec 7< "{self.answers}"\n'
@@ -171,6 +187,78 @@ class TestObtainApiKey:
         assert result.stdout.endswith('sk-ant-typed-47L')
         assert 'Could not verify the key right now' in result.stdout
 
+    def test_key_without_a_workspace_asks_for_the_id_and_sends_it_from_then_on(self, harness):
+        """The 2026-10 beta tester: the Console's Create key dialog left unscoped makes a key
+        Anthropic refuses without an anthropic-workspace-id header. The check is a
+        count_tokens call so this 400 shows at install, not at the first message."""
+        harness.set_curl(('400', WORKSPACE_REQUIRED_BODY), ('200', ''))
+        harness.set_answers('sk-ant-typed-47L', 'wrkspc_01TEST')
+        result = harness.run('obtain_api_key; printf "%s %s" "$API_KEY" "$WORKSPACE_ID"')
+        assert result.returncode == 0, result.stdout
+        assert result.stdout.endswith('sk-ant-typed-47L wrkspc_01TEST')
+        assert 'not tied to a workspace' in result.stdout
+        assert 'platform.claude.com/settings/keys' in result.stdout
+        assert 'platform.claude.com/settings/workspaces' in result.stdout
+        assert len(harness.prompts) == 2 and 'Workspace id' in harness.prompts[1]
+        first, second = harness.curl_calls.read_text().splitlines()
+        assert 'count_tokens' in first
+        assert 'anthropic-workspace-id' not in first
+        assert 'anthropic-workspace-id: wrkspc_01TEST' in second
+
+    def test_enter_instead_of_a_workspace_id_asks_for_a_new_key(self, harness):
+        harness.set_curl(('400', WORKSPACE_REQUIRED_BODY), ('200', ''))
+        harness.set_answers('sk-ant-one', '', 'sk-ant-two')
+        result = harness.run('obtain_api_key; printf "%s %s" "$API_KEY" "$WORKSPACE_ID"')
+        assert result.returncode == 0, result.stdout
+        assert result.stdout.endswith('sk-ant-two ')
+        assert len(harness.prompts) == 3
+        assert 'anthropic-workspace-id' not in harness.curl_calls.read_text()
+
+    def test_unknown_workspace_id_is_asked_again(self, harness):
+        not_found = '{"type":"error","error":{"type":"not_found_error","message":"Workspace `wrkspc_bad` not found."}}'
+        harness.set_curl(('400', WORKSPACE_REQUIRED_BODY), ('404', not_found), ('200', ''))
+        harness.set_answers('sk-ant-one', 'wrkspc_bad', 'wrkspc_good')
+        result = harness.run('obtain_api_key; printf "%s" "$WORKSPACE_ID"')
+        assert result.returncode == 0, result.stdout
+        assert result.stdout.endswith('wrkspc_good')
+        assert 'does not know workspace wrkspc_bad' in result.stdout
+        assert len(harness.prompts) == 3
+
+    def test_malformed_workspace_id_never_reaches_anthropic(self, harness):
+        harness.set_curl(('400', WORKSPACE_REQUIRED_BODY), ('200', ''))
+        harness.set_answers('sk-ant-one', 'default', 'wrkspc_01TEST')
+        result = harness.run('obtain_api_key')
+        assert result.returncode == 0, result.stdout
+        assert 'does not look like a workspace id' in result.stdout
+        assert 'default' not in harness.curl_calls.read_text()
+
+    def test_environment_workspace_id_is_sent_without_a_prompt(self, harness):
+        harness.set_answers()
+        result = harness.run('obtain_api_key', ANTHROPIC_API_KEY='sk-ant-env-47L',
+                             ANTHROPIC_WORKSPACE_ID='wrkspc_01ENV')
+        assert result.returncode == 0, result.stdout
+        assert harness.prompts == []
+        assert 'anthropic-workspace-id: wrkspc_01ENV' in harness.curl_calls.read_text()
+        assert 'wrkspc_01ENV' in result.stdout
+
+    def test_environment_key_without_a_workspace_names_the_variable_to_set(self, harness):
+        harness.set_curl(('400', WORKSPACE_REQUIRED_BODY))
+        harness.set_answers()
+        result = harness.run('obtain_api_key', ANTHROPIC_API_KEY='sk-ant-env-47L')
+        assert result.returncode == 1
+        assert 'ANTHROPIC_WORKSPACE_ID' in result.stdout
+
+    def test_other_400_keeps_the_key_and_repeats_what_anthropic_said(self, harness):
+        billing = ('{"type":"error","error":{"type":"invalid_request_error",'
+                   '"message":"Your credit balance is too low to access the Anthropic API."}}')
+        harness.set_curl(('400', billing))
+        harness.set_answers('sk-ant-typed-47L')
+        result = harness.run('obtain_api_key; printf "%s" "$API_KEY"')
+        assert result.returncode == 0, result.stdout
+        assert result.stdout.endswith('sk-ant-typed-47L')
+        assert 'Could not verify the key right now' in result.stdout
+        assert 'credit balance is too low' in result.stdout
+
     def test_no_terminal_and_no_environment_key_fails_with_the_workaround(self, harness):
         # curl | bash with no /dev/tty: `read` must not wait on the pipe the script came from.
         result = harness.run('obtain_api_key')
@@ -191,7 +279,16 @@ class TestWriteConfig:
             section, name = key.split('.')
             assert config[section][name], f"{key} is empty in the written config"
         assert config['api_keys']['anthropic'] == 'sk-ant-typed-47L'
+        assert 'anthropic_workspace' not in config['api_keys']   # a key tied to one workspace needs none
         assert re.fullmatch(r'[A-Za-z0-9]{32}', str(config['vault']['key']))
+
+    def test_workspace_id_is_written_for_a_key_not_tied_to_one(self, harness):
+        """Contract with config.yaml: ClaudeLLM reads the id as api_keys.anthropic_workspace."""
+        harness.keep_dir.mkdir()
+        result = harness.run('API_KEY=sk-ant-typed-47L; WORKSPACE_ID=wrkspc_01TEST; write_config')
+        assert result.returncode == 0, result.stdout
+        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
+        assert config['api_keys']['anthropic_workspace'] == 'wrkspc_01TEST'
 
     def test_developer_release_follows_the_branch_the_install_was_made_from(self, harness):
         """restart_server pulls the branch `developer_release` names, so a master install
