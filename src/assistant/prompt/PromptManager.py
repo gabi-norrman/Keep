@@ -151,6 +151,7 @@ class PromptManager:
     # and the order of the {INTEGRATION_DATA} block. A section a new folder brings comes after
     # these, by key.
     SECTION_ORDER = ("memory", "memory_recent", "procedures", "watchlist", "integrations", "trial", "vault", "voices", "weather",
+                     "homeclaw",
                      "precipitation", "home", "web", "calendar", "sonos", "music_zones", "car_info", "pool", "heat_pump", "phones")
     # The placeholder the data sections of the integrations fill, each under its own heading.
     DATA_BLOCK = "{INTEGRATION_DATA}"

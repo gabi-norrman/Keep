@@ -1,0 +1,18 @@
+# HomeKit through the HomeClaw app (github.com/omarshahine/HomeClaw), running on the server's Mac as
+# the same user as Keep. Enable with "HomeClaw" in enabled_integrations; nothing to sign in — the app
+# holds the HomeKit access, Keep talks to its local socket. When list_integrations says "HomeClaw is
+# not running", the user must start the HomeClaw app (and let it finish loading the home).
+# Every key is optional. Accessories are keyed on their HomeKit UUID (shown in the HOMEKIT section
+# as the 8-character ref in brackets; HomeClaw's `list_accessories` gives the full one).
+homeclaw:
+  # socket: ~/Library/Group Containers/group.com.shahine.homeclaw/homeclaw.sock   # the app's socket, the default
+  refresh_seconds: 60             # how often the HOMEKIT prompt section re-reads the app (15 at least)
+  # Accessories whose bridge or maker matches one of these (case-insensitive) are left out: Keep's
+  # Plejd and Hue integrations already bring them. Bridges themselves are always left out.
+  exclude_bridges: ["Plejd", "Philips hue", "Signify"]
+  include: []                     # accessory UUIDs to show although exclude_bridges matches them
+  exclude: []                     # accessory UUIDs to leave out although nothing else would
+  thermostat_range: [10, 30]      # the target temperatures (°C) homekit_thermostat may set, lowest and highest
+  # Characteristics whose changes homekit_events leaves out of the event log it reads — the
+  # sensor readings and light tweaks that change all day. Remove one to have its changes listed.
+  event_skip: [current_temperature, current_humidity, battery_level, color_temperature, hue, saturation, brightness]
