@@ -1972,6 +1972,65 @@ class TestTolerantMfaPage:
             _get_mfa_auth_options_tolerant(service)
 
 
+class TestTokenLoginLogged:
+    """The token login is the first step of every sign-in; on 2026-10-16 two Find My
+    sign-ins fell through it to a password sign-in Apple challenged, and the log could
+    not say whether Apple had refused the session token or distrusted the browser."""
+
+    @staticmethod
+    def _service(trust_token=None, data=None):
+        service = Mock()
+        service.session.data = {"trust_token": trust_token} if trust_token else {}
+        service.data = data or {}
+        return service
+
+    @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
+    def test_service_gets_logged_token_login(self, mock_pyicloud):
+        from integrations.icloud.ICloudIntegration import _authenticate_with_token_logged
+        from pyicloud import PyiCloudService
+        assert PyiCloudService._authenticate_with_token is _authenticate_with_token_logged
+
+    def test_untrusted_answer_is_logged_with_apples_verdict_and_reraised(self):
+        from pyicloud.exceptions import PyiCloud2FARequiredException
+        from integrations.icloud import ICloudIntegration as module
+        service = self._service(trust_token="tok", data={"hsaTrustedBrowser": False})
+        with patch.object(module, '_original_authenticate_with_token',
+                          side_effect=PyiCloud2FARequiredException("m@mlab.test", Mock())), \
+                patch.object(module, 'info') as mock_info:
+            with pytest.raises(PyiCloud2FARequiredException):
+                module._authenticate_with_token_logged(service)
+        line = mock_info.call_args.args[0]
+        assert "hsaTrustedBrowser=False" in line
+        assert "trust token sent: True" in line
+
+    def test_refused_token_is_logged_with_http_status(self):
+        from pyicloud.exceptions import PyiCloudFailedLoginException, PyiCloudAPIResponseException
+        from integrations.icloud import ICloudIntegration as module
+        service = self._service()
+
+        def refuse(api, require_trust=True):
+            try:
+                raise PyiCloudAPIResponseException("Authentication required", 421)
+            except PyiCloudAPIResponseException as e:
+                raise PyiCloudFailedLoginException("Invalid authentication token.", e) from e
+
+        with patch.object(module, '_original_authenticate_with_token', side_effect=refuse), \
+                patch.object(module, 'info') as mock_info:
+            with pytest.raises(PyiCloudFailedLoginException):
+                module._authenticate_with_token_logged(service)
+        line = mock_info.call_args.args[0]
+        assert "HTTP 421" in line
+        assert "trust token sent: False" in line
+
+    def test_trusted_answer_logs_nothing_at_info(self):
+        from integrations.icloud import ICloudIntegration as module
+        service = self._service(trust_token="tok", data={"hsaTrustedBrowser": True})
+        with patch.object(module, '_original_authenticate_with_token', return_value=None), \
+                patch.object(module, 'info') as mock_info:
+            module._authenticate_with_token_logged(service)
+        mock_info.assert_not_called()
+
+
 class TestSigninSmsGate:
     """pyicloud calls _request_2fa_code on its own after ANY SRP signin ending in
     a 2FA challenge — including the find-my-iphone re-auth that the devices

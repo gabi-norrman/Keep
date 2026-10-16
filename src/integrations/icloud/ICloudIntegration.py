@@ -13,7 +13,7 @@ from pyicloud import PyiCloudService
 from pyicloud.base import resolve_cookie_directory
 from pyicloud.exceptions import (PyiCloudFailedLoginException, PyiCloudAPIResponseException,
                                  PyiCloudAuthRequiredException, PyiCloudConnectionException,
-                                 PyiCloudAcceptTermsException)
+                                 PyiCloudAcceptTermsException, PyiCloud2FARequiredException)
 from pyicloud.services.findmyiphone import FindMyiPhoneServiceManager
 
 from common.ConfigManager import ConfigManager
@@ -82,6 +82,38 @@ def _refresh_find_my_without_reauth(manager: FindMyiPhoneServiceManager, locate:
 
 
 FindMyiPhoneServiceManager._refresh_client_with_reauth = _refresh_find_my_without_reauth
+
+
+_original_authenticate_with_token = PyiCloudService._authenticate_with_token
+
+
+def _authenticate_with_token_logged(api: PyiCloudService, require_trust: bool = True) -> None:
+    """Wrapper around PyiCloudService._authenticate_with_token (2026.10): say what Apple
+    answered the token login with. It is the first step of every sign-in; when it does not
+    yield a trusted session pyicloud goes on to a password sign-in, and whether Apple then
+    raises a 2FA challenge depends on the same trust. On 2026-10-16 two such sign-ins ended
+    on a challenge with a trust token from the same morning in the session file, and the log
+    could not tell a refused session token from a browser Apple no longer trusts."""
+    trust_token_sent = bool(api.session.data.get("trust_token"))
+    try:
+        _original_authenticate_with_token(api, require_trust)
+    except PyiCloud2FARequiredException:
+        info("iCloud: token login answered, but Apple does not trust the browser "
+             f"(hsaTrustedBrowser={api.data.get('hsaTrustedBrowser')!r}, "
+             f"trust token sent: {trust_token_sent}) — password sign-in next")
+        raise
+    except PyiCloudFailedLoginException as e:
+        cause = e.__cause__
+        response = getattr(cause, "response", None)
+        status = getattr(cause, "code", None) or getattr(response, "status_code", None)
+        info(f"iCloud: token login refused (HTTP {status}, {_brief(cause) if cause else _brief(e)}; "
+             f"trust token sent: {trust_token_sent}) — password sign-in next")
+        raise
+    trace(f"iCloud: token login ok (hsaTrustedBrowser={api.data.get('hsaTrustedBrowser')!r}, "
+          f"trust token sent: {trust_token_sent})")
+
+
+PyiCloudService._authenticate_with_token = _authenticate_with_token_logged
 
 
 _MFA_PAGE_STATUSES = (200, 409)
@@ -665,6 +697,7 @@ class ICloudIntegration(Integration):
         api = self._api
         info(f"iCloud: Find My wants a fresh sign-in ({why}) — re-authenticating")
         started_at = time.time()
+        trust_token_held = bool(api.session.data.get("trust_token"))
         self._signin_sms_wanted = True
         try:
             api.authenticate(force_refresh=True)
@@ -686,7 +719,10 @@ class ICloudIntegration(Integration):
         self._challenge_from_fresh_signin = self._challenge_open()
         self._arm_auto_sent_code(started_at)
         if self._challenge_from_fresh_signin:
-            info("iCloud: the re-authentication ended in a 2FA challenge — the auto-2FA flow completes it")
+            info("iCloud: the re-authentication ended in a 2FA challenge"
+                 + (" although the session held a trust token — Apple no longer honours it"
+                    if trust_token_held else " — the session held no trust token")
+                 + " — the auto-2FA flow completes it")
             self._find_my_probe = FindMyProbe("reauth", "2FA pending")
             return self.SESSION_EXPIRED_2FA_MESSAGE
         return None
