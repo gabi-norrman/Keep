@@ -41,6 +41,10 @@ class iCloudTab(AuthTab):
             self._devices_list = api.get_devices_list() or ""
         except Exception:
             self._devices_list = ""
+        if not self._icloud_devices:
+            # The listing is the one request that learns Find My's verdict: show it in this
+            # tick, not as "Connected" over an empty table until the next one.
+            self._auth_status = api.get_auth_status()
 
     def _before_draw(self):
         """The integration verifies codes from iMessage on its own; show the outcome when it has one."""
