@@ -1,3 +1,4 @@
+import json
 import logging
 import pathlib
 import shutil
@@ -11,7 +12,9 @@ from assistant.SystemNote import system_note
 from pyicloud import PyiCloudService
 from pyicloud.base import resolve_cookie_directory
 from pyicloud.exceptions import (PyiCloudFailedLoginException, PyiCloudAPIResponseException,
-                                 PyiCloudAuthRequiredException, PyiCloudConnectionException)
+                                 PyiCloudAuthRequiredException, PyiCloudConnectionException,
+                                 PyiCloudAcceptTermsException)
+from pyicloud.services.findmyiphone import FindMyiPhoneServiceManager
 
 from common.ConfigManager import ConfigManager
 from common.Paths import ICLOUD_SESSION_DIR
@@ -61,6 +64,24 @@ def _request_sms_code_only(api: PyiCloudService) -> None:
         trace(f"iCloud: requested SMS 2FA code for phone id {phone.device_id} (no device push)")
     except Exception as e:
         info(f"iCloud: SMS code request after signin failed ({_brief(e)}) — Apple usually pushes one anyway")
+
+
+def _refresh_find_my_without_reauth(manager: FindMyiPhoneServiceManager, locate: bool, retry: bool = False) -> None:
+    """Replacement for FindMyiPhoneServiceManager._refresh_client_with_reauth (2026.10): the
+    original answers Find My's "Re-authentication required" with a password sign-in on the
+    spot, inside whatever device read hit it, and with no one watching for the 2FA challenge
+    it opens — the Oct 6–13 sign-ins that ended on a challenge nothing completed. Here the
+    refusal propagates and ICloudIntegration decides whether to sign in
+    (`_run_with_reauthentication`: one deliberate sign-in, its challenge completed, none while
+    sign-ins are parked)."""
+    manager.stop_event.set()
+    manager._refresh_client(locate=locate)
+    manager._initialize_devices(locate=locate)
+    if manager._refresh_interval is not None:
+        manager._start_monitor_thread()
+
+
+FindMyiPhoneServiceManager._refresh_client_with_reauth = _refresh_find_my_without_reauth
 
 
 _MFA_PAGE_STATUSES = (200, 409)
@@ -192,11 +213,18 @@ class ICloudIntegration(Integration):
     takes the Apple ID and the 2FA code Apple texts.
 
     Owns the pyicloud session, including automatic SMS 2FA recovery with strict caps on code
-    requests and fresh signins so a broken flow can never spam Apple or the phone."""
+    requests and fresh signins so a broken flow can never spam Apple or the phone. Apple's risk
+    engine locked the account on 2026-10-15 and -16 after days of half-finished sign-ins and
+    a Find My read every 15 minutes that mostly failed, so the rules since are: nothing talks to
+    Find My on a timer (a command does), every password sign-in is one this class runs and
+    completes with the code Apple texts (pyicloud's own re-auth is disabled), and a refusal from
+    Apple parks sign-ins — in a file, across restarts — until the user confirms the account is
+    usable again."""
     sensitive = True
 
     SESSION_EXPIRED_2FA_MESSAGE = (
-        "iCloud session expired. Please complete 2FA in the TUI console (iCloud tab)."
+        "iCloud is waiting for a 2FA code: the server submits the one Apple texts on its own, so try again "
+        "in a minute (manual entry: the console's iCloud tab)."
     )
     NO_DEVICES_MESSAGE = (
         "No iCloud devices are configured yet: icloud_devices() lists the devices the account sees "
@@ -226,18 +254,12 @@ class ICloudIntegration(Integration):
     # of the SMS limiter: on 2026-08-24 a 409 on every submitted code drove four
     # password logins + four SMS in 63s before the limiter kicked in.
     MAX_FRESH_SIGNINS_PER_RECOVERY = 1
-    # The read-only Find My probe behind the health check, the TUI status and the device
-    # listing: one verdict serves them all for this long. A session Find My wants re-signed
-    # gets one deliberate password sign-in per cooldown from the health check (Ctrl-R in the
-    # iCloud tab does it at once): on 2026-10-15 pyicloud's own re-auth inside every device
-    # listing turned each opening of the tab into a sign-in attempt, until Apple locked the
-    # account.
+    # The read-only Find My probe behind the TUI's device table and the device listing: one
+    # verdict serves them for this long. Nothing runs it on a timer: until 2026-10-16 the health
+    # check did, every 15 minutes, and three of four answered "Re-authentication required"
+    # (Find My's cookies live 15-30 minutes) — some 75 failed authentications a day that Apple
+    # read as an unknown client holding the password.
     FIND_MY_PROBE_TTL_SECONDS = 5 * 60
-    FIND_MY_REAUTH_COOLDOWN_SECONDS = 60 * 60
-    # After Apple rejects an automatic re-sign-in (a locked account, a throttle) the next one
-    # waits this long: hourly retries against a locked account are the Oct 6-13 pattern that
-    # earned the lock, only slower. Ctrl-R and a restart try at once.
-    FIND_MY_REAUTH_FAILURE_BACKOFF_SECONDS = 24 * 60 * 60
     FAMILY_POLLS = 3            # refreshClient rounds a complete listing waits for family devices
     FAMILY_POLL_DELAY_SECONDS = 0.5
     # Blocks only the user can clear, by the text Apple's answer carries, and what to tell them.
@@ -247,9 +269,16 @@ class ICloudIntegration(Integration):
          "Sign in at https://icloud.com (or open Settings on an Apple device) and accept them."),
         ("locked for security reasons",
          "Apple has locked the Apple Account for security reasons, so the server's iCloud sign-ins fail "
-         "(Find My on the phones keeps working). Unlock it at https://iforgot.apple.com, then press "
-         "Ctrl-R in the console's iCloud tab."),
+         "(Find My on the phones keeps working). Unlock it at https://iforgot.apple.com."),
     )
+    # A refusal from Apple (a locked account, a rejected password, new terms) parks every
+    # automatic sign-in until the user says the account works again — a retry against a locked
+    # account is what the risk engine reads as an attack, and the production machine restarts
+    # 17-23 times a day, each start a sign-in. The verdict lives in this file beside the session
+    # so the restarts keep it; Ctrl-R in the iCloud tab and icloud_unlocked delete it.
+    PARK_FILE = "parked.json"
+    PARK_NOTICE = ("The server will not sign in to iCloud again until you confirm the account works: "
+                   "tell the assistant (it runs icloud_unlocked) or press Ctrl-R in the console's iCloud tab.")
 
     def __init__(
         self,
@@ -262,11 +291,9 @@ class ICloudIntegration(Integration):
         self._validate_config()
         self._find_my_probe: Optional[FindMyProbe] = None
         self._probe_lock = threading.Lock()
-        self._last_auto_reauth_at: Optional[float] = None
-        self._auto_reauth_failed_at: Optional[float] = None
         self._api: Optional[PyiCloudService] = None
         self._auth_error: Optional[str] = None
-        self._blocks_notified: set = set()
+        self._park_memory: Optional[str] = None     # the park when its file could not be written
         self._auto_2fa_message: Optional[str] = None
         self._sms_requested_at: Optional[float] = None
         self._auto_sms_limiter = RateLimiter(self.AUTO_SMS_MAX_REQUESTS, self.AUTO_SMS_WINDOW_SECONDS)
@@ -276,17 +303,19 @@ class ICloudIntegration(Integration):
         # own SMS request before the first one registers as pending.
         self._auto_sms_lock = threading.Lock()
         self._stale_session_rejection = False
-        # Only challenges raised by our own fresh password signin are known to
-        # accept code validation — codes requested on token-restored sessions get
-        # rejected with 409 'Authentication required for Account' (observed
-        # 2026-08-20), so requesting on them wastes an SMS.
+        # True while a 2FA challenge one of our own password signins opened is still
+        # unanswered. Only such a challenge accepts a code — codes requested on
+        # token-restored sessions get rejected with 409 'Authentication required for
+        # Account' (observed 2026-08-20), so requesting on them wastes an SMS — and it
+        # is the whole of `requires_2fa()`: a session pyicloud merely calls untrusted
+        # has nothing a code could answer.
         self._challenge_from_fresh_signin = False
         self._fresh_signins_this_recovery = 0
         # True only while Floxy runs a signin it intends to complete with a code
         # (startup auth, fresh recovery signin, the Find My re-auth). pyicloud calls
         # request_2fa_code by itself after ANY SRP signin that ends in a 2FA
         # challenge — including the Find My re-auth it ran inside every device
-        # listing until 2026-10-15 (now _reauthenticate_find_my, deliberate and
+        # listing until 2026-10-15 (now _sign_in_for_find_my, deliberate and
         # spaced), which sent one SMS per server restart (Aug 31–Sep 1) that
         # nothing ever submitted.
         self._signin_sms_wanted = False
@@ -310,16 +339,13 @@ class ICloudIntegration(Integration):
         return ["icloud"]
 
     def check_health(self) -> bool:
-        """Signed in, no 2FA pending, and Find My answering on the cookies the session holds
-        (the read-only probe). A session Find My wants re-signed is re-authenticated here,
-        once per FIND_MY_REAUTH_COOLDOWN_SECONDS; the iCloud tab's Ctrl-R does it on demand."""
+        """Signed in, with no 2FA challenge open. Nothing here touches Find My: until 2026-10-16
+        the check read the device list every 15 minutes and re-signed in once an hour when the
+        cookies had expired, and the stream of refusals is the likeliest road to the two
+        lockouts. Find My is read when a command needs it, and a session it wants re-signed is
+        idle, not unhealthy."""
         self._ensure_authenticated()
-        if self.requires_2fa():
-            return False
-        probe = self._probe_find_my()
-        if probe.verdict == "reauth" and self._auto_reauth_due():
-            probe = self._reauthenticate_find_my("health check", automatic=True)
-        return probe.verdict == "ok"
+        return not self.requires_2fa()
 
     def needs_2fa(self) -> bool:
         return self.requires_2fa()
@@ -426,9 +452,11 @@ class ICloudIntegration(Integration):
         _request_sms_code_only(api)
 
     def _new_service(self, authenticate: bool = True) -> PyiCloudService:
+        # refresh_interval=None: no monitor thread re-reading Find My every five minutes for
+        # the rest of the process once a command has used it (a command rebuilds the manager).
         api = PyiCloudService(
             self._config["apple_id"], self._config["password"],
-            cookie_directory=self._session_dir(), authenticate=False)
+            cookie_directory=self._session_dir(), authenticate=False, refresh_interval=None)
         api.request_2fa_code = types.MethodType(self._signin_2fa_code_hook, api)
         api._get_mfa_auth_options = types.MethodType(_get_mfa_auth_options_tolerant, api)
         if authenticate:
@@ -471,9 +499,15 @@ class ICloudIntegration(Integration):
         return True
 
     def _ensure_authenticated(self):
-        """Ensure we have an authenticated API connection."""
+        """Ensure we have an authenticated API connection: the session files when they still
+        serve, a password sign-in otherwise — unless sign-ins are parked, when nothing is tried."""
         if self._api is not None:
             return
+        parked = self._parked_reason()
+        if parked:
+            self._auth_error = f"sign-ins parked after Apple refused one: {parked}"
+            info(f"iCloud: not signing in — {self._auth_error}")
+            raise iCloudAuthenticationError(self._auth_error)
 
         try:
             info("Authenticating to iCloud using user id "+self._config["apple_id"])
@@ -488,39 +522,83 @@ class ICloudIntegration(Integration):
             # A token-restored session carries no live challenge; only a password
             # signin (no/expired session file) does — and that one is as good as
             # any fresh signin, its auto-sent code included.
-            self._challenge_from_fresh_signin = self._arm_auto_sent_code(started_at)
-            info("iCloud authentication successful")
-        except (PyiCloudFailedLoginException, PyiCloudConnectionException) as e:
+            self._challenge_from_fresh_signin = self._challenge_open()
+            self._arm_auto_sent_code(started_at)
+            info("iCloud authentication successful"
+                 + (" — a 2FA challenge is open, the auto-2FA flow completes it" if self._challenge_from_fresh_signin else ""))
+        except (PyiCloudFailedLoginException, PyiCloudAcceptTermsException) as e:
             self._auth_error = _brief(e)
             error(f"iCloud: Failed to authenticate: {_brief(e)}")
-            self._notify_apple_block(e)
+            self._park(e)
+            raise iCloudAuthenticationError(f"Failed to authenticate: {e}") from e
+        except PyiCloudConnectionException as e:
+            self._auth_error = _brief(e)
+            error(f"iCloud: Failed to authenticate: {_brief(e)}")
             raise iCloudAuthenticationError(f"Failed to authenticate: {e}") from e
 
-    def _is_session_functional(self) -> bool:
-        """Whether the session serves Find My although pyicloud flags requires_2fa — it does
-        so whenever hsaTrustedBrowser is False, cookies that work included. Decided by the
-        read-only probe; until 2026-10-15 by a device listing, whose built-in re-auth was a
-        password sign-in on every restart."""
-        if not self._api:
+    def _challenge_open(self) -> bool:
+        """Whether the sign-in that just ran ended on a 2FA challenge — pyicloud holds the
+        challenge page in `_auth_data`; a token-restored session it merely calls untrusted
+        has none, and `requires_2fa` alone does not tell the two apart."""
+        api = self._api
+        if api is None or not api.requires_2fa:
             return False
-        probe = self._probe_find_my()
-        if probe.verdict == "ok":
-            trace("iCloud session is functional despite requires_2fa=True")
-            return True
-        # This is the verdict that decides "needs 2FA" — keep it visible. On
-        # 2026-08-24 it was swallowed here and the trigger of a 4x SMS loop
-        # was never logged.
-        info(f"iCloud session is NOT functional (requires_2fa={self._api.requires_2fa}): "
-             f"{probe.verdict}: {probe.detail}")
-        return False
+        auth_data = getattr(api, "_auth_data", None)
+        return isinstance(auth_data, dict) and bool(auth_data)
+
+    def _park_path(self) -> pathlib.Path:
+        return pathlib.Path(self._session_dir()) / self.PARK_FILE
+
+    def _parked_reason(self) -> Optional[str]:
+        """Why sign-ins are parked — Apple's refusal and when — or None."""
+        if self._park_memory:
+            return self._park_memory
+        path = self._park_path()
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text())
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(data["at"])))
+            return f"{data['reason']} ({when})"
+        except (ValueError, KeyError, TypeError, OSError):
+            return "a refused sign-in (the details were lost)"
+
+    def _park(self, exc: BaseException):
+        """Apple refused a sign-in: park every automatic one until the user confirms the account
+        works again (`refresh_connection(by_user=True)` lifts it), and tell the user once where
+        to go — a block Apple names (new terms, a security lock; 2026-10-15: HTTP 403, code
+        -20209, which pyicloud 2.6.5 reported as a wrong password) gets its own message."""
+        reason = _brief(exc)
+        if self._parked_reason():
+            trace(f"iCloud: sign-ins already parked, not repeating the notice ({reason})")
+            return
+        try:
+            self._park_path().write_text(json.dumps({"at": time.time(), "reason": reason}))
+        except OSError as e:
+            self._park_memory = reason
+            error(f"iCloud: could not write the park file ({e}) — parked in memory, until the next restart")
+        lowered = _brief(exc, limit=10_000).lower()
+        message = next((text for marker, text in self.APPLE_BLOCKS if marker in lowered),
+                       f"Apple refused the server's iCloud sign-in ({reason}).")
+        info(f"iCloud: Apple refused the sign-in — automatic sign-ins parked until the user confirms ({reason})")
+        system_note(self.name, f"{message} {self.PARK_NOTICE}")
+
+    def _lift_park(self):
+        parked = self._parked_reason()
+        if not parked:
+            trace("iCloud: no park to lift")
+            return
+        self._park_memory = None
+        self._park_path().unlink(missing_ok=True)
+        info(f"iCloud: the user confirmed the account works — park lifted (was: {parked})")
 
     def _probe_find_my(self, force: bool = False, complete: bool = False) -> FindMyProbe:
         """One read of the Find My device list on the cookies the session holds — the request
         the Find My web page makes when it opens, without the locate flags (no device is woken)
-        and outside pyicloud's device manager (no password sign-in when Find My wants one, no
-        5-minute monitor thread). The verdict is cached FIND_MY_PROBE_TTL_SECONDS so the TUI,
-        the health check and the device listing share one request; `complete` also polls for
-        the family members' devices, which Apple hands out after the account's own."""
+        and outside pyicloud's device manager. The verdict is cached FIND_MY_PROBE_TTL_SECONDS
+        so the TUI's table and the device listing share one request; `complete` also polls for
+        the family members' devices, which Apple hands out after the account's own. Nothing
+        calls this on a timer."""
         with self._probe_lock:
             cached = self._find_my_probe
             if (cached and not force and (cached.complete or not complete)
@@ -574,68 +652,64 @@ class ICloudIntegration(Integration):
         return bool(user_info.get("hasMembers")) and any(
             isinstance(m, dict) and m.get("deviceFetchStatus") == "LOADING" for m in members.values())
 
-    def _auto_reauth_due(self) -> bool:
-        now = time.time()
-        failed = self._auto_reauth_failed_at
-        if failed is not None and now - failed < self.FIND_MY_REAUTH_FAILURE_BACKOFF_SECONDS:
-            trace(f"iCloud: Find My wants a fresh sign-in, but Apple rejected the automatic one "
-                  f"{(now - failed) / 3600:.1f} h ago — parked until Ctrl-R in the iCloud tab, a restart, "
-                  f"or {self.FIND_MY_REAUTH_FAILURE_BACKOFF_SECONDS // 3600} h have passed")
-            return False
-        last = self._last_auto_reauth_at
-        due = last is None or now - last >= self.FIND_MY_REAUTH_COOLDOWN_SECONDS
-        if not due:
-            trace(f"iCloud: Find My wants a fresh sign-in, but the last automatic one was "
-                  f"{(now - last) / 60:.0f} min ago — waiting (Ctrl-R in the iCloud tab does it now)")
-        return due
-
-    def _reauthenticate_find_my(self, why: str, automatic: bool) -> FindMyProbe:
+    def _sign_in_for_find_my(self, why: str) -> Optional[str]:
         """One deliberate password sign-in on the live session because Find My rejected its
-        cookies (a restart loses them on pyicloud 2.6.5; Apple also expires them on its own).
-        The trust token normally spares the 2FA; when Apple asks anyway, the auto-2FA flow
-        completes it. Automatic runs are spaced FIND_MY_REAUTH_COOLDOWN_SECONDS apart."""
+        cookies (Apple expires them within the hour), run only when a command needs Find My.
+        The trust token normally spares the 2FA; a challenge Apple raises anyway is handed to
+        the auto-2FA flow, never left open. Returns why Find My still cannot be used, None when
+        the sign-in went through. Parked sign-ins are not attempted."""
+        parked = self._parked_reason()
+        if parked:
+            info(f"iCloud: Find My wants a fresh sign-in ({why}), but sign-ins are parked — {parked}")
+            return f"sign-ins are parked after Apple refused one: {parked}"
         api = self._api
-        if automatic:
-            self._last_auto_reauth_at = time.time()
         info(f"iCloud: Find My wants a fresh sign-in ({why}) — re-authenticating")
         started_at = time.time()
         self._signin_sms_wanted = True
         try:
             api.authenticate(force_refresh=True)
-        except (PyiCloudFailedLoginException, PyiCloudConnectionException) as e:
+        except (PyiCloudFailedLoginException, PyiCloudAcceptTermsException) as e:
             self._auth_error = _brief(e)
-            if automatic:
-                self._auto_reauth_failed_at = time.time()
-            error(f"iCloud: re-authentication for Find My failed: {_brief(e)}"
-                  + (" — automatic retries parked" if automatic else ""))
-            self._notify_apple_block(e)
-            self._find_my_probe = probe = FindMyProbe("error", _brief(e))
-            return probe
+            error(f"iCloud: re-authentication for Find My failed: {_brief(e)} — sign-ins parked")
+            self._park(e)
+            self._find_my_probe = FindMyProbe("error", _brief(e))
+            return _brief(e)
+        except PyiCloudConnectionException as e:
+            error(f"iCloud: re-authentication for Find My failed: {_brief(e)}")
+            self._find_my_probe = FindMyProbe("error", _brief(e))
+            return _brief(e)
         finally:
             self._signin_sms_wanted = False
         self._auth_error = None
-        self._auto_reauth_failed_at = None
-        self._challenge_from_fresh_signin = self._arm_auto_sent_code(started_at)
-        if api.requires_2fa:
+        self._find_my_probe = None
+        api._devices = None                       # the device manager of the cookies Find My rejected
+        self._challenge_from_fresh_signin = self._challenge_open()
+        self._arm_auto_sent_code(started_at)
+        if self._challenge_from_fresh_signin:
             info("iCloud: the re-authentication ended in a 2FA challenge — the auto-2FA flow completes it")
-            self._find_my_probe = probe = FindMyProbe("reauth", "2FA pending")
-            return probe
-        return self._probe_find_my(force=True)
+            self._find_my_probe = FindMyProbe("reauth", "2FA pending")
+            return self.SESSION_EXPIRED_2FA_MESSAGE
+        return None
 
     def requires_2fa(self) -> bool:
-        """Check if 2FA verification is required."""
+        """A 2FA challenge is open: one of our own password sign-ins ended on it and no code
+        has been accepted since. pyicloud's flag alone is not it — it is also set on a
+        token-restored session Apple calls untrusted, which has no challenge a code could
+        answer and serves Find My and the setup endpoints as it is (Photos' CloudKit, which
+        needs the trust, asks for the sign-in that opens a challenge when it breaks). Until
+        2026-10-16 the verdict came from a Find My probe, a request Apple counted as a
+        failed authentication every time the cookies had expired."""
         try:
             self._ensure_authenticated()
-            if not self._api:
-                return False
-            if not self._api.requires_2fa:
-                return False
-            # requires_2fa can be a false positive - verify by testing the session
-            if self._is_session_functional():
-                return False
-            return True
         except iCloudAuthenticationError:
             return False
+        api = self._api
+        if not api or not api.requires_2fa:
+            return False
+        if not self._challenge_from_fresh_signin:
+            trace("iCloud: pyicloud flags the session untrusted, but no challenge is open — nothing to verify")
+            return False
+        return True
 
     def request_sms_2fa(self) -> str:
         """Request a 2FA code via SMS. Returns the obfuscated phone number.
@@ -711,6 +785,10 @@ class ICloudIntegration(Integration):
         session with 409 'Authentication required for Account' — without ever
         evaluating the code. Only a password (SRP) signin raises a challenge that
         codes can actually validate against."""
+        parked = self._parked_reason()
+        if parked:
+            info(f"iCloud: no fresh password signin — sign-ins are parked ({parked})")
+            raise iCloudAuthenticationError(f"sign-ins parked after Apple refused one: {parked}")
         info("iCloud: fresh password signin — discarding persisted session state")
         self._api = None
         self._sms_requested_at = None
@@ -720,10 +798,14 @@ class ICloudIntegration(Integration):
         self._signin_sms_wanted = True
         try:
             api.authenticate()
-        except (PyiCloudFailedLoginException, PyiCloudConnectionException) as e:
+        except (PyiCloudFailedLoginException, PyiCloudAcceptTermsException) as e:
             self._auth_error = _brief(e)
             error(f"iCloud: fresh password signin failed: {_brief(e)}")
-            self._notify_apple_block(e)
+            self._park(e)
+            raise iCloudAuthenticationError(f"Fresh signin failed: {e}") from e
+        except PyiCloudConnectionException as e:
+            self._auth_error = _brief(e)
+            error(f"iCloud: fresh password signin failed: {_brief(e)}")
             raise iCloudAuthenticationError(f"Fresh signin failed: {e}") from e
         finally:
             self._signin_sms_wanted = False
@@ -758,6 +840,10 @@ class ICloudIntegration(Integration):
         with self._auto_sms_lock:
             if self.sms_request_pending():
                 trace("iCloud: SMS 2FA request already pending, not requesting another")
+                return
+            parked = self._parked_reason()
+            if parked:
+                info(f"iCloud: not auto-requesting SMS 2FA code — sign-ins are parked ({parked})")
                 return
             limit = self._auto_sms_limiter.check()
             if limit:
@@ -972,7 +1058,15 @@ class ICloudIntegration(Integration):
         return msg
 
     def get_auth_status(self) -> Dict[str, Any]:
-        """Get current authentication status for TUI display."""
+        """Current authentication status for TUI display. No request of its own: the Find My
+        verdict shown is the last listing's (the tab's device table runs one, cached)."""
+        parked = self._parked_reason()
+        if parked:
+            return {
+                "status": "parked",
+                "message": f"Sign-ins parked after Apple refused one: {parked} — Ctrl-R once the account works again",
+            }
+
         if self._auth_error:
             return {
                 "status": "error",
@@ -991,13 +1085,13 @@ class ICloudIntegration(Integration):
                 "message": "2FA verification required",
             }
 
-        probe = self._probe_find_my()
-        if probe.verdict == "reauth":
+        probe = self._find_my_probe
+        if probe and probe.verdict == "reauth":
             return {
                 "status": "needs_reauth",
                 "message": "Signed in, but Find My wants a fresh sign-in",
             }
-        if probe.verdict == "error":
+        if probe and probe.verdict == "error":
             return {
                 "status": "error",
                 "message": f"Find My: {probe.detail}",
@@ -1025,11 +1119,12 @@ class ICloudIntegration(Integration):
         """How many icloud.devices entries exist — the index the next one gets."""
         return len(self._device_specs)
 
-    def get_icloud_devices(self) -> List[Dict[str, Any]]:
+    def get_icloud_devices(self, sign_in: bool = False) -> List[Dict[str, Any]]:
         """Every device the iCloud account sees (not the config), each with `configured_as`
         (the display name it is configured under, or None) and `slot` (its index in
-        icloud.devices, or None) — read through the Find My probe, so a listing never signs
-        in and never wakes a device."""
+        icloud.devices, or None) — read through the Find My probe, so a listing never wakes a
+        device. When Find My wants a fresh sign-in, `sign_in` (the icloud_devices command)
+        does it; the TUI's table, which asks every half minute, does not — Ctrl-R is its way."""
         try:
             self._ensure_authenticated()
         except iCloudAuthenticationError:
@@ -1038,6 +1133,8 @@ class ICloudIntegration(Integration):
             info("iCloud: not listing devices — the session needs 2FA")
             return []
         probe = self._probe_find_my(complete=True)
+        if probe.verdict == "reauth" and sign_in and not self._sign_in_for_find_my("device listing"):
+            probe = self._probe_find_my(force=True, complete=True)
         if probe.verdict != "ok":
             info(f"iCloud: not listing devices — Find My probe {probe.verdict}: {probe.detail}")
             return []
@@ -1057,54 +1154,36 @@ class ICloudIntegration(Integration):
         fine(f"iCloud: account sees {len(devices)} device(s), {len(specs)} configured")
         return devices
 
-    def _notify_apple_block(self, exc: BaseException):
-        """Apple blocks the account for reasons only the user can clear — new terms to accept,
-        a security lock to lift (2026-10-15: HTTP 403, code -20209, which pyicloud 2.6.5
-        reported as a wrong password). Tell the user once per block where to go."""
-        text = _brief(exc, limit=10_000).lower()
-        for marker, message in self.APPLE_BLOCKS:
-            if marker not in text:
-                continue
-            if marker in self._blocks_notified:
-                trace(f"iCloud: '{marker}' block already reported, not repeating")
-                return
-            self._blocks_notified.add(marker)
-            info(f"iCloud: Apple blocks the account ({marker}) — notifying the user")
-            system_note(self.name, message)
-            return
-
-    def _notify_2fa_required(self):
-        """Send notification when 2FA is required."""
-        system_note(self.name, "iCloud session expired. Attempting automatic SMS 2FA — "
-                               "manual entry available in Keep TUI console (iCloud tab) if it doesn't recover.")
-
     @staticmethod
     def _is_reauthentication_error(exc: Exception) -> bool:
+        if isinstance(exc, PyiCloudAuthRequiredException):
+            return True
         error_str = str(exc).lower()
         return "re-authentication required" in error_str or ("authentication" in error_str and "required" in error_str)
 
-    def _mark_session_needs_2fa(self):
-        self.state = IntegrationState.NEEDS_2FA
-        self._notify_2fa_required()
-        self._api = None
-        self._auth_error = "Session expired - 2FA required"
-
     def _ensure_authenticated_and_ready(self):
-        try:
-            self._ensure_authenticated()
-        except iCloudAuthenticationError:
-            self._notify_2fa_required()
-            raise
-
+        """Signed in with no 2FA challenge open, or the reason as an iCloudAuthenticationError.
+        A session with an open challenge is kept as it is — the auto-2FA flow is completing it,
+        and dropping it (as this did until 2026-10-16) meant the next call opened another."""
+        self._ensure_authenticated()
         if self._api and self.requires_2fa():
-            self._mark_session_needs_2fa()
+            self.state = IntegrationState.NEEDS_2FA
+            info("iCloud: a 2FA challenge is open — not using Find My until the code is accepted")
             raise iCloudAuthenticationError(self.SESSION_EXPIRED_2FA_MESSAGE)
 
-    def _find_target_device(self, spec: iCloudDeviceSpec):
-        target_device = next((d for d in self._api.devices if spec.matches(d.data)), None)
+    def _devices_now(self):
+        """pyicloud's device manager, rebuilt: the one from the last command holds that
+        command's records, and no monitor thread refreshes them (refresh_interval=None)."""
+        api = self._api
+        api._devices = None
+        return api.devices
+
+    @staticmethod
+    def _find_target_device(spec: iCloudDeviceSpec, devices):
+        target_device = next((d for d in devices if spec.matches(d.data)), None)
         if not target_device:
             available = [f"{d.data.get('name')} ({d.data.get('deviceDisplayName') or d.data.get('deviceClass') or '?'}, "
-                         f"id {(d.data.get('id') or '')[:8]}…)" for d in self._api.devices]
+                         f"id {(d.data.get('id') or '')[:8]}…)" for d in devices]
             info(f"iCloud: configured device '{spec.label()}' (id {spec.id[:8]}…) is not among the "
                  f"{len(available)} the account sees — its id may have changed; icloud_devices() shows the current ones")
             raise iCloudAPIError(
@@ -1113,6 +1192,9 @@ class ICloudIntegration(Integration):
         return target_device
 
     def _run_with_reauthentication(self, operation, failure_context: str):
+        """Run a Find My operation; when Find My rejects the session's cookies, sign in once —
+        deliberately, on the live session (pyicloud's own re-auth is disabled, see
+        _refresh_find_my_without_reauth) — and run it again."""
         try:
             return operation()
         except iCloudAPIError:
@@ -1120,22 +1202,14 @@ class ICloudIntegration(Integration):
         except Exception as e:
             if not self._is_reauthentication_error(e):
                 raise
-
-            info(f"iCloud session expired {failure_context}, attempting re-authentication...")
-            self._api = None
-            self._ensure_authenticated_and_ready()
-
-            try:
-                return operation()
-            except iCloudAuthenticationError:
-                raise
-            except Exception as retry_error:
-                error(f"Failed to re-authenticate or retry: {_brief(retry_error)}")
-                self._notify_apple_block(retry_error)
-                raise
+            info(f"iCloud session expired {failure_context}, re-authenticating...")
+            trouble = self._sign_in_for_find_my(failure_context)
+            if trouble:
+                raise iCloudAuthenticationError(f"Find My is not available: {trouble}") from e
+            return operation()
 
     def _play_sound_for_spec(self, spec: iCloudDeviceSpec) -> str:
-        target_device = self._find_target_device(spec)
+        target_device = self._find_target_device(spec, self._devices_now())
         target_device.play_sound()
         return target_device.data.get("name") or spec.label()
 
@@ -1161,8 +1235,9 @@ class ICloudIntegration(Integration):
         this we'd report stale locations (e.g. "home" long after they left)."""
         deadline = time.time() + self._LOCATE_TIMEOUT_SECONDS
         attempts = 0
+        devices = self._devices_now()
         while True:
-            target_device = self._find_target_device(spec)
+            target_device = self._find_target_device(spec, devices)
             location = target_device.location
             if not location or not bool(location.get("isOld")):
                 if attempts:
@@ -1177,7 +1252,7 @@ class ICloudIntegration(Integration):
             attempts += 1
             trace(f"iCloud: {spec.label()} fix is stale, requesting active locate (attempt {attempts})")
             try:
-                self._api.devices.refresh(locate=True)
+                devices.refresh(locate=True)
             except Exception as e:
                 if self._is_reauthentication_error(e):
                     raise
@@ -1291,20 +1366,30 @@ class ICloudIntegration(Integration):
             pass
         return None
 
-    def refresh_connection(self):
-        """Ctrl-R: sign in again and, when Find My wants more than the restored token (a
-        password sign-in on top), do that too — now, cooldown or not."""
+    def refresh_connection(self, by_user: bool = False):
+        """Sign in again on the session files (the token when it still serves, the password
+        when Apple wants it). `by_user` — Ctrl-R in the iCloud tab, the icloud_unlocked
+        command — is the user saying the account works again: it lifts the park and, when Find
+        My wants more than the restored token, signs in for it too, now. Photos' refresh on an
+        auth error is automatic: the park holds, Find My is left alone (CloudKit does not need
+        it), and a session with an open 2FA challenge is kept for the auto-2FA flow to finish
+        rather than replaced by a sign-in that opens another."""
+        if by_user:
+            self._lift_park()
+        elif self._api and self._api.requires_2fa and self._challenge_from_fresh_signin:
+            info("iCloud: refresh asked while a 2FA challenge is open — keeping the session, nudging the auto-2FA flow")
+            self.on_needs_2fa()
+            return
         self._api = None
         self._auth_error = None
-        self._auto_reauth_failed_at = None
         # New signin = new auth challenge; any SMS code in flight for the old
         # session is dead, so don't let the poller submit it.
         self._sms_requested_at = None
         self._ensure_authenticated()
-        if self._api and not self.requires_2fa():
-            probe = self._probe_find_my()
-            if probe.verdict == "reauth":
-                probe = self._reauthenticate_find_my("manual refresh", automatic=False)
+        if by_user and self._api and not self.requires_2fa():
+            probe = self._probe_find_my(force=True)
+            if probe.verdict == "reauth" and not self._sign_in_for_find_my("manual refresh"):
+                probe = self._probe_find_my(force=True)
             if probe.verdict == "ok":
                 self.state = IntegrationState.OK
                 info("iCloud connection refreshed, session is functional")

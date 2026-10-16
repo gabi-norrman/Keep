@@ -1,7 +1,7 @@
 ---
 name: location
 summary: "make a family member's phone ring, find where they are, set up the phones"
-commands: [find_phone, locate_user, icloud_devices]
+commands: [find_phone, locate_user, icloud_devices, icloud_unlocked]
 ---
 ### Find My iPhone
 To make a family member's phone play a sound (useful when someone can't find their phone):
@@ -32,5 +32,12 @@ Find My): run `icloud_devices()` and point the entry at the new id.
 
 `config_set` and `restart_integration` are in the `setup` toolkit.
 
+### When Apple refused a sign-in
+After Apple refuses the server's iCloud sign-in (the Apple Account locked for security reasons, new terms to accept,
+a rejected password) the server parks every sign-in of its own and says so; Find My and iCloud Photos stay off until
+the user has sorted it out on Apple's side (https://iforgot.apple.com for a lock) and says the account works again.
+Then run `icloud_unlocked()` — it lifts the park and signs in at once. Never run it on your own initiative: a sign-in
+against an account that is still locked is what earns the next lock.
+
 ### Stop-and-wait
-`locate_user()`, `icloud_devices()` return data: emit them and stop generating; the result arrives in the next round.
+`locate_user()`, `icloud_devices()`, `icloud_unlocked()` return data: emit them and stop generating; the result arrives in the next round.

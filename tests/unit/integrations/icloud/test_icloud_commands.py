@@ -27,3 +27,20 @@ class TestCmdIcloudDevices:
     def test_empty_listing_points_at_the_login(self, commands_instance, icloud_api):
         icloud_api.get_icloud_devices.return_value = []
         assert "login may be incomplete" in commands_instance._owner("icloud_devices")._run_icloud_devices()
+
+    def test_the_command_lets_the_listing_sign_in_for_find_my(self, commands_instance, icloud_api):
+        """The TUI's table never signs in; the command, asked for by the user, may."""
+        icloud_api.get_icloud_devices.return_value = []
+        commands_instance._owner("icloud_devices")._run_icloud_devices()
+        assert icloud_api.get_icloud_devices.call_args.kwargs.get("sign_in") is True
+
+
+class TestCmdIcloudUnlocked:
+    def test_lifts_the_park_as_the_user_and_reports_the_status(self, commands_instance, icloud_api):
+        icloud_api.name = "iCloud"
+        icloud_api.get_auth_status.return_value = {"status": "authenticated", "message": "Connected to iCloud"}
+        owner = commands_instance._owner("icloud_unlocked")
+        with patch.object(type(owner.commands), "integration_monitor", return_value=Mock()):
+            text = owner._run_icloud_unlocked()
+        icloud_api.refresh_connection.assert_called_once_with(by_user=True)
+        assert "authenticated" in text and "Connected to iCloud" in text

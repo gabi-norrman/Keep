@@ -19,11 +19,24 @@ class ICloudCommands(CommandSet):
     def cmd_icloud_devices(self, parameter_string: str = ""):
         self.background_command(self._run_icloud_devices, "")
 
+    def cmd_icloud_unlocked(self, parameter_string: str = ""):
+        self.background_command(self._run_icloud_unlocked, "")
+
+    def _run_icloud_unlocked(self, _="") -> str:
+        """The user says the Apple Account works again: lift the park a refused sign-in put on
+        the server's iCloud sign-ins and sign in now."""
+        api = self._get_icloud_api()
+        api.refresh_connection(by_user=True)
+        status = api.get_auth_status()
+        info(f"icloud_unlocked: signed in again — {status['status']}: {status['message']}")
+        self.commands.integration_monitor().check_now(api.name)
+        return f"iCloud sign-in attempted — {status['status']}: {status['message']}"
+
     def _run_icloud_devices(self, _="") -> str:
         """Every device the iCloud account sees, with its id and the icloud.devices entry it
         is configured in — the material for finishing the setup with config_set."""
         api = self._get_icloud_api()
-        devices = api.get_icloud_devices()
+        devices = api.get_icloud_devices(sign_in=True)
         if not devices:
             info("icloud_devices: the account listed no devices")
             return ("iCloud listed no devices — the login may be incomplete (list_integrations shows the "
@@ -44,3 +57,4 @@ class ICloudCommands(CommandSet):
     def describe_find_phone(self, p):             return "Pinging phone"
     def describe_locate_user(self, p):            return f"Locating {p.strip()}" if p.strip() else "Locating user"
     def describe_icloud_devices(self, p):         return "Listing iCloud devices"
+    def describe_icloud_unlocked(self, p):        return "Signing in to iCloud again"

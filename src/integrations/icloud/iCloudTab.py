@@ -22,6 +22,7 @@ class iCloudTab(AuthTab):
         "partial_auth": ("Partly verified", Theme.COLOR_GREEN),
         "needs_2fa": ("2FA Required", Theme.COLOR_YELLOW),
         "needs_reauth": ("Needs sign-in", Theme.COLOR_YELLOW),
+        "parked": ("Sign-ins parked", Theme.COLOR_YELLOW),
     }
 
     def __init__(self):
@@ -84,7 +85,9 @@ class iCloudTab(AuthTab):
         if self.status == "needs_2fa":
             return "Auto-2FA in progress — Ctrl-E to enter the code manually", Theme.COLOR_YELLOW
         if self.status == "needs_reauth":
-            return "Find My wants a fresh sign-in — Ctrl-R does it now (the monitor retries hourly)", Theme.COLOR_YELLOW
+            return "Find My wants a fresh sign-in — Ctrl-R does it now (nothing retries on its own)", Theme.COLOR_YELLOW
+        if self.status == "parked":
+            return "Apple refused a sign-in — once the account works again, Ctrl-R lifts the park", Theme.COLOR_YELLOW
         return None
 
     def _begin_entry(self):
@@ -118,12 +121,13 @@ class iCloudTab(AuthTab):
             self._status_message = "2FA verification failed. Try again."
 
     def _refresh(self):
-        """Refresh the iCloud session; synchronous, like the check that follows it."""
+        """Refresh the iCloud session; synchronous, like the check that follows it. By the
+        user, so it also lifts the park a refused sign-in left and signs in for Find My."""
         self._status_message = "Refreshing connection..."
         api = self._get_api()
         if api:
             try:
-                api.refresh_connection()
+                api.refresh_connection(by_user=True)
                 self._status_message = "Connection refreshed"
             except iCloudAuthenticationError as e:
                 self._status_message = f"Auth error: {e}"

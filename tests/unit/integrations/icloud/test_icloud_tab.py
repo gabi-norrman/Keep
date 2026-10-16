@@ -104,6 +104,28 @@ class TestCtrlE:
         assert api.request_sms_2fa.called is opens
 
 
+class TestCtrlR:
+    def test_ctrl_r_is_the_users_refresh(self):
+        """It lifts the park a refused sign-in left and signs in for Find My — the automatic
+        refresh does neither, so the tab must say which one it is."""
+        api = Mock()
+        api.get_auth_status.return_value = {"status": "authenticated", "message": ""}
+        api.get_icloud_devices.return_value = []
+        api.get_devices_list.return_value = ""
+        tab = make_tab(api)
+        assert tab.handle_input('\x12') is True
+        api.refresh_connection.assert_called_once_with(by_user=True)
+        assert "refreshed" in tab._status_message.lower()
+
+    def test_a_parked_tab_hides_the_device_table_and_points_at_ctrl_r(self):
+        tab = make_tab(Mock())
+        tab._auth_status = {"status": "parked", "message": "Sign-ins parked after Apple refused one"}
+        assert tab._table().rows == []
+        hint, _ = tab._entry_hint()
+        assert "Ctrl-R" in hint
+        assert tab._status_label()[0] != "Not initialized"
+
+
 class TestAutoTwoFactor:
     def test_an_auto_verified_code_cancels_a_half_typed_one_and_rechecks(self):
         api = Mock()

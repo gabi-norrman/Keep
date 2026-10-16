@@ -88,14 +88,24 @@ class TestiCloudAPI:
         assert "Login failed" in status['message']
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
-    def test_requires_2fa_with_mocked_api(self, mock_pyicloud):
+    def test_requires_2fa_when_the_signin_ended_on_a_challenge(self, mock_pyicloud):
+        mock_pyicloud.return_value = _service_with_sms_challenge()
+
+        api = iCloudAPI(config=VALID_CONFIG)
+        assert api.requires_2fa() is True
+
+    @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
+    def test_an_untrusted_token_session_is_not_a_2fa_case(self, mock_pyicloud):
+        """pyicloud flags a token-restored session Apple calls untrusted as requires_2fa, but it
+        holds no challenge a code could answer — and no Find My request decides it any more."""
         mock_service = Mock()
         mock_service.requires_2fa = True
+        mock_service._auth_data = {}
         mock_pyicloud.return_value = mock_service
 
         api = iCloudAPI(config=VALID_CONFIG)
-        result = api.requires_2fa()
-        assert result is True
+        assert api.requires_2fa() is False
+        mock_service.session.post.assert_not_called()
 
 
 class TestDeviceSpecs:
@@ -849,11 +859,28 @@ class TestAutoSmsRequest:
 class TestGetAuthStatus:
     def test_needs_2fa_branch(self):
         api = iCloudAPI(config=VALID_CONFIG)
+        api._api = _service_with_sms_challenge()
+        api._challenge_from_fresh_signin = True
+        status = api.get_auth_status()
+        assert status['status'] == 'needs_2fa'
+
+    def test_untrusted_token_session_is_partly_verified(self):
+        api = iCloudAPI(config=VALID_CONFIG)
         mock_service = Mock()
         mock_service.requires_2fa = True
         api._api = mock_service
         status = api.get_auth_status()
-        assert status['status'] == 'needs_2fa'
+        assert status['status'] == 'partial_auth'
+        mock_service.session.post.assert_not_called(), "the status check makes no Find My request"
+
+    def test_parked_signins_show_as_parked(self):
+        from pyicloud.exceptions import PyiCloudFailedLoginException
+        api = iCloudAPI(config=VALID_CONFIG)
+        with patch('assistant.Notifier.NullNotifier.send_message'):
+            api._park(PyiCloudFailedLoginException("Invalid email/password combination."))
+        status = api.get_auth_status()
+        assert status['status'] == 'parked'
+        assert "Invalid email/password" in status['message']
 
     def test_authenticated_branch(self):
         api = iCloudAPI(config=VALID_CONFIG)
@@ -935,30 +962,35 @@ class TestPlaySound:
         device.play_sound.assert_called_once()
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
-    def test_ensure_auth_raises_notifies_and_propagates(self, mock_pyicloud):
+    def test_a_refused_signin_propagates_and_parks(self, mock_pyicloud, icloud_session_dir):
         from pyicloud.exceptions import PyiCloudFailedLoginException
         mock_pyicloud.side_effect = PyiCloudFailedLoginException("bad")
 
         api = iCloudAPI(config=VALID_CONFIG)
-        with patch.object(api, '_notify_2fa_required') as mock_notify:
+        with patch('assistant.Notifier.NullNotifier.send_message') as notify:
             with pytest.raises(iCloudAuthenticationError):
                 api.play_sound("iPhone")
-            mock_notify.assert_called_once()
+        notify.assert_called_once()
+        assert (icloud_session_dir / api.PARK_FILE).exists()
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
-    def test_requires_2fa_on_entry_notifies_resets_raises(self, mock_pyicloud):
-        mock_service = Mock()
-        mock_service.requires_2fa = True
+    def test_an_open_challenge_raises_and_keeps_the_session(self, mock_pyicloud):
+        """Dropping the session here (as until 2026-10-16) threw away the challenge the
+        auto-2FA flow was completing, and the next call opened another one."""
+        mock_service = _service_with_sms_challenge()
         mock_pyicloud.return_value = mock_service
 
         api = iCloudAPI(config=VALID_CONFIG)
         api._api = mock_service
+        api._challenge_from_fresh_signin = True
 
-        with patch.object(api, '_notify_2fa_required') as mock_notify:
-            with pytest.raises(iCloudAuthenticationError, match="session expired"):
+        with patch('assistant.Notifier.NullNotifier.send_message') as notify:
+            with pytest.raises(iCloudAuthenticationError, match="2FA code"):
                 api.play_sound("iPhone")
-            mock_notify.assert_called_once()
-        assert api._api is None
+        notify.assert_not_called()
+        assert api._api is mock_service
+        assert api.state == IntegrationState.NEEDS_2FA
+        mock_service.authenticate.assert_not_called()
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
     def test_device_not_found_raises_with_available_names_and_models(self, mock_pyicloud):
@@ -1007,53 +1039,69 @@ class TestPlaySound:
         device.play_sound.assert_called_once()
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
-    def test_device_list_reauth_retries_successfully(self, mock_pyicloud):
+    def test_device_list_reauth_signs_in_on_the_live_session_and_retries(self, mock_pyicloud):
+        """Find My rejecting the cookies earns one deliberate sign-in on the session that holds
+        the trust token (force_refresh: the cached token alone would hand the same cookies back),
+        never a second PyiCloudService."""
         device = self._make_device("device-1-uuid", "iPhone")
-        mock_service_good = Mock()
-        mock_service_good.requires_2fa = False
-        mock_service_good.devices = [device]
 
         class FailingDevices:
             def __iter__(self):
                 raise Exception("Re-authentication required")
 
-        mock_service_expired = Mock()
-        mock_service_expired.requires_2fa = False
-        mock_service_expired.devices = FailingDevices()
-
-        # Only the re-auth call to PyiCloudService matters (expired is pre-assigned)
-        mock_pyicloud.return_value = mock_service_good
+        service = Mock()
+        service.requires_2fa = False
+        type(service).devices = PropertyMock(side_effect=[FailingDevices(), [device]])
 
         api = iCloudAPI(config=VALID_CONFIG)
-        api._api = mock_service_expired
+        api._api = service
 
         result = api.play_sound("iPhone")
 
         assert "Playing sound on iPhone" in result
         device.play_sound.assert_called_once()
+        service.authenticate.assert_called_once_with(force_refresh=True)
+        mock_pyicloud.assert_not_called()
+        assert service._devices is None, "the device manager of the rejected cookies is dropped"
 
-    @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
-    def test_play_sound_call_reauth_retries_successfully(self, mock_pyicloud):
+    def test_play_sound_call_reauth_retries_successfully(self):
         device_fail = self._make_device("device-1-uuid", "iPhone")
         device_fail.play_sound.side_effect = Exception("Re-authentication required")
-
         device_ok = self._make_device("device-1-uuid", "iPhone")
 
-        mock_service_1 = Mock()
-        mock_service_1.requires_2fa = False
-        mock_service_1.devices = [device_fail]
-
-        mock_service_2 = Mock()
-        mock_service_2.requires_2fa = False
-        mock_service_2.devices = [device_ok]
-
-        mock_pyicloud.side_effect = [mock_service_1, mock_service_2]
+        service = Mock()
+        service.requires_2fa = False
+        type(service).devices = PropertyMock(side_effect=[[device_fail], [device_ok]])
 
         api = iCloudAPI(config=VALID_CONFIG)
+        api._api = service
         result = api.play_sound("iPhone")
 
         assert "Playing sound on iPhone" in result
         device_ok.play_sound.assert_called_once()
+        service.authenticate.assert_called_once_with(force_refresh=True)
+
+    def test_a_reauth_that_apple_refuses_fails_the_command_and_parks(self, icloud_session_dir):
+        from pyicloud.exceptions import PyiCloudFailedLoginException
+
+        class FailingDevices:
+            def __iter__(self):
+                raise Exception("Re-authentication required")
+
+        service = Mock()
+        service.requires_2fa = False
+        service.devices = FailingDevices()
+        service.authenticate.side_effect = PyiCloudFailedLoginException("Invalid email/password combination.")
+
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = service
+        with patch('assistant.Notifier.NullNotifier.send_message'):
+            with pytest.raises(iCloudAuthenticationError, match="Find My is not available"):
+                api.play_sound("iPhone")
+        assert (icloud_session_dir / api.PARK_FILE).exists()
+        with pytest.raises(iCloudAuthenticationError, match="parked"):
+            api.play_sound("iPhone")
+        service.authenticate.assert_called_once(), "parked: the second command does not sign in"
 
 
 class TestGetLocation:
@@ -1279,8 +1327,8 @@ class TestGetLocation:
     @patch('integrations.icloud.ICloudIntegration.reverse_geocode')
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
     def test_reauth_retries_successfully(self, mock_pyicloud, mock_geocode):
-        # First device raises a re-auth error when location is read; after re-auth
-        # PyiCloudService is constructed again and returns the working device.
+        # First device raises a re-auth error when location is read; after the deliberate
+        # sign-in on the same session the device list is read again and works.
         device_fail = self._make_device("device-1-uuid", name="iPhone")
         type(device_fail).location = PropertyMock(side_effect=Exception("Re-authentication required"))
 
@@ -1297,21 +1345,18 @@ class TestGetLocation:
             },
         )
 
-        service_1 = Mock()
-        service_1.requires_2fa = False
-        service_1.devices = [device_fail]
-
-        service_2 = Mock()
-        service_2.requires_2fa = False
-        service_2.devices = [device_ok]
-
-        mock_pyicloud.side_effect = [service_1, service_2]
+        service = Mock()
+        service.requires_2fa = False
+        type(service).devices = PropertyMock(side_effect=[[device_fail], [device_ok]])
+        mock_pyicloud.return_value = service
         mock_geocode.return_value = "Some Place"
 
         api = iCloudAPI(config=VALID_CONFIG)
         result = api.get_location("iPhone")
 
         assert "Some Place" in result
+        service.authenticate.assert_called_with(force_refresh=True)
+        assert mock_pyicloud.call_count == 1, "the sign-in happens on the live session, not a new one"
 
 
 class TestIsReauthenticationError:
@@ -1331,24 +1376,37 @@ class TestIsReauthenticationError:
         assert iCloudAPI._is_reauthentication_error(Exception("authentication failed")) is False
 
 
-class TestIsSessionFunctional:
-    def test_returns_true_when_devices_accessible(self):
-        api = iCloudAPI(config=VALID_CONFIG)
-        api._api = _find_my_answers(Mock(), [{"id": "fmip-1"}])
-        assert api._is_session_functional() is True
+class TestFindMyManagerNeverSignsIn:
+    """pyicloud's device manager answers Find My's 'Re-authentication required' with a password
+    sign-in of its own, inside the device read — the Oct 6–13 sign-ins whose 2FA challenge
+    nothing completed. The module replaces that method: the refusal propagates."""
 
-    def test_probe_failure_logs_the_actual_error(self):
-        # The probe's exception is what decides "needs 2FA recovery" — on
-        # 2026-08-24 it was swallowed here and the trigger of a 4x SMS signin
-        # loop was never logged. The message must reach the log.
+    def test_a_reauth_refusal_propagates_instead_of_a_signin(self):
+        from pyicloud.exceptions import PyiCloudAuthRequiredException
+        from pyicloud.services.findmyiphone import FindMyiPhoneServiceManager
+        manager = Mock()
+        manager._refresh_client.side_effect = PyiCloudAuthRequiredException("m@mlab.test", Mock())
+        with pytest.raises(PyiCloudAuthRequiredException):
+            FindMyiPhoneServiceManager._refresh_client_with_reauth(manager, locate=False)
+        manager.session.service.authenticate.assert_not_called()
+        manager._initialize_devices.assert_not_called()
+
+    def test_a_working_refresh_initializes_the_devices_without_a_monitor_thread(self):
+        from pyicloud.services.findmyiphone import FindMyiPhoneServiceManager
+        manager = Mock()
+        manager._refresh_interval = None
+        FindMyiPhoneServiceManager._refresh_client_with_reauth(manager, locate=True)
+        manager._refresh_client.assert_called_once_with(locate=True)
+        manager._initialize_devices.assert_called_once_with(locate=True)
+        manager._start_monitor_thread.assert_not_called()
+
+    @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
+    def test_the_service_is_built_without_a_refresh_interval(self, mock_pyicloud):
+        """A manager with the default interval re-reads Find My every five minutes for the rest
+        of the process once a command has used it."""
         api = iCloudAPI(config=VALID_CONFIG)
-        mock_service = _find_my_answers(Mock(), exc=ValueError("401 Unauthorized"))
-        mock_service.requires_2fa = True
-        api._api = mock_service
-        with patch('integrations.icloud.ICloudIntegration.info') as mock_info:
-            assert api._is_session_functional() is False
-        logged = " ".join(c.args[0] for c in mock_info.call_args_list)
-        assert "401 Unauthorized" in logged
+        api._ensure_authenticated()
+        assert mock_pyicloud.call_args.kwargs["refresh_interval"] is None
 
 
 class TestRequestSms2fa:
@@ -1411,23 +1469,37 @@ class TestCheckHealth:
         assert api.check_health() is True
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
-    def test_returns_true_when_2fa_is_false_positive(self, mock_pyicloud):
-        """check_health should use the false-positive detection path, not raw requires_2fa."""
-        mock_service = _find_my_answers(Mock(), [{"id": "fmip-1"}])  # session works = false positive
+    def test_an_untrusted_token_session_is_healthy(self, mock_pyicloud):
+        """pyicloud's requires_2fa alone is not the verdict: a token-restored session Apple calls
+        untrusted has no open challenge, and nothing asks Find My about it."""
+        mock_service = Mock()
         mock_service.requires_2fa = True
+        mock_service._auth_data = {}
         mock_pyicloud.return_value = mock_service
 
         api = iCloudAPI(config=VALID_CONFIG)
         assert api.check_health() is True
+        mock_service.session.post.assert_not_called()
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
-    def test_returns_false_when_2fa_truly_needed(self, mock_pyicloud):
-        mock_service = _find_my_answers(Mock(), exc=Exception("401"))
-        mock_service.requires_2fa = True
-        mock_pyicloud.return_value = mock_service
+    def test_returns_false_while_a_challenge_is_open(self, mock_pyicloud):
+        mock_pyicloud.return_value = _service_with_sms_challenge()
 
         api = iCloudAPI(config=VALID_CONFIG)
         assert api.check_health() is False
+
+    def test_a_session_find_my_rejects_is_idle_not_unhealthy(self):
+        """Until 2026-10-16 the check read Find My every 15 minutes and re-signed in hourly when
+        the cookies had expired — the stream of refusals Apple read as an attack."""
+        from pyicloud.exceptions import PyiCloudAuthRequiredException
+        service = _find_my_answers(Mock(), exc=PyiCloudAuthRequiredException("m@mlab.test", Mock()))
+        service.requires_2fa = False
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = service
+        for _ in range(3):
+            assert api.check_health() is True
+        service.session.post.assert_not_called()
+        service.authenticate.assert_not_called()
 
 
 class TestApiProperty:
@@ -1441,21 +1513,20 @@ class TestApiProperty:
         assert api.api is mock_service
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
-    def test_returns_api_when_2fa_false_positive(self, mock_pyicloud):
-        """api property should use false-positive detection, not raw requires_2fa."""
-        mock_service = _find_my_answers(Mock(), [{"id": "fmip-1"}])  # session works
+    def test_returns_api_for_an_untrusted_token_session(self, mock_pyicloud):
+        """Photos reads CloudKit through it and asks for the sign-in itself when the trust is missing."""
+        mock_service = Mock()
         mock_service.requires_2fa = True
+        mock_service._auth_data = {}
         mock_pyicloud.return_value = mock_service
 
         api = iCloudAPI(config=VALID_CONFIG)
         assert api.api is mock_service
+        mock_service.session.post.assert_not_called()
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
-    def test_returns_none_when_2fa_truly_needed(self, mock_pyicloud):
-        mock_service = Mock()
-        mock_service.requires_2fa = True
-        mock_service.devices.__iter__ = Mock(side_effect=Exception("401"))
-        mock_pyicloud.return_value = mock_service
+    def test_returns_none_while_a_challenge_is_open(self, mock_pyicloud):
+        mock_pyicloud.return_value = _service_with_sms_challenge()
 
         api = iCloudAPI(config=VALID_CONFIG)
         assert api.api is None
@@ -1488,7 +1559,7 @@ class TestRefreshConnection:
         assert api._api is mock_service
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
-    def test_sets_state_ok_when_session_functional(self, mock_pyicloud):
+    def test_a_users_refresh_checks_find_my_and_sets_state_ok(self, mock_pyicloud):
         mock_service = _find_my_answers(Mock(), [{"id": "fmip-1"}])
         mock_service.requires_2fa = False
         mock_pyicloud.return_value = mock_service
@@ -1496,9 +1567,37 @@ class TestRefreshConnection:
         api = iCloudAPI(config=VALID_CONFIG)
         api.state = IntegrationState.NEEDS_2FA
 
-        api.refresh_connection()
+        api.refresh_connection(by_user=True)
 
         assert api.state == IntegrationState.OK
+        assert mock_service.session.post.call_count == 1
+
+    @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
+    def test_an_automatic_refresh_leaves_find_my_alone(self, mock_pyicloud):
+        """Photos' refresh on an auth error needs CloudKit, not Find My."""
+        mock_service = _find_my_answers(Mock(), [{"id": "fmip-1"}])
+        mock_service.requires_2fa = False
+        mock_pyicloud.return_value = mock_service
+
+        api = iCloudAPI(config=VALID_CONFIG)
+        api.refresh_connection()
+
+        assert api._api is mock_service
+        mock_service.session.post.assert_not_called()
+        assert all(call.kwargs.get("force_refresh") is not True for call in mock_service.authenticate.call_args_list), \
+            "the session sign-in happens, the Find My one does not"
+
+    def test_an_automatic_refresh_keeps_a_session_with_an_open_challenge(self):
+        service = _service_with_sms_challenge()
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = service
+        api._challenge_from_fresh_signin = True
+        with patch.object(api, "on_needs_2fa") as nudge, \
+                patch('integrations.icloud.ICloudIntegration.PyiCloudService') as mock_pyicloud:
+            api.refresh_connection()
+        assert api._api is service
+        mock_pyicloud.assert_not_called()
+        nudge.assert_called_once()
 
 
 class TestHumanizeAge:
@@ -2008,20 +2107,27 @@ class TestTermsOfServiceNotification:
         api._api = mock_service
         return api
 
-    def test_terms_error_notifies_user_once(self):
-        """The terms block now surfaces where the sign-in happens: the deliberate Find My re-auth."""
+    def test_terms_error_notifies_user_once_and_parks(self):
+        """The terms block surfaces where the sign-in happens: the deliberate Find My re-auth.
+        The second attempt is not made — sign-ins are parked until the user confirms."""
         api = self._api_whose_reauth_fails(self._TERMS_ERROR)
         with patch(self._NOTIFY_PATH) as mock_notify:
             for _ in range(2):
-                assert api._reauthenticate_find_my("test", automatic=False).verdict == "error"
+                assert api._sign_in_for_find_my("test")
         mock_notify.assert_called_once()
         assert "icloud.com" in mock_notify.call_args.args[0]
+        api._api.authenticate.assert_called_once()
 
-    def test_other_errors_do_not_notify(self):
-        api = self._api_whose_reauth_fails(Exception("connection reset"))
+    def test_a_connection_failure_neither_notifies_nor_parks(self):
+        from pyicloud.exceptions import PyiCloudConnectionException
+        api = self._api_whose_reauth_fails(None)
+        api._api.authenticate.side_effect = PyiCloudConnectionException("connection reset")
         with patch(self._NOTIFY_PATH) as mock_notify:
-            assert api._reauthenticate_find_my("test", automatic=False).verdict == "error"
+            for _ in range(2):
+                assert "connection reset" in api._sign_in_for_find_my("test")
         mock_notify.assert_not_called()
+        assert api._parked_reason() is None
+        assert api._api.authenticate.call_count == 2
 
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
     def test_a_terms_block_at_signin_is_reported_once(self, mock_pyicloud):
