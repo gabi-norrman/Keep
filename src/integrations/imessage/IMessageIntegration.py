@@ -11,6 +11,7 @@ from assistant.SystemNote import system_note
 from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
 from assistant.integration.Integration import Integration
 from common.ConfigManager import config
+from common.Paths import AISERVER_DIR
 from common.logging import info, trace, error, fine, note
 from assistant.PromptInjectionDetector import is_prompt_injection
 from assistant.tools.MediaAnalyzer import media_analyzer, media_kind, KIND_VIDEO
@@ -20,11 +21,32 @@ from common.RateLimiter import RateLimiter
 CHAT_DB_PATH = os.path.expanduser("~/Library/Messages/chat.db")
 # What the LLM relays when macOS keeps the server out of chat.db or the AddressBook. The grant
 # goes to Terminal, the app macOS holds responsible for the server (start.sh launches it from
-# there), and a process that was refused once stays refused — so a fresh process, not a reopen
-# in this one. The prompt shows only the first ~80 characters of an error, so the action leads.
-FULL_DISK_ACCESS_HINT = ("needs Full Disk Access for Terminal, then restart_server: System Settings > Privacy & "
-                         "Security > Full Disk Access > turn on Terminal (the server is launched from it); the "
-                         "running process keeps the refusal, so run restart_server afterwards — no need to quit Terminal")
+# there, whatever terminal the user typed in), and macOS applies a grant to a running Terminal
+# only once it is relaunched: it offers "quit now" or "later" when the toggle goes on, and after
+# "later" every restart_server spawns from the same ungranted Terminal. The user sits in
+# Terminal during the setup, so quitting it takes the chat down too — the way back is
+# start.sh in a fresh Terminal, not restart_server — spelled with the install's real path,
+# since a new Terminal opens in the home folder and the install folder is the user's choice.
+# The prompt shows only the first ~80 characters of an error, so the action leads.
+
+
+def _start_command() -> str:
+    """The line that starts the server from a fresh Terminal: `~/Keep/start.sh` for an install
+    under the home folder (start.sh cds into its own folder first), the full path otherwise,
+    quoted only when it needs it."""
+    script = str(AISERVER_DIR / "start.sh")
+    home = str(Path.home())
+    if script.startswith(home + os.sep):
+        script = "~" + script[len(home):]
+    if re.search(r"[\s'\"$`\\]", script):
+        script = '"' + script.replace("~", "$HOME", 1).replace('"', '\\"') + '"'
+    return script
+
+
+FULL_DISK_ACCESS_HINT = ("needs Full Disk Access for Terminal, then quit Terminal and run start.sh. Tell the user: "
+                         "1) System Settings > Privacy & Security > Full Disk Access > turn on Terminal; "
+                         "2) quit Terminal with Cmd+Q (the chat closes, that's fine); "
+                         f"3) open Terminal again, type {_start_command()} and press Enter — the chat comes back")
 APPLE_EPOCH_OFFSET = 978_307_200
 POLL_INTERVAL = 5
 FETCH_BATCH_SIZE = 500   # chat.db rows read per fetch; a shorter batch means the catch-up is over

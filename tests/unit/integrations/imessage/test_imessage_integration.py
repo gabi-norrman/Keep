@@ -2,6 +2,7 @@ import sqlite3
 from unittest.mock import patch, Mock, MagicMock
 
 import pytest
+from pathlib import Path
 
 from integrations.imessage.IMessageIntegration import (
     IMessageIntegration,
@@ -1396,16 +1397,31 @@ class TestFeed:
             assert integration.open_feed() is False
         assert "Full Disk Access" in integration.open_error
 
-    def test_refused_chat_db_names_terminal_and_restart_server_up_front(self, integration):
+    def test_refused_chat_db_names_terminal_quit_and_start_sh_up_front(self, integration):
         """sqlite's refusal of an existing chat.db is the TCC refusal: the error the LLM relays
-        must say the grant goes to Terminal and that a restart_server follows, within the ~80
-        characters the prompt shows of it — a reopen in the refused process would fail again."""
+        must say the grant goes to Terminal, that Terminal is quit (macOS applies the grant only
+        to a relaunched one) and that start.sh brings the server back, within the ~80 characters
+        the prompt shows of it — a restart_server from the refused Terminal would fail again."""
         with patch('integrations.imessage.IMessageIntegration.sqlite3.connect',
                    side_effect=sqlite3.OperationalError("unable to open database file")), \
              patch('integrations.imessage.IMessageIntegration.os.path.exists', return_value=True):
             assert integration.open_feed() is False
         head = integration.open_error[:80]
-        assert "Terminal" in head and "restart_server" in head
+        assert "Terminal" in head and "quit" in head and "start.sh" in head
+
+    @pytest.mark.parametrize("folder, expected", [
+        ("/Users/marcus/Keep", "~/Keep/start.sh"),
+        ("/opt/keep", "/opt/keep/start.sh"),
+        ("/Users/marcus/My Keep", '"$HOME/My Keep/start.sh"'),
+        ("/Users/marcus-2/Keep", "/Users/marcus-2/Keep/start.sh"),
+    ])
+    def test_start_command_is_short_under_home_and_safe_elsewhere(self, folder, expected):
+        """The line the hint tells the user to type: a tilde for an install under the home
+        folder, the full path outside it, and quotes only when the path needs them."""
+        import integrations.imessage.IMessageIntegration as mod
+        with patch.object(mod, "AISERVER_DIR", Path(folder)), \
+             patch.object(mod.Path, "home", return_value=Path("/Users/marcus")):
+            assert mod._start_command() == expected
 
     def test_missing_chat_db_is_not_blamed_on_full_disk_access(self, integration):
         with patch('integrations.imessage.IMessageIntegration.sqlite3.connect',
