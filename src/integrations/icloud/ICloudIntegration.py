@@ -1086,9 +1086,12 @@ class ICloudIntegration(Integration):
                 "message": "2FA verification required",
             }
 
+        # A "reauth" verdict stands until a sign-in or an accepted code drops it: expired
+        # cookies do not come back on their own, so asking Find My again before then would be
+        # one more refused request every TTL for nothing. A transient error may expire.
         probe = self._find_my_probe
-        if probe and time.time() - probe.at >= self.FIND_MY_PROBE_TTL_SECONDS:
-            probe = None                     # too old to show; the table's next listing brings a new one
+        if probe and probe.verdict == "error" and time.time() - probe.at >= self.FIND_MY_PROBE_TTL_SECONDS:
+            probe = None
         if probe and probe.verdict == "reauth":
             return {
                 "status": "needs_reauth",
