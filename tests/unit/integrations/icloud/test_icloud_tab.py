@@ -125,6 +125,22 @@ class TestCtrlR:
         assert "Ctrl-R" in hint
         assert tab._status_label()[0] != "Not initialized"
 
+    def test_idle_find_my_reads_as_connected_not_as_a_problem(self):
+        """Find My's cookies go with every restart and the tab never signs in on its own, so
+        the verdict is the tab's resting state: the session is connected, Ctrl-R fills the
+        table — no yellow, nothing that reads as a failure."""
+        from interfaces.console import Theme
+        tab = make_tab(Mock())
+        tab._auth_status = {"status": "needs_reauth", "message": "Signed in — Find My is idle"}
+        label, color = tab._status_label()
+        assert label == tab.STATUS_LABELS["authenticated"][0]
+        assert color not in (Theme.COLOR_YELLOW, Theme.COLOR_RED)
+        hint, hint_color = tab._entry_hint()
+        assert "Ctrl-R" in hint
+        assert hint_color != Theme.COLOR_YELLOW
+        assert tab._table().rows == []
+        assert "Ctrl-R" in tab._table().empty
+
 
 class TestAutoTwoFactor:
     def test_an_auto_verified_code_cancels_a_half_typed_one_and_rechecks(self):

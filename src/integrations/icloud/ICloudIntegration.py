@@ -1093,9 +1093,11 @@ class ICloudIntegration(Integration):
         if probe and probe.verdict == "error" and time.time() - probe.at >= self.FIND_MY_PROBE_TTL_SECONDS:
             probe = None
         if probe and probe.verdict == "reauth":
+            # The resting state after a restart or half an hour idle: Find My's cookies are
+            # gone, the session is fine, and the next device command signs in by itself.
             return {
                 "status": "needs_reauth",
-                "message": "Signed in, but Find My wants a fresh sign-in",
+                "message": "Signed in — Find My is idle and signs in when a device is asked for",
             }
         if probe and probe.verdict == "error":
             return {

@@ -9,6 +9,10 @@ from integrations.icloud.ICloudIntegration import iCloudAPI, iCloudAuthenticatio
 DEVICE_WIDTH, MODEL_WIDTH, CONFIGURED_WIDTH = 30, 22, 18
 NONE_CONFIGURED = "none yet — ask Keep to set one up, or copy an id into icloud.devices"
 VERIFIED_STATES = ("authenticated", "partial_auth")   # partial_auth still serves Find My
+# Find My's cookies are gone (every restart, every half hour idle) and the tab never signs in
+# on its own — nothing is wrong, the session is connected, Ctrl-R or a device command fills
+# the table.
+FIND_MY_IDLE = "Find My idle — Ctrl-R lists the devices"
 
 
 class iCloudTab(AuthTab):
@@ -21,7 +25,7 @@ class iCloudTab(AuthTab):
         **AuthTab.STATUS_LABELS,
         "partial_auth": ("Partly verified", Theme.COLOR_GREEN),
         "needs_2fa": ("2FA Required", Theme.COLOR_YELLOW),
-        "needs_reauth": ("Needs sign-in", Theme.COLOR_YELLOW),
+        "needs_reauth": ("Connected", Theme.COLOR_GREEN),
         "parked": ("Sign-ins parked", Theme.COLOR_YELLOW),
     }
 
@@ -70,13 +74,14 @@ class iCloudTab(AuthTab):
                     (str(device.get("id", "")), Theme.COLOR_DIM)]))
         return Table("Find My devices",
                      [("Device", DEVICE_WIDTH), ("Model", MODEL_WIDTH), ("Configured as", CONFIGURED_WIDTH), ("Id", None)],
-                     rows, "sign in to see the devices")
+                     rows, FIND_MY_IDLE if self.status == "needs_reauth" else "sign in to see the devices")
 
     def _tiles(self) -> List[SummaryTile]:
         devices = self._icloud_devices if self.status in VERIFIED_STATES else []
         seen: SummaryTile = ("Devices", str(len(devices)), Theme.COLOR_BRIGHT, [("seen by the account", Theme.COLOR_LABEL)])
         if not devices:
-            seen = ("Devices", PENDING, Theme.COLOR_DIM, [("sign in to see them", Theme.COLOR_DIM)])
+            why = "Find My idle — Ctrl-R" if self.status == "needs_reauth" else "sign in to see them"
+            seen = ("Devices", PENDING, Theme.COLOR_DIM, [(why, Theme.COLOR_DIM)])
         if not self._devices_list:
             return [seen, ("Configured", "none", Theme.COLOR_DIM, [(NONE_CONFIGURED, Theme.COLOR_DIM)])]
         configured = sum(1 for device in devices if device.get("configured_as"))
@@ -89,7 +94,7 @@ class iCloudTab(AuthTab):
         if self.status == "needs_2fa":
             return "Auto-2FA in progress — Ctrl-E to enter the code manually", Theme.COLOR_YELLOW
         if self.status == "needs_reauth":
-            return "Find My wants a fresh sign-in — Ctrl-R does it now (nothing retries on its own)", Theme.COLOR_YELLOW
+            return "Ctrl-R signs in to Find My now and lists the devices (a device command does it by itself)", Theme.COLOR_LABEL
         if self.status == "parked":
             return "Apple refused a sign-in — once the account works again, Ctrl-R lifts the park", Theme.COLOR_YELLOW
         return None
