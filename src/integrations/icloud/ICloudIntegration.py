@@ -924,6 +924,7 @@ class ICloudIntegration(Integration):
             self.state = IntegrationState.OK
             self._sms_requested_at = None
             self._fresh_signins_this_recovery = 0
+            self._find_my_probe = None       # "2FA pending" predates the code; the next listing decides
             info("iCloud: 2FA verification successful")
             if not api.is_trusted_session:
                 info("iCloud: Trusting session...")
@@ -1086,6 +1087,8 @@ class ICloudIntegration(Integration):
             }
 
         probe = self._find_my_probe
+        if probe and time.time() - probe.at >= self.FIND_MY_PROBE_TTL_SECONDS:
+            probe = None                     # too old to show; the table's next listing brings a new one
         if probe and probe.verdict == "reauth":
             return {
                 "status": "needs_reauth",
