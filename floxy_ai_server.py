@@ -104,7 +104,8 @@ def _post_startup_message(prompt_manager) -> str:
     message = StartupTracker.build_history_message(commits, previous, whats_new)
     trace(f"Posting startup message to history: {message!r}")
     prompt_manager.message_history.add_context_message("system", message, time.time(), "startup")
-    StartupTracker.write_current_startup(time.time(), Version.version() if whats_new else None)
+    announced = Version.version() if whats_new or previous is None else None   # a first boot skips the note for good
+    StartupTracker.write_current_startup(time.time(), announced)
     from assistant.agents.PullRequestTrial import PullRequestTrial
     return StartupTracker.build_announcement(commits, Version.label(), whats_new, PullRequestTrial.announcement_note())
 

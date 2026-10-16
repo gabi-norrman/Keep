@@ -69,12 +69,18 @@ class TestUnannouncedReleaseNotes:
     NOTE = "<b>Spotify is back.</b>"
 
     def test_the_first_start_on_a_release_gets_its_note(self, temp_state_file):
+        StartupTracker.write_current_startup(1.0, "v2026.09.200")
         with patch.object(startup_tracker_module.Version, "release_notes", return_value=self.NOTE), \
              patch.object(startup_tracker_module.Version, "version", return_value="v2026.10.243"):
             assert StartupTracker.unannounced_release_notes() == self.NOTE
 
     def test_a_restart_on_an_announced_release_gets_nothing(self, temp_state_file):
         StartupTracker.write_current_startup(1.0, "v2026.10.243")
+        with patch.object(startup_tracker_module.Version, "release_notes", return_value=self.NOTE), \
+             patch.object(startup_tracker_module.Version, "version", return_value="v2026.10.243"):
+            assert StartupTracker.unannounced_release_notes() == ""
+
+    def test_the_very_first_boot_gets_nothing(self, temp_state_file):
         with patch.object(startup_tracker_module.Version, "release_notes", return_value=self.NOTE), \
              patch.object(startup_tracker_module.Version, "version", return_value="v2026.10.243"):
             assert StartupTracker.unannounced_release_notes() == ""

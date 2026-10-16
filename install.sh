@@ -597,8 +597,8 @@ obtain_api_key() {
   else
     note "Keep runs on Claude. An API key is the only way to use it without breaking Anthropic's terms of service."
     note "Create one at ${C_BOLD}$KEYS_URL${C_RESET} (it starts with sk-ant-). In the dialog:"
-    note "  Expires: choose Never - a key that expires stops Keep after 30 days."
-    note "  Scope:   Default workspace, not Organization."
+    note "  Expires: Never"
+    note "  Scope:   Default workspace"
     note "The key is stored only in $KEEP_DIR/config.yaml. Typing is hidden."
     printf '\n'
   fi

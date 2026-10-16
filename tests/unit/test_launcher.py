@@ -498,3 +498,27 @@ class TestMainShutdown:
                 patch("floxy_ai_server.faulthandler.dump_traceback_later") as dump:
             floxy_ai_server._arm_exit_deadline()
         dump.assert_not_called()
+
+
+@pytest.mark.unit
+class TestFirstBootWhatsNew:
+    """A fresh install's first start skips the release note and records the release as announced,
+    so the next restart on the same release stays quiet too."""
+
+    def test_first_boot_records_the_release_as_announced_without_sending_its_note(self, tmp_path, monkeypatch):
+        import floxy_ai_server
+        from common import StartupTracker as tracker_module
+        from common import Version
+        from common.StartupTracker import StartupTracker
+        monkeypatch.setattr(tracker_module, "STATE_FILE", tmp_path / "last_startup.json")
+        history = Mock()
+        with patch.object(Version, "release_notes", return_value="<b>Spotify is back.</b>"), \
+             patch.object(Version, "version", return_value="v2026.10.243"), \
+             patch.object(Version, "label", return_value="Keep v2026.10.243"), \
+             patch.object(StartupTracker, "get_commits_since", return_value=[]), \
+             patch("assistant.agents.PullRequestTrial.PullRequestTrial.announcement_note", return_value=""):
+            announcement = floxy_ai_server._post_startup_message(Mock(message_history=history))
+            assert "Spotify" not in announcement
+            assert "Spotify" not in history.add_context_message.call_args.args[1]
+            assert StartupTracker.read_announced_release() == "v2026.10.243"
+            assert StartupTracker.unannounced_release_notes() == ""

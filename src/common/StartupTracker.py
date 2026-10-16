@@ -53,7 +53,7 @@ class StartupTracker:
     @staticmethod
     def write_current_startup(ts: float, announced_release: str | None = None):
         """Record this start; *announced_release* names the release whose what's new this
-        start announced, None keeps whatever an earlier start recorded."""
+        start announced (or skipped, on a first boot), None keeps whatever an earlier start recorded."""
         if announced_release is None:
             announced_release = StartupTracker.read_announced_release()
         state = {"started_at": ts}
@@ -72,10 +72,15 @@ class StartupTracker:
     @staticmethod
     def unannounced_release_notes() -> str:
         """The what's new of the running release when this is the first start on it; "" when the
-        commit has no release note or an earlier start announced it already."""
+        commit has no release note, an earlier start announced it already, or this is the very
+        first boot — a fresh install has nothing to compare the release to, so the household's
+        first message is a greeting, not a change log."""
         notes = Version.release_notes()
         if not notes:
             trace("StartupTracker: the running commit carries no what's new.")
+            return ""
+        if StartupTracker.read_previous_startup() is None:
+            info(f"StartupTracker: first boot ever on {Version.version()}, its what's new stays unsent.")
             return ""
         if StartupTracker.read_announced_release() == Version.version():
             info(f"StartupTracker: the what's new of {Version.version()} was announced by an earlier start.")
