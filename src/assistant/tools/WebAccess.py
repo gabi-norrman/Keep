@@ -981,12 +981,16 @@ class WebAccess(Integration):
     # removes navigator.webdriver, the chrome.runtime shim and the cdc_* patches.
     # No WebGL spoof: the 'Intel Inc. / Intel Iris OpenGL Engine' pair is the
     # puppeteer-extra-stealth signature every bot vendor fingerprints.
+    # A Proxy, not a wrapper function: Function.prototype.toString of a proxied native
+    # still reads `[native code]` and `.name` is still 'query', so the patch itself is
+    # not the tell it replaces.
     _STEALTH_JS = """
-        const originalQuery = navigator.permissions.query;
-        navigator.permissions.query = (parameters) =>
-            parameters.name === 'notifications'
-                ? Promise.resolve({state: Notification.permission})
-                : originalQuery(parameters);
+        navigator.permissions.query = new Proxy(navigator.permissions.query, {
+            apply: (target, thisArg, args) =>
+                args[0] && args[0].name === 'notifications'
+                    ? Promise.resolve({state: Notification.permission, onchange: null})
+                    : Reflect.apply(target, thisArg, args)
+        });
     """
 
     async def _async_install_stealth_script(self, tab: 'nodriver.Tab'):
@@ -3979,6 +3983,8 @@ class WebAccess(Integration):
             pass
 
         async def click() -> Optional[str]:
+            if frame_id is None and await self._async_trusted_click(find):
+                return None
             try:
                 clicked = await ev(
                     f"(function(){{ const e = {find}; if (e) e.click(); return !!e; }})();"
@@ -4801,6 +4807,44 @@ class WebAccess(Integration):
         return (self._take_dialog_notes()
                 + f"Clicked at ({x:g}, {y:g}) — hit <{hit}>.\n\n"
                 + snapshot)
+
+    # The point a real mouse click on the element lands on: the centre of its box when
+    # that lies in the viewport and nothing else is drawn over it (a cookie veil, a modal),
+    # else null. Only main-document elements: a frame's rect is in the frame's own
+    # coordinates, not the viewport's the click is dispatched in.
+    _CLICK_POINT_JS = """
+(function(e) {
+    if (!e || e.ownerDocument !== document) return null;
+    const r = e.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return null;
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || !(e.contains(hit) || hit.contains(e))) return null;
+    return {x: x, y: y};
+})"""
+
+    async def _async_trusted_click(self, find: str) -> bool:
+        """Click the element `find` evaluates to with a real mouse event (isTrusted,
+        mousemove before the press — what a bot score looks for in a form's submit),
+        when its centre is visible on the main page. False means the caller should
+        fall back to the JS click; the reason is in the log."""
+        try:
+            point = await self._evaluate(self._tab, f"({self._CLICK_POINT_JS})({find});")
+        except Exception as e:
+            trace(f"trusted click: click point lookup failed ({self._describe_error(e)}) — JS click")
+            return False
+        if not isinstance(point, dict):
+            trace("trusted click: element has no visible box or is covered — JS click")
+            return False
+        try:
+            await self._async_dispatch_click_at(point['x'], point['y'])
+        except Exception as e:
+            trace(f"trusted click at ({point['x']:g}, {point['y']:g}) failed "
+                  f"({self._describe_error(e)}) — JS click")
+            return False
+        trace(f"trusted click at ({point['x']:g}, {point['y']:g})")
+        return True
 
     async def _async_dispatch_click_at(self, x: float, y: float) -> None:
         """One real left click at viewport coordinates via Input.dispatchMouseEvent on

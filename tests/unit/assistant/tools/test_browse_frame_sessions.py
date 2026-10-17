@@ -246,21 +246,48 @@ class TestExecuteActionFrameRouting:
         wa._browse_snapshot_frame_ids = [None, 'ft9']
         frame_eval = AsyncMock(side_effect=[self.META, None, True])  # meta, scroll, click
         with patch.object(WebAccess, '_async_eval_in_frame_target', new=frame_eval), \
-                patch.object(WebAccess, '_evaluate', new=AsyncMock()) as main_eval:
+                patch.object(WebAccess, '_evaluate', new=AsyncMock()) as main_eval, \
+                patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()) as mouse:
             assert run(wa._async_execute_action(1, None)) is None
         assert all(call.args[0] == 'ft9' for call in frame_eval.await_args_list)
         main_eval.assert_not_awaited()
+        # a frame's box is in the frame's coordinates, so no mouse click is attempted there
+        mouse.assert_not_awaited()
 
     def test_main_page_element_evaluates_on_tab(self):
         wa = make_wa()
         wa._tab = SimpleNamespace()
         wa._browse_snapshot_frame_ids = [None]
+        # meta, scroll, click point (none: covered), JS click
         with patch.object(WebAccess, '_evaluate',
-                          new=AsyncMock(side_effect=[self.META, None, True])) as main_eval, \
+                          new=AsyncMock(side_effect=[self.META, None, None, True])) as main_eval, \
                 patch.object(WebAccess, '_async_eval_in_frame_target', new=AsyncMock()) as frame_eval:
             assert run(wa._async_execute_action(0, None)) is None
-        assert main_eval.await_count == 3
+        assert main_eval.await_count == 4
         frame_eval.assert_not_awaited()
+
+    def test_visible_main_page_element_gets_a_real_mouse_click(self):
+        wa = make_wa()
+        wa._tab = SimpleNamespace()
+        wa._browse_snapshot_frame_ids = [None]
+        main_eval = AsyncMock(side_effect=[self.META, None, {'x': 120.0, 'y': 48.5}])
+        with patch.object(WebAccess, '_evaluate', new=main_eval), \
+                patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()) as mouse:
+            assert run(wa._async_execute_action(0, None)) is None
+        mouse.assert_awaited_once_with(120.0, 48.5)
+        # the trusted click is the click: no e.click() evaluation follows it
+        assert not any('click()' in call.args[1] for call in main_eval.await_args_list)
+
+    def test_failed_mouse_click_falls_back_to_js_click(self):
+        wa = make_wa()
+        wa._tab = SimpleNamespace()
+        wa._browse_snapshot_frame_ids = [None]
+        main_eval = AsyncMock(side_effect=[self.META, None, {'x': 10.0, 'y': 10.0}, True])
+        with patch.object(WebAccess, '_evaluate', new=main_eval), \
+                patch.object(WebAccess, '_async_dispatch_click_at',
+                             new=AsyncMock(side_effect=TimeoutError())):
+            assert run(wa._async_execute_action(0, None)) is None
+        assert 'click()' in main_eval.await_args_list[-1].args[1]
 
     def test_click_reports_element_gone_when_finder_misses(self):
         wa = make_wa()
@@ -268,7 +295,7 @@ class TestExecuteActionFrameRouting:
         wa._browse_snapshot_frame_ids = [None]
         # meta resolves, but by click time the element has left the DOM
         with patch.object(WebAccess, '_evaluate',
-                          new=AsyncMock(side_effect=[self.META, None, False])):
+                          new=AsyncMock(side_effect=[self.META, None, None, False])):
             assert run(wa._async_execute_action(0, None)) == 'element no longer in DOM'
 
     def test_missing_meta_reports_element_gone(self):
