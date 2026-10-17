@@ -1096,6 +1096,44 @@ class TestOneShotSends:
         assert kwargs["thumbnail"] == b"jpg" and "width" not in kwargs and "duration" not in kwargs
 
     @pytest.mark.asyncio
+    async def test_a_turned_clip_is_re_encoded_upright_and_sent_with_the_new_coded_size(self, transport):
+        # Telegram for iOS drops the track matrix at playback, so the turn goes into the pixels
+        # before the upload; the dimensions are read from the clip that is actually sent.
+        transport._application.bot.send_video = AsyncMock()
+        sizes = {b"turned": (720, 1280), b"upright": (720, 1280)}
+        with patch(f'{MODULE}.mp4_is_rotated', side_effect=lambda data: data == b"turned"), \
+             patch(f'{MODULE}.bake_rotation', return_value=b"upright") as bake, \
+             patch(f'{MODULE}.mp4_display_size', side_effect=sizes.get) as display_size, \
+             patch(f'{MODULE}.mp4_duration_seconds', return_value=21):
+            await transport._send_video_async(111, b"turned", "clip", thumbnail=b"jpg")
+        bake.assert_called_once_with(b"turned")
+        display_size.assert_called_once_with(b"upright")
+        kwargs = transport._application.bot.send_video.call_args.kwargs
+        assert kwargs["video"] == b"upright"
+        assert (kwargs["width"], kwargs["height"], kwargs["duration"], kwargs["thumbnail"]) == (720, 1280, 21, b"jpg")
+
+    @pytest.mark.asyncio
+    async def test_a_clip_stored_as_shown_is_sent_without_re_encoding(self, transport):
+        transport._application.bot.send_video = AsyncMock()
+        with patch(f'{MODULE}.mp4_is_rotated', return_value=False), \
+             patch(f'{MODULE}.bake_rotation') as bake, \
+             patch(f'{MODULE}.mp4_display_size', return_value=(1280, 720)):
+            await transport._send_video_async(111, b"landscape", "clip")
+        bake.assert_not_called()
+        assert transport._application.bot.send_video.call_args.kwargs["video"] == b"landscape"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", [{"return_value": None}, {"side_effect": RuntimeError("no encoder")}])
+    async def test_a_failed_re_encode_sends_the_clip_as_it_is(self, transport, outcome):
+        transport._application.bot.send_video = AsyncMock()
+        with patch(f'{MODULE}.mp4_is_rotated', return_value=True), \
+             patch(f'{MODULE}.bake_rotation', **outcome), \
+             patch(f'{MODULE}.mp4_display_size', return_value=(720, 1280)):
+            await transport._send_video_async(111, b"turned", "clip")
+        kwargs = transport._application.bot.send_video.call_args.kwargs
+        assert kwargs["video"] == b"turned" and (kwargs["width"], kwargs["height"]) == (720, 1280)
+
+    @pytest.mark.asyncio
     async def test_video_without_a_track_header_still_carries_its_duration(self, transport):
         # width=None or a dropped duration puts the 00:00-on-black player back; absent keys are the contract
         transport._application.bot.send_video = AsyncMock()

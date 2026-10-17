@@ -36,6 +36,17 @@ class TestResizeToJpeg:
         assert result is not None
         assert max(Image.open(io.BytesIO(result)).size) == 1024
 
+    def test_resize_applies_the_exif_orientation(self):
+        # A phone stores a portrait JPEG as its landscape sensor frame plus an orientation tag;
+        # a chat thumbnail is shown as stored, so the turn has to be in the pixels.
+        img = Image.new("RGB", (200, 100), "red")
+        exif = Image.Exif()
+        exif[0x0112] = 6  # rotate 90° clockwise to display
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", exif=exif.tobytes())
+        result = resize_to_jpeg(buf.getvalue())
+        assert Image.open(io.BytesIO(result)).size == (100, 200)
+
     def test_resize_rgba_converted_to_rgb(self):
         assert resize_to_jpeg(_png(size=(200, 200), mode="RGBA", color=(255, 0, 0, 128))) is not None
 

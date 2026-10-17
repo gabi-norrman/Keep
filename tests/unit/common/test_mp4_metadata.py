@@ -1,6 +1,6 @@
 import struct
 
-from common.Mp4Metadata import mp4_display_size, mp4_duration, mp4_duration_seconds
+from common.Mp4Metadata import mp4_display_size, mp4_duration, mp4_duration_seconds, mp4_is_rotated
 
 IDENTITY = (0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000)
 ROTATE_90 = (0, 0x10000, 0, -0x10000, 0, 0, 720 << 16, 0, 0x40000000)
@@ -103,3 +103,29 @@ def test_largesize_and_to_eof_boxes():
         for cut in range(1, len(data)):
             mp4_display_size(data[:cut])
             mp4_duration_seconds(data[:cut])
+
+
+ROTATE_180 = (-0x10000, 0, 0, 0, -0x10000, 0, 1280 << 16, 720 << 16, 0x40000000)
+
+
+def test_a_clip_stored_as_shown_is_not_rotated():
+    assert mp4_is_rotated(movie(tkhd(1280, 720))) is False
+
+
+def test_a_quarter_turn_matrix_is_rotated():
+    assert mp4_is_rotated(movie(tkhd(1280, 720, ROTATE_90))) is True
+
+
+def test_an_upside_down_matrix_is_rotated_but_keeps_its_dimensions():
+    data = movie(tkhd(1280, 720, ROTATE_180))
+    assert mp4_is_rotated(data) is True
+    assert mp4_display_size(data) == (1280, 720)
+
+
+def test_rotation_is_read_from_the_video_track_not_the_audio_track():
+    assert mp4_is_rotated(movie(tkhd(0, 0, ROTATE_90), tkhd(1280, 720))) is False
+
+
+def test_no_video_track_is_not_rotated():
+    assert mp4_is_rotated(movie(tkhd(0, 0))) is False
+    assert mp4_is_rotated(b"not an mp4 at all") is False

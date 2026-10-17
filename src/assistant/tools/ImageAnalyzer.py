@@ -7,7 +7,7 @@ import tempfile
 import threading
 from typing import Optional
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from common.logging import info, error, trace, fine
 from ..llm.AbstractLLM import LLMPreempted
@@ -41,7 +41,7 @@ def resize_to_jpeg(raw_bytes: bytes, max_dim: int = MAX_DIMENSION) -> Optional[b
             return None
 
     try:
-        img = img.convert("RGB")
+        img = ImageOps.exif_transpose(img).convert("RGB")  # a phone's JPEG is often stored turned, with the orientation in EXIF
         w, h = img.size
         if max(w, h) > max_dim:
             scale = max_dim / max(w, h)
