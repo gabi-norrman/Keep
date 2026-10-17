@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 import pytz
 import vobject
+from caldav.lib.error import NotFoundError, ReportError
 
 from assistant.integration.calendar.CalendarSource import CalendarSource
 from assistant.integration.calendar.Event import Event
@@ -230,9 +231,35 @@ class TestDeleteEvent:
             _account().delete_event("Home", _read(uid=""))
         with pytest.raises(ValueError, match="Calendar 'Work' not found"):
             _account().delete_event("Work", _read())
-        home.event_by_uid.side_effect = RuntimeError("404 Not Found")
+        home.event_by_uid.side_effect = NotFoundError("404 Not Found")
         with pytest.raises(ValueError, match="no longer"):
             _account().delete_event("Home", _read())
+
+    @patch(CALDAV)
+    def test_an_event_read_earlier_is_fetched_by_the_href_that_read_kept_not_by_a_uid_report(self, mock_caldav):
+        """iCloud answers the UID REPORT with 412 for every event (issue #76); the href of the
+        read the user acted on needs no query."""
+        home = _calendar("Home", ("Dentist", 11))
+        home.date_search.return_value[0].url = "https://caldav.example/home/abc.ics"
+        _serve(mock_caldav, home)
+        home.event_by_url.return_value = _resource()
+        account = _account()
+        account.events(["Home"], date(2025, 6, 15), date(2025, 6, 16))
+
+        account.delete_event("Home", _read(uid="uid-Dentist"))
+
+        home.event_by_url.assert_called_once_with("https://caldav.example/home/abc.ics")
+        home.event_by_uid.assert_not_called()
+        home.event_by_url.return_value.delete.assert_called_once_with()
+
+    @patch(CALDAV)
+    def test_a_lookup_the_server_refuses_is_an_error_not_a_gone_event(self, mock_caldav):
+        home = _calendar("Home")
+        _serve(mock_caldav, home)
+        home.event_by_uid.side_effect = ReportError("ReportError at '412 Precondition Failed'")
+        with pytest.raises(RuntimeError, match="refused") as caught:
+            _account().delete_event("Home", _read())
+        assert "412" in str(caught.value) and "no longer" not in str(caught.value)
 
 
 @pytest.mark.unit

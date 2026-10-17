@@ -326,6 +326,12 @@ class ICloudIntegration(Integration):
         self._api: Optional[PyiCloudService] = None
         self._auth_error: Optional[str] = None
         self._park_memory: Optional[str] = None     # the park when its file could not be written
+        # One Find My sign-in at a time: the LLM runs its commands in parallel, and two that
+        # found Find My's cookies rejected at once each ran a password sign-in on the one
+        # session until 2026-10-17. The ones that waited take the outcome of the one that ran.
+        self._find_my_signin_lock = threading.Lock()
+        self._find_my_signins = 0
+        self._find_my_signin_outcome: Optional[str] = None
         self._auto_2fa_message: Optional[str] = None
         self._sms_requested_at: Optional[float] = None
         self._auto_sms_limiter = RateLimiter(self.AUTO_SMS_MAX_REQUESTS, self.AUTO_SMS_WINDOW_SECONDS)
@@ -595,12 +601,32 @@ class ICloudIntegration(Integration):
         except (ValueError, KeyError, TypeError, OSError):
             return "a refused sign-in (the details were lost)"
 
+    @staticmethod
+    def _http_status(exc: BaseException) -> Optional[int]:
+        """The HTTP status the exception or one of its causes carries, or None."""
+        e: Optional[BaseException] = exc
+        while e is not None:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if not isinstance(status, int):
+                status = getattr(e, "code", None)
+            if isinstance(status, int) and 100 <= status < 600:
+                return status
+            e = e.__cause__
+        return None
+
     def _park(self, exc: BaseException):
         """Apple refused a sign-in: park every automatic one until the user confirms the account
         works again (`refresh_connection(by_user=True)` lifts it), and tell the user once where
         to go — a block Apple names (new terms, a security lock; 2026-10-15: HTTP 403, code
-        -20209, which pyicloud 2.6.5 reported as a wrong password) gets its own message."""
+        -20209, which pyicloud 2.6.5 reported as a wrong password) gets its own message. A 5xx
+        is Apple's side failing, not a refusal: pyicloud wraps it in the same login exception,
+        and parking on it (until 2026-10-17) left the server signed out until the user noticed."""
         reason = _brief(exc)
+        status = self._http_status(exc)
+        if status is not None and status >= 500:
+            info(f"iCloud: Apple answered the sign-in with HTTP {status} — a fault on Apple's side, "
+                 f"not a refusal, so sign-ins are not parked ({reason})")
+            return
         if self._parked_reason():
             trace(f"iCloud: sign-ins already parked, not repeating the notice ({reason})")
             return
@@ -689,7 +715,20 @@ class ICloudIntegration(Integration):
         cookies (Apple expires them within the hour), run only when a command needs Find My.
         The trust token normally spares the 2FA; a challenge Apple raises anyway is handed to
         the auto-2FA flow, never left open. Returns why Find My still cannot be used, None when
-        the sign-in went through. Parked sign-ins are not attempted."""
+        the sign-in went through. Parked sign-ins are not attempted. Commands that want one at
+        the same time share it: a caller that waited for another's sign-in gets its outcome."""
+        seen = self._find_my_signins
+        with self._find_my_signin_lock:
+            if self._find_my_signins != seen:
+                info(f"iCloud: Find My wanted a fresh sign-in ({why}), and another command ran one meanwhile "
+                     f"— taking its outcome ({self._find_my_signin_outcome or 'signed in'})")
+                return self._find_my_signin_outcome
+            outcome = self._sign_in_for_find_my_now(why)
+            self._find_my_signins += 1
+            self._find_my_signin_outcome = outcome
+            return outcome
+
+    def _sign_in_for_find_my_now(self, why: str) -> Optional[str]:
         parked = self._parked_reason()
         if parked:
             info(f"iCloud: Find My wants a fresh sign-in ({why}), but sign-ins are parked — {parked}")
@@ -703,7 +742,7 @@ class ICloudIntegration(Integration):
             api.authenticate(force_refresh=True)
         except (PyiCloudFailedLoginException, PyiCloudAcceptTermsException) as e:
             self._auth_error = _brief(e)
-            error(f"iCloud: re-authentication for Find My failed: {_brief(e)} — sign-ins parked")
+            error(f"iCloud: re-authentication for Find My failed: {_brief(e)}")
             self._park(e)
             self._find_my_probe = FindMyProbe("error", _brief(e))
             return _brief(e)

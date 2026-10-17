@@ -2,6 +2,7 @@
 rules since the lockouts of 2026-10-15/16: nothing reads Find My on a timer, a session Find My
 wants re-signed is idle, the one sign-in a command earns is deliberate and completed, and a
 refusal from Apple parks every sign-in — across restarts — until the user confirms."""
+import time
 from unittest.mock import Mock, patch
 
 import pytest
@@ -40,6 +41,16 @@ def _service(answers=None, exc=None):
 
 def _reauth_wanted():
     return PyiCloudAuthRequiredException("m@mlab.test", Mock())
+
+
+def _login_behind_a_5xx():
+    try:
+        raise PyiCloudAPIResponseException("Service Temporarily Unavailable", 503, Mock(text=""))
+    except PyiCloudAPIResponseException as cause:
+        try:
+            raise PyiCloudFailedLoginException("Failed to initiate srp authentication.") from cause
+        except PyiCloudFailedLoginException as e:
+            return e
 
 
 def _locked_login():
@@ -209,6 +220,37 @@ class TestAccountLock:
         assert (icloud_session_dir / api.PARK_FILE).exists()
         status = api.get_auth_status()
         assert status["status"] == "parked" and "locked" in status["message"].lower()
+
+    def test_a_5xx_behind_the_login_failure_parks_nothing_so_the_next_command_tries_again(self, api, icloud_session_dir):
+        """pyicloud wraps Apple's server fault in the same exception as a refused password."""
+        service = _service(exc=_reauth_wanted())
+        service.authenticate.side_effect = _login_behind_a_5xx()
+        api._api = service
+        with patch(NOTIFY_PATH) as notify:
+            assert all(api._sign_in_for_find_my("test") for _ in range(2)), "Find My stays unavailable for now"
+        notify.assert_not_called()
+        assert service.authenticate.call_count == 2
+        assert not (icloud_session_dir / api.PARK_FILE).exists()
+        assert api.get_auth_status()["status"] != "parked"
+
+    def test_commands_wanting_a_sign_in_at_once_share_the_one_that_runs(self, api):
+        import threading
+        service = _service([{"content": [_record("fmip-dad")]}] * 2)
+
+        def slow_signin(force_refresh=False):
+            time.sleep(0.02)
+        service.authenticate.side_effect = slow_signin
+        api._api = service
+        outcomes = []
+        threads = [threading.Thread(target=lambda: outcomes.append(api._sign_in_for_find_my("locate"))) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert outcomes == [None, None]
+        service.authenticate.assert_called_once()
+        assert api._sign_in_for_find_my("later") is None and service.authenticate.call_count == 2, \
+            "a command asking after the shared sign-in runs its own"
 
     def _parked(self, api):
         service = _service(exc=_reauth_wanted())
