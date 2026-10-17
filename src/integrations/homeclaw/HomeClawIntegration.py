@@ -13,8 +13,11 @@ Not a Feed yet: `events` already turns the app's log into FeedEntry rows, so mak
 the changes poured into the history as they happen — is adding the base class, a cursor over
 the event time and the class to the feed set tests/unit/assistant/integration/test_bootstrap.py
 pins."""
+import re
 import threading
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 from assistant.integration.Feed import FeedEntry
 from assistant.integration.Integration import Integration
@@ -27,8 +30,31 @@ from .HomeClawModel import (
     build_targets, event_entry, excluded, real_scenes, render, zones_of)
 
 EVENT_LIMIT = 500           # events per read; the app answers newest first, so a full page means older ones are cut
+_DURATION = re.compile(r"^(\d+(?:\.\d+)?)\s*([hmd])$", re.I)
+_UNIT_SECONDS = {"m": 60, "h": 3600, "d": 86400}
 DEFAULT_EVENT_SKIP = ("current_temperature", "current_humidity", "battery_level", "color_temperature", "hue",
                       "saturation", "brightness")
+
+
+def since_timestamp(since: str, now: Optional[datetime] = None) -> str:
+    """`since` as the ISO 8601 UTC instant the app's events command filters on. The app parses
+    that form alone and reads anything else — a duration such as "1h" or "2d", the form the
+    toolkit documents and the app's own CLI converts before sending — as no window at all, so
+    the whole log came back whatever was asked. A time without a zone is the home's local time;
+    a form that is neither is refused rather than sent."""
+    text = (since or "1h").strip()
+    match = _DURATION.match(text)
+    if match:
+        instant = (now or datetime.now(timezone.utc)) - timedelta(
+            seconds=float(match.group(1)) * _UNIT_SECONDS[match.group(2).lower()])
+    else:
+        try:
+            instant = datetime.fromisoformat(text)
+        except ValueError:
+            raise HomeClawError(f"'{since}' is not a time window HomeClaw understands — use 30m, 6h, 2d or an ISO 8601 time")
+        if instant.tzinfo is None:
+            instant = instant.replace(tzinfo=ZoneInfo(config.get_home_timezone()))
+    return instant.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class HomeClawIntegration(Integration):
@@ -276,7 +302,8 @@ class HomeClawIntegration(Integration):
     def events(self, since: str = "1h") -> list[FeedEntry]:
         """The changes since `since` (the app's form: "1h", "30m", an ISO time), oldest first,
         minus `homeclaw.event_skip` and the accessories left out."""
-        data = self.client().call("events", limit=EVENT_LIMIT, since=since or "1h", type="characteristic_change")
+        stamp = since_timestamp(since)
+        data = self.client().call("events", limit=EVENT_LIMIT, since=stamp, type="characteristic_change")
         events = self._list(data, "events")
         if any(str((e.get("accessory") or {}).get("id") or "").upper() not in self._known_ids() for e in events):
             self.refresh()
@@ -288,7 +315,7 @@ class HomeClawIntegration(Integration):
         entries = [entry for event in events if event.get("characteristic") not in skip
                    and (entry := event_entry(event, targets)) is not None]
         entries.sort(key=lambda e: e.timestamp)
-        trace(f"HomeClaw: {len(events)} events since {since}, {len(entries)} kept")
+        trace(f"HomeClaw: {len(events)} events since {since} ({stamp}), {len(entries)} kept")
         return entries
 
     def _known_ids(self) -> set[str]:

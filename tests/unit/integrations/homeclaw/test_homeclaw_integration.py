@@ -1,10 +1,13 @@
 """The integration against a fake HomeClaw app: what one refresh asks, how every write goes
 out (by UUID, verified, a zone by its service, a dry run flagged), the guards that keep a
 request from going out at all, and the feed of changes."""
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
 import pytest
 
 from integrations.homeclaw.HomeClawClient import HomeClawError, HomeClawUnavailable
-from integrations.homeclaw.HomeClawIntegration import HomeClawIntegration
+from integrations.homeclaw.HomeClawIntegration import HomeClawIntegration, config, since_timestamp
 from integrations.homeclaw.HomeClawModel import Unresolved
 from .conftest import (
     AWNING, FLOOR_LAMP, GARAGE_DOOR, HUE_LAMP, PLEJD_LAMP, SENSOR_A, THERMOSTAT, WATER_CONTROL, ZONE_PATIO, ok,
@@ -123,7 +126,20 @@ class TestEvents:
         ]})
         entries = homeclaw.events("2h")
         assert [("Awning" in e.content, "Garage" in e.content) for e in entries] == [(True, False), (False, True)]
-        assert app.of("events")[-1]["since"] == "2h"
+        sent = datetime.strptime(app.of("events")[-1]["since"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        assert timedelta(hours=2) <= datetime.now(timezone.utc) - sent < timedelta(hours=2, seconds=5), \
+            "the app parses an ISO instant alone; a duration went through as no window until 2026-10-17"
+
+    def test_the_window_is_an_iso_instant_in_utc_whatever_form_it_was_given_in(self):
+        now = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
+        assert since_timestamp("30m", now) == "2026-03-01T11:30:00Z"
+        assert since_timestamp("2d", now) == "2026-02-27T12:00:00Z"
+        assert since_timestamp("", now) == "2026-03-01T11:00:00Z"
+        assert since_timestamp("2026-03-01T10:15:00+02:00") == "2026-03-01T08:15:00Z"
+        with patch.object(config, "get_home_timezone", return_value="Europe/Stockholm"):
+            assert since_timestamp("2026-03-01T10:15") == "2026-03-01T09:15:00Z"
+        with pytest.raises(HomeClawError, match="yesterday"):
+            since_timestamp("yesterday")
 
     def test_the_skip_list_comes_from_the_config(self, app):
         app.replies["events"] = ok({"events": [self._event(SENSOR_A, "2026-03-01T10:03:00Z", "current_temperature", "16.2°C")]})
