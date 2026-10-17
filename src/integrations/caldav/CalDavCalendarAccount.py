@@ -6,6 +6,7 @@ from typing import Callable, Optional
 
 import caldav
 import pytz
+from caldav.lib.error import NotFoundError
 
 from assistant.integration.calendar.CalendarAccount import CalendarAccount, CalendarInfo
 from assistant.integration.calendar.Event import Event
@@ -25,6 +26,7 @@ class CalDavCalendarAccount(CalendarAccount):
         self._shown_calendars = shown_calendars
         self._default_calendar = default_calendar
         self._objects: Optional[list] = None
+        self._hrefs: dict[str, str] = {}       # UID -> href of every event a read returned
 
     @property
     def name(self) -> str:
@@ -81,8 +83,11 @@ class CalDavCalendarAccount(CalendarAccount):
                 vevent = event.vobject_instance.vevent
                 dtstart, all_day = self._as_datetime(vevent.contents['dtstart'][0].value)
                 dtend = self._end(vevent, dtstart)
+                uid = self._uid(vevent)
+                if uid:
+                    self._hrefs[uid] = str(event.url)
                 found.append(Event(dtstart, dtend, vevent.summary.value, calendar=str(calendar.name),
-                                   account=self.name, all_day=all_day, id=self._uid(vevent),
+                                   account=self.name, all_day=all_day, id=uid,
                                    recurring=self._is_recurring(vevent)))
         trace(f"{self.name}: {len(found)} event(s) in {sorted(wanted)} between {start} and {end}")
         return found
@@ -130,25 +135,39 @@ class CalDavCalendarAccount(CalendarAccount):
         return calendar
 
     def _resource(self, calendar_name: str, event: Event, verb: str):
-        """The library's object for an event read earlier, looked up by its UID; refuses an
-        event of a series, whose resource is the whole series (saving one expanded occurrence
-        would overwrite the series with that instance, deleting it would delete every one)."""
+        """The library's object for an event read earlier: fetched by the href that read kept
+        (one GET), by its UID only when none is kept — a UID REPORT, which iCloud answers with
+        412 Precondition Failed for every event (2026-10-16, issue #76). A lookup the server
+        refuses is said as such, never as the event being gone. Refuses an event of a series,
+        whose resource is the whole series (saving one expanded occurrence would overwrite the
+        series with that instance, deleting it would delete every one)."""
         if event.recurring:
             raise ValueError(f"'{event.title}' is a recurring event, which cannot be {verb} yet — only single events can")
         if not event.id:
             raise ValueError(f"'{event.title}' has no UID, so it cannot be {verb}")
         calendar = self._calendar(calendar_name)
+        href = self._hrefs.get(event.id)
         try:
-            resource = calendar.event_by_uid(event.id)
-        except Exception as e:
-            info(f"{self.name}: event '{event.title}' ({event.id}) not found in '{calendar_name}': {type(e).__name__}: {e}")
+            if href:
+                resource = calendar.event_by_url(href)
+            else:
+                trace(f"{self.name}: no href kept for '{event.title}' ({event.id}) — asking '{calendar_name}' by UID")
+                resource = calendar.event_by_uid(event.id)
+        except NotFoundError as e:
+            info(f"{self.name}: event '{event.title}' ({event.id}) not found in '{calendar_name}': {e}")
             raise ValueError(f"'{event.title}' is no longer in '{calendar_name}'") from e
+        except Exception as e:
+            info(f"{self.name}: '{calendar_name}' refused the lookup of '{event.title}' ({event.id}, "
+                 f"{'by href' if href else 'by UID'}): {type(e).__name__}: {e}")
+            raise RuntimeError(f"{self.name} refused the lookup of '{event.title}' in '{calendar_name}': "
+                               f"{type(e).__name__}: {e}") from e
         if self._is_recurring(resource.vobject_instance.vevent):
             raise ValueError(f"'{event.title}' is a recurring event, which cannot be {verb} yet — only single events can")
         return resource
 
     def delete_event(self, calendar_name: str, event: Event) -> None:
         self._resource(calendar_name, event, "deleted").delete()
+        self._hrefs.pop(event.id, None)
         info(f"{self.name}: event '{event.title}' ({event.id}) deleted from '{calendar_name}'")
 
     def move_event(self, calendar_name: str, event: Event, start: datetime, end: datetime, all_day: bool) -> None:
