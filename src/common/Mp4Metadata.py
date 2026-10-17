@@ -2,6 +2,8 @@
 import struct
 from typing import Optional
 
+IDENTITY_MATRIX = (0x10000, 0, 0, 0x10000)  # the 16.16 fixed-point a, b, c, d of a track shown as stored
+
 
 def mp4_display_size(data: bytes) -> Optional[tuple[int, int]]:
     """The (width, height) a player shows *data* at, or None when no video track header is found.
@@ -9,13 +11,15 @@ def mp4_display_size(data: bytes) -> Optional[tuple[int, int]]:
     Phone cameras often encode a portrait clip as a landscape stream plus a 90° rotation matrix
     in the track header, so the coded size alone gives the wrong aspect ratio. Telegram lays a
     video out from the coded size unless told otherwise, hence this helper."""
-    for offset, size in _boxes(data, 0, len(data), b"moov"):
-        for trak_offset, trak_size in _boxes(data, offset, offset + size, b"trak"):
-            for tkhd_offset, tkhd_size in _boxes(data, trak_offset, trak_offset + trak_size, b"tkhd"):
-                dims = _tkhd_display_size(data[tkhd_offset:tkhd_offset + tkhd_size])
-                if dims:
-                    return dims
-    return None
+    track = _video_track(data)
+    return track[:2] if track else None
+
+
+def mp4_is_rotated(data: bytes) -> bool:
+    """Whether the video track's display matrix turns the coded frames (90°, 180° or 270°) —
+    the clip is shown other than as its pixels are stored. False with no video track."""
+    track = _video_track(data)
+    return bool(track) and track[2] != IDENTITY_MATRIX
 
 
 def mp4_duration_seconds(data: bytes) -> Optional[int]:
@@ -66,7 +70,18 @@ def _boxes(data: bytes, start: int, end: int, wanted: bytes):
         pos += size
 
 
-def _tkhd_display_size(payload: bytes) -> Optional[tuple[int, int]]:
+def _video_track(data: bytes) -> Optional[tuple[int, int, tuple[int, int, int, int]]]:
+    """(display width, display height, matrix a b c d) of the first track with a size."""
+    for offset, size in _boxes(data, 0, len(data), b"moov"):
+        for trak_offset, trak_size in _boxes(data, offset, offset + size, b"trak"):
+            for tkhd_offset, tkhd_size in _boxes(data, trak_offset, trak_offset + trak_size, b"tkhd"):
+                track = _tkhd_video_track(data[tkhd_offset:tkhd_offset + tkhd_size])
+                if track:
+                    return track
+    return None
+
+
+def _tkhd_video_track(payload: bytes) -> Optional[tuple[int, int, tuple[int, int, int, int]]]:
     if not payload:
         return None
     version = payload[0]
@@ -80,5 +95,5 @@ def _tkhd_display_size(payload: bytes) -> Optional[tuple[int, int]]:
     width, height = round(width / 65536), round(height / 65536)
     if not width or not height:
         return None  # audio / metadata tracks carry zero size
-    rotated = abs(a) < 0x8000 and abs(d) < 0x8000 and abs(b) >= 0x8000 and abs(c) >= 0x8000
-    return (height, width) if rotated else (width, height)
+    quarter_turn = abs(a) < 0x8000 and abs(d) < 0x8000 and abs(b) >= 0x8000 and abs(c) >= 0x8000
+    return (height, width, (a, b, c, d)) if quarter_turn else (width, height, (a, b, c, d))

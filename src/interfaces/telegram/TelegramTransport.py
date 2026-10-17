@@ -28,7 +28,8 @@ from assistant.ChannelProfile import SOURCE_TELEGRAM
 from assistant.integration.Integration import Integration
 from common import ConfigStore
 from common.ConfigManager import config
-from common.Mp4Metadata import mp4_display_size, mp4_duration_seconds
+from common.Mp4Metadata import mp4_display_size, mp4_duration_seconds, mp4_is_rotated
+from common.VideoRotation import bake_rotation
 from common.logging import error, fine, info, trace
 from interfaces.chat import FallbackNotice, RichText
 from interfaces.chat.ChatTransport import ChatTransport
@@ -1019,6 +1020,7 @@ class TelegramTransport(Integration, ChatTransport):
         # Telegram derives nothing from a bot upload: without explicit dimensions it lays the player
         # out from the coded frame size and ignores the rotation matrix phone cameras use for
         # portrait clips (squashed playback), and without a duration/thumbnail it shows 00:00 on black.
+        video_bytes = await self._upright(video_bytes)
         try:
             size = mp4_display_size(video_bytes)
             duration = mp4_duration_seconds(video_bytes)
@@ -1044,6 +1046,30 @@ class TelegramTransport(Integration, ChatTransport):
             info(f"Telegram [{chat_id}]: sent video ({len(video_bytes) / 1024 / 1024:.1f} MB, {shown})")
         except Exception as e:
             error(f"Failed to send Telegram video to {chat_id}: {e}")
+
+    @staticmethod
+    async def _upright(video_bytes: bytes) -> bytes:
+        """The clip with its rotation baked into the pixels when its display matrix turns it;
+        a clip stored the way it is shown comes back untouched. Telegram for iOS reads the
+        matrix for the layout, then renders the unrotated raster into it (the clip plays turned
+        and squeezed), so a portrait phone clip is re-encoded upright off the loop before it
+        goes out. A failed re-encode sends the clip as it is."""
+        try:
+            if not mp4_is_rotated(video_bytes):
+                return video_bytes
+        except Exception as e:
+            error(f"Telegram: could not read the clip's MP4 header ({e}), sending it as it is")
+            return video_bytes
+        info("Telegram: the clip's display matrix rotates it, re-encoding it upright for the iOS player")
+        try:
+            upright = await asyncio.to_thread(bake_rotation, video_bytes)
+        except Exception as e:
+            error(f"Telegram: re-encoding the clip upright failed ({e}), sending it as it is")
+            return video_bytes
+        if upright is None:
+            info("Telegram: the clip could not be re-encoded, sending it as it is")
+            return video_bytes
+        return upright
 
     # --- ChatTransport: the status line ---------------------------------------------------------
 
