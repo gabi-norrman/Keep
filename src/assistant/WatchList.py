@@ -258,14 +258,15 @@ def describe_duration(delta: timedelta) -> str:
 
 
 def staleness(item: Item, today: date = None) -> str:
-    """Why the item needs a look, or '' when it does not."""
+    """Why the item needs a look, or '' when it does not. A check is a touch: an item polled on
+    its cadence that keeps finding nothing is current, however old its note."""
     today = today or date.today()
     overdue = _days_since(item.due, today)
     if overdue is not None and overdue >= OVERDUE_AFTER_DAYS:
         return f"STALE: due date passed {overdue} days ago"
-    idle = _days_since(item.updated, today)
-    if idle is not None and idle >= STALE_AFTER_DAYS:
-        return f"STALE: no update for {idle} days"
+    touched = [d for d in (_days_since(item.updated, today), _days_since(item.checked, today)) if d is not None]
+    if touched and min(touched) >= STALE_AFTER_DAYS:
+        return f"STALE: not updated or checked for {min(touched)} days"
     return ""
 
 

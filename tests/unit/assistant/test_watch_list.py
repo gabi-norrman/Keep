@@ -180,8 +180,9 @@ class TestChecks:
 
 @pytest.mark.unit
 class TestStaleness:
-    def item(self, due="", updated=TODAY):
-        return WatchList.Item("parcel", "note", due, TODAY.isoformat(), updated.isoformat())
+    def item(self, due="", updated=TODAY, checked=None):
+        return WatchList.Item("parcel", "note", due, TODAY.isoformat(), updated.isoformat(), "",
+                              f"{checked.isoformat()} 16:48" if checked else "")
 
     def test_a_fresh_item_is_not_stale(self):
         assert WatchList.staleness(self.item(due=TODAY.isoformat()), TODAY) == ""
@@ -200,6 +201,12 @@ class TestStaleness:
     def test_untouched_for_two_weeks_is_stale(self):
         assert WatchList.staleness(self.item(updated=TODAY - timedelta(days=13)), TODAY) == ""
         assert "STALE" in WatchList.staleness(self.item(updated=TODAY - timedelta(days=14)), TODAY)
+
+    def test_a_recent_check_keeps_an_old_note_fresh(self):
+        old_note = TODAY - timedelta(days=20)
+        assert WatchList.staleness(self.item(updated=old_note, checked=TODAY - timedelta(days=2)), TODAY) == ""
+        assert "20 days" in WatchList.staleness(self.item(updated=old_note, checked=old_note), TODAY)
+        assert "16 days" in WatchList.staleness(self.item(updated=old_note, checked=TODAY - timedelta(days=16)), TODAY)
 
 
 @pytest.mark.unit
@@ -227,6 +234,7 @@ class TestRender:
     def test_an_item_nobody_touched_is_marked(self, wl, log):
         WatchList.save("Forgotten", "x", None, wl, log)
         backdate(wl, "forgotten", "Updated", date.today() - timedelta(days=30))
+        backdate(wl, "forgotten", "Checked", date.today() - timedelta(days=30))
         assert "STALE" in WatchList.render(wl)
 
     def test_a_deleted_item_is_gone(self, wl, log):
@@ -268,6 +276,7 @@ class TestIndex:
     def test_an_item_nobody_touched_is_marked_stale(self, wl, log):
         WatchList.save("Forgotten", "x", None, wl, log)
         backdate(wl, "forgotten", "Updated", TODAY - timedelta(days=30))
+        backdate(wl, "forgotten", "Checked", TODAY - timedelta(days=30))
         assert "STALE" in WatchList.render_index(wl, TODAY)
 
     def test_a_poll_that_only_stamps_leaves_the_index_as_it_was(self, wl, log):
