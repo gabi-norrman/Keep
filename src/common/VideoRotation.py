@@ -1,14 +1,49 @@
 """Bakes a clip's display rotation into its pixels, for players that read the coded frames and drop the matrix."""
+import importlib
 import os
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 from typing import Optional
 
 from common.logging import error, info, trace
 
 EXPORT_TIMEOUT_SECONDS = 180
 _STATUS_COMPLETED = 3  # AVAssetExportSessionStatusCompleted
+
+_FRAMEWORK_NAMES = {
+    "AVFoundation": ("AVURLAsset", "AVMediaTypeVideo", "AVMutableVideoCompositionLayerInstruction",
+                     "AVMutableVideoCompositionInstruction", "AVMutableVideoComposition", "AVAssetExportSession",
+                     "AVAssetExportPreset1280x720", "AVFileTypeMPEG4"),
+    "CoreMedia": ("CMTimeMake", "CMTimeRangeMake", "kCMTimeZero"),
+    "Foundation": ("NSURL",),
+    "Quartz": ("CGAffineTransformConcat", "CGAffineTransformMakeTranslation", "CGRectApplyAffineTransform",
+               "CGRectMake"),
+}
+_frameworks_lock = threading.Lock()
+_frameworks: Optional[SimpleNamespace] = None
+
+
+def _load_frameworks() -> SimpleNamespace:
+    """Every AVFoundation, CoreMedia, Foundation and Quartz name the export uses, resolved once.
+
+    pyobjc binds a framework's names lazily, on first access, and that first lookup is not
+    thread-safe: it checks a shared dict and pops from it, so two threads resolving the same name
+    at once leave one of them with a bare KeyError. Two clips sent in one reply are re-encoded in
+    parallel, and did exactly that (KeyError('CGAffineTransformConcat')); resolving under a lock,
+    once, keeps the lazy lookups out of the export itself. Raises ImportError where the frameworks
+    are missing (not a Mac); a failure is not cached, so the next call tries again."""
+    global _frameworks
+    with _frameworks_lock:
+        if _frameworks is None:
+            resolved = {}
+            for module_name, names in _FRAMEWORK_NAMES.items():
+                module = importlib.import_module(module_name)
+                for name in names:
+                    resolved[name] = getattr(module, name)
+            _frameworks = SimpleNamespace(**resolved)
+        return _frameworks
 
 
 def bake_rotation(video_bytes: bytes, timeout: float = EXPORT_TIMEOUT_SECONDS) -> Optional[bytes]:
@@ -21,11 +56,7 @@ def bake_rotation(video_bytes: bytes, timeout: float = EXPORT_TIMEOUT_SECONDS) -
     matrix for the layout, then renders the unrotated raster into it. Only a clip whose matrix is
     not identity needs this, see `Mp4Metadata.mp4_is_rotated`."""
     try:
-        import AVFoundation as AV
-        from CoreMedia import CMTimeMake, CMTimeRangeMake, kCMTimeZero
-        from Foundation import NSURL
-        from Quartz import (CGAffineTransformConcat, CGAffineTransformMakeTranslation, CGRectApplyAffineTransform,
-                            CGRectMake)
+        fw = _load_frameworks()
     except ImportError as e:
         info(f"VideoRotation: AVFoundation not available ({e}), clip sent as it is")
         return None
@@ -37,8 +68,8 @@ def bake_rotation(video_bytes: bytes, timeout: float = EXPORT_TIMEOUT_SECONDS) -
         with open(source, "wb") as f:
             f.write(video_bytes)
 
-        asset = AV.AVURLAsset.URLAssetWithURL_options_(NSURL.fileURLWithPath_(source), None)
-        tracks = asset.tracksWithMediaType_(AV.AVMediaTypeVideo)
+        asset = fw.AVURLAsset.URLAssetWithURL_options_(fw.NSURL.fileURLWithPath_(source), None)
+        tracks = asset.tracksWithMediaType_(fw.AVMediaTypeVideo)
         if not tracks:
             info("VideoRotation: no video track in the clip, sent as it is")
             return None
@@ -48,29 +79,29 @@ def bake_rotation(video_bytes: bytes, timeout: float = EXPORT_TIMEOUT_SECONDS) -
         # The matrix maps the coded frame onto the display; the frame lands wherever its
         # translation says, so shift it back to the origin before rendering into a canvas of
         # the displayed size.
-        shown = CGRectApplyAffineTransform(CGRectMake(0, 0, natural.width, natural.height), transform)
-        transform = CGAffineTransformConcat(transform, CGAffineTransformMakeTranslation(-shown.origin.x, -shown.origin.y))
+        shown = fw.CGRectApplyAffineTransform(fw.CGRectMake(0, 0, natural.width, natural.height), transform)
+        transform = fw.CGAffineTransformConcat(transform, fw.CGAffineTransformMakeTranslation(-shown.origin.x, -shown.origin.y))
         width, height = round(abs(shown.size.width)), round(abs(shown.size.height))
 
-        layer = AV.AVMutableVideoCompositionLayerInstruction.videoCompositionLayerInstructionWithAssetTrack_(track)
-        layer.setTransform_atTime_(transform, kCMTimeZero)
-        instruction = AV.AVMutableVideoCompositionInstruction.videoCompositionInstruction()
-        instruction.setTimeRange_(CMTimeRangeMake(kCMTimeZero, asset.duration()))
+        layer = fw.AVMutableVideoCompositionLayerInstruction.videoCompositionLayerInstructionWithAssetTrack_(track)
+        layer.setTransform_atTime_(transform, fw.kCMTimeZero)
+        instruction = fw.AVMutableVideoCompositionInstruction.videoCompositionInstruction()
+        instruction.setTimeRange_(fw.CMTimeRangeMake(fw.kCMTimeZero, asset.duration()))
         instruction.setLayerInstructions_([layer])
-        composition = AV.AVMutableVideoComposition.videoComposition()
+        composition = fw.AVMutableVideoComposition.videoComposition()
         composition.setRenderSize_((width, height))
         frame_rate = track.nominalFrameRate() or 30
-        composition.setFrameDuration_(CMTimeMake(1000, round(frame_rate * 1000)))
+        composition.setFrameDuration_(fw.CMTimeMake(1000, round(frame_rate * 1000)))
         composition.setInstructions_([instruction])
 
         # The 720p preset fits either orientation (a 720x1280 canvas stays 720x1280) and caps the
         # bitrate, so a rendition near the chat's upload limit does not grow past it.
-        export = AV.AVAssetExportSession.exportSessionWithAsset_presetName_(asset, AV.AVAssetExportPreset1280x720)
+        export = fw.AVAssetExportSession.exportSessionWithAsset_presetName_(asset, fw.AVAssetExportPreset1280x720)
         if export is None:
             error("VideoRotation: AVFoundation refused to create an export session for the clip")
             return None
-        export.setOutputURL_(NSURL.fileURLWithPath_(target))
-        export.setOutputFileType_(AV.AVFileTypeMPEG4)
+        export.setOutputURL_(fw.NSURL.fileURLWithPath_(target))
+        export.setOutputFileType_(fw.AVFileTypeMPEG4)
         export.setVideoComposition_(composition)
         export.setShouldOptimizeForNetworkUse_(True)
         done = threading.Event()

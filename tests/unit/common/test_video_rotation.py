@@ -1,10 +1,13 @@
 """bake_rotation: a clip whose track matrix turns it comes back with the turn in the pixels."""
 import sys
 import threading
+import types
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
 
+import common.VideoRotation as VideoRotation
 from common.Mp4Metadata import mp4_display_size, mp4_duration, mp4_is_rotated
 from common.VideoRotation import bake_rotation
 
@@ -102,6 +105,64 @@ class TestBakeRotation:
         pytest.importorskip("AVFoundation")
         assert bake_rotation(b"not an mp4 at all") is None
 
+    def test_two_clips_re_encoded_at_once_both_come_out_upright(self, portrait):
+        """Two portrait clips shown in one reply are re-encoded in parallel threads (the case that
+        failed in the field with a KeyError from pyobjc's lazy framework loading)."""
+        with patch.object(VideoRotation, "_frameworks", None), ThreadPoolExecutor(2) as pool:
+            results = list(pool.map(bake_rotation, [portrait, portrait]))
+
+        assert all(upright is not None and not mp4_is_rotated(upright) for upright in results)
+
     def test_without_avfoundation_nothing_is_done(self):
-        with patch.dict(sys.modules, {"AVFoundation": None}):
+        with patch.dict(sys.modules, {"AVFoundation": None}), patch.object(VideoRotation, "_frameworks", None):
             assert bake_rotation(b"\x00" * 64) is None
+            assert VideoRotation._frameworks is None  # the failure is not remembered
+
+
+class _LazyModule(types.ModuleType):
+    """A stand-in for a pyobjc framework module: names are bound on first access and the lookup
+    breaks when entered from two threads at once, the way pyobjc's does."""
+
+    def __init__(self, name):
+        super().__init__(name)
+        self.inside = 0
+        self.overlapped = False
+        self.lookups = 0
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        self.inside += 1
+        self.lookups += 1
+        if self.inside > 1:
+            self.overlapped = True
+        threading.Event().wait(0.002)  # long enough for an unguarded second caller to overlap
+        self.inside -= 1
+        if self.overlapped:
+            raise KeyError(name)
+        return f"{self.__name__}.{name}"
+
+
+@pytest.mark.unit
+class TestLoadFrameworks:
+    @pytest.fixture
+    def lazy_modules(self):
+        modules = {name: _LazyModule(name) for name in VideoRotation._FRAMEWORK_NAMES}
+        with patch.dict(sys.modules, modules), patch.object(VideoRotation, "_frameworks", None):
+            yield modules
+
+    def test_concurrent_callers_never_overlap_in_the_lazy_lookups(self, lazy_modules):
+        with ThreadPoolExecutor(8) as pool:
+            namespaces = list(pool.map(lambda _: VideoRotation._load_frameworks(), range(8)))
+
+        assert not any(module.overlapped for module in lazy_modules.values())
+        assert all(ns is namespaces[0] for ns in namespaces)
+        assert namespaces[0].CGAffineTransformConcat == "Quartz.CGAffineTransformConcat"
+        assert namespaces[0].AVFileTypeMPEG4 == "AVFoundation.AVFileTypeMPEG4"
+
+    def test_the_names_are_resolved_once(self, lazy_modules):
+        VideoRotation._load_frameworks()
+        VideoRotation._load_frameworks()
+
+        assert {m.__name__: m.lookups for m in lazy_modules.values()} == {
+            name: len(names) for name, names in VideoRotation._FRAMEWORK_NAMES.items()}
