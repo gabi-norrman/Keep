@@ -12,7 +12,7 @@ from assistant.integration.HomeAutomation import HomeAutomation, HomeSnapshot
 from assistant.integration.Integration import Integration
 from common.ConfigManager import config
 from common.logging import info
-from .PlejdLink import NotConnected, PlejdLink
+from .PlejdLink import NotConnected, PlejdLink, WriteFailed
 from .PlejdModel import SCENE_TYPE, Unresolved, build, is_cover, kind_of, to_plejd_level
 
 CONNECT_WAIT = 10       # seconds a snapshot, a command or the health check waits for the site to load
@@ -32,8 +32,9 @@ class PlejdIntegration(Integration, HomeAutomation):
     pyplejd (the library behind the Home Assistant component) does the cloud call and the mesh
     protocol; PlejdLink runs its asyncio side — scanner, link, keep-alive — on a thread, and
     PlejdModel maps the devices and states onto the snapshot and the name index. pyplejd drops
-    a write it cannot deliver (no link, a Bluetooth error) without raising, so a command only
-    reports what it could check: the link being up before the write."""
+    a write it cannot deliver (no link, a Bluetooth error) without raising, so PlejdLink watches
+    its writes and judges the link by the Bluetooth client rather than pyplejd's own flag, which
+    stays up on a lost client; a command on a dead link first tries one reconnect."""
 
     def __init__(self):
         super().__init__()
@@ -141,16 +142,19 @@ class PlejdIntegration(Integration, HomeAutomation):
         action = self._action(device, display, verb, level)
         if isinstance(action, str):
             return action
-        if not link.connected:
+        if not link.connected and not link.reconnect(COMMAND_TIMEOUT):
             info(f"Plejd: cannot {verb} {display} — no mesh link")
             return NO_MESH
         try:
-            link.run(action(), COMMAND_TIMEOUT)
+            link.run(link.send(action), COMMAND_TIMEOUT)
         except TimeoutError:
             info(f"Plejd: {verb} {display} timed out")
             return "Request timed out"
         except NotConnected:
             return NO_MESH
+        except WriteFailed:
+            info(f"Plejd: {verb} {display} did not reach the mesh — the link is reconnecting")
+            return f"{display} did not get the command: the Plejd mesh link dropped. Try again in a moment."
         except Exception as e:
             info(f"Plejd: {verb} {display} failed: {type(e).__name__}: {e}")
             return str(e)

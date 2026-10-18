@@ -7,7 +7,7 @@ import pytest
 
 from assistant.integration.HomeAutomation import render
 from integrations.plejd.PlejdIntegration import NO_MESH, PlejdIntegration
-from integrations.plejd.PlejdLink import NotConnected
+from integrations.plejd.PlejdLink import NotConnected, WriteFailed
 
 MODULE = "integrations.plejd.PlejdIntegration"
 CONFIG = {"plejd.username": "m@mlab.test", "plejd.password": "secret", "plejd.site": "Villa Nyström"}
@@ -88,6 +88,9 @@ class FakeLink:
         self.scan_left = 0.0            # seconds of the first scan window still ahead
         self.waited = []                # the timeouts check_health waited for the mesh with
         self.connects_while_waiting = False
+        self.reconnects = []            # the timeouts a command waited for a reconnect with
+        self.reconnect_works = False
+        self.write_fails = False
 
     def start(self):
         self.started += 1
@@ -106,6 +109,16 @@ class FakeLink:
         if self.connects_while_waiting:
             self.connected = True
         return self.connected
+
+    def reconnect(self, timeout):
+        self.reconnects.append(timeout)
+        self.connected = self.reconnect_works
+        return self.connected
+
+    async def send(self, action):
+        await action()
+        if self.write_fails:
+            raise WriteFailed("the write did not reach the Plejd mesh")
 
     def states(self):
         return dict(self._states)
@@ -213,10 +226,24 @@ class TestCommands:
         answer = integration.turn_on("Poolbelysning")
         assert "Poolbelysning" in answer and all(d.calls == [] for d in link.devices)
 
-    def test_without_a_mesh_link_nothing_is_sent(self, integration, link):
+    def test_without_a_mesh_link_a_reconnect_is_tried_and_failing_it_nothing_is_sent(self, integration, link):
         link.connected = False
         assert integration.turn_on("Taklampa") == NO_MESH
-        assert device(link, "Taklampa").calls == []
+        assert len(link.reconnects) == 1 and device(link, "Taklampa").calls == []
+
+    def test_a_dead_link_that_reconnects_carries_the_command(self, integration, link):
+        link.connected, link.reconnect_works = False, True
+        assert integration.turn_on("Taklampa") == ""
+        assert len(link.reconnects) == 1 and device(link, "Taklampa").calls == [("turn_on", None)]
+
+    def test_a_live_link_needs_no_reconnect(self, integration, link):
+        integration.turn_on("Taklampa")
+        assert link.reconnects == []
+
+    def test_a_write_that_did_not_reach_the_mesh_is_not_reported_as_done(self, integration, link):
+        link.write_fails = True
+        answer = integration.turn_on("Taklampa")
+        assert answer != "" and "Taklampa" in answer
 
     def test_a_site_that_is_not_there_answers_with_the_reason(self, integration, link):
         link.error = "Plejd cloud login refused"
