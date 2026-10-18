@@ -35,11 +35,11 @@ def create_llm(llm_class_name: str, model: str | None = None, prompt_cache: bool
 # otherwise it will break.
 _TIER_DEFAULTS = {
     'fast': ('GeminiLLM', "gemini-3.5-flash"),  # used when user is speaking (voice to voice), neets do be FAST for conversation to feel natural
-    'smart': ('ClaudeLLM', 'claude-fable-5-1'),  # used when user is chatting with the AI (over Telegram for example), want the best possible AI here
-    'vision': ('ClaudeLLM', 'claude-fable-5-1'),  # used when image processing is needed, overrides smart/fast in that case
+    'smart': ('ClaudeLLM', 'claude-opus-5-5'),  # used when user is chatting with the AI (over Telegram for example), want the best possible AI here
+    'vision': ('ClaudeLLM', 'claude-opus-5-5'),  # used when image processing is needed, overrides smart/fast in that case
     'video': ('GeminiLLM', 'gemini-3.8-flash'),  # describes videos (iMessage/Telegram/email); must be an LLM with native video input — Claude has none
-    'autonomous_action': ('ClaudeLLM', 'claude-fable-5-1'),  # used for the heartbeat/autonomous actions
-    'memory_curator': ('ClaudeLLM', 'claude-fable-5-1'),  # memory curation: nightly, or more often while the bank is being built up
+    'autonomous_action': ('ClaudeLLM', 'claude-opus-5-5'),  # used for the heartbeat/autonomous actions
+    'memory_curator': ('ClaudeLLM', 'claude-opus-5-5'),  # memory curation: nightly, or more often while the bank is being built up
     'cache_auditor': ('GeminiLLM', 'gemini-3.8-flash'),  # used to decide is a user query is cachable or not, fairly simple decision so a cost efficient AI is good here
     'photo_indexing': ('GeminiLLM', 'gemini-3.8-flash'),  # indexes every Apple Photos still and video (one call each, thousands on a backfill); needs native video input
     'code_quality': ('ClaudeLLM', 'claude-fable-5-1'),  # model for the nightly Claude Code CLI runs (CodeQualityMaintainer); only the model is used, the class is always the `claude` CLI
