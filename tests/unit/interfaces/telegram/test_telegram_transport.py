@@ -223,9 +223,6 @@ class TestGroupDestinations:
         assert Destinations.names() == ["Family"]
         assert Destinations.find("-9") is None
 
-    @pytest.mark.xfail(strict=True, reason="Destinations.register replaces a destination of the same name: two allowed "
-                                           "groups with one title leave only the second reachable, the first's id alias "
-                                           "gone with it")
     def test_two_groups_with_one_title_both_stay_reachable_by_their_ids(self):
         from assistant import Destinations
         t = _make_transport(allowed=(-5, -7))

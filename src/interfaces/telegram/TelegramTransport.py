@@ -447,6 +447,11 @@ class TelegramTransport(Integration, ChatTransport):
                 info(f"Telegram [{chat_id}]: get_chat failed ({type(e).__name__}: {e}) — destination by id only")
                 title = ''
             name = title or str(chat_id)
+            if title and any(n.lower() == name.lower() for n in self._group_destinations):
+                # The registry replaces a destination of the same name: a second group with the
+                # title would wipe the first, its id alias with it
+                name = f"{title} ({chat_id})"
+                info(f"Telegram [{chat_id}]: title {title!r} already taken, destination named {name!r}")
             Destinations.register(Destinations.Destination(
                 name, Destinations.KIND_GROUP, lambda text, cid=chat_id: self._post_to_chat(cid, text),
                 aliases=(str(chat_id),) if title else ()))
