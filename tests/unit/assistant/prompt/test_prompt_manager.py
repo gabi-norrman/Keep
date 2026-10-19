@@ -1034,6 +1034,136 @@ def test_a_trim_that_evicts_the_delta_notes_leaves_one_note_restating_the_sectio
     assert manager.message_history.dropped_delta_sections == set()
 
 
+def _trim_keeping_the_last_notes(manager, keep: int):
+    """Make the window evict all but the last `keep` transient notes: the older notes sit
+    before a run of large turns, the kept ones after it, and the watermarks cut inside the
+    run. Returns what the next request would send."""
+    now = time.time()
+    notes = manager.message_history.transient_entries
+    for i, entry in enumerate(notes[:-keep] if keep else notes):
+        entry["timestamp"] = now - 300 + i
+    for i, entry in enumerate(notes[len(notes) - keep:] if keep else []):
+        entry["timestamp"] = now - 100 + i
+    manager.message_history.history = [
+        {"role": "Marcus", "content": f"m{i:03d}" + "x" * 100, "timestamp": now - 200 + i,
+         "source": None, "location": None}
+        for i in range(30)
+    ] + [
+        {"role": "Marcus", "content": f"t{i:03d}" + "x" * 20, "timestamp": now - 50 + i,
+         "source": None, "location": None}
+        for i in range(5)
+    ]
+    manager.message_history.trim_high_bytes = 2_000
+    manager.message_history.trim_low_bytes = 1_000
+    manager.message_history.trim_ceiling_bytes = 2_000
+    with manager._prompt_lock:
+        return manager._resolved_messages_locked()
+
+
+def _procedure_notes(manager):
+    return [e for e in manager.message_history.transient_entries if e.get("section") == "procedures"]
+
+
+@pytest.mark.unit
+def test_a_trim_that_keeps_later_notes_bridges_only_up_to_the_oldest_survivor(prompt_test_environment):
+    """Four notes a → b → c → d; the trim takes the first two. The window still tells the
+    model b → c and c → d, so the restate must say only how the baseline became b — a
+    restate against the current state repeated every surviving note (31 duplicates in one
+    morning on 2026-10-19)."""
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+    manager.test_suite = False
+    for state in ("procedures_a", "procedures_b", "procedures_c", "procedures_d"):
+        _change(manager, sections, "procedures", state)
+        _send(manager)
+    assert len(_procedure_notes(manager)) == 4
+
+    messages = _trim_keeping_the_last_notes(manager, keep=2)
+
+    notes = _procedure_notes(manager)
+    assert len(notes) == 3, "the two survivors and one bridge"
+    bridge = notes[0]
+    lines = bridge["content"].splitlines()
+    assert "-procedures_content" in lines and "+procedures_b" in lines
+    assert not {"-procedures_c", "+procedures_c", "-procedures_d", "+procedures_d"} & set(lines)
+    assert not {"-procedures_a", "+procedures_a"} & set(lines), "the intermediate state is history"
+    assert bridge["base"] == "procedures_content"
+    rendered = "".join(m["content"] for m in messages[1:])
+    assert rendered.index("+procedures_b") < rendered.index("+procedures_c") < rendered.index("+procedures_d"), \
+        "the bridge renders ahead of the notes it leads into"
+    assert manager.message_history.dropped_delta_sections == set()
+
+
+@pytest.mark.unit
+def test_the_bridge_is_stamped_at_the_cutoff_so_it_heads_the_window(prompt_test_environment):
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+    manager.test_suite = False
+    for state in ("procedures_a", "procedures_b", "procedures_c"):
+        _change(manager, sections, "procedures", state)
+        _send(manager)
+
+    _trim_keeping_the_last_notes(manager, keep=1)
+
+    bridge = _procedure_notes(manager)[0]
+    assert bridge["timestamp"] == manager.message_history.trim_cutoff
+    window = manager.message_history.get_history_messages()
+    assert "+procedures_b" in window[0]["content"], "the bridge is the first row the window renders"
+
+
+@pytest.mark.unit
+def test_the_window_renders_the_same_bytes_twice_after_a_bridge(prompt_test_environment):
+    """The bridge shares the cutoff's timestamp with the window's first row: its place in
+    the tie must not depend on the render, or the prefix cache misses on every request."""
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+    manager.test_suite = False
+    for state in ("procedures_a", "procedures_b", "procedures_c"):
+        _change(manager, sections, "procedures", state)
+        _send(manager)
+
+    first = _trim_keeping_the_last_notes(manager, keep=1)
+    with manager._prompt_lock:
+        second = manager._resolved_messages_locked()
+    third = manager.message_history.get_history_messages()
+
+    assert first == second
+    assert [m["content"] for m in first[1:]] == [m["content"] for m in third]
+
+
+@pytest.mark.unit
+def test_no_bridge_when_the_surviving_chain_starts_at_the_baseline(prompt_test_environment):
+    """content → a → content → b, the trim takes the first two notes: the survivor diffs
+    from the baseline itself, so there is no gap to close."""
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+    manager.test_suite = False
+    for state in ("procedures_a", "procedures_content", "procedures_b"):
+        _change(manager, sections, "procedures", state)
+        _send(manager)
+    assert len(_procedure_notes(manager)) == 3
+
+    messages = _trim_keeping_the_last_notes(manager, keep=1)
+
+    notes = _procedure_notes(manager)
+    assert len(notes) == 1 and "+procedures_b" in notes[0]["content"]
+    assert "procedures_a" not in "".join(m["content"] for m in messages[1:])
+    assert manager.message_history.dropped_delta_sections == set()
+
+
+@pytest.mark.unit
+def test_a_bridge_carries_the_section_the_survivors_do(prompt_test_environment):
+    """A later trim that evicts the bridge but keeps its successor bridges again from the
+    baseline — the bridge is a note like any other, tagged and based."""
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+    manager.test_suite = False
+    for state in ("procedures_a", "procedures_b", "procedures_c"):
+        _change(manager, sections, "procedures", state)
+        _send(manager)
+
+    _trim_keeping_the_last_notes(manager, keep=2)
+
+    bridge = _procedure_notes(manager)[0]
+    assert bridge["section"] == "procedures" and bridge["source"] == "prompt_delta"
+    assert bridge["base"] == manager._section_baselines["procedures"]
+
+
 @pytest.mark.unit
 def test_a_section_back_at_its_baseline_gets_no_note_after_a_trim(prompt_test_environment):
     """Baseline → A → baseline: the system prompt is right again, so restating would only

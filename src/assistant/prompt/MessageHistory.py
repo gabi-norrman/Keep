@@ -181,26 +181,50 @@ class MessageHistory:
 
     def add_transient_entry(self, role: str, content: str, timestamp: float,
                             source: str | None = None, location: str | None = None,
-                            section: str | None = None) -> dict:
+                            section: str | None = None, base: str | None = None,
+                            first: bool = False) -> dict:
         """Add an in-memory-only history entry. NOT persisted to floxy.db; returns the entry.
 
         Used by PromptManager to inject section-diff notes (see
         PromptManager._emit_transient_section_update). `section` tags the entry with the
-        section it describes. Once in the window a note stays until the trim drops it:
+        section it describes and `base` is the section state the note's diff starts from —
+        never rendered, it lets a trim's restate bridge the baseline to the oldest surviving
+        note (oldest_delta_note). `first` puts the entry ahead of the other transient rows
+        instead of after them, for a row that shares the window head's timestamp and must
+        render before the rows there. Once in the window a note stays until the trim drops it:
         removing or rewording a row changes the window's bytes from that row on, and the
         prefix cache reads the window only while every byte before the breakpoint repeats.
         """
-        self.transient_entries.append({
+        entry = {
             "role": role,
             "content": content,
             "timestamp": timestamp,
             "source": source,
             "location": location,
             "section": section,
-        })
-        trace(f"MessageHistory: transient entry added ({role}, {len(content)} chars, source={source})")
+            "base": base,
+        }
+        if first:
+            self.transient_entries.insert(0, entry)
+        else:
+            self.transient_entries.append(entry)
+        trace(f"MessageHistory: transient entry added ({role}, {len(content)} chars, source={source}"
+              f"{', at the window head' if first else ''})")
         self._notify_changed()
-        return self.transient_entries[-1]
+        return entry
+
+    @property
+    def trim_cutoff(self) -> float:
+        """The timestamp of the window's oldest row; 0 while nothing has been trimmed."""
+        return self._trim_cutoff
+
+    def oldest_delta_note(self, section: str) -> dict | None:
+        """The oldest prompt-delta note of `section` still inside the window, or None. Its `base`
+        is where the section's surviving chain of notes starts."""
+        notes = [e for e in self.transient_entries
+                 if e.get("source") == self.SOURCE_PROMPT_DELTA and e.get("section") == section
+                 and e["timestamp"] >= self._trim_cutoff]
+        return min(notes, key=lambda e: e["timestamp"], default=None)
 
     def withdraw_unanswered_note(self, entry: dict) -> bool:
         """Remove `entry` if it is still a transient row with no assistant row after it, and

@@ -76,6 +76,67 @@ class TestSubscribe:
 
 
 # ===========================================================================
+# TestTransientEntryPlacement
+# ===========================================================================
+
+class TestTransientEntryPlacement:
+    def test_a_note_keeps_the_state_its_diff_starts_from(self):
+        section = _make_history_section()
+        note = section.add_transient_entry("system", "-a\n+b", 1000.0, source="prompt_delta",
+                                           section="cars", base="a")
+        assert note["base"] == "a"
+        rendered = section.get_history_messages()
+        assert all("base" not in m for m in rendered) and "a\n" not in rendered[0]["content"].split("-a")[0], \
+            "the base is bookkeeping, never a byte of the window"
+
+    def test_first_places_the_row_ahead_of_others_with_the_same_timestamp(self):
+        section = _make_history_section()
+        section.add_transient_entry("system", "later note", 1000.0, source="prompt_delta", section="cars")
+        section.add_transient_entry("system", "bridge", 1000.0, source="prompt_delta", section="cars", first=True)
+        rendered = "\n".join(m["content"] for m in section.get_history_messages())
+        assert rendered.index("bridge") < rendered.index("later note")
+
+    def test_first_does_not_jump_a_row_it_follows_in_time(self):
+        """Only the tie order is at stake: a later timestamp still sorts later."""
+        section = _make_history_section()
+        section.history = [{"role": "Marcus", "content": "hi", "timestamp": 900.0, "source": None, "location": None}]
+        section.add_transient_entry("system", "bridge", 1000.0, first=True)
+        rendered = "\n".join(m["content"] for m in section.get_history_messages())
+        assert rendered.index("hi") < rendered.index("bridge")
+
+
+# ===========================================================================
+# TestOldestDeltaNote
+# ===========================================================================
+
+class TestOldestDeltaNote:
+    def test_the_oldest_note_of_the_section_inside_the_window(self):
+        section = _make_history_section()
+        section.add_transient_entry("system", "cars 2", 1002.0, source="prompt_delta", section="cars", base="b")
+        section.add_transient_entry("system", "cars 1", 1001.0, source="prompt_delta", section="cars", base="a")
+        section.add_transient_entry("system", "calendar", 1000.0, source="prompt_delta", section="calendar", base="x")
+        assert section.oldest_delta_note("cars")["base"] == "a"
+
+    def test_a_note_behind_the_cutoff_does_not_count(self):
+        section = _make_history_section()
+        section.add_transient_entry("system", "cars 1", 1001.0, source="prompt_delta", section="cars", base="a")
+        section.add_transient_entry("system", "cars 2", 1002.0, source="prompt_delta", section="cars", base="b")
+        section._trim_cutoff = 1002.0
+        assert section.oldest_delta_note("cars")["base"] == "b"
+
+    def test_a_row_that_is_not_a_delta_note_does_not_count(self):
+        section = _make_history_section()
+        section.add_transient_entry("system", "stub", 1000.0, source="toolkit_evicted", section="cars")
+        assert section.oldest_delta_note("cars") is None
+
+    def test_a_tie_goes_to_the_row_that_renders_first(self):
+        section = _make_history_section()
+        section.add_transient_entry("system", "note", 1000.0, source="prompt_delta", section="cars", base="b")
+        section.add_transient_entry("system", "bridge", 1000.0, source="prompt_delta", section="cars", base="a", first=True)
+        assert section.oldest_delta_note("cars")["base"] == "a"
+
+
+# ===========================================================================
 # TestWithdrawUnansweredNote
 # ===========================================================================
 

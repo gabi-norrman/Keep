@@ -570,14 +570,14 @@ class PromptManager:
         we phrase the body so the final string reads naturally, e.g.
         "System (10:30): Prompt section `weather` updated:\\n@@ ..."
 
-        `base` is the state the diff starts from, kept while the note is unsent
-        (see _open_notes).
+        `base` is the state the diff starts from: kept on the entry for a trim's restate
+        (_restate_trimmed_sections_locked) and in _open_notes while the note is unsent.
         """
         trace(f"Adding section delta: {section_name} ({len(diff)} chars)")
         self._add_open_note_locked(key, f"Prompt section `{section_name}` updated:\n{diff}", base, diff)
 
     def _add_open_note_locked(self, key: str, content: str, base: str, diff: str):
-        self._open_notes[key] = (self._add_transient_note_locked(key, content), base, len(diff))
+        self._open_notes[key] = (self._add_transient_note_locked(key, content, base), base, len(diff))
 
     def _withdraw_open_note_locked(self, key: str, section_name: str) -> tuple[str, int] | None:
         """Take back `key`'s note if no request has sent it yet: returns the state it diffed
@@ -591,13 +591,16 @@ class PromptManager:
         trace(f"Section '{section_name}' changed again before its last note was sent — that note is folded into the next")
         return base, chars
 
-    def _add_transient_note_locked(self, key: str, content: str) -> dict:
+    def _add_transient_note_locked(self, key: str, content: str, base: str | None = None,
+                                   timestamp: float | None = None, first: bool = False) -> dict:
         return self.message_history.add_transient_entry(
             role="system",
             content=content,
-            timestamp=time.time(),
+            timestamp=time.time() if timestamp is None else timestamp,
             source=MessageHistory.SOURCE_PROMPT_DELTA,
             section=key,
+            base=base,
+            first=first,
         )
 
     def is_night_mode_active(self) -> bool:
@@ -670,16 +673,21 @@ class PromptManager:
         return messages
 
     def _restate_trimmed_sections_locked(self) -> bool:
-        """Put one fresh note back for every section whose delta notes a trim just evicted.
+        """Put one bridging note back for every section whose delta notes a trim just evicted.
 
         The system prompt still carries the section's baseline, and the notes were the only
         thing telling the LLM it moved on since — on 2026-10-05 a burst of browser output
         evicted them and the model reported the car still driving, 40 minutes after it
-        parked. One note diffing the baseline against the last state the LLM was told
-        about, stamped now so it sits inside the kept window, restores the chain without
-        touching the cached system prompt. A carried section has no baseline in the prompt;
-        its notes have their own pointer fallback, so it is left alone here. Caller holds
-        _prompt_lock; returns whether a note was added."""
+        parked. The notes form a chain (each diffs from the state the one before it ended
+        at), so the trim leaves a gap between the baseline and the oldest note still in the
+        window: one note diffing the baseline against that note's `base`, stamped at the
+        cutoff and placed ahead of it, closes the gap and repeats nothing — restating the
+        baseline against the current state instead duplicated every surviving note (31
+        duplicates in one morning on 2026-10-19), and that diff is usually empty. When the
+        trim took every note the restate is the baseline against the current state, stamped
+        now, as before. A carried section has no baseline in the prompt; its notes have their
+        own pointer fallback, so it is left alone here. Caller holds _prompt_lock; returns
+        whether a note was added."""
         dropped = self.message_history.dropped_delta_sections
         if not dropped:
             return False
@@ -695,13 +703,26 @@ class PromptManager:
             if baseline is None or current is None:
                 trace(f"Section '{key}' lost its notes to a trim but has no baseline — nothing to restate")
                 continue
-            diff = self._compute_section_delta(baseline, current)
-            if not diff:
-                trace(f"Section '{key}' lost its notes to a trim but is back at its baseline — nothing to restate")
-                continue
             section = self.sections.get(key)
             name = getattr(section, "section_name", "") or key
-            info(f"Section '{name}' lost its notes to a trim — one fresh note restates its current state")
+            oldest = self.message_history.oldest_delta_note(key)
+            if oldest is not None and oldest.get("base") is not None:
+                diff = self._compute_section_delta(baseline, oldest["base"])
+                if not diff:
+                    trace(f"Section '{name}' lost notes to a trim but its surviving notes start at the baseline "
+                          f"— nothing to restate")
+                    continue
+                info(f"Section '{name}' lost notes to a trim — one note bridges the baseline to its oldest "
+                     f"surviving note ({len(diff)} chars)")
+                self._add_transient_note_locked(key, f"Prompt section `{name}` updated:\n{diff}", base=baseline,
+                                                timestamp=self.message_history.trim_cutoff, first=True)
+                added = True
+                continue
+            diff = self._compute_section_delta(baseline, current)
+            if not diff:
+                trace(f"Section '{name}' lost its notes to a trim but is back at its baseline — nothing to restate")
+                continue
+            info(f"Section '{name}' lost all its notes to a trim — one fresh note restates its current state")
             self._withdraw_open_note_locked(key, name)
             self._emit_transient_section_update_locked(name, key, diff, baseline)
             added = True
