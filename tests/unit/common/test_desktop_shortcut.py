@@ -24,12 +24,18 @@ class TestFullDiskAccessProbe:
 
 
 def _osacompile(calls, returncode=0, make_bundle=True):
-    """A stand-in for subprocess.run that records the argv and lays out the applet the way
-    osacompile does (Contents/Resources inside the -o bundle)."""
+    """A stand-in for subprocess.run that records every argv and, for osacompile, lays out the
+    applet the way it does: Contents/Info.plist and Resources/Assets.car inside the -o bundle.
+    plutil and codesign are recorded and succeed."""
     def run(argv, **kwargs):
         calls.append(argv)
+        if argv[0] != "osacompile":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if make_bundle:
-            (Path(argv[argv.index("-o") + 1]) / "Contents" / "Resources").mkdir(parents=True)
+            contents = Path(argv[argv.index("-o") + 1]) / "Contents"
+            (contents / "Resources").mkdir(parents=True)
+            (contents / "Resources" / "Assets.car").write_bytes(b"car")
+            (contents / "Info.plist").write_text("<plist/>")
         return SimpleNamespace(returncode=returncode, stdout="", stderr="syntax error" if returncode else "")
     return run
 
@@ -46,6 +52,18 @@ class TestEnsure:
         assert argv[argv.index("-o") + 1] == str(desktop / "Keep.app")
         assert str(repo / "keep.sh") in argv[argv.index("-e") + 1]
         assert (desktop / "Keep.app" / "Contents" / "Resources" / "applet.icns").read_bytes() == b"icns"
+
+    def test_the_stock_icon_catalog_is_removed_and_the_bundle_resigned(self, tmp_path):
+        """Finder shows the asset catalog's icon over applet.icns while the catalog is there."""
+        desktop, icon = tmp_path / "Desktop", tmp_path / "keep.icns"
+        desktop.mkdir()
+        icon.write_bytes(b"icns")
+        calls = []
+        DesktopShortcut.ensure(desktop, tmp_path, icon, run=_osacompile(calls))
+        app = desktop / "Keep.app"
+        assert not (app / "Contents" / "Resources" / "Assets.car").exists()
+        assert ["plutil", "-remove", "CFBundleIconName", str(app / "Contents" / "Info.plist")] in calls
+        assert ["codesign", "--force", "-s", "-", str(app)] in calls
 
     def test_a_path_with_quotes_is_escaped_in_the_applescript_literal(self, tmp_path):
         source = DesktopShortcut._applescript(tmp_path / 'My "Keep"' / "keep.sh")

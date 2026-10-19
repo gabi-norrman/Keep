@@ -63,11 +63,25 @@ def ensure(desktop: Path = DESKTOP, repo: Path = AISERVER_DIR, icon: Path = ICON
     if result.returncode != 0:
         error(f"Desktop shortcut: osacompile failed ({result.returncode}): {(result.stderr or result.stdout).strip()}")
         return False
-    resources = app / "Contents" / "Resources"
-    if icon.exists() and resources.is_dir():
-        shutil.copyfile(icon, resources / "applet.icns")   # the applet's Info.plist names `applet` as its icon
-        app.touch()                                         # Finder re-reads the icon on a changed bundle
+    if icon.exists():
+        _brand(app, icon, run)
     else:
-        info(f"Desktop shortcut: icon {icon} or {resources} missing — the applet keeps the stock icon")
+        info(f"Desktop shortcut: icon {icon} missing — the applet keeps the stock icon")
     info(f"Desktop shortcut: built {app} running {script}")
     return True
+
+
+def _brand(app: Path, icon: Path, run):
+    """Give the applet the Keep icon. Its Info.plist names `applet` as the icon file, but Finder
+    prefers the asset catalog osacompile ships (`Assets.car`, named by `CFBundleIconName`), so
+    both go; the bundle is then re-signed ad hoc, as osacompile signed it, and touched so Finder
+    re-reads it."""
+    contents = app / "Contents"
+    shutil.copyfile(icon, contents / "Resources" / "applet.icns")
+    (contents / "Resources" / "Assets.car").unlink(missing_ok=True)
+    for argv in (["plutil", "-remove", "CFBundleIconName", str(contents / "Info.plist")],
+                 ["codesign", "--force", "-s", "-", str(app)]):
+        result = run(argv, capture_output=True, text=True)
+        if result.returncode != 0:
+            info(f"Desktop shortcut: {argv[0]} failed ({result.returncode}): {(result.stderr or result.stdout).strip()}")
+    app.touch()
