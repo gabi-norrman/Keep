@@ -218,13 +218,15 @@ class AbstractLLM(ABC):
         return self._retry(lambda: self.create_completion(messages, thinking=thinking, volatile_tail=volatile_tail))
 
     @abstractmethod
-    def create_streaming_completion(self, messages: list[dict], thinking: bool = False) -> Generator[str, None, None]:
+    def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
+                                    volatile_tail: int = 0) -> Generator[str, None, None]:
         """
         Create a streaming completion from the llm
 
         Args:
             messages: List of message dictionaries with 'role' and 'content'
             thinking: Enable native thinking mode if supported by this LLM
+            volatile_tail: see think_with_messages; only an LLM with a prefix cache acts on it
 
         Yields:
             String chunks of the response

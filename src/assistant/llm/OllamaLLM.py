@@ -849,7 +849,7 @@ class OllamaLLM(AbstractLLM):
                  f"{total_dur_s:.2f}s total. (no cache data — {hint})")
 
     def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
-                                    num_predict: int | None = None) -> Generator[str, None, None]:
+                                    num_predict: int | None = None, volatile_tail: int = 0) -> Generator[str, None, None]:
         """Native thinking (the chunk's `thinking` field) is yielded wrapped in <thinking> tags,
         so the command processor swallows and times it exactly like a prompted thinking block.
         `thinking` is ignored: the model thinks whenever it can (see thinks())."""

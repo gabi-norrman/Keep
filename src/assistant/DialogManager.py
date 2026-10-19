@@ -83,6 +83,10 @@ class DialogManager:
         self.is_killed = False
         self.reply_to_llm: str | list = ""
         self.reply_from_role = "user"
+        # Trailing messages of this round no later request sends as they are — a command
+        # result the history keeps only a cut copy of. ClaudeLLM moves the history cache
+        # breakpoint in front of them: written to the 1h cache they would never be read.
+        self.volatile_tail = 0
         # Clean user utterance used as the response-cache key. Set by the request handler
         # for genuine user turns only; stays None for image and command-follow-up turns so
         # those bypass the cache. See CachedLLM.create_streaming_completion.
@@ -390,7 +394,8 @@ class DialogManager:
         attempt = 0
         while True:
             try:
-                response = self.ai.create_streaming_completion(messages, thinking=self.thinking)
+                response = self.ai.create_streaming_completion(messages, thinking=self.thinking,
+                                                               volatile_tail=self.volatile_tail)
                 yield from self.process_llm_stream(response, t, time_shown)
                 if refused_ai is not None:
                     yield from self._surface_fallback_notice(refused_ai)

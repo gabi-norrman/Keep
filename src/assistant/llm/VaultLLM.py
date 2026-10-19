@@ -25,16 +25,18 @@ class VaultLLM(AbstractLLM):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
         return getattr(self.llm, name)
 
-    def create_streaming_completion(self, messages: list[dict], thinking: bool = False) -> Generator[str, None, None]:
+    def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
+                                    volatile_tail: int = 0) -> Generator[str, None, None]:
         if not self.redactor.active:
             vault = self.redactor.vault
             if vault.locked:
                 info(f"Vault: LOCKED ({vault.error}) — {self.llm.name()} stream passed through unredacted")
             else:
                 fine(f"Vault: empty — {self.llm.name()} stream passed through without hold-back")
-            yield from self.llm.create_streaming_completion(messages, thinking=thinking)
+            yield from self.llm.create_streaming_completion(messages, thinking=thinking, volatile_tail=volatile_tail)
             return
-        inner = self.llm.create_streaming_completion(self.redactor.redact_messages(messages), thinking=thinking)
+        inner = self.llm.create_streaming_completion(self.redactor.redact_messages(messages), thinking=thinking,
+                                                    volatile_tail=volatile_tail)
         yield from RestoringStream(inner, self.redactor)
 
     def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:

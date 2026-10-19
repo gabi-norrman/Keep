@@ -89,7 +89,7 @@ class TestOutbound:
     def test_streaming_sends_redacted_messages(self, wrapped, inner, messages):
         inner.create_streaming_completion.return_value = iter(["ok"])
         list(wrapped.create_streaming_completion(messages, thinking=True))
-        inner.create_streaming_completion.assert_called_once_with(REDACTED, thinking=True)
+        inner.create_streaming_completion.assert_called_once_with(REDACTED, thinking=True, volatile_tail=0)
 
 
 @pytest.mark.unit
@@ -196,7 +196,7 @@ class TestEmptyVault:
         chunks = ["a ", "{{sec", " b"]
         inner.create_streaming_completion.return_value = iter(chunks)
         assert list(passthrough.create_streaming_completion(messages, thinking=True)) == chunks
-        inner.create_streaming_completion.assert_called_once_with(messages, thinking=True)
+        inner.create_streaming_completion.assert_called_once_with(messages, thinking=True, volatile_tail=0)
         assert inner.create_streaming_completion.call_args.args[0] is messages
 
     def test_non_streaming_calls_forward_the_very_same_list(self, passthrough, inner, messages):
@@ -245,7 +245,7 @@ class TestDelegation:
             def create_completion_with_images(self, messages, images):
                 return ""
 
-            def create_streaming_completion(self, messages, thinking=False):
+            def create_streaming_completion(self, messages, thinking=False, volatile_tail=0):
                 yield ""
 
             def initialize(self):
@@ -293,7 +293,7 @@ class TestDelegation:
             def create_completion_with_images(self, messages, images):
                 return ""
 
-            def create_streaming_completion(self, messages, thinking=False):
+            def create_streaming_completion(self, messages, thinking=False, volatile_tail=0):
                 yield ""
 
             def initialize(self):

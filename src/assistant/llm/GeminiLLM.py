@@ -264,7 +264,8 @@ class GeminiLLM(AbstractLLM):
 
         return system_instruction, gemini_messages
 
-    def create_streaming_completion(self, messages: list[dict], thinking: bool = False) -> Generator[str, None, None]:
+    def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
+                                    volatile_tail: int = 0) -> Generator[str, None, None]:
         self._ensure_initialized()
 
         system_instruction, gemini_messages = self._convert_messages(messages)

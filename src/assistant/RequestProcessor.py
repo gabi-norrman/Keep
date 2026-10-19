@@ -11,6 +11,7 @@ from colorama import Fore
 
 from common.DevelopmentConfig import BYTE_PREFIX_TAIL, PREPEND_USER_QUERY_OVERRIDE
 from assistant.DialogManager import DialogManager
+from assistant.prompt.MessageHistory import MessageHistory
 from assistant.AssistantRequest import RequestContext
 from common.RequestKilledException import RequestKilledException
 from common.logging import info, trace, note, error, fine
@@ -790,8 +791,19 @@ class RequestProcessor:
             loaded_toolkit = any(c.startswith(("load_toolkit(", "load_watch(")) for c in executed)
             if loaded_toolkit and len(executed) > 1:
                 trace(f"Command result stored uncapped: load_toolkit ran alongside {len(executed) - 1} other command(s)")
-            prompt_manager.add_command_result(_command_result_for_history(self.dialog_manager.reply_to_llm),
-                                              cap=not loaded_toolkit)
+            result_text = _command_result_for_history(self.dialog_manager.reply_to_llm)
+            prompt_manager.add_command_result(result_text, cap=not loaded_toolkit)
+            # The history keeps a cut copy of an oversized result, so no later request repeats
+            # this round's result turn, nor anything after it: cached, it would be a 1h write
+            # nobody reads (half the price uncached). The model still gets the whole result.
+            # A volatile tail carries into the next round of the same request, grown by the
+            # reply and the result that round appends after it.
+            carried = old_dialog_manager.volatile_tail
+            self.dialog_manager.volatile_tail = carried + 2 if carried else 0
+            if not carried and not loaded_toolkit and len(result_text) > MessageHistory.COMMAND_RESULT_CHARS:
+                info(f"Command result of {len(result_text)} chars goes uncached: the history keeps "
+                     f"{MessageHistory.COMMAND_RESULT_CHARS}, so no later request repeats it")
+                self.dialog_manager.volatile_tail = 1
             self.dialog_manager.use_vision_for_image_reply()
             try:
                 yield from self.stream_response()

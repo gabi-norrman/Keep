@@ -173,7 +173,9 @@ class ClaudeLLM(AbstractLLM):
         turn is byte-stable (the next round's prefix then ends exactly there), else the one
         before it — a trailing turn that will be re-rendered would only ever be written.
         `volatile_tail` trailing messages the caller folded on for this call alone (the
-        autonomous check's instruction) move it further back the same way. Anthropic has a
+        autonomous check's instruction, a command result the history keeps only a cut copy
+        of — a 300K-char page dump was a 166K-token 1h write nobody read, prod 2026-10-18)
+        move it further back the same way. Anthropic has a
         cache entry only where a request put a breakpoint, so a breakpoint on bytes no later
         request repeats leaves the next one nothing to read: it rewrites the whole window
         (12–22K tokens on prod, 2026-10-10..12, after every periodic check)."""
@@ -310,6 +312,9 @@ class ClaudeLLM(AbstractLLM):
             system = None
 
         index = self._message_cache_index(volatile_tail)
+        if volatile_tail:
+            trace(f"Claude cache: {volatile_tail} trailing message(s) no later request repeats — "
+                  f"history breakpoint on message {index}")
         if index == -1 and self._carries_image(anthropic_messages[-1]):
             # The history keeps an image turn as its text alone (RequestProcessor), so the
             # turn as sent never comes back: the breakpoint goes on the message before it.
@@ -466,10 +471,11 @@ class ClaudeLLM(AbstractLLM):
         # Final attempt — let exceptions propagate
         yield from self._stream_once(api_params)
 
-    def create_streaming_completion(self, messages: list[dict], thinking: bool = False) -> Generator[str, None, None]:
+    def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
+                                    volatile_tail: int = 0) -> Generator[str, None, None]:
         self._ensure_initialized()
 
-        api_params = self._build_api_params(messages, thinking, stream=True)
+        api_params = self._build_api_params(messages, thinking, stream=True, volatile_tail=volatile_tail)
         for attempt in range(self.EMPTY_REPLY_RETRIES + 1):
             produced_text = False
             try:

@@ -26,7 +26,7 @@ class ConcreteTestLLM(AbstractLLM):
     def initialize(self):
         self.client = "initialized"
 
-    def create_streaming_completion(self, messages, thinking=False):
+    def create_streaming_completion(self, messages, thinking=False, volatile_tail=0):
         self._ensure_initialized()
         for c in self._streaming_chunks:
             yield c
@@ -630,6 +630,23 @@ class TestClaudeLLM:
         llm.client.messages.create.return_value = Mock(content=[text], usage=None, stop_reason="end_turn")
         llm.create_completion(self._ROUNDS, volatile_tail=1)
         sent = llm.client.messages.create.call_args.kwargs['messages']
+        assert [i for i, m in enumerate(sent) if isinstance(m['content'], list)
+                and any('cache_control' in b for b in m['content'])] == [len(sent) - 2]
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_the_volatile_tail_reaches_the_request_through_the_stream(self, mock_config):
+        """A chat round's follow-up is streamed: an oversized command result at its tail
+        must move the breakpoint there too, not only on the non-streaming path."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        llm = ClaudeLLM("claude-fable-5-1")
+        llm.client = Mock()
+        seen = {}
+        def capture(api_params):
+            seen['messages'] = api_params['messages']; yield "ok"
+        with patch.object(llm, '_stream_with_status_retry', side_effect=capture):
+            list(llm.create_streaming_completion(self._ROUNDS, volatile_tail=1))
+        sent = seen['messages']
         assert [i for i, m in enumerate(sent) if isinstance(m['content'], list)
                 and any('cache_control' in b for b in m['content'])] == [len(sent) - 2]
 
