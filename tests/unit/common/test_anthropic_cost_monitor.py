@@ -11,7 +11,6 @@ def _make_monitor():
     tab.daily_costs = {}
     tab.cost_workspaces = []
     tab.total_cost_30d = 0.0
-    tab.total_cost_7d = 0.0
     tab.total_cost_1d = 0.0
     tab.cost_dates = []
     tab.cost_date_strs = []
@@ -193,7 +192,6 @@ class TestAnthropicCostMonitorAggregation:
         monitor._fetch_cost_data()
 
         assert tab.total_cost_1d == 20.0
-        assert tab.total_cost_7d == 50.0
         assert tab.total_cost_30d == 100.0
 
     @patch('common.AnthropicCostMonitor.config')
@@ -221,7 +219,6 @@ class TestAnthropicCostMonitorAggregation:
 
         assert tab.cost_workspaces == []
         assert tab.total_cost_30d == 0.0
-        assert tab.total_cost_7d == 0.0
         assert tab.total_cost_1d == 0.0
         assert tab.cost_error == ""
 

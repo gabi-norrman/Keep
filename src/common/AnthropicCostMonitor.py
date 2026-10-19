@@ -142,7 +142,6 @@ class AnthropicCostMonitor:
         cost_date_strs = [d.strftime("%Y-%m-%d") for d in cost_dates]
 
         thirty_day_strs = set(cost_date_strs[-30:])
-        seven_day_strs = set(cost_date_strs[-7:])
         today_str = {cost_date_strs[-1]}
         yesterday_str = {cost_date_strs[-2]} if len(cost_date_strs) >= 2 else set()
 
@@ -152,7 +151,6 @@ class AnthropicCostMonitor:
         self._dashboard_tab.daily_costs = filtered_daily
         self._dashboard_tab.cost_workspaces = significant
         self._dashboard_tab.total_cost_30d = _sum_costs(thirty_day_strs)
-        self._dashboard_tab.total_cost_7d = _sum_costs(seven_day_strs)
         self._dashboard_tab.total_cost_1d = _sum_costs(today_str)
         self._dashboard_tab.total_cost_yesterday = _sum_costs(yesterday_str)
         self._dashboard_tab.cost_dates = cost_dates
@@ -162,7 +160,7 @@ class AnthropicCostMonitor:
 
         fine(f"AnthropicCostMonitor: fetched {len(all_buckets)} day buckets, "
              f"{len(significant)} workspaces > $1 {significant}, "
-             f"30d ${self._dashboard_tab.total_cost_30d:.0f} / 7d ${self._dashboard_tab.total_cost_7d:.0f} / "
+             f"30d ${self._dashboard_tab.total_cost_30d:.0f} / "
              f"yesterday ${self._dashboard_tab.total_cost_yesterday:.0f} / 1d ${self._dashboard_tab.total_cost_1d:.0f}")
 
     def _workspace_names(self, headers: dict) -> dict:

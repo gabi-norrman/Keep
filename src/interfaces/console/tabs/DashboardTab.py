@@ -94,7 +94,6 @@ class DashboardTab(TabView):
         self.daily_costs: dict = {}
         self.cost_workspaces: list = []
         self.total_cost_30d: float = 0.0
-        self.total_cost_7d: float = 0.0
         self.total_cost_1d: float = 0.0
         self.total_cost_yesterday: float = 0.0
         self.cost_dates: list = []
@@ -866,16 +865,15 @@ class DashboardTab(TabView):
         dates = self.cost_dates
         date_strs = self.cost_date_strs
 
-        cost_summary = f"Month ${self.total_cost_30d:.0f} \u00b7 Week ${self.total_cost_7d:.0f} \u00b7 Day ${self.total_cost_yesterday:.0f}"
-
         y_axis_w = self.Y_AXIS_W
         # Legend height: 1 line for legend + 1 for x-axis labels
         legend_h = 2
         box_w = width
         chart_h = box_h - Tile.CARD_CHROME - legend_h
 
-        Tile.draw_card(screen, self._cards, x, y, box_w, box_h, "Anthropic API Cost",
-                        cost_summary if self.cost_last_updated > 0 else "", Theme.COLOR_CYAN)
+        Tile.draw_card(screen, self._cards, x, y, box_w, box_h, "Anthropic API Cost")
+        if self.cost_last_updated > 0:
+            self._draw_cost_summary(screen, x, y, box_w)
 
         # Show loading/error state
         if self.cost_error and not daily_costs:
@@ -1039,6 +1037,27 @@ class DashboardTab(TabView):
             screen.set_color(Theme.COLOR_LABEL)
             screen.write_at(lx + 2, legend_y, f" {name}")
             lx += entry_w
+        screen.reset_color()
+
+    def _draw_cost_summary(self, screen: TUIScreen, x: int, y: int, width: int):
+        """The title strip's right end: the month's total, then yesterday's cost per workspace,
+        each figure in the colour its bars have so the reader can tell which is which."""
+        yesterday = self.daily_costs.get(self.cost_date_strs[-2], {}) if len(self.cost_date_strs) >= 2 else {}
+        pieces = [(f"Month ${self.total_cost_30d:.0f}", Theme.COLOR_CYAN), (" \u00b7 ", Theme.COLOR_FAINT),
+                  ("Day ", Theme.COLOR_LABEL)]
+        for mi, w in enumerate(self.cost_workspaces):
+            if mi:
+                pieces.append((" ", Theme.COLOR_FAINT))
+            pieces.append((f"${yesterday.get(w, 0):.0f}", self.WORKSPACE_COLORS[mi % len(self.WORKSPACE_COLORS)]))
+        total_w = sum(display_width(text) for text, _ in pieces)
+        if display_width("Anthropic API Cost") + total_w + 6 > width:
+            return
+        px = x + width - total_w - 2
+        for text, color in pieces:
+            screen.set_color(color)
+            screen.bold()
+            screen.write_at(px, y, text)
+            px += display_width(text)
         screen.reset_color()
 
     def _workspace_shade(self, workspace_index: int, t: float) -> Color:
