@@ -25,6 +25,15 @@ ENERGY = f"{API_URL}/energy/v2/vehicles"
 LOCATION = f"{API_URL}/location/v1/vehicles"
 TIMEOUT = 15
 RETRIES = 2
+RETRY_PAUSE_S = 1.5
+# Since 2026-10 Volvo answers about half the calls, at random per endpoint and car, with 401
+# "invalid VCC-API-KEY" while the key, the VIN and the token are fine; the same call a moment
+# later goes through. That answer is asked again once before it counts as a refusal.
+FLAKY_REFUSAL = "invalid vcc-api-key"
+# A read that still fails leaves the endpoint's last answer standing for so long; the engine
+# status for a short while only, since a stale "RUNNING" would keep a parked car on the road.
+KEEP_S = 24 * 3600
+KEEP_ENGINE_S = 600
 STATE_TTL = 60                 # the prompt section may ask every minute while a car drives: one set of reads per minute per car
 COMMAND_OK = ("COMPLETED", "DELIVERED")
 
@@ -63,7 +72,10 @@ class VolvoIntegration(Integration, VehicleProvider):
     process, since the app has 10,000 calls a day. Volvo answers a VIN that is not among the
     Volvo ID's cars with 401 "invalid VCC-API-KEY", the same words as for a bad key, so a
     refused per-car call is told apart by one read of the account's car list (cached for the
-    process) before the error names the VIN, the key or the scopes. Volvo offers no defrost, trunk or
+    process, VINs compared case aside) before the error names the VIN, the key or the scopes.
+    Volvo also gives that answer at random to calls that are fine, so a 401 with those words is
+    asked once more first, and a state read that still fails keeps the endpoint's last answer
+    (KEEP_S) instead of blanking the car's battery, range and location. Volvo offers no defrost, trunk or
     navigation command, so those three stay the contract's Unsupported. `needs_2fa` is "the
     owner has to sign in": the monitor shows NEEDS_2FA with the login hint until the paste
     flow completes. Config is read at call time."""
@@ -76,6 +88,7 @@ class VolvoIntegration(Integration, VehicleProvider):
         self._details: Dict[str, dict] = {}
         self._states: Dict[str, tuple[float, VehicleState]] = {}
         self._account_vins: Optional[List[str]] = None
+        self._kept: Dict[str, Dict[str, tuple[float, dict]]] = {}     # vin -> read -> (when, answer)
         self._lock = threading.RLock()
 
     @property
@@ -146,6 +159,7 @@ class VolvoIntegration(Integration, VehicleProvider):
         """A new Volvo ID (or none): its car list and the states are the old one's."""
         with self._lock:
             self._states.clear()
+            self._kept.clear()
             self._account_vins = None
 
     def needs_2fa(self) -> bool:
@@ -190,41 +204,74 @@ class VolvoIntegration(Integration, VehicleProvider):
 
     def _request(self, method: str, url: str, body: Optional[dict] = None) -> dict:
         """One call with the bearer token and the API key: the JSON body, {} for a 404 (an
-        endpoint the car or region lacks), a VehicleError for everything else."""
+        endpoint the car or region lacks), a VehicleError for everything else. A timeout or a
+        dropped connection is tried RETRIES times and Volvo's random 401 "invalid VCC-API-KEY"
+        once more, each after RETRY_PAUSE_S; a refused POST was not carried out, so asking
+        again cannot run a command twice."""
         api_key = str(self._config(API_KEY_KEY, "") or "")
         headers = {"Authorization": f"Bearer {self.auth.token()}", "vcc-api-key": api_key, "Accept": "application/json"}
         if method == "POST":
             headers["Content-Type"] = "application/json"
-        last_error: Optional[Exception] = None
         path = url[len(API_URL):]
-        for attempt in range(1, RETRIES + 1):
+        refusal_retried = False
+        while True:
+            response = self._send(method, url, path, headers, body)
             try:
-                response = self._session.request(method, url, headers=headers, json=body, timeout=TIMEOUT)
+                data = response.json() if response.content else {}
+            except ValueError:
+                data = {}
+            if response.status_code != 401 or refusal_retried:
                 break
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-                last_error = e
-                info(f"Volvo: {method} {path} attempt {attempt}/{RETRIES} failed: {e}")
-        else:
-            raise VolvoApiError(f"Volvo's API could not be reached: {last_error}")
-        try:
-            data = response.json() if response.content else {}
-        except ValueError:
-            data = {}
+            reason = self._error_text(data) or response.text[:200]
+            if FLAKY_REFUSAL not in reason.lower():
+                break
+            refusal_retried = True
+            info(f"Volvo: {method} {path} refused (401: {reason}) — Volvo's random refusal, asked again in {RETRY_PAUSE_S} s")
+            time.sleep(RETRY_PAUSE_S)
         if response.status_code == 404:
             trace(f"Volvo: {method} {path} is not there for this car (404)")
             return {}
         if response.status_code == 429:
-            info(f"Volvo: {method} {path} rate limited (429)")
+            info(f"Volvo: {method} {path} rate limited (429): {response.text[:200]}")
             raise VolvoRateLimited("Volvo's API rate limit is reached (10,000 calls a day per app, about 100 a minute) — try again later.")
         if response.status_code in (401, 403):
             reason = self._error_text(data) or response.text[:200]
-            info(f"Volvo: {method} {path} refused ({response.status_code}): {reason}")
+            info(f"Volvo: {method} {path} refused ({response.status_code}{', after a second try' if refusal_retried else ''}): "
+                 f"{reason} — body: {response.text[:200]}")
             raise VolvoApiError(self._refusal(path, response.status_code, reason))
         if response.status_code >= 400:
             reason = self._error_text(data) or response.text[:200]
-            info(f"Volvo: {method} {path} failed ({response.status_code}): {reason}")
+            info(f"Volvo: {method} {path} failed ({response.status_code}): {reason} — body: {response.text[:200]}")
             raise VolvoApiError(f"Volvo {method} {path} failed: {response.status_code} {reason}")
+        if refusal_retried:
+            info(f"Volvo: {method} {path} answered {response.status_code} on the second try")
         return data if isinstance(data, dict) else {}
+
+    def _send(self, method: str, url: str, path: str, headers: dict, body: Optional[dict]):
+        """The response, after up to RETRIES attempts against timeouts and dropped connections."""
+        cause = ""
+        for attempt in range(1, RETRIES + 1):
+            if attempt > 1:
+                time.sleep(RETRY_PAUSE_S)
+            try:
+                return self._session.request(method, url, headers=headers, json=body, timeout=TIMEOUT)
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                cause = self._cause(e)
+                info(f"Volvo: {method} {path} attempt {attempt}/{RETRIES} failed: {cause}")
+        raise VolvoApiError(f"Volvo's API could not be reached: {cause}")
+
+    @staticmethod
+    def _cause(e: BaseException) -> str:
+        """The exception and what it wraps (requests hides RemoteDisconnected two levels down)."""
+        parts, seen = [], set()
+        while e is not None and id(e) not in seen and len(parts) < 4:
+            seen.add(id(e))
+            parts.append(f"{type(e).__name__}: {e}")
+            inner = e.__cause__ or e.__context__
+            if inner is None and e.args and isinstance(e.args[0], BaseException):
+                inner = e.args[0]
+            e = inner
+        return " ← ".join(parts)
 
     def _refusal(self, path: str, status: int, reason: str) -> str:
         """Why a 401/403 happened, for the LLM: a VIN the Volvo ID does not own (Volvo's answer
@@ -234,13 +281,17 @@ class VolvoIntegration(Integration, VehicleProvider):
         if not vin:
             return f"{refused} — the token or the app's scopes do not cover it; {sign_in_again_hint()} if it persists."
         owned = self._owned_vins()
+        flaky = FLAKY_REFUSAL in reason.lower()
         if owned is None:
             return (f"{refused}, and so is the Volvo ID's car list — check volvo.vcc_api_key (the VCC API key of the "
                     f"app on developer.volvocars.com) and the app's scopes; {sign_in_again_hint()} if it persists.")
-        if vin not in owned:
+        if vin.upper() not in {v.upper() for v in owned}:
             listed = ", ".join(f"…{v[-6:]}" for v in owned) or "none"
             return (f"{refused} — Volvo answers this for a VIN that is not among the Volvo ID's cars, and {vin} is not: "
                     f"the account has {len(owned)} car(s) with VIN ending {listed}. Check the `vin` of that car in volvo.vehicles.")
+        if flaky:
+            return (f"{refused} twice in a row — the VIN is the Volvo ID's and Volvo refuses its calls at random with "
+                    f"these words; try again in a moment, and {sign_in_again_hint()} if it persists.")
         return f"{refused} — the VIN is the Volvo ID's, so the app's scopes do not cover this call; {sign_in_again_hint()} if it persists."
 
     def _vin_in(self, path: str) -> str:
@@ -331,16 +382,33 @@ class VolvoIntegration(Integration, VehicleProvider):
             newest = at if newest is None or at > newest else newest
         return newest
 
-    def _read(self, label: str, vin: str, fetch: Callable[[], dict]) -> dict:
-        """One endpoint of the composed state; a failed read leaves its fields unknown rather
-        than failing the car, except an auth or rate-limit error, which every read would repeat."""
+    def _read(self, label: str, vin: str, fetch: Callable[[], dict], keep_s: float = KEEP_S) -> dict:
+        """One endpoint of the composed state. A failed read leaves the endpoint's last answer
+        standing for keep_s seconds (its fields carry Volvo's own timestamps), and only after that
+        its fields unknown rather than failing the car; an auth or rate-limit error, which every
+        read would repeat, fails it."""
         try:
-            return fetch()
+            data = fetch()
         except (NotSignedIn, VolvoRateLimited):
             raise
         except VehicleError as e:
-            info(f"Volvo: {label} of {vin[-6:]} not read: {e}")
+            with self._lock:
+                kept = self._kept.get(vin, {}).get(label)
+            if kept and time.time() - kept[0] < keep_s:
+                info(f"Volvo: {label} of {vin[-6:]} not read, the answer of "
+                     f"{datetime.fromtimestamp(kept[0]).strftime('%H:%M')} stands: {e}")
+                return kept[1]
+            if kept:
+                info(f"Volvo: {label} of {vin[-6:]} not read, and its last answer "
+                     f"({datetime.fromtimestamp(kept[0]).strftime('%d %b %H:%M')}) is too old to stand: {e}")
+                with self._lock:
+                    self._kept.get(vin, {}).pop(label, None)
+            else:
+                info(f"Volvo: {label} of {vin[-6:]} not read, nothing kept to stand in: {e}")
             return {}
+        with self._lock:
+            self._kept.setdefault(vin, {})[label] = (time.time(), data)
+        return data
 
     def vehicle_state(self, spec: VehicleSpec) -> VehicleState:
         """The car now, composed from the cached answers Volvo's servers hold (there is no live
@@ -357,7 +425,7 @@ class VolvoIntegration(Integration, VehicleProvider):
         has_combustion = fuel_type in COMBUSTION_FUEL_TYPES
 
         access = self._read("command accessibility", vin, lambda: self._get_data(f"{CONNECTED}/{vin}/command-accessibility"))
-        engine = self._read("engine status", vin, lambda: self._get_data(f"{CONNECTED}/{vin}/engine-status"))
+        engine = self._read("engine status", vin, lambda: self._get_data(f"{CONNECTED}/{vin}/engine-status"), KEEP_ENGINE_S)
         statistics = self._read("statistics", vin, lambda: self._get_data(f"{CONNECTED}/{vin}/statistics"))
         energy = self._read("energy state", vin, lambda: self._request("GET", f"{ENERGY}/{vin}/state")) if has_battery else {}
         fuel = self._read("fuel", vin, lambda: self._get_data(f"{CONNECTED}/{vin}/fuel")) if has_combustion else {}
