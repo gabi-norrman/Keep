@@ -562,9 +562,6 @@ class TestIndexExcerpt:
         assert lines["fits"].endswith(fits)
         assert lines["over"].endswith("x" * 10 + "…")
 
-    @pytest.mark.xfail(strict=True, reason="_note_start cuts first[:INDEX_NOTE_CHARS] at its last space even when the "
-                                           "last character is the end of a whole word, so a word ending exactly at the "
-                                           "limit is dropped")
     def test_a_word_that_ends_exactly_at_the_limit_is_kept(self, wl, log):
         second = "y" * (WatchList.INDEX_NOTE_CHARS - 11)
         WatchList.save("Edge", "x" * 10 + " " + second + " more words follow", None, wl, log)

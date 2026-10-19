@@ -366,7 +366,8 @@ def _note_start(note: str) -> str:
     first = " ".join(note.strip().split("\n", 1)[0].split())
     if len(first) <= INDEX_NOTE_CHARS:
         return first
-    return first[:INDEX_NOTE_CHARS].rsplit(" ", 1)[0].rstrip(" ,;:—-(") + "…"
+    # One char past the limit, so a word ending exactly at it is cut after, not inside
+    return first[:INDEX_NOTE_CHARS + 1].rsplit(" ", 1)[0].rstrip(" ,;:—-(") + "…"
 
 
 def _due_fact(item: Item, today: date) -> str:
