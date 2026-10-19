@@ -184,6 +184,8 @@ class TelegramTransport(Integration, ChatTransport):
 
     # Longest we're willing to sleep out a flood ban to deliver a final message.
     FLOOD_WAIT_MAX_SECONDS = 600
+    START_RETRY_BASE_SECONDS = 5
+    START_RETRY_MAX_SECONDS = 300
     CALL_TIMEOUT_SECONDS = FLOOD_WAIT_MAX_SECONDS + 30
     APPROVAL_PREFIX = "approval"
     SECRET_PREFIX = "secret"
@@ -253,6 +255,11 @@ class TelegramTransport(Integration, ChatTransport):
     def check_health(self) -> bool:
         if not self._bot_token:
             return False
+        if self._running and self._thread is not None and not self._thread.is_alive():
+            # A getMe of our own would pass while nobody polls: the bot thread died and no
+            # message reaches us. The monitor's restart is what brings it back.
+            error("Telegram bot thread is dead while the bot should be running")
+            return False
         resp = requests.get(f"https://api.telegram.org/bot{self._bot_token}/getMe", timeout=10)
         return resp.status_code == 200
 
@@ -300,7 +307,7 @@ class TelegramTransport(Integration, ChatTransport):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
-            self._loop.run_until_complete(self._start_bot())
+            self._loop.run_until_complete(self._serve())
         except RuntimeError as e:
             if self._running:
                 error(f"Telegram bot crashed: {e}")
@@ -311,6 +318,52 @@ class TelegramTransport(Integration, ChatTransport):
         finally:
             self._drop_held()
             self._loop.close()
+
+    async def _serve(self):
+        """Run the bot until stop(); an API error while it comes up (Telegram's flood control
+        answers the first getMe with a 429 after a quick restart) is retried after the wait
+        Telegram names, or a growing one, instead of ending the bot for good. An error once
+        the bot is up is a crash as before."""
+        attempt = 0
+        while self._running:
+            try:
+                await self._start_bot()
+                return
+            except Exception as e:
+                if self._stop_event is not None or not self._running:
+                    raise
+                attempt += 1
+                delay = self._start_retry_seconds(e, attempt)
+                error(f"Telegram bot failed to start (attempt {attempt}: {type(e).__name__}: {e}), "
+                      f"retrying in {delay:.0f}s")
+                await self._shutdown_application()
+                await self._wait_for_retry(delay)
+        trace("Telegram bot stopped before it came up.")
+
+    async def _wait_for_retry(self, delay: float):
+        """Sleep out the retry delay, waking as soon as stop() is called."""
+        end = time.monotonic() + delay
+        while self._running and time.monotonic() < end:
+            await asyncio.sleep(min(0.5, end - time.monotonic()))
+
+    def _start_retry_seconds(self, e: Exception, attempt: int) -> float:
+        retry_after = getattr(e, 'retry_after', None)
+        if retry_after is not None:
+            seconds = retry_after.total_seconds() if hasattr(retry_after, 'total_seconds') else float(retry_after)
+            return min(seconds + 1, self.START_RETRY_MAX_SECONDS)
+        return min(self.START_RETRY_BASE_SECONDS * 2 ** (attempt - 1), self.START_RETRY_MAX_SECONDS)
+
+    async def _shutdown_application(self):
+        """Let go of a half-started application before building the next one."""
+        app, self._application = self._application, None
+        if app is None:
+            return
+        try:
+            if app.running:
+                await app.stop()
+            await app.shutdown()
+        except Exception as e:
+            trace(f"Telegram: shutting down the half-started application failed: {e}")
 
     def _release_held(self):
         """The bot is up: fire what was scheduled while it connected. Runs on the bot loop."""
@@ -354,10 +407,10 @@ class TelegramTransport(Integration, ChatTransport):
         self._application.add_handler(MessageReactionHandler(self._handle_reaction))
         self._application.add_handler(CallbackQueryHandler(self._handle_callback_query))
 
-        info("Telegram bot polling started.")
         await self._application.initialize()
         await self._application.start()
         await self._application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        info("Telegram bot polling started.")
         self._release_held()
         await self._register_group_destinations()
 
