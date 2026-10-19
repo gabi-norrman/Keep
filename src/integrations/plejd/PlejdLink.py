@@ -3,7 +3,13 @@ Plejd cloud through pyplejd (retrying while the cloud is unreachable, giving up 
 login or a site it cannot pick), runs the Bluetooth scanner that tells pyplejd which mesh units
 are in range, keeps the link alive with pyplejd's ping — which connects to the strongest unit
 seen and reconnects after a drop —, syncs the mesh clock hourly, and keeps every device's last
-reported state. The sync integration hands it coroutines to run and reads the states."""
+reported state. The sync integration hands it coroutines to run and reads the states.
+
+pyplejd 0.22.0 never hands its disconnect callback to bleak, so after a Bluetooth drop its
+client object stays and `manager.connected` stays True on a dead link: every ping and write then
+fails on it forever. The link therefore judges the connection by the bleak client itself,
+registers its own disconnect callback on each new client, drops a stale client before the next
+connect, and watches pyplejd's writes, which swallow their failures."""
 import asyncio
 import threading
 import time
@@ -20,6 +26,8 @@ PING_INTERVAL = 180         # pyplejd's own keep-alive period: the mesh drops an
 TIME_SYNC_INTERVAL = 3600   # the mesh clock drifts; Home Assistant's component syncs it hourly too
 CLOUD_RETRY = 60            # seconds before the site is fetched again when the cloud was unreachable
 TICK = 5                    # how long the loop sleeps between looks at its timers
+FIRST_SCAN = 6              # seconds of scanning before the first connect, so the strongest unit is known
+WEAK_RSSI = -80             # dBm below which a unit makes a link that drops
 STOP_TIMEOUT = 10
 
 
@@ -29,6 +37,10 @@ class SiteChoice(Exception):
 
 class NotConnected(Exception):
     """The link's loop is not running, so nothing can be sent."""
+
+
+class WriteFailed(Exception):
+    """pyplejd could not deliver a write to the mesh."""
 
 
 def choose_site(sites: list[dict], wanted: str) -> dict:
@@ -58,6 +70,7 @@ class PlejdLink:
         self._wake: Optional[asyncio.Event] = None
         self._stopping = False
         self._ping_wanted = False
+        self._write_failures = 0
         self._ready = threading.Event()         # the site is loaded and the scanner runs
         self._mesh = threading.Event()          # the mesh link is up (cleared on a drop)
         self._lock = threading.Lock()
@@ -90,7 +103,14 @@ class PlejdLink:
 
     def wait_connected(self, timeout: float) -> bool:
         """Blocks until the mesh link is up or *timeout* passes; whether it is up."""
-        return self._mesh.wait(timeout) or self.connected
+        return self._mesh.wait(timeout) and self.connected
+
+    def reconnect(self, timeout: float) -> bool:
+        """Asks the loop for a connect now and waits up to *timeout* for it; whether the link is up."""
+        info("Plejd: no mesh link — trying to reconnect at once")
+        self._mesh.clear()
+        self.request_ping()
+        return self.wait_connected(timeout)
 
     def scan_time_left(self, window: float) -> float:
         """Seconds of the first *window* seconds of scanning still ahead — 0 once they have
@@ -103,7 +123,20 @@ class PlejdLink:
 
     @property
     def connected(self) -> bool:
-        return self.manager is not None and bool(self.manager.connected)
+        """Whether the mesh link is up — by the Bluetooth client itself, not pyplejd's flag,
+        which stays True on a client bleak has lost."""
+        if self.manager is None or not self.manager.connected:
+            return False
+        client = self.manager.mesh._client
+        return client is not None and bool(client.is_connected)
+
+    async def send(self, action):
+        """Runs *action* (a pyplejd device coroutine) on the loop; WriteFailed when one of its
+        writes did not reach the mesh."""
+        failures = self._write_failures
+        await action()
+        if self._write_failures > failures:
+            raise WriteFailed("the write did not reach the Plejd mesh")
 
     @property
     def devices(self) -> list:
@@ -164,13 +197,14 @@ class PlejdLink:
         try:
             while not self._stopping:
                 now = time.monotonic()
-                if self._ping_wanted or now - last_ping >= PING_INTERVAL:
+                settling = self.connected_at is None and self.scan_time_left(FIRST_SCAN) > 0
+                if not settling and (self._ping_wanted or now - last_ping >= PING_INTERVAL):
                     self._ping_wanted, last_ping = False, now
                     await self._ping()
                 if self.connected and now - last_sync >= TIME_SYNC_INTERVAL:
                     last_sync = now
                     await self._sync_time()
-                await self._sleep(TICK)
+                await self._sleep(self.scan_time_left(FIRST_SCAN) if settling else TICK)
         finally:
             await scanner.stop()
             if manager.connected:
@@ -207,6 +241,7 @@ class PlejdLink:
                 continue
             self.site_title = site["title"]
             manager.connection_monitor = self._on_connection
+            self._watch_writes(manager.mesh)
             for device in manager.devices:
                 device.subscribe(lambda state, d=device: self._on_state(d, state))
             self.manager = manager
@@ -229,25 +264,86 @@ class PlejdLink:
             info(f"Plejd: unit {mac} in range (rssi {advertisement.rssi})")
             self.request_ping()
 
+    def _watch_writes(self, mesh):
+        """Wraps pyplejd's mesh write, which logs and swallows a failed delivery, so that
+        send() can tell and the link gets a reconnect."""
+        write = mesh._write
+
+        async def watched(payloads):
+            ok = await write(payloads)
+            if ok is False:
+                self._write_failures += 1
+                if not self.connected:
+                    self._on_connection(False)
+            return ok
+
+        mesh._write = watched
+
     async def _ping(self):
         if self.units_seen == 0:
             trace("Plejd: no unit of the site in Bluetooth range yet")
             return
+        if self.manager.connected and not self.connected:
+            info("Plejd: pyplejd holds a Bluetooth client that is no longer connected — dropping it")
+            await self._drop_client()
         was_connected = self.connected
         try:
             ok = await self.manager.ping(retry=False)
         except Exception as e:
             info(f"Plejd: ping failed: {type(e).__name__}: {e}")
             ok = False
+        ok = ok and self.connected
         if ok and not was_connected:
             self.connected_at = time.time()
-            info("Plejd: connected to the mesh")
+            self._watch_client()
+            info(f"Plejd: connected to the mesh{self._gateway_text()}")
         elif not ok:
             info("Plejd: the mesh did not answer — reconnecting at the next ping")
+            if self.manager.connected:
+                await self._drop_client()
+                if not was_connected:
+                    self._ping_wanted = False   # a unit that connects but does not answer waits for the next ping
         if ok:
             self._mesh.set()
         else:
             self._mesh.clear()
+
+    async def _drop_client(self):
+        """Disconnects pyplejd so its next ping makes a real connect; that fires _on_connection(False)."""
+        try:
+            await self.manager.disconnect()
+        except Exception as e:
+            info(f"Plejd: disconnecting the dead link failed: {type(e).__name__}: {e}")
+        if self.manager.connected:
+            self.manager.mesh._client = None
+            self.manager.connect_callback(False)
+
+    def _watch_client(self):
+        """Registers a disconnect callback on pyplejd's fresh bleak client, which pyplejd
+        itself fails to do, so a drop is noticed at once instead of at the next ping."""
+        client = self.manager.mesh._client
+        backend = getattr(client, "_backend", None)
+        if backend is None or not hasattr(backend, "set_disconnected_callback"):
+            info("Plejd: cannot watch the Bluetooth client for drops — the keep-alive ping will notice them")
+            return
+
+        def dropped():
+            if self.manager.mesh._client is client:
+                info("Plejd: Bluetooth reports the mesh link lost")
+                self._on_connection(False)
+
+        backend.set_disconnected_callback(dropped)
+
+    def _gateway_text(self) -> str:
+        """' through unit … (rssi …)' for the unit pyplejd connected to, with a warning when weak."""
+        node = getattr(self.manager.mesh, "_gateway_node", None)
+        if node is None or node.rssi is None:
+            return ""
+        heard = sorted((h.rssi for h in self.manager.hardware.values() if h.rssi is not None), reverse=True)
+        text = f" through unit {node.BLEaddress} (rssi {node.rssi}, {len(heard)} units heard)"
+        if node.rssi < WEAK_RSSI:
+            text += f" — weaker than {WEAK_RSSI} dBm, the link may drop"
+        return text
 
     async def _sync_time(self):
         try:
@@ -258,7 +354,8 @@ class PlejdLink:
     def _on_connection(self, connected: bool):
         if connected:
             return
-        info("Plejd: the mesh link dropped")
+        if self._mesh.is_set():
+            info("Plejd: the mesh link dropped")
         self._mesh.clear()
         if not self._stopping:
             self.request_ping()

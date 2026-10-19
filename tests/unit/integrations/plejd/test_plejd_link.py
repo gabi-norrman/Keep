@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from integrations.plejd.PlejdModel import MANUFACTURER_ID
-from integrations.plejd.PlejdLink import NotConnected, PlejdLink, SiteChoice, choose_site
+from integrations.plejd.PlejdLink import NotConnected, PlejdLink, SiteChoice, WriteFailed, choose_site
 from pyplejd import AuthenticationError
 from pyplejd import ConnectionError as PlejdCloudUnreachable
 
@@ -114,6 +114,7 @@ class SiteManager:
         self.hardware = {"AABBCCDDEEFF": Hardware()}
         self.connected = False
         self.connection_monitor = None
+        self.mesh = Mesh()
 
     async def init(self):
         pass
@@ -171,20 +172,74 @@ class TestLoadSite:
         assert "plejd.site" in link.error and link.manager is None and link.slept == []
 
 
-class MeshManager:
-    """pyplejd's ping as the link sees it: it connects (or not) and says so."""
+class Backend:
+    def __init__(self):
+        self.disconnected_callback = None
 
-    def __init__(self, failure=None):
-        self.connected = False
-        self.pings = 0
+    def set_disconnected_callback(self, callback):
+        self.disconnected_callback = callback
+
+
+class BleakClient:
+    """The bleak client pyplejd keeps: it can lose its connection while pyplejd still holds it."""
+
+    def __init__(self):
+        self.is_connected = True
+        self._backend = Backend()
+
+    def lose(self):
+        self.is_connected = False
+        if self._backend.disconnected_callback:
+            self._backend.disconnected_callback()
+
+
+class Mesh:
+    def __init__(self):
+        self._client = None
+        self._gateway_node = None
+        self.writes = []
+        self.write_ok = True
+
+    async def _write(self, payloads):
+        self.writes.append(payloads)
+        return self.write_ok
+
+
+class MeshManager:
+    """pyplejd's manager as the link sees it: its connected flag is only whether it holds a
+    client — the 0.22.0 behaviour that left a lost client in place —, ping connects when it
+    holds none and answers only over a live one, disconnect drops the client and calls back."""
+
+    def __init__(self, failure=None, answers=True):
+        self.mesh = Mesh()
+        self.hardware = {}
+        self.pings = self.connects = self.disconnects = 0
         self.failure = failure
+        self.answers = answers
+        self.connection_monitor = None
+
+    @property
+    def connected(self):
+        return self.mesh._client is not None
+
+    def connect_callback(self, connected):
+        if self.connection_monitor:
+            self.connection_monitor(connected)
 
     async def ping(self, retry=True):
         self.pings += 1
         if self.failure is not None:
             raise self.failure
-        self.connected = True
-        return True
+        if self.mesh._client is None:
+            self.connects += 1
+            self.mesh._client = BleakClient()
+            self.connect_callback(True)
+        return self.answers and self.mesh._client.is_connected
+
+    async def disconnect(self):
+        self.disconnects += 1
+        self.mesh._client = None
+        self.connect_callback(False)
 
 
 @pytest.mark.unit
@@ -193,6 +248,7 @@ class TestPing:
     def link(self):
         link = PlejdLink("m@mlab.test", "secret")
         link.manager = MeshManager()
+        link.manager.connection_monitor = link._on_connection
         link.units_seen = 1
         return link
 
@@ -217,7 +273,7 @@ class TestPing:
         assert not link.wait_connected(0)
         asyncio.run(link._ping())
         assert link.wait_connected(0)
-        link.manager.connected = False
+        link.manager.mesh._client = None
         link._on_connection(False)
         assert not link.wait_connected(0) and link._ping_wanted
 
@@ -225,6 +281,86 @@ class TestPing:
         link.manager = MeshManager(failure=OSError("Bluetooth is off"))
         asyncio.run(link._ping())
         assert not link.wait_connected(0)
+
+
+@pytest.mark.unit
+class TestDeadLink:
+    """pyplejd 0.22.0 keeps a bleak client that lost its connection; the link must notice and heal."""
+
+    @pytest.fixture
+    def link(self):
+        link = PlejdLink("m@mlab.test", "secret")
+        link.manager = MeshManager()
+        link.manager.connection_monitor = link._on_connection
+        link.units_seen = 1
+        asyncio.run(link._ping())
+        link._ping_wanted = False
+        return link
+
+    def lose_silently(self, link):
+        """A drop pyplejd's own callback would miss: the client is down, the manager still holds it."""
+        link.manager.mesh._client.is_connected = False
+
+    def test_a_held_client_that_is_down_is_not_connected(self, link):
+        assert link.connected
+        self.lose_silently(link)
+        assert link.manager.connected and not link.connected and not link.wait_connected(0)
+
+    def test_the_next_ping_drops_the_stale_client_and_connects_afresh(self, link):
+        self.lose_silently(link)
+        asyncio.run(link._ping())
+        assert link.manager.disconnects == 1 and link.manager.connects == 2
+        assert link.connected and link.wait_connected(0)
+
+    def test_a_ping_that_fails_on_a_held_client_disconnects_and_asks_for_a_reconnect(self, link):
+        link.manager.answers = False
+        asyncio.run(link._ping())
+        assert link.manager.disconnects == 1 and not link.manager.connected
+        assert not link.connected and link._ping_wanted
+        link.manager.answers, link._ping_wanted = True, False
+        asyncio.run(link._ping())
+        assert link.manager.connects == 2 and link.connected
+
+    def test_a_unit_that_connects_but_does_not_answer_waits_for_the_regular_ping(self, link):
+        link.manager.mesh._client = None
+        link._mesh.clear()
+        link.manager.answers = False
+        asyncio.run(link._ping())
+        assert link.manager.disconnects == 1 and not link._ping_wanted
+
+    def test_the_drop_is_logged_once(self, link):
+        link.manager.answers = False
+        with patch(f"{MODULE}.info") as info:
+            asyncio.run(link._ping())
+            asyncio.run(link._ping())
+        assert sum("dropped" in c.args[0] for c in info.call_args_list) == 1
+
+    def test_bluetooth_reporting_the_loss_marks_the_link_down_and_asks_for_a_reconnect_at_once(self, link):
+        link.manager.mesh._client.lose()
+        assert not link.connected and not link._mesh.is_set() and link._ping_wanted
+
+    def test_the_loss_of_a_client_already_replaced_is_ignored(self, link):
+        old = link.manager.mesh._client
+        asyncio.run(link.manager.disconnect())
+        asyncio.run(link._ping())
+        link._ping_wanted = False
+        old.lose()
+        assert link.connected and not link._ping_wanted
+
+    def test_a_write_pyplejd_could_not_deliver_fails_the_send_and_asks_for_a_reconnect(self, link):
+        link._watch_writes(link.manager.mesh)
+        mesh = link.manager.mesh
+
+        async def action():
+            await mesh._write(["payload"])
+
+        asyncio.run(link.send(action))
+        self.lose_silently(link)
+        mesh.write_ok = False
+        link._ping_wanted = False
+        with pytest.raises(WriteFailed):
+            asyncio.run(link.send(action))
+        assert link._ping_wanted and len(mesh.writes) == 2
 
 
 @pytest.mark.unit
