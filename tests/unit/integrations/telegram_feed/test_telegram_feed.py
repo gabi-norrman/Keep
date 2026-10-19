@@ -979,6 +979,18 @@ class TestOwnBotChat:
                 _make_msg(123, "Hello"), _make_me(999), self._bot_dialog(123))
         assert "Hello" in result
 
+    @pytest.mark.asyncio
+    async def test_the_own_bots_message_in_a_group_is_skipped_but_another_bots_is_kept(self, feed_no_blacklist):
+        """The feed sees the bot's streaming draft as it is posted (a bare spinner frame) and never
+        the edit or the delete that follows; her real reply is in the history already."""
+        group = _make_dialog(title="Family", is_group=True)
+        with patch(CONFIG) as cfg:
+            cfg.get.side_effect = lambda key, default=None: {'telegram_bot.bot_token': '4242:secret'}.get(key, default)
+            own = await feed_no_blacklist._format_message(_make_msg(4242, "█", "Helper DEV"), _make_me(999), group)
+            other = await feed_no_blacklist._format_message(_make_msg(4343, "Hi there", "OtherBot"), _make_me(999), group)
+        assert own is None
+        assert "OtherBot" in other and "Hi there" in other
+
     @pytest.mark.parametrize("token", ["", None, "YOUR_TELEGRAM_BOT_TOKEN_HERE"])
     def test_no_usable_token_matches_nothing(self, token):
         with patch(CONFIG) as cfg:

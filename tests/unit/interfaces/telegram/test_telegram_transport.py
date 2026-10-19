@@ -1622,6 +1622,7 @@ class TestGroupsAndGuests:
         await transport._handle_message(_update(chat_id=-5001, reply=_bubble_of(777, "the forecast")), MagicMock())
         msg = received(hub)
         assert msg.reply_to_text == "the forecast" and msg.conversation == -5001
+        assert msg.reply_to_bot is True  # the chat layer answers it instead of allowing a NO
 
     @pytest.mark.asyncio
     async def test_a_photo_in_the_group_follows_the_same_rule(self):

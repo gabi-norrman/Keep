@@ -526,6 +526,12 @@ class TelegramFeedIntegration(Integration, Feed):
         if self._is_own_bot(dialog.entity):
             fine("TelegramFeed: skipped a message in the chat with Floxy's own bot")
             return None
+        if self._is_own_bot_message(msg):
+            # In a group the feed sees the bot's streaming draft the moment it is posted — the
+            # first spinner frame — and never the edit that gives it its text, nor the delete
+            # of a suppressed reply; the history holds her real reply first hand anyway.
+            fine("TelegramFeed: skipped a message of Floxy's own bot (its reply is in the history already)")
+            return None
 
         is_from_me = msg.sender_id == me.id
 
@@ -583,6 +589,11 @@ class TelegramFeedIntegration(Integration, Feed):
         user id, so no lookup is needed; read live, the bot can be configured after the feed opened."""
         bot_id = TelegramFeedIntegration._bot_user_id()
         return bot_id is not None and getattr(entity, 'id', None) == bot_id
+
+    @staticmethod
+    def _is_own_bot_message(msg) -> bool:
+        bot_id = TelegramFeedIntegration._bot_user_id()
+        return bot_id is not None and getattr(msg, 'sender_id', None) == bot_id
 
     @staticmethod
     def _media_kind(msg) -> Optional[str]:

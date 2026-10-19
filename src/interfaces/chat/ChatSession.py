@@ -368,15 +368,20 @@ class ChatSession:
         if msg.guest:
             note = self._guest_note(msg)
         elif self._chat_name:
+            # An owner replying to the bot's own post is talking to her: that turn gets an
+            # answer like a private one, not the licence to stay silent.
+            tail = ("It is a reply to a message of yours." if msg.reply_to_bot
+                    else f"{self.NO_TAIL[0].upper()}{self.NO_TAIL[1:]}")
             note = (f'The next message was sent in the group chat "{self._chat_name}"; everyone in the group can '
                     f'read your reply. Private information from your memory and the history is not for sharing '
                     f'with the group; if you are unsure whether something may be said here, ask before answering. '
-                    f'{self.NO_TAIL[0].upper()}{self.NO_TAIL[1:]}')
+                    f'{tail}')
         else:
             return None, suppress_no
+        reply = " replying to the bot's own post" if msg.reply_to_bot else ""
         info(f"{self._log_prefix()}: {'guest' if msg.guest else 'group'} turn from {msg.sender}"
-             f"{' (a bot)' if msg.sender_is_bot else ''}")
-        return note, True
+             f"{' (a bot)' if msg.sender_is_bot else ''}{reply}")
+        return note, msg.guest or not msg.reply_to_bot
 
     def _guest_note(self, msg: IncomingMessage) -> str:
         owner = config.get_owner_name()

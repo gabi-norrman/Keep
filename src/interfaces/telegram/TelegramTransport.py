@@ -693,7 +693,8 @@ class TelegramTransport(Integration, ChatTransport):
         await self._receive(update, IncomingMessage(
             conversation=chat_id, sender=self._sender_name(update), message_id=update.message.message_id,
             kind=KIND_TEXT, text=user_text, reply_to_text=self._reply_to_text(update),
-            chat_name=self._chat_name(update), guest=guest, sender_is_bot=is_bot))
+            reply_to_bot=self._replies_to_bot(update), chat_name=self._chat_name(update),
+            guest=guest, sender_is_bot=is_bot))
 
     async def _take_secret_reply(self, update, chat_id: int):
         """The text is the answer to the open secret prompt: hand it to the hub (off the loop —
@@ -772,8 +773,8 @@ class TelegramTransport(Integration, ChatTransport):
         await self._receive(update, IncomingMessage(
             conversation=chat_id, sender=self._sender_name(update), message_id=update.message.message_id,
             kind=KIND_VOICE, attachments=[Attachment(voice_bytes, mime_type, "voice")],
-            reply_to_text=self._reply_to_text(update), chat_name=self._chat_name(update),
-            **self._guest_fields(update)))
+            reply_to_text=self._reply_to_text(update), reply_to_bot=self._replies_to_bot(update),
+            chat_name=self._chat_name(update), **self._guest_fields(update)))
 
     async def _handle_video(self, update, context):
         """A video, round video note or GIF (mp4 animation). The chat layer has it described
@@ -809,8 +810,8 @@ class TelegramTransport(Integration, ChatTransport):
         await self._receive(update, IncomingMessage(
             conversation=chat_id, sender=self._sender_name(update), message_id=message.message_id,
             kind=KIND_VIDEO, text=caption, attachments=[Attachment(video_bytes, mime_type, kind)],
-            reply_to_text=self._reply_to_text(update), chat_name=self._chat_name(update),
-            **self._guest_fields(update)))
+            reply_to_text=self._reply_to_text(update), reply_to_bot=self._replies_to_bot(update),
+            chat_name=self._chat_name(update), **self._guest_fields(update)))
 
     async def _handle_reaction(self, update, context):
         reaction = update.message_reaction
@@ -880,8 +881,9 @@ class TelegramTransport(Integration, ChatTransport):
     async def _delete_message_async(self, chat_id: int, message_id: int):
         try:
             await self._application.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            trace(f"Telegram [{chat_id}]: deleted draft message {message_id}")
         except Exception as e:
-            fine(f"Telegram: delete draft message failed: {e}")
+            fine(f"Telegram [{chat_id}]: delete draft message {message_id} failed: {e}")
 
     def _flood_wait_seconds(self, e: RetryAfter) -> float:
         """How long to sleep out a flood ban before retrying a final delivery."""

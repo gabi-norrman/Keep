@@ -34,6 +34,7 @@ class IncomingMessage:
     text: str = ""                        # message text, or the caption of a media message
     attachments: list = field(default_factory=list)
     reply_to_text: Optional[str] = None   # quoted text when the user replied to a message
+    reply_to_bot: bool = False            # the replied-to message is the assistant's own
     reaction: Optional[str] = None        # emoji(s) the user added
     reaction_target_text: Optional[str] = None
     group_id: Optional[str] = None        # album / media-group id: photos sharing it become one request

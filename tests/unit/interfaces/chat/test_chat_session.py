@@ -428,6 +428,17 @@ class TestIntake:
         private = hub.session_for(transport, 999)  # a session never forgets its group, so a fresh one
         assert private._frame(msg(text="hello"), False) == (None, False)  # a private chat: no note
 
+    def test_an_owners_reply_to_the_bots_own_post_is_not_licensed_to_stay_silent(self, session, hub, transport):
+        session.submit(msg(text="hello", chat_name="Family"))  # learn the group
+        note, suppress = session._frame(msg(text="nice tip", chat_name="Family", reply_to_text="Tip", reply_to_bot=True), False)
+        assert suppress is False and '"NO"' not in note and 'group chat "Family"' in note
+        assert "reply to a message of yours" in note
+
+    def test_a_guests_reply_to_the_bots_own_post_keeps_the_no_licence(self, session, hub, transport):
+        session.submit(msg(text="hello", chat_name="Family"))
+        note, suppress = session._frame(msg(text="nice tip", chat_name="Family", guest=True, reply_to_bot=True), False)
+        assert suppress is True and '"NO"' in note
+
     def test_reply_context_is_quoted(self, session, hub, transport):
         _, query = self._submit_and_wait(session, hub, transport, msg(text="my reply", reply_to_text="Previous message"))
         assert query == '[Replying to: "Previous message"]\nmy reply'
