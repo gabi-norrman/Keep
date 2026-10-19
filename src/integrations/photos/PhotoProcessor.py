@@ -87,6 +87,18 @@ VIDEO_ANALYSIS_PROMPT_USER = """# Context about this video
 
 Analyze this video and return the JSON object as described."""
 
+# The "thinking" field of the two prompts above. Sonnet 5.5, Opus 5.5 and Fable refuse a request
+# that asks for the model's reasoning (`stop_reason: refusal`, reasoning_extraction) and return
+# nothing else, so for such a backend the field is left out; the scores and their guidance stay.
+REASONING_FIELD_LINE = re.compile(r'^- "thinking":.*\n', re.MULTILINE)
+
+
+def without_reasoning_field(system_prompt: str) -> str:
+    """The analysis prompt minus its "thinking" field, for a backend that refuses to be asked
+    for its reasoning (`AbstractLLM.refuses_reasoning_requests`)."""
+    return REASONING_FIELD_LINE.sub("", system_prompt)
+
+
 PHOTOS_SQLITE_PATH = os.path.expanduser(
     "~/Pictures/Photos Library.photoslibrary/database/Photos.sqlite"
 )
@@ -346,6 +358,7 @@ class PhotoProcessor:
         self._pending_icloud: dict[str, tuple[dict, int]] = {}  # uuid -> (row, retry_count)
         self._icloud_lock = threading.Lock()
         self._refused_last_run: list[str] = []    # uuids the backend refused in the last process_rows
+        self._refuses_reasoning: bool | None = None   # the indexing backend's verdict on the "thinking" field, asked once
 
     def remove_hidden_assets(self) -> int:
         """Drop indexed rows for assets the user has since hidden in Photos; returns how many."""
@@ -1095,8 +1108,8 @@ class PhotoProcessor:
 
     def _analyze_video_with_llm(self, video_bytes: bytes, mime_type: str, date_str: str, location: str,
                                 albums: str, persons: str, video_type: str, duration: float) -> Optional[dict]:
-        system = VIDEO_ANALYSIS_PROMPT_SYSTEM.format(
-            current_memory=self._escape_braces(self._read_memory() or "(no memory available)"))
+        system = self._for_backend(VIDEO_ANALYSIS_PROMPT_SYSTEM.format(
+            current_memory=self._escape_braces(self._read_memory() or "(no memory available)")))
         user = VIDEO_ANALYSIS_PROMPT_USER.format(
             date=date_str,
             location=self._escape_braces(location or "unknown"),
@@ -1376,8 +1389,28 @@ class PhotoProcessor:
         """The part of a still's prompt that is the same for every photo: the instructions and the
         memory bank. Identical text from photo to photo is what a provider's prefix or explicit
         cache keys on, so nothing per-photo may go in here."""
-        return ANALYSIS_PROMPT_SYSTEM.format(
-            current_memory=self._escape_braces(self._read_memory() or "(no memory available)"))
+        return self._for_backend(ANALYSIS_PROMPT_SYSTEM.format(
+            current_memory=self._escape_braces(self._read_memory() or "(no memory available)")))
+
+    def _for_backend(self, system: str) -> str:
+        """The prompt as the indexing backend can take it: whole for most, without the "thinking"
+        field for a model that refuses to be asked for its reasoning. Same answer for every photo
+        and clip of the process, so the cached prefix stays stable."""
+        return without_reasoning_field(system) if self._backend_refuses_reasoning() else system
+
+    def _backend_refuses_reasoning(self) -> bool:
+        if self._refuses_reasoning is None:
+            try:
+                # The live backend when there is one; otherwise the configured one, built
+                # uninitialized like indexing_is_local() does — no key, no network.
+                llm = self._llm or create_llm(*parse_llm_config('photo_indexing'))
+                self._refuses_reasoning = bool(llm.refuses_reasoning_requests())
+            except Exception as e:
+                trace(f"Photos: could not ask the indexing backend about reasoning requests ({e}), keeping the thinking field")
+                self._refuses_reasoning = False
+            if self._refuses_reasoning:
+                info(f"Photos: {llm.name()} refuses a prompt that asks for its reasoning — indexing without the thinking field")
+        return self._refuses_reasoning
 
     def _photo_prompt(self, date_str: str, location: str, albums: str, persons: str,
                       photo_type: str) -> tuple[str, str]:

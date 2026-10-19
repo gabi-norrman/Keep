@@ -1182,7 +1182,7 @@ class Commands:
             if status["state"] == "disabled":
                 line += f'; enable: enable_integration("{status["name"]}")'
             if status["last_error"] and status["state"] in ("warning", "error", "needs_2fa", "rate_limited"):
-                line += f": {status['last_error'][:160]}"
+                line += f": {status['last_error'][:450]}"
             if status["last_check_time"]:
                 line += f" (checked {self._age(status['last_check_time'])})"
             if status["keys"]:
@@ -1441,7 +1441,7 @@ class Commands:
             line += " — " + (status.get("login_hint")
                              or "the login must be completed in the console's tab for it (the code arrives by SMS or email)")
         elif status["last_error"]:
-            line += f" — {status['last_error'][:300]}"
+            line += f" — {status['last_error'][:450]}"
         return line
 
     def cmd_remember(self, parameter_string: str):

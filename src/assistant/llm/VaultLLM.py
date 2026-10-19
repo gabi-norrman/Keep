@@ -65,6 +65,9 @@ class VaultLLM(AbstractLLM):
     def is_local(self) -> bool:
         return self.llm.is_local()
 
+    def refuses_reasoning_requests(self) -> bool:
+        return self.llm.refuses_reasoning_requests()
+
     # Explicit like refusal_fallback: the AbstractLLM defaults would win over __getattr__.
     def unavailable(self) -> str | None:
         return self.llm.unavailable()

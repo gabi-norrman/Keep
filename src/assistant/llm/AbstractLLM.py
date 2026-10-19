@@ -107,6 +107,13 @@ class AbstractLLM(ABC):
         Override in subclasses that pay for caching (e.g. ClaudeLLM)."""
         pass
 
+    def refuses_reasoning_requests(self) -> bool:
+        """True when the backend's safeguards stop a request that asks the model to write out
+        its reasoning — as a JSON field, a tag, a "think step by step" line — so that the whole
+        reply is lost (Anthropic's `reasoning_extraction` refusal). A prompt builder then leaves
+        the reasoning field out for this backend instead of losing every reply."""
+        return False
+
     def supports_native_thinking(self) -> bool:
         """Returns True if this LLM supports native thinking mode. Override in subclasses."""
         return False

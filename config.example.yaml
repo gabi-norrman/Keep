@@ -348,7 +348,10 @@ wake_word_near_misses: [mission, missions, we shall]
 #  cache_auditor:
 #    llm: OllamaLLM
 #  photo_indexing:         # indexes Apple Photos stills and videos, one call each (thousands on a backfill).
-#    llm: GeminiLLM         # Needs native video input for the videos, so Gemini is the only full backend
+#    llm: GeminiLLM         # Needs native video input for the videos, so Gemini is the only full backend.
+#                           # A Claude model indexes the stills only (Haiku 5.5 is the cheapest of all); Sonnet,
+#                           # Opus and Fable refuse to be asked for their reasoning, so the indexer drops the
+#                           # prompt's "thinking" field for them by itself.
 #    # model: gemini-3.8-flash
 #  code_quality:            # model for the nightly Claude Code CLI runs (CodeQualityMaintainer)
 #    model: claude-fable-5-1

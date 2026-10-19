@@ -149,6 +149,12 @@ class ClaudeLLM(AbstractLLM):
         — without it it would not reason at all."""
         return self.model.startswith(self.ALWAYS_THINKING_MODEL_PREFIXES)
 
+    def refuses_reasoning_requests(self) -> bool:
+        """The same families: Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a prompt that asks for a
+        "thinking" field with `stop_reason: refusal`, category `reasoning_extraction`, and no text
+        at all (measured 2026-10-19 on the photo-indexing prompt); Haiku 5.5 answers it."""
+        return self.model.startswith(self.ALWAYS_THINKING_MODEL_PREFIXES)
+
     def prefers_prepended_user_query(self) -> bool:
         """Prepending the user query to the top of the system prompt puts per-request
         content at byte 0 of the cached prefix, defeating Anthropic prompt caching
