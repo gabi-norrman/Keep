@@ -388,8 +388,9 @@ change), medium (a few places, or new tests), large (a design change, or a risk 
 Change nothing: no edits, no branch, no PR.
 
 IMPORTANT: The user will only see your final message. Make it the table alone, one row per pin, numbered from 1, with
-the columns #, Test (file::name), Reason (the marker's reason in one line), Fix complexity. The maintainer answers it
-with "fix 1, 3; wontfix the rest", so the numbers matter. When there is no pin, say so in one line.
+the columns #, Test (the test function's name alone — no file, no class, no backticks: the path makes the table
+too wide to read), Reason (the marker's reason in one line), Fix complexity. The maintainer answers it with
+"fix 1, 3; wontfix the rest", so the numbers matter. When there is no pin, say so in one line.
 """
 
 SELF_IMPROVEMENT_PROMPT = """
