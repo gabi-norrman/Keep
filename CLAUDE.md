@@ -124,7 +124,9 @@ exercises the same code path. Use the standing cast and nothing from the real ho
   `*@example.com`, plate `KEP 47L`, personal id `19850203-1234`, hosts `*.local` / `*.example`, IPs from
   `192.0.2.0/24` or `100.64.0.0/10`, the house in `tests/unit/data/home/` (synthetic — regenerate its
   `*rendered.md` with the real renderer, never by hand)
-- a test must pass with `FLOXY_CONFIG=config.example.yaml`: patch the config values it depends on
+- a test must pass with any `config.yaml`, the example one included (`FLOXY_CONFIG=config.example.yaml`): the
+  conftest's `CAST_CONFIG` pins `owner_name`, the wake word keys and `ai_message_footer` to the cast's values;
+  patch any other config value a test depends on
 
 **Tests not to write.** A test must assert something the author had to *derive*, never something copied from the
 line it checks. Do not write a test that:

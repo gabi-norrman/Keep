@@ -67,6 +67,31 @@ import openai  # noqa: F401
 import common.logging
 common.logging.disable_file_logging = True
 
+# The suite runs against whatever config.yaml the machine has, so the keys the tests' literals
+# depend on are pinned to the cast's values here: the owner is Marcus ("Marcus to Alice: …"),
+# the wake word is Michelle with the example config's aliases and near-misses (the transcript
+# gate's constants read these once, at import, so the pin must be in place before collection
+# imports them — not in a fixture), and the AI footer is on. Pinned under `get` of the shared
+# instance only: a test patching `config.get` still wins, and the ConfigManager tests' own
+# instances still read their files.
+import common.ConfigManager as _config_module
+
+CAST_CONFIG = {
+    "owner_name": "Marcus",
+    "wake_word": "Michelle",
+    "wake_word_aliases": ["michel"],
+    "wake_word_near_misses": ["mission", "missions", "we shall"],
+    "ai_message_footer": True,
+}
+_real_config_get = _config_module.config.get
+
+
+def _cast_config_get(key, *args, **kwargs):
+    return CAST_CONFIG[key] if key in CAST_CONFIG else _real_config_get(key, *args, **kwargs)
+
+
+_config_module.config.get = _cast_config_get
+
 # Cheap vault keys: every test vault derived a real scrypt key (~90 ms), about a third of
 # the suite's time. Sixteen rounds derive in microseconds and no test cares about strength.
 import common.vault.Vault
@@ -109,22 +134,6 @@ def first_run_files_stay_out_of_the_tree(tmp_path):
     from assistant import FirstRun
     with patch.object(FirstRun, "STATE_FILE", tmp_path / "first_run.json"), \
             patch.object(FirstRun, "SETUP_ACTIVITY_FILE", tmp_path / "setup_activity.json"):
-        yield
-
-
-@pytest.fixture(autouse=True)
-def owner_is_the_cast_owner():
-    """The developer's config.yaml decides `owner_name`; tests asserting on rendered messages
-    ("Marcus to Alice: …") must not depend on it. Pinned under `get` on the shared instance only:
-    a test patching `config.get` still wins, and the ConfigManager tests' own instances still
-    read their files."""
-    import common.ConfigManager as config_module
-    real_get = config_module.config.get
-
-    def get(key, *args, **kwargs):
-        return "Marcus" if key == "owner_name" else real_get(key, *args, **kwargs)
-
-    with patch.object(config_module.config, "get", get):
         yield
 
 
