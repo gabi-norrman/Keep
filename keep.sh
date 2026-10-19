@@ -25,10 +25,31 @@ if [ ! -t 0 ]; then
     exec open -a Terminal "$script"
 fi
 
-# A listening server, or one still booting: the console reconnects by itself until it is up.
-if lsof -iTCP:8888 -sTCP:LISTEN >/dev/null 2>&1 || pgrep -f 'floxy_ai_server\.py$' >/dev/null 2>&1; then
-    rlog "server running — attaching the console"
+listening() { lsof -iTCP:8888 -sTCP:LISTEN >/dev/null 2>&1; }
+process()   { pgrep -f 'floxy_ai_server\.py$' >/dev/null 2>&1; }
+
+if listening; then
+    rlog "server listening — attaching the console"
     exec python3 tui.py localhost
+fi
+# A process without a listener is booting (models load for ~25s) or shutting down (stop.sh,
+# a restart): wait for it to listen or to go away, and only then attach or start.
+if process; then
+    rlog "server process without a listener — waiting for it to come up or go away"
+    echo "A Keep server is starting or stopping — waiting for it..."
+    for i in $(seq 1 120); do
+        sleep 1
+        if listening; then
+            rlog "server up after ${i}s — attaching the console"
+            exec python3 tui.py localhost
+        fi
+        process || break
+    done
+    if process; then
+        rlog "server process still not listening after 120s — attaching the console anyway"
+        exec python3 tui.py localhost
+    fi
+    rlog "server process went away after ${i}s"
 fi
 rlog "no server running — starting it"
 exec ./start.sh

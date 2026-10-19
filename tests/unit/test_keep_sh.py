@@ -25,6 +25,7 @@ class Harness:
         self.calls = tmp_path / 'calls.log'
         self._stub('start.sh', 'echo "start.sh ran"', where=self.root)
         self._stub('python3', f'echo "python3 $*" >> {self.calls}')
+        self._stub('sleep', f'echo "sleep $*" >> {self.calls}')
         self.installed([])
         self.server(listening=False, process=False)
 
@@ -42,6 +43,21 @@ class Harness:
     def server(self, listening, process):
         self._stub('lsof', f'exit {0 if listening else 1}')
         self._stub('pgrep', f'exit {0 if process else 1}')
+
+    def _counted(self, name, true_when):
+        """A stub whose verdict follows its call count: `true_when` is a bash test on $n."""
+        counter = self.bin / f'{name}.count'
+        self._stub(name, f'n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {counter}; [ {true_when} ]')
+
+    def booting_server(self, listens_at_call):
+        """A process from the start; the port listens from the given lsof call on."""
+        self._stub('pgrep', 'exit 0')
+        self._counted('lsof', f'$n -ge {listens_at_call}')
+
+    def dying_server(self, gone_at_call):
+        """Never listening; the process is gone from the given pgrep call on."""
+        self._stub('lsof', 'exit 1')
+        self._counted('pgrep', f'$n -lt {gone_at_call}')
 
     def run(self, with_tty):
         env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}")
@@ -97,10 +113,23 @@ class TestInsideTheTerminal:
         assert harness.recorded() == ['python3 tui.py localhost']
         assert 'start.sh ran' not in result.stdout
 
-    def test_a_booting_server_gets_the_console_too(self, harness):
+    def test_a_booting_server_is_waited_for_and_then_gets_the_console(self, harness):
+        harness.booting_server(listens_at_call=4)
+        result = harness.run(with_tty=True)
+        assert 'waiting' in result.stdout
+        assert harness.recorded() == ['sleep 1'] * 3 + ['python3 tui.py localhost']
+
+    def test_a_server_shutting_down_is_waited_out_and_a_new_one_started(self, harness):
+        harness.dying_server(gone_at_call=3)
+        result = harness.run(with_tty=True)
+        assert 'start.sh ran' in result.stdout
+        assert 'python3 tui.py localhost' not in harness.recorded()
+        assert harness.recorded().count('sleep 1') == 2
+
+    def test_a_process_that_never_listens_gets_the_console_in_the_end(self, harness):
         harness.server(listening=False, process=True)
         harness.run(with_tty=True)
-        assert harness.recorded() == ['python3 tui.py localhost']
+        assert harness.recorded() == ['sleep 1'] * 120 + ['python3 tui.py localhost']
 
     def test_no_server_starts_one(self, harness):
         result = harness.run(with_tty=True)
