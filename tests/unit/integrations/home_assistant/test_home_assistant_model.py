@@ -1,13 +1,15 @@
 """HomeAssistantModel: states and registries → the four lists, the values, HA's exposure rule,
 areas through devices, the name index and the feed wording (plans/HOME_ASSISTANT_PLAN.md)."""
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from assistant.integration.Feed import FeedEntry
 from integrations.home_assistant.HomeAssistantModel import (
-    NameIndex, Registries, Unresolved, area_of, build, feed_entry, format_value, should_expose)
+    NameIndex, Registries, Unresolved, area_of, build, feed_entry, format_value, outage_row, recovery_row,
+    should_expose, tracks_availability)
 from assistant.integration.HomeAutomation import render
 
 DATA = Path(__file__).parents[2] / "data" / "home" / "ha"
@@ -295,6 +297,42 @@ class TestFeedEntry:
     ])
     def test_silence(self, index, old, new):
         assert feed_entry(old, new, index) is None
+
+    def test_a_recovery_from_unavailable_is_never_worded_as_an_action(self, index):
+        """A hub that drops for half a minute takes every cover behind it through unavailable;
+        the covers never moved, so "closed" would be a lie — the integration words a recovery
+        against the pre-outage state instead."""
+        assert feed_entry(state("cover.blinds", "unavailable"), state("cover.blinds", "closed"), index) is None
+        assert feed_entry(state("light.hall", "unavailable"), state("light.hall", "on"), index) is None
+
+    def test_a_button_or_a_diagnostic_entity_going_unavailable_is_silent(self, index):
+        assert feed_entry(state("button.reboot", "unknown"), state("button.reboot", "unavailable"), NameIndex()) is None
+        assert feed_entry(state("input_button.ring", "2026-09-15T09:00:00+00:00"),
+                          state("input_button.ring", "unavailable"), NameIndex()) is None
+        diagnostic = {"entity_category": "diagnostic"}
+        assert feed_entry(state("light.hall", "on"), state("light.hall", "unavailable"), index, entry=diagnostic) is None
+        assert feed_entry(state("light.hall", "on"), state("light.hall", "unavailable"), index, entry={}) is not None
+
+    def test_tracks_availability_follows_the_feed_rules(self, index):
+        assert tracks_availability("light.hall", index, {}) is True
+        assert tracks_availability("light.hall", index, {"entity_category": "config"}) is False
+        assert tracks_availability("button.reboot", NameIndex(), None) is False
+        assert tracks_availability("sensor.kitchen_temperature", index, {}) is False, "a sensor's changes are never rows"
+        assert tracks_availability("light.bedroom", index, {}) is False, "not in the snapshot"
+
+    def test_outage_and_recovery_rows_name_the_device_the_entities_and_the_time(self):
+        since = 1789466400.0        # 2026-09-15T10:00:00+00:00
+        row = outage_row(["Hall light [Hall]", "Blinds [Sovrum]"], "Hue bridge", since, since + 400)
+        assert row.timestamp == since + 400
+        assert row.content.startswith("Hue bridge")
+        assert "Hall light [Hall]" in row.content and "Blinds [Sovrum]" in row.content
+        assert datetime.fromtimestamp(since).strftime("%H:%M") in row.content
+        loose = outage_row(["Night"], None, since, since + 400)
+        assert loose.content.startswith("Night") and "None" not in loose.content
+        back = recovery_row(["Hall light [Hall]"], "Hue bridge", since, since + 900)
+        assert back.timestamp == since + 900
+        assert "Hall light [Hall]" in back.content and back.content.startswith("Hue bridge")
+        assert back.content != row.content, "a recovery reads differently from an outage"
 
     def test_an_entity_not_yet_indexed_uses_its_friendly_name_when_no_index(self):
         entry = feed_entry(state("light.new", "off"), state("light.new", "on", friendly_name="New (lamp)"), NameIndex())

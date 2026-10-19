@@ -23,4 +23,4 @@ class AsekoSectionGenerator(PromptSectionGenerator):
         if api is None:
             info("Pool: Aseko Pool is being rebuilt — section empty until it is back")
             return ""
-        return render_units(api.fetch_units())
+        return render_units(api.fetch_units(), api.held)

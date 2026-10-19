@@ -3,7 +3,10 @@
 a state reads as a value (never with parens — `to_display` would turn them into a room), which
 entities the prompt sees (the ones exposed to Assist, HA's own default rule mirrored), the name
 index that turns the names the LLM hands back into entity ids, and the wording of a state
-change as a feed row."""
+change as a feed row. Availability is not an event here: `feed_entry` never words a recovery,
+and the integration holds an outage for UNAVAILABLE_HOLD_S before `outage_row` names it, since
+a hub that drops for half a minute took every entity behind it through unavailable and "back"
+(three covers "closed" without moving, 2026-10-19)."""
 import difflib
 import re
 from dataclasses import dataclass, field
@@ -42,6 +45,12 @@ BINARY_VERBS = {  # device class → (went on, went off) for the feed
     "occupancy": ("detected occupancy", "cleared"), "presence": ("detected presence", "cleared"),
     "lock": ("unlocked", "locked"),
 }
+# An entity unavailable for less than this is a hiccup: the snapshot keeps showing its last
+# available state and the feed says nothing. Past it the outage is a fact worth one row.
+UNAVAILABLE_HOLD_S = 300
+# Domains whose availability is noise: a button has no state to lose, a diagnostic entity
+# (entity_category set) is a hub's own vitals.
+AVAILABILITY_SILENT_DOMAINS = ("button", "input_button")
 _SPACES = re.compile(r"\s+")
 _PAREN_SUFFIX = re.compile(r"^(.*?)\s*\(([^()]*)\)\s*$")
 _NUMBER = re.compile(r"^-?\d+(\.\d+)?$")
@@ -320,17 +329,45 @@ def _disambiguate(chosen: list[tuple[str, str, Optional[dict], dict]]) -> list[s
     return names
 
 
-def feed_entry(old: Optional[dict], new: Optional[dict], index: NameIndex, user: Optional[str] = None) -> Optional[FeedEntry]:
+def is_unavailable(state: Optional[dict]) -> bool:
+    return state is not None and str(state.get("state")) == "unavailable"
+
+
+def feeds_changes(entity_id: str, index: NameIndex) -> bool:
+    """Whether the dialog wants this entity's state changes at all: a listed domain that is not
+    a ticking sensor, and in the snapshot once there is one."""
+    domain = domain_of(entity_id)
+    if domain in ("sensor", "climate", "media_player", "weather") or domain not in SECTION_OF:
+        return False
+    return not index or entity_id in index
+
+
+def tracks_availability(entity_id: str, index: NameIndex, entry: Optional[dict]) -> bool:
+    """Whether an outage of the entity is worth a row once it has lasted: one the dialog follows,
+    not a button, not a diagnostic entity."""
+    if not feeds_changes(entity_id, index):
+        return False
+    if domain_of(entity_id) in AVAILABILITY_SILENT_DOMAINS:
+        return False
+    return not (entry or {}).get("entity_category")
+
+
+def feed_entry(old: Optional[dict], new: Optional[dict], index: NameIndex, user: Optional[str] = None,
+               entry: Optional[dict] = None) -> Optional[FeedEntry]:
     """A state change as a history row, or None for one the dialog does not want: attribute-only
     changes, numeric sensors ticking, entities outside the snapshot's lists, an entity
-    appearing or vanishing."""
+    appearing or vanishing, a recovery from `unavailable` (the integration words that against
+    the pre-outage state), and `unavailable` itself on a button or a diagnostic entity
+    (`entry`, the registry entry, when the caller has it)."""
     if old is None or new is None:
         return None
     entity_id = new["entity_id"]
     domain = domain_of(entity_id)
-    if domain in ("sensor", "climate", "media_player", "weather") or domain not in SECTION_OF:
+    if not feeds_changes(entity_id, index):
         return None
-    if index and entity_id not in index:
+    if is_unavailable(old):
+        return None
+    if is_unavailable(new) and not tracks_availability(entity_id, index, entry):
         return None
     verb = _verb(domain, old, new)
     if verb is None:
@@ -343,7 +380,7 @@ def feed_entry(old: Optional[dict], new: Optional[dict], index: NameIndex, user:
     content = f"{display} {verb}"
     if user:
         content += f" by {user}"
-    return FeedEntry(_timestamp(new), content)
+    return FeedEntry(state_time(new), content)
 
 
 def _verb(domain: str, old: dict, new: dict) -> Optional[str]:
@@ -395,7 +432,26 @@ def _verb(domain: str, old: dict, new: dict) -> Optional[str]:
     return f"changed to {after}"
 
 
-def _timestamp(state: dict) -> float:
+def _clock(ts: float) -> str:
+    return datetime.fromtimestamp(ts).strftime("%H:%M")
+
+
+def outage_row(names: list[str], device: Optional[str], since: float, at: float) -> FeedEntry:
+    """One row for every entity of `device` (a hub or device name, None for loose entities)
+    unavailable since `since` and still so at `at`, when the hold has run out."""
+    prefix = f"{device}: " if device else ""
+    return FeedEntry(at, f"{prefix}{', '.join(names)} unavailable since {_clock(since)}")
+
+
+def recovery_row(names: list[str], device: Optional[str], since: Optional[float], at: float) -> FeedEntry:
+    """One row for the entities of `device` that are available again after an outage the feed
+    reported (`since` when known)."""
+    prefix = f"{device}: " if device else ""
+    tail = f" after being unavailable since {_clock(since)}" if since else ""
+    return FeedEntry(at, f"{prefix}{', '.join(names)} available again{tail}")
+
+
+def state_time(state: dict) -> float:
     """When the change the row describes happened. last_updated moves with every change,
     last_changed only with a state change — an automation that fires while staying "on"
     moves last_triggered and last_updated alone, and stamping its rows with last_changed

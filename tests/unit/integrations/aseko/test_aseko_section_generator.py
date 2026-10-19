@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from integrations.aseko.AsekoIntegration import AsekoIntegration
+from integrations.aseko.AsekoIntegration import AsekoIntegration, PoolHeld
 from integrations.aseko.AsekoSectionGenerator import AsekoSectionGenerator
 
 UNIT = {"name": "Garden pool", "serialNumber": "AQ-0001", "online": True,
@@ -22,6 +22,7 @@ class TestFetchContent:
     def test_with_the_integration_the_section_is_the_rendered_units(self):
         api = Mock(spec=AsekoIntegration)
         api.fetch_units.return_value = [UNIT]
+        api.held = PoolHeld()
         section = AsekoSectionGenerator(None)
         with patch.object(AsekoIntegration, "peek_instance", return_value=api):
             text = section._fetch_content()

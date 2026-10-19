@@ -16,6 +16,7 @@ from typing import List, Optional
 import requests
 
 from assistant.integration.Integration import Integration
+from assistant.prompt.Held import HeldStates, HeldValues
 from common.ConfigManager import config
 from common.logging import info, trace
 
@@ -38,6 +39,19 @@ STATES = (("1A01", "Compressor"), ("1A02", "Additional heat step 1"), ("1A03", "
 OTHERS = (("3108", "Compressor speed"), ("2105", "Degree minutes"), ("3104", "Additional heat"),
           ("9104", "Additional heat"), ("6F63", "Compressor hours heating"), ("6F64", "Compressor hours hot water"))
 ALARMS = ("2A20", "1A20")       # the H1 manual's alarm number, the newer firmware's alarm flag
+# The prompt section is a summary: the temperatures a person asks about and the states that
+# matter (SUMMARY_*), rounded to whole degrees and held, the running states shown once they
+# have lasted ten minutes. The full register set rendered to the decimal made ~61 notes an
+# idle hour (2026-10-19); it is the `heat_pump_readings` command now.
+SUMMARY_TEMPERATURES = (("0007", "Outdoor"), ("0008", "Indoor"), ("0021", "Indoor 2"), (ROOM_TARGET, "Room target"),
+                        ("0009", "Hot water"), (HOT_WATER_SETPOINT, "Hot water setpoint"), ("0011", "Pool"))
+SUMMARY_STATES = (("1A01", "Compressor", "running", "resting"), ("1A02", "Additional heat step 1", "on", "off"),
+                  ("1A03", "Additional heat step 2", "on", "off"))
+TEMPERATURE_STEP_C = 1
+STATE_HOLD_S = 600
+# A reading outside its type's plausible range is a sentinel the gateway sends for a register it
+# cannot read (besides the -32768 `decode` drops); by type digit, inclusive.
+PLAUSIBLE = {"0": (-60.0, 150.0), "3": (0.0, 100.0)}
 
 
 class HusdataError(Exception):
@@ -66,7 +80,12 @@ def decode(idx: str, raw: int) -> Register | None:
     value = raw - 65536 if raw > 32767 else raw
     if value == -32768:
         return None
-    return Register(idx, idx, value / 10 if tenths else value, unit)
+    value = value / 10 if tenths else value
+    low, high = PLAUSIBLE.get(idx[0].upper(), (None, None))
+    if low is not None and not low <= value <= high:
+        trace(f"Husdata: register {idx} reads {value}{unit}, outside the plausible {low:g}–{high:g}{unit} — a sentinel, dropped")
+        return None
+    return Register(idx, idx, value, unit)
 
 
 def to_wire(celsius: float) -> int:
@@ -93,6 +112,8 @@ class HusdataIntegration(Integration):
     def __init__(self):
         super().__init__()
         self._registers: dict[str, int] = {}
+        self._held_temperatures = HeldValues(TEMPERATURE_STEP_C)
+        self._held_states = HeldStates(STATE_HOLD_S)
 
     @property
     def base_url(self) -> str:
@@ -144,9 +165,30 @@ class HusdataIntegration(Integration):
         register = decode(idx, raw)
         return Register(idx, name, register.value, register.unit) if register else None
 
-    def snapshot(self) -> str:
-        """The prompt section's body, from a fresh read: the temperatures, the running state,
-        the counters and the alarm the pump reports, one group per line."""
+    def summary(self) -> str:
+        """The prompt section's body, from a fresh read: the summary temperatures to the degree,
+        the compressor and additional heat once their state has lasted, and the alarm."""
+        self.refresh()
+        temperatures = []
+        for idx, name in SUMMARY_TEMPERATURES:
+            reading = self.reading(idx, name)
+            shown = self._held_temperatures.show(idx, reading.value if reading else None)
+            if shown is not None:
+                temperatures.append(f"{name} {shown} °C")
+        states = []
+        for idx, name, when_on, when_off in SUMMARY_STATES:
+            reading = self.reading(idx, name)
+            shown = self._held_states.show(idx, bool(reading.value) if reading else None)
+            if shown is not None:
+                states.append(f"{name} {when_on if shown else when_off}")
+        lines = [", ".join(group) for group in (temperatures, states) if group]
+        lines.append(self._alarm_line())
+        trace(f"Husdata: summary of {len(temperatures)} temperatures and {len(states)} states")
+        return "\n".join(lines)
+
+    def readings(self) -> str:
+        """Every register the pump reports, unrounded, one group per line — the
+        `heat_pump_readings` command; `summary()` is the prompt's."""
         self.refresh()
         temperatures = [str(r) for idx, name in TEMPERATURES if (r := self.reading(idx, name))]
         states = [str(r) for idx, name in STATES if (r := self.reading(idx, name))]

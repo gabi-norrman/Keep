@@ -190,3 +190,52 @@ class TestRenderUnit:
         assert "No pool unit" in render_units([])
         two = render_units([UNIT, dict(UNIT, name="Spa")])
         assert "\n\nSpa: online" in two
+
+
+@pytest.mark.unit
+class TestHeldReadings:
+    """The probes' wobble must not rewrite the pool's lines: measured values are rounded and held."""
+
+    @staticmethod
+    def _held():
+        from integrations.aseko.AsekoIntegration import PoolHeld
+        return PoolHeld()
+
+    def test_two_tenths_of_a_degree_render_the_same_water_line(self):
+        held = self._held()
+        first = dict(readings(dict(UNIT["statusValues"], waterTemperature=27.4), held, "AQ-0001"))["Water"]
+        again = dict(readings(dict(UNIT["statusValues"], waterTemperature=27.6), held, "AQ-0001"))["Water"]
+        assert first == again and first.startswith("27°C")
+
+    def test_redox_is_held_to_ten_millivolts_and_moves_at_a_full_step(self):
+        held = self._held()
+        first = dict(readings(dict(UNIT["statusValues"], redox=712), held, "AQ-0001"))["Redox"]
+        assert dict(readings(dict(UNIT["statusValues"], redox=718), held, "AQ-0001"))["Redox"] == first
+        moved = dict(readings(dict(UNIT["statusValues"], redox=727), held, "AQ-0001"))["Redox"]
+        assert moved != first and moved.startswith("730 mV")
+
+    def test_the_targets_stay_exact(self):
+        got = dict(readings(UNIT["statusValues"], self._held(), "AQ-0001"))
+        assert "(target 28°C)" in got["Water"] and "(target 7.2)" in got["pH"] and "(target 0.6 mg/l)" in got["Free chlorine"]
+
+    def test_ph_and_chlorine_are_held_to_a_tenth(self):
+        got = dict(readings(UNIT["statusValues"], self._held(), "AQ-0001"))
+        assert got["pH"].startswith("7.2 ") and got["Free chlorine"].startswith("0.6 mg/l")
+
+    def test_a_level_alarm_shows_at_once_whatever_is_held(self):
+        held = self._held()
+        readings({"waterLevelState": "OK", "waterLevel": 12}, held, "AQ-0001")
+        got = dict(readings({"waterLevelState": "LOW", "waterLevel": 3}, held, "AQ-0001"))
+        assert "alarm" in got["Water level"]
+
+    def test_two_units_are_held_apart(self):
+        held = self._held()
+        a = dict(readings({"waterTemperature": 27.4}, held, "AQ-0001"))["Water"]
+        b = dict(readings({"waterTemperature": 29.6}, held, "AQ-0002"))["Water"]
+        assert a != b
+
+    def test_the_integration_owns_the_store_and_the_unit_renders_through_it(self):
+        api, _ = _api({})
+        text = render_units([dict(UNIT, statusValues={"waterTemperature": 27.4})], api.held)
+        assert "Water: 27°C" in text
+        assert render_units([dict(UNIT, statusValues={"waterTemperature": 27.6})], api.held) == text

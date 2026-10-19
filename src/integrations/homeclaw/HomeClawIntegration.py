@@ -26,7 +26,7 @@ from common.logging import info, trace
 from .HomeClawAutomations import is_hidden, render_detail, render_summary
 from .HomeClawClient import HomeClawClient, HomeClawError, HomeClawUnavailable
 from .HomeClawModel import (
-    COVER, DEFAULT_BRIDGE_FILTERS, GARAGE, IRRIGATION, SWITCHED, THERMOSTAT, Index, Target, Unresolved,
+    COVER, DEFAULT_BRIDGE_FILTERS, GARAGE, IRRIGATION, SWITCHED, THERMOSTAT, Held, Index, Target, Unresolved,
     build_targets, event_entry, excluded, real_scenes, render, zones_of)
 
 EVENT_LIMIT = 500           # events per read; the app answers newest first, so a full page means older ones are cut
@@ -76,6 +76,7 @@ class HomeClawIntegration(Integration):
         self._index: Optional[Index] = None
         self._scenes: list[dict] = []
         self._by_accessory: dict[str, list[Target]] = {}
+        self.held = Held()      # the section's rounded-and-held readings, across refreshes
         self._left_out: set[str] = set()        # accessory UUIDs excluded at the last refresh
 
     def _on_reset(self):
@@ -154,7 +155,7 @@ class HomeClawIntegration(Integration):
         index = self.refresh()
         with self._lock:
             scenes = list(self._scenes)
-        body = render(index, scenes)
+        body = render(index, scenes, self.held)
         try:
             summary = render_summary(self.automations())
         except HomeClawUnavailable:

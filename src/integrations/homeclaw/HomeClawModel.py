@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 from assistant.integration.Feed import FeedEntry
+from assistant.prompt.Held import HeldValues
 
 UNREAD = "--"
 VALVE_SERVICE = "000000D0-0000-1000-8000-0026BB765291"    # HomeKit's Valve service: one per zone
@@ -26,6 +27,13 @@ SKIPPED = {"bridge", "programmable_switch"}         # a bridge is no device; a b
 KIND_ORDER = (SENSOR, THERMOSTAT, COVER, GARAGE, IRRIGATION, LIGHT)
 DEFAULT_BRIDGE_FILTERS = ("Plejd", "Philips hue", "Signify")
 REF_LENGTH = 8
+# A sensor reports to the decimal and every changed line costs a note in the history window, so the
+# prompt shows readings rounded to a step and held until the fresh one is a full step away (Held).
+# A battery is only worth a line when it is getting low.
+TEMPERATURE_STEP_C = 0.5
+HUMIDITY_STEP_PCT = 5
+BATTERY_STEP_PCT = 10
+BATTERY_SHOWN_BELOW_PCT = 20
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 _HEX = re.compile(r"^[0-9a-f-]{6,36}$", re.I)
 _ROOM_SUFFIX = re.compile(r"^(.*?)\s*[\[(]([^\])]+)[\])]\s*$")
@@ -75,6 +83,15 @@ class Target:
     def label(self) -> str:
         name = f"{self.name}, zone {self.zone}" if self.zone else self.name
         return f"{name} [{self.room}]" if self.room else name
+
+
+@dataclass
+class Held:
+    """The prompt's rounded-and-held readings, keyed by the target's ref; HomeClawIntegration owns one
+    and hands it to `render`. Without one (the commands, the tests) a value is shown as read."""
+    temperature: HeldValues = field(default_factory=lambda: HeldValues(TEMPERATURE_STEP_C))
+    humidity: HeldValues = field(default_factory=lambda: HeldValues(HUMIDITY_STEP_PCT))
+    battery: HeldValues = field(default_factory=lambda: HeldValues(BATTERY_STEP_PCT))
 
 
 def excluded(accessory: dict, bridge_filters: Iterable[str], include: Iterable[str], exclude: Iterable[str]) -> bool:
@@ -210,29 +227,43 @@ def _number(value) -> Optional[float]:
         return None
 
 
-def _degrees(value) -> str:
-    number = _number(value)
+def _degrees(value, store: Optional[HeldValues] = None, ref: Optional[str] = None) -> str:
+    number = _held(_number(value), store, ref)
     return f"{number:.1f} °C" if number is not None else str(value)
 
 
-def _percent(value) -> str:
-    number = _number(value)
+def _percent(value, store: Optional[HeldValues] = None, ref: Optional[str] = None) -> str:
+    number = _held(_number(value), store, ref)
     return f"{number:.0f} %" if number is not None else str(value)
+
+
+def _held(number: Optional[float], store: Optional[HeldValues], ref: Optional[str]) -> Optional[float]:
+    return store.show(ref, number) if store is not None and number is not None else number
+
+
+def _battery(value, held: Optional[Held], ref: Optional[str]) -> str:
+    """The battery part of a line, or "" while the battery is fine: only a low one is worth a note.
+    The reading decides whether it shows, the held value what it says."""
+    number = _number(value)
+    if number is None or number >= BATTERY_SHOWN_BELOW_PCT:
+        return ""
+    return f"battery {_held(number, held.battery if held else None, ref):.0f} %"
 
 
 def _on(value) -> bool:
     return str(value).strip().lower() in ("true", "1", "on", "yes")
 
 
-def state_text(t: Target) -> str:
-    """What the prompt line says about the target's state; unread values are left out."""
+def state_text(t: Target, held: Optional[Held] = None, ref: Optional[str] = None) -> str:
+    """What the prompt line says about the target's state; unread values are left out. With `held`,
+    the readings are rounded and held under `ref` (the target's ref in the index); setpoints are exact."""
     if not t.reachable:
         return "unreachable"
     s = {k: v for k, v in t.state.items() if is_read(v)}
     if t.kind == SENSOR or t.kind == THERMOSTAT:
         parts = []
         if "current_temperature" in s:
-            parts.append(_degrees(s["current_temperature"]))
+            parts.append(_degrees(s["current_temperature"], held.temperature if held else None, ref))
         if "target_temperature" in s:
             parts.append(f"target {_degrees(s['target_temperature'])}")
         if "target_heating_cooling" in s:
@@ -241,15 +272,16 @@ def state_text(t: Target) -> str:
             parts.append(f"now {s['current_heating_cooling']}")
         if "current_humidity" in s:
             moisture = "gardena" in t.manufacturer.lower()
-            parts.append(f"{'soil moisture' if moisture else 'humidity'} {_percent(s['current_humidity'])}")
+            parts.append(f"{'soil moisture' if moisture else 'humidity'} "
+                         f"{_percent(s['current_humidity'], held.humidity if held else None, ref)}")
         if "occupancy_detected" in s or "motion_detected" in s:
             parts.append("motion" if _on(s.get("occupancy_detected", s.get("motion_detected"))) else "no motion")
         for key, value in s.items():
             if key not in ("current_temperature", "target_temperature", "target_heating_cooling", "current_heating_cooling",
                            "current_humidity", "occupancy_detected", "motion_detected", "battery_level", "temperature_units"):
                 parts.append(f"{key.replace('_', ' ')} {value}")
-        if "battery_level" in s:
-            parts.append(f"battery {_percent(s['battery_level'])}")
+        if battery := _battery(s.get("battery_level"), held, ref):
+            parts.append(battery)
         return ", ".join(parts) or "no reading"
     if t.kind == COVER:
         current, target = _number(s.get("current_position")), _number(s.get("target_position"))
@@ -265,8 +297,8 @@ def state_text(t: Target) -> str:
             (", OBSTRUCTED" if _on(s.get("obstruction_detected")) else "")
     if t.kind == IRRIGATION:
         parts = ["watering" if _on(s.get("active")) else "off"]
-        if "battery_level" in s:
-            parts.append(f"battery {_percent(s['battery_level'])}")
+        if battery := _battery(s.get("battery_level"), held, ref):
+            parts.append(battery)
         return ", ".join(parts)
     if t.kind in SWITCHED:
         if "power" not in s:
@@ -277,9 +309,9 @@ def state_text(t: Target) -> str:
     return ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in s.items()) or "no reading"
 
 
-def render(index: Index, scenes: list[dict]) -> str:
+def render(index: Index, scenes: list[dict], held: Optional[Held] = None) -> str:
     """The prompt section's body: one `## Room` block per room, a line per target ending in
-    its ref, then the scenes by name."""
+    its ref, then the scenes by name. `held` rounds and holds the readings (see Held)."""
     rooms: dict[str, list[Target]] = {}
     for t in index.targets:
         rooms.setdefault(t.room or "No room", []).append(t)
@@ -289,7 +321,8 @@ def render(index: Index, scenes: list[dict]) -> str:
         lines = [f"## {room}"]
         for t in sorted(rooms[room], key=lambda t: (order.get(t.kind, len(order)), t.name.lower(), t.zone or "", t.key)):
             name = f"{t.name}, zone {t.zone}" if t.zone else t.name
-            lines.append(f"- {name} ({t.kind.replace('_', ' ')}): {state_text(t)} [{index.ref(t)}]")
+            ref = index.ref(t)
+            lines.append(f"- {name} ({t.kind.replace('_', ' ')}): {state_text(t, held, ref)} [{ref}]")
         blocks.append("\n".join(lines))
     names = sorted({str(s.get("name")) for s in scenes}, key=str.lower)
     if names:

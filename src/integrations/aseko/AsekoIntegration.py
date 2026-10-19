@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from assistant.integration.Integration import Integration
+from assistant.prompt.Held import HeldValues
 from common.ConfigManager import config
 from common.Version import version
 from common.logging import info, trace
@@ -57,6 +58,7 @@ class AsekoIntegration(Integration):
         super().__init__()
         self._session = session or requests.Session()
         self.last_units: List[Dict[str, Any]] = []
+        self.held = PoolHeld()      # the section's rounded-and-held readings, across fetches
 
     def check_health(self) -> bool:
         return isinstance(self._get("/paired-units", params={"limit": PAGE_LIMIT}).get("items"), list)
@@ -111,9 +113,30 @@ def _on_off(running) -> str:
     return "running" if running else "off"
 
 
-def readings(values: dict) -> List[Reading]:
+# The probes report to the hundredth and every changed line costs a note in the history window, so
+# the prompt shows the measured values rounded to a step and held until the fresh one is a full step
+# away (Held); the targets are setpoints and stay exact.
+STEPS = {"waterTemperature": 1, "airTemperature": 1, "redox": 10, "ph": 0.1, "clFree": 0.1, "filterPressure": 0.1}
+
+
+class PoolHeld:
+    """The held readings of every unit, one store per measured field, keyed by the unit; the
+    integration owns one and the section hands it to `render_units`."""
+
+    def __init__(self):
+        self._stores = {name: HeldValues(step) for name, step in STEPS.items()}
+
+    def show(self, key, name: str, value):
+        store = self._stores.get(name)
+        if store is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+            return value
+        return store.show((key, name), value)
+
+
+def readings(values: dict, held: Optional[PoolHeld] = None, key=None) -> List[Reading]:
     """The unit's status values as (label, value) pairs in a fixed order, only the ones the
-    unit reports: a sensor it lacks is absent, one with nothing to say is null, both are skipped."""
+    unit reports: a sensor it lacks is absent, one with nothing to say is null, both are skipped.
+    With `held`, the measured values are rounded and held under `key` (the unit)."""
     v = {k: val for k, val in (values or {}).items() if val is not None}
     out: List[Reading] = []
 
@@ -121,17 +144,20 @@ def readings(values: dict) -> List[Reading]:
         if text:
             out.append((label, text))
 
+    def measured(name: str):
+        return held.show(key, name, v[name]) if held is not None else v[name]
+
     if "waterTemperature" in v:
-        put("Water", _with_target(v["waterTemperature"], v.get("waterTemperatureRequired"), "°C"))
+        put("Water", _with_target(measured("waterTemperature"), v.get("waterTemperatureRequired"), "°C"))
     if "airTemperature" in v:
-        put("Air", f"{number(v['airTemperature'])}°C")
+        put("Air", f"{number(measured('airTemperature'))}°C")
     if "ph" in v:
-        put("pH", _with_target(v["ph"], v.get("phRequired"), ""))
+        put("pH", _with_target(measured("ph"), v.get("phRequired"), ""))
     if "redox" in v:
-        put("Redox", _with_target(v["redox"], v.get("redoxRequired"), " mV"))
+        put("Redox", _with_target(measured("redox"), v.get("redoxRequired"), " mV"))
     if "clFree" in v:
         unit = v.get("clFreeRequiredUnit") or "mg/l"
-        put("Free chlorine", _with_target(v["clFree"], v.get("clFreeRequired"), f" {unit}"))
+        put("Free chlorine", _with_target(measured("clFree"), v.get("clFreeRequired"), f" {unit}"))
     if "clBounded" in v:
         put("Bound chlorine", f"{number(v['clBounded'])} mg/l")
     if "salinity" in v:
@@ -146,7 +172,7 @@ def readings(values: dict) -> List[Reading]:
     if "filtrationRunning" in v:
         put("Filtration", _filtration(v))
     if "filterPressure" in v or "filterFlowSpeed" in v:
-        parts = [f"{number(v['filterPressure'])} bar" if "filterPressure" in v else "",
+        parts = [f"{number(measured('filterPressure'))} bar" if "filterPressure" in v else "",
                  f"{number(v['filterFlowSpeed'])} m³/h" if "filterFlowSpeed" in v else ""]
         put("Filter", ", ".join(p for p in parts if p))
     if "heatingRunning" in v:
@@ -193,7 +219,7 @@ def warnings(unit: dict) -> List[dict]:
     return sorted(unit.get("statusMessages") or [], key=lambda m: rank.get(m.get("severity"), 3))
 
 
-def render_unit(unit: dict) -> str:
+def render_unit(unit: dict, held: Optional[PoolHeld] = None) -> str:
     """One unit for the prompt: a headline, a line per reading, then the unit's own messages."""
     name = unit_name(unit)
     values = unit.get("statusValues")
@@ -201,7 +227,7 @@ def render_unit(unit: dict) -> str:
         return f"{name}: never connected to Aseko Cloud, no readings"
     online = "online" if unit.get("online") else "OFFLINE — these readings are the last it sent"
     lines = [f"{name}: {online}"]
-    lines += [f"  {label}: {text}" for label, text in readings(values)]
+    lines += [f"  {label}: {text}" for label, text in readings(values, held, unit.get("serialNumber") or name)]
     messages = warnings(unit)
     if not messages:
         lines.append("  Unit messages: none")
@@ -213,7 +239,7 @@ def render_unit(unit: dict) -> str:
     return "\n".join(lines)
 
 
-def render_units(units: List[dict]) -> str:
+def render_units(units: List[dict], held: Optional[PoolHeld] = None) -> str:
     if not units:
         return "No pool unit is paired to the Aseko account."
-    return "\n\n".join(render_unit(unit) for unit in units)
+    return "\n\n".join(render_unit(unit, held) for unit in units)

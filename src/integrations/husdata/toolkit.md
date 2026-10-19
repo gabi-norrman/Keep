@@ -1,10 +1,14 @@
 ---
 name: husdata
-summary: "the heat pump: set the room target and the hot water setpoint"
-commands: [set_room_target, set_hot_water]
+summary: "the heat pump: every register's reading, set the room target and the hot water setpoint"
+commands: [heat_pump_readings, set_room_target, set_hot_water]
 ---
-The heat pump is read through its Husdata gateway; its current readings are in the HEAT PUMP section of your
-prompt (temperatures, what is running, the alarm). Two of its settings can be changed (use this syntax exactly):
+The heat pump is read through its Husdata gateway. The HEAT PUMP section of your prompt is a summary — outdoor,
+indoor and hot water temperatures to the degree, whether the compressor and the additional heat run, the alarm.
+The full picture is a command, and two of its settings can be changed (use this syntax exactly):
+
+`heat_pump_readings()` — every register the pump reports, unrounded: the radiator, heat carrier and brine
+circuits, hot gas and suction gas, the pumps and the switch valve, compressor speed, degree minutes, hours run
 
 `set_room_target(celsius: float)` — the room temperature the pump aims for (register "Room target")
 `set_hot_water(celsius: float)` — the hot water temperature the pump keeps (register "Hot water setpoint")

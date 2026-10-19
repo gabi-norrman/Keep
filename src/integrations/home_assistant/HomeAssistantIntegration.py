@@ -5,18 +5,23 @@ current, so `snapshot()` is a read from memory; the registries (areas, entities,
 the Assist exposure list come over the same socket and are refreshed on a registry event or
 after REGISTRY_TTL; the commands are `call_service` through a domain → service table; the
 health check is a `ping`. The event handler also queues the changes the dialog wants to know
-about (HomeAssistantModel.feed_entry) for `fetch`. REST is used for one thing the websocket
-does not offer, `GET /api/error_log`."""
+about (HomeAssistantModel.feed_entry) for `fetch`. An entity going `unavailable` is not queued
+but held (`_Outage`): the snapshot keeps its last available state and `fetch` writes one row
+per device once the hold (UNAVAILABLE_HOLD_S) has run out; a recovery inside the hold is
+silent, worded only as the real change from the pre-outage state. REST is used for one thing
+the websocket does not offer, `GET /api/error_log`."""
 import queue
 import threading
 import time
+from dataclasses import dataclass
 from typing import List, Optional
 
 import requests
 
 from .HomeAssistantClient import HAError, HomeAssistantClient, NotConnected
 from .HomeAssistantModel import (
-    ACTION_DOMAINS, ASSISTANT, LIGHT_DOMAINS, NameIndex, Registries, Unresolved, build, domain_of, feed_entry)
+    ACTION_DOMAINS, ASSISTANT, LIGHT_DOMAINS, UNAVAILABLE_HOLD_S, NameIndex, Registries, Unresolved, build, domain_of,
+    feed_entry, friendly_name, is_unavailable, outage_row, recovery_row, state_time, tracks_availability)
 from assistant.integration.HomeAutomation import HomeAutomation, HomeSnapshot
 from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
 from assistant.integration.Integration import Integration
@@ -46,6 +51,15 @@ EXECUTE = {"scene": ("scene", "turn_on"), "script": ("script", "turn_on"), "auto
            "button": ("button", "press"), "input_button": ("input_button", "press")}
 
 
+@dataclass
+class _Outage:
+    """An entity the feed follows that went unavailable: the state it had before, when, and
+    whether the hold ran out and its row went out."""
+    before: dict
+    since: float
+    released: bool = False
+
+
 class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
     """The house through Home Assistant: lights, sensors, scenes and events.
 
@@ -73,6 +87,8 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         self._dirty = True
         self._users: dict[str, str] = {}
         self._live: "queue.Queue[FeedEntry]" = queue.Queue()
+        self._outages: dict[str, _Outage] = {}          # entity_id → its current outage
+        self._recovered: list[tuple[str, float, Optional[float]]] = []   # (entity_id, when, outage since) awaiting a row
 
     def _on_reset(self):
         from assistant.integration.FeedRunner import Feeds
@@ -185,18 +201,112 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         with self._lock:
             if new is None:
                 self._states.pop(entity_id, None)
+                self._outages.pop(entity_id, None)
             else:
                 self._states[entity_id] = new
             self._dirty = True
             index = self._index
+            registry_entry = self._registries.entities.get(entity_id)
+        if old is not None and new is not None and is_unavailable(new) and not is_unavailable(old):
+            self._outage_began(entity_id, old, new, index, registry_entry)
+            return
+        if is_unavailable(old) and new is not None and not is_unavailable(new):
+            old = self._outage_ended(entity_id, new)
+            if old is None:
+                return
         user = None
         context = (new or {}).get("context") or {}
         if context.get("user_id"):
             user = self._users.get(context["user_id"])
-        entry = feed_entry(old, new, index, user)
+        entry = feed_entry(old, new, index, user, registry_entry)
         if entry is not None:
             trace(f"Home Assistant event: {entry.content}")
             self._live.put(entry)
+
+    def _outage_began(self, entity_id: str, before: dict, new: dict, index: NameIndex, registry_entry: Optional[dict]):
+        if not tracks_availability(entity_id, index, registry_entry):
+            trace(f"Home Assistant: {entity_id} unavailable — not an entity whose availability the feed follows")
+            return
+        with self._lock:
+            self._outages[entity_id] = _Outage(before=before, since=state_time(new))
+        trace(f"Home Assistant: {entity_id} unavailable — held {UNAVAILABLE_HOLD_S // 60} min before it is a row")
+
+    def _outage_ended(self, entity_id: str, new: dict) -> Optional[dict]:
+        """The state to word the recovery against: the pre-outage state of an outage still
+        inside its hold (a silent recovery, only a real change makes a row), else None — the
+        recovery of a reported outage is one "available again" row written by fetch, one that
+        began before this process watched is nothing at all."""
+        with self._lock:
+            outage = self._outages.pop(entity_id, None)
+            if outage is not None and outage.released:
+                self._recovered.append((entity_id, state_time(new), outage.since))
+        if outage is None:
+            trace(f"Home Assistant: {entity_id} available again after an outage the feed never saw begin — no row")
+            return None
+        if outage.released:
+            trace(f"Home Assistant: {entity_id} available again after a reported outage — one row at the next fetch")
+            return None
+        trace(f"Home Assistant: {entity_id} back within the hold — worded against its state before the outage")
+        return outage.before
+
+    def _release_outages(self, now: float) -> list[FeedEntry]:
+        """The rows for the outages past the hold and for the recoveries since the last fetch,
+        each grouped per device (the hub behind the entity when the registry names one)."""
+        with self._lock:
+            due = [(entity_id, outage) for entity_id, outage in self._outages.items()
+                   if not outage.released and now - outage.since >= UNAVAILABLE_HOLD_S]
+            for _, outage in due:
+                outage.released = True
+            recovered, self._recovered = self._recovered, []
+            if due:
+                self._dirty = True      # the snapshot stops holding the pre-outage states
+        rows = []
+        for device, group in self._by_device([e for e, _ in due]).items():
+            since = min(self._outages[e].since for e in group)
+            rows.append(outage_row([self._name_of(e) for e in group], device, since, now))
+            info(f"Home Assistant: {len(group)} entit{'y' if len(group) == 1 else 'ies'} of {device or 'no device'} "
+                 f"unavailable for {UNAVAILABLE_HOLD_S // 60} min — one row")
+        when = {e: at for e, at, _ in recovered}
+        began = {e: since for e, _, since in recovered}
+        for device, group in self._by_device(list(when)).items():
+            rows.append(recovery_row([self._name_of(e) for e in group], device, min(began[e] for e in group),
+                                     max(when[e] for e in group)))
+            info(f"Home Assistant: {len(group)} entit{'y' if len(group) == 1 else 'ies'} of {device or 'no device'} "
+                 f"available again — one row")
+        return rows
+
+    def _by_device(self, entity_ids: list[str]) -> dict[Optional[str], list[str]]:
+        """entity ids grouped under the name of the device they share — the hub they hang off
+        (`via_device_id`) when the registry knows one, else their own device, else None."""
+        groups: dict[Optional[str], list[str]] = {}
+        with self._lock:
+            registries = self._registries
+        for entity_id in entity_ids:
+            entry = registries.entities.get(entity_id) or {}
+            device = registries.devices.get(entry.get("device_id") or "")
+            hub = registries.devices.get((device or {}).get("via_device_id") or "") if device else None
+            named = hub or device
+            name = (named.get("name_by_user") or named.get("name")) if named else None
+            groups.setdefault(name, []).append(entity_id)
+        return groups
+
+    def _name_of(self, entity_id: str) -> str:
+        with self._lock:
+            display = self._index.display(entity_id)
+            state = self._states.get(entity_id)
+        if display:
+            return display
+        return HomeAutomation.to_display(friendly_name(state)) if state else entity_id
+
+    def _states_for_snapshot(self, now: float) -> dict[str, dict]:
+        """The mirror, with an entity inside its outage hold shown as it was before. Caller
+        holds _lock."""
+        held = {entity_id: outage.before for entity_id, outage in self._outages.items()
+                if not outage.released and now - outage.since < UNAVAILABLE_HOLD_S and entity_id in self._states}
+        if held:
+            trace(f"Home Assistant: {len(held)} entit{'y' if len(held) == 1 else 'ies'} inside the unavailable hold "
+                  f"— the snapshot shows their last available state")
+        return {**self._states, **held}
 
     def _on_registry_event(self, event: dict):
         trace(f"Home Assistant: {event.get('event_type')} — registries will be refreshed")
@@ -220,9 +330,12 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         if stale:
             self._load_registries()
         with self._lock:
+            now = time.time()
+            if any(not o.released and now - o.since >= UNAVAILABLE_HOLD_S for o in self._outages.values()):
+                self._dirty = True      # a hold ran out with no event and no fetch to notice
             if self._dirty:
-                self._snapshot, self._index = build(self._states, self._registries, self.exposed_only)
-                self._snapshot.taken_at = time.time()
+                self._snapshot, self._index = build(self._states_for_snapshot(now), self._registries, self.exposed_only)
+                self._snapshot.taken_at = now
                 self._dirty = False
             return self._snapshot, self._index
 
@@ -346,12 +459,14 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         self.client()
         return True
 
-    def fetch(self, cursor: Optional[str], backfill: bool) -> FeedBatch:
-        """Whatever the event handler queued since the last drain; nothing is ever replayed."""
+    def fetch(self, cursor: Optional[str], backfill: bool, now: Optional[float] = None) -> FeedBatch:
+        """Whatever the event handler queued since the last drain, then the outage and recovery
+        rows that are due; nothing is ever replayed. `now` is for tests."""
         entries: list[FeedEntry] = []
         while True:
             try:
                 entries.append(self._live.get_nowait())
             except queue.Empty:
                 break
+        entries.extend(self._release_outages(time.time() if now is None else now))
         return FeedBatch(entries)

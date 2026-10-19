@@ -44,7 +44,37 @@ class TestSetCommands:
         assert "warm" in commands_instance.command_processor.set_command_reply.call_args.args[0]
 
 
+class TestReadingsCommand:
+    def test_the_full_readings_are_the_reply(self, commands_instance, pump):
+        pump.readings.return_value = "Outdoor 3.4 °C, Brine in -0.4 °C\nCompressor on\nAlarm: none"
+
+        commands_instance.run("heat_pump_readings", [])
+        commands_instance.wait_for_background(timeout=5)
+
+        pump.readings.assert_called_once_with()
+        reply = commands_instance.command_processor.set_command_reply.call_args.args[0]
+        assert "Brine in -0.4 °C" in reply
+
+    def test_a_gateway_failure_reaches_the_llm_as_text(self, commands_instance, pump):
+        pump.readings.side_effect = HusdataError("Could not connect to the Husdata gateway at gateway.local")
+
+        commands_instance.run("heat_pump_readings", [])
+        commands_instance.wait_for_background(timeout=5)
+
+        assert "Could not connect" in commands_instance.command_processor.set_command_reply.call_args.args[0]
+
+
 class TestFlags:
     def test_both_writes_need_approval(self):
         assert {"set_room_target", "set_hot_water"} <= HusdataCommands.SENSITIVE_COMMANDS
         assert set(HusdataCommands.APPROVAL_NOTES) == HusdataCommands.SENSITIVE_COMMANDS
+
+    def test_reading_the_pump_is_pure_and_needs_no_approval(self):
+        assert "heat_pump_readings" in HusdataCommands.PURE_COMMANDS
+        assert "heat_pump_readings" not in HusdataCommands.SENSITIVE_COMMANDS
+
+    def test_the_toolkit_offers_the_readings_beside_the_writes(self):
+        from assistant.commands import Toolkits
+        toolkit = Toolkits.by_name("husdata")
+        assert toolkit is not None
+        assert {"heat_pump_readings", "set_room_target", "set_hot_water"} <= set(toolkit.commands)

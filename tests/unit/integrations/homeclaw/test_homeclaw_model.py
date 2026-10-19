@@ -188,3 +188,59 @@ class TestRefParsing:
         with pytest.raises(Unresolved, match="several") as caught:
             index.resolve("A10000", {SENSOR}, "sensor")
         assert all(uid[:8] in str(caught.value) for uid in (SENSOR_A, SENSOR_B, SENSOR_C))
+
+
+class TestHeldReadings:
+    """A sensor's wobble must not rewrite its prompt line: the readings are rounded to a step and held."""
+
+    @staticmethod
+    def _sensor(temperature, humidity="48", battery="64", uid="X"):
+        return Target(id=uid, name="Climate", room="Hall", kind=SENSOR,
+                      state={"current_temperature": f"{temperature}°C", "current_humidity": humidity, "battery_level": battery})
+
+    def test_a_quarter_degree_of_wobble_renders_the_same_line(self):
+        from integrations.homeclaw.HomeClawModel import Held
+        held = Held()
+        first = state_text(self._sensor("21.26"), held, "ref1")
+        assert state_text(self._sensor("21.49"), held, "ref1") == first
+        assert state_text(self._sensor("21.74"), held, "ref1") == first
+
+    def test_a_full_step_moves_the_shown_temperature(self):
+        from integrations.homeclaw.HomeClawModel import Held
+        held = Held()
+        state_text(self._sensor("21.26"), held, "ref1")
+        assert "22.0 °C" in state_text(self._sensor("22.0"), held, "ref1")
+
+    def test_humidity_is_held_in_five_percent_steps(self):
+        from integrations.homeclaw.HomeClawModel import Held
+        held = Held()
+        first = state_text(self._sensor("21", humidity="47"), held, "ref1")
+        assert "humidity 45 %" in first
+        assert state_text(self._sensor("21", humidity="49"), held, "ref1") == first
+
+    def test_a_healthy_battery_is_absent_and_a_low_one_present(self):
+        from integrations.homeclaw.HomeClawModel import Held
+        held = Held()
+        assert "battery" not in state_text(self._sensor("21", battery="64"), held, "ref1")
+        assert "battery 20 %" in state_text(self._sensor("21", battery="18"), held, "ref2")
+        assert "battery" not in state_text(self._sensor("21", battery="64"))
+
+    def test_an_irrigation_zones_full_battery_is_absent(self):
+        index = _index()
+        assert "battery" not in state_text(index.resolve("Patio", {IRRIGATION}, "v"))
+
+    def test_a_thermostats_target_stays_exact_while_its_reading_is_held(self):
+        from integrations.homeclaw.HomeClawModel import THERMOSTAT, Held
+        held = Held()
+        radiator = Target(id="X", name="Radiator", room="", kind=THERMOSTAT,
+                          state={"current_temperature": "19.74°C", "target_temperature": "21.3", "target_heating_cooling": "heat"})
+        text = state_text(radiator, held, "ref1")
+        assert "19.5 °C" in text and "target 21.3 °C" in text
+
+    def test_each_target_is_held_on_its_own_and_the_render_keys_by_ref(self):
+        from integrations.homeclaw.HomeClawModel import Held
+        held = Held()
+        text = render(_index(), [], held)
+        again = render(_index(), [], held)
+        assert text == again
+        assert "18.5 °C" in text     # SENSOR_C reads 18.4 → the nearest half degree

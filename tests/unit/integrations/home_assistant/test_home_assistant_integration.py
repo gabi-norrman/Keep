@@ -428,3 +428,114 @@ class TestFeed:
         fake.push("state_changed", {"entity_id": "light.hall"})
         assert integration.fetch(None, backfill=False).entries == []
         assert isinstance(integration._live, queue.Queue)
+
+
+T0 = 1789466400.0       # 2026-09-15T10:00:00+00:00, the fixture's clock
+
+
+def at(seconds: float) -> str:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(T0 + seconds, tz=timezone.utc).isoformat()
+
+
+FIXTURE_ATTRIBUTES = {s["entity_id"]: s.get("attributes") or {} for s in json.loads((DATA / "states.json").read_text())}
+
+
+def timed(entity_id, value, seconds, **attributes):
+    """The fixture's entity (its friendly name and attributes kept, so the mirror still names it
+    as the snapshot does) in state `value` at T0 + `seconds`."""
+    s = state(entity_id, value, **{**FIXTURE_ATTRIBUTES.get(entity_id, {}), **attributes})
+    s["last_changed"] = s["last_updated"] = at(seconds)
+    return s
+
+
+@pytest.mark.unit
+class TestAvailabilityHold:
+    """An entity going unavailable is held UNAVAILABLE_HOLD_S before it is a row; a hub hiccup
+    is nothing at all (plans/PROMPT_CHURN_PLAN.md, phase 3)."""
+
+    HUB = ("light.hall", "light.kitchen_spots", "cover.blinds")
+
+    @pytest.fixture
+    def hub(self, integration, fake):
+        """The three entities hang off the Hue spots device, which hangs off the Hue bridge."""
+        for entry in fake.results["config/entity_registry/list"]:
+            if entry["entity_id"] in self.HUB:
+                entry["device_id"] = "dev_hue"
+        integration.snapshot()
+        return {"light.hall": "on", "light.kitchen_spots": "on", "cover.blinds": "open"}
+
+    def _outage(self, fake, hub, seconds):
+        for entity_id, value in hub.items():
+            fake.push("state_changed", {"entity_id": entity_id, "old_state": timed(entity_id, value, 0),
+                                        "new_state": timed(entity_id, "unavailable", seconds)})
+
+    def _recovery(self, fake, hub, seconds, values=None):
+        for entity_id, value in (values or hub).items():
+            fake.push("state_changed", {"entity_id": entity_id, "old_state": timed(entity_id, "unavailable", 0),
+                                        "new_state": timed(entity_id, value, seconds)})
+
+    def test_a_hub_away_for_forty_seconds_is_nothing(self, integration, fake, hub):
+        self._outage(fake, hub, 0)
+        assert integration.fetch(None, backfill=False, now=T0 + 20).entries == []
+        self._recovery(fake, hub, 37)
+        assert integration.fetch(None, backfill=False, now=T0 + 40).entries == []
+        assert integration.fetch(None, backfill=False, now=T0 + 900).entries == [], "nothing is released later either"
+
+    def test_a_hub_away_past_the_hold_is_one_row_and_one_row_back(self, integration, fake, hub):
+        self._outage(fake, hub, 0)
+        assert integration.fetch(None, backfill=False, now=T0 + 299).entries == []
+        rows = integration.fetch(None, backfill=False, now=T0 + 360).entries
+        assert len(rows) == 1
+        assert rows[0].content.startswith("Hue bridge")
+        for name in ("Hall light [Hall]", "Kitchen spots light [Kök]", "Blinds [Sovrum]"):
+            assert name in rows[0].content
+        assert rows[0].timestamp == T0 + 360
+        assert integration.fetch(None, backfill=False, now=T0 + 600).entries == [], "an outage is reported once"
+        self._recovery(fake, hub, 700)
+        back = integration.fetch(None, backfill=False, now=T0 + 702).entries
+        assert len(back) == 1 and back[0].content.startswith("Hue bridge")
+        assert "Blinds [Sovrum]" in back[0].content and back[0].timestamp == T0 + 700
+        assert integration.fetch(None, backfill=False, now=T0 + 900).entries == []
+
+    def test_a_cover_that_moved_during_the_hiccup_is_the_one_real_change(self, integration, fake, hub):
+        self._outage(fake, hub, 0)
+        self._recovery(fake, hub, 30, {**hub, "cover.blinds": "closed"})
+        rows = integration.fetch(None, backfill=False, now=T0 + 31).entries
+        assert [r.content for r in rows] == ["Blinds [Sovrum] closed"]
+
+    def test_the_snapshot_holds_the_last_available_state_through_the_hold(self, integration, fake, hub):
+        self._outage(fake, hub, 0)
+        with patch(f"{MODULE}.time") as clock:
+            clock.time.return_value = T0 + 120
+            lights = {e.name: e.value for e in integration.snapshot().lights}
+            assert lights["Hall light"] == "on" and lights["Blinds"].startswith("open")
+            clock.time.return_value = T0 + 400
+            lights = {e.name: e.value for e in integration.snapshot().lights}
+            assert lights["Hall light"] == "unavailable" and lights["Blinds"] == "unavailable"
+
+    def test_an_outage_that_began_before_the_process_watched_ends_silently(self, integration, fake, hub):
+        self._recovery(fake, {"light.hall": "on"}, 10)
+        assert integration.fetch(None, backfill=False, now=T0 + 11).entries == []
+
+    def test_a_diagnostic_entity_and_a_vanished_one_never_become_rows(self, integration, fake):
+        for entry in fake.results["config/entity_registry/list"]:
+            if entry["entity_id"] == "light.hall":
+                entry["entity_category"] = "diagnostic"
+        integration.snapshot()
+        fake.push("state_changed", {"entity_id": "light.hall", "old_state": timed("light.hall", "on", 0),
+                                    "new_state": timed("light.hall", "unavailable", 0)})
+        fake.push("state_changed", {"entity_id": "cover.blinds", "old_state": timed("cover.blinds", "open", 0),
+                                    "new_state": timed("cover.blinds", "unavailable", 0)})
+        fake.push("state_changed", {"entity_id": "cover.blinds", "old_state": timed("cover.blinds", "unavailable", 0),
+                                    "new_state": None})
+        assert integration.fetch(None, backfill=False, now=T0 + 900).entries == []
+
+    def test_loose_entities_are_grouped_without_a_device_name(self, integration, fake):
+        integration.snapshot()
+        for entity_id, value in (("light.hall", "on"), ("cover.blinds", "open")):
+            fake.push("state_changed", {"entity_id": entity_id, "old_state": timed(entity_id, value, 0),
+                                        "new_state": timed(entity_id, "unavailable", 5)})
+        rows = integration.fetch(None, backfill=False, now=T0 + 400).entries
+        assert len(rows) == 1 and "None" not in rows[0].content
+        assert "Hall light [Hall]" in rows[0].content and "Blinds [Sovrum]" in rows[0].content

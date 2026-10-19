@@ -61,6 +61,14 @@ class TestDecode:
     def test_the_unavailable_marker_is_no_reading(self):
         assert decode("0011", 32768) is None
 
+    def test_a_temperature_outside_any_pump_is_a_sentinel(self):
+        assert decode("0007", 32767) is None, "3276.7 °C is the gateway's 'no value', not a reading"
+        assert decode("0007", -0) is not None
+
+    def test_a_percent_outside_0_to_100_is_a_sentinel(self):
+        assert decode("3108", 1200) is None
+        assert decode("3108", 1000).value == 100.0
+
     def test_wire_value_is_tenths(self):
         assert to_wire(21.5) == 215
 
@@ -85,9 +93,11 @@ class TestRefresh:
         assert "not reported" in gateway._alarm_line()
 
 
-class TestSnapshot:
+class TestReadings:
+    """`readings()` is the heat_pump_readings command: every register, unrounded."""
+
     def test_groups_and_names_what_the_pump_reports(self, gateway):
-        text = gateway.snapshot()
+        text = gateway.readings()
         lines = text.split("\n")
         assert "Outdoor 3.4 °C" in lines[0] and "Brine in -0.4 °C" in lines[0] and "Room target 21.0 °C" in lines[0]
         assert "Compressor on" in lines[1] and "Additional heat step 1 off" in lines[1]
@@ -95,22 +105,97 @@ class TestSnapshot:
         assert lines[-1] == "Alarm: none"
 
     def test_an_unreported_or_unavailable_register_is_left_out(self, gateway):
-        text = gateway.snapshot()
+        text = gateway.readings()
         assert "Pool" not in text and "Hot water setpoint" not in text and "Fan" not in text
+
+    def test_a_sentinel_temperature_is_left_out(self, gateway):
+        gateway.replies["/api/alldata"]["000B"] = 32767
+        assert "Hot gas" not in gateway.readings()
 
     def test_an_alarm_code_is_called_out(self, gateway):
         gateway.replies["/api/alldata"]["2A20"] = 7
-        assert "ALARM active (code 7)" in gateway.snapshot()
+        assert "ALARM active (code 7)" in gateway.readings()
 
     def test_the_flag_style_alarm_register_counts_too(self, gateway):
         del gateway.replies["/api/alldata"]["2A20"]
         gateway.replies["/api/alldata"]["1A20"] = 1
-        assert "ALARM active" in gateway.snapshot()
+        assert "ALARM active" in gateway.readings()
 
     def test_an_empty_report_is_an_error_not_an_empty_section(self, gateway):
         gateway.replies["/api/alldata"] = {}
         with pytest.raises(HusdataError, match="no registers"):
-            gateway.snapshot()
+            gateway.readings()
+
+
+class TestSummary:
+    """`summary()` is the prompt section: the temperatures a person asks about to the degree, the
+    running states once they have lasted, the alarm — and none of the circuit telemetry that
+    rewrote the section every minute."""
+
+    def test_the_summary_keeps_the_household_temperatures_and_the_alarm(self, gateway):
+        lines = gateway.summary().split("\n")
+        assert "Outdoor 3 °C" in lines[0] and "Indoor 21 °C" in lines[0] and "Hot water 48 °C" in lines[0]
+        assert "Room target 21 °C" in lines[0]
+        assert lines[-1] == "Alarm: none"
+
+    def test_the_summary_omits_the_circuits_pumps_and_counters(self, gateway):
+        gateway.replies["/api/alldata"].update({"2105": 65336, "1A05": 1, "1A06": 1})
+        text = gateway.summary()
+        for noise in ("Brine", "Radiator", "Heat carrier", "speed", "Degree minutes", "hours", "pump", "Switch valve"):
+            assert noise not in text, noise
+
+    def test_the_summary_names_the_states_in_words(self, gateway):
+        text = gateway.summary()
+        assert "Compressor running" in text
+        assert "Additional heat step 1 off" in text
+        assert " on" not in text.split("\n")[1].replace("step 1 off", "")
+
+    def test_a_decimal_wobble_leaves_the_summary_unchanged(self, gateway):
+        first = gateway.summary()
+        gateway.replies["/api/alldata"].update({"0007": 38, "0008": 208, "0009": 489})
+        assert gateway.summary() == first
+
+    def test_a_full_degree_of_change_shows(self, gateway):
+        gateway.summary()
+        gateway.replies["/api/alldata"]["0007"] = 44
+        assert "Outdoor 4 °C" in gateway.summary()
+
+    def test_a_short_compressor_rest_is_not_shown(self, gateway):
+        """A compressor that stops for three minutes and restarts is "running" throughout."""
+        clock = [1_000.0]
+        with patch("assistant.prompt.Held.time.time", side_effect=lambda: clock[0]):
+            assert "Compressor running" in gateway.summary()
+            gateway.replies["/api/alldata"]["1A01"] = 0
+            clock[0] += 60
+            assert "Compressor running" in gateway.summary()
+            clock[0] += 120
+            assert "Compressor running" in gateway.summary()
+            gateway.replies["/api/alldata"]["1A01"] = 1
+            clock[0] += 60
+            assert "Compressor running" in gateway.summary()
+
+    def test_a_rest_that_lasts_is_shown(self, gateway):
+        clock = [1_000.0]
+        with patch("assistant.prompt.Held.time.time", side_effect=lambda: clock[0]):
+            gateway.summary()
+            gateway.replies["/api/alldata"]["1A01"] = 0
+            gateway.summary()
+            clock[0] += 601
+            assert "Compressor resting" in gateway.summary()
+
+    def test_a_sentinel_temperature_is_left_out_of_the_summary(self, gateway):
+        gateway.replies["/api/alldata"]["0008"] = 32767
+        assert "Indoor" not in gateway.summary()
+
+    def test_an_alarm_is_in_the_summary_at_once(self, gateway):
+        gateway.summary()
+        gateway.replies["/api/alldata"]["2A20"] = 7
+        assert "ALARM active (code 7)" in gateway.summary()
+
+    def test_an_empty_report_is_an_error_not_an_empty_section(self, gateway):
+        gateway.replies["/api/alldata"] = {}
+        with pytest.raises(HusdataError, match="no registers"):
+            gateway.summary()
 
 
 class TestWrites:

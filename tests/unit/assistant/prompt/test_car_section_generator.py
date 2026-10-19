@@ -85,8 +85,12 @@ class TestRender:
 
     def test_cabin_fuel_and_range(self, section):
         line = section._render(CAR, VehicleState(latitude=HOME[0], longitude=HOME[1], cabin_temp_c=22.4, fuel_percent=40, range_km=312.4))
-        assert "Cabin 22°C" in line and "(~40% fuel)" in line and "312 km range" in line
+        assert "Cabin 22°C" in line and "(~40% fuel)" in line and "~300 km range" in line
         assert "battery" not in line
+
+    def test_a_driving_car_shows_its_exact_range(self, section, no_lookups):
+        line = section._render(CAR, VehicleState(latitude=AWAY[0], longitude=AWAY[1], speed_kmh=50, in_gear=True, range_km=312.4))
+        assert "312 km range" in line
 
     def test_no_charge_at_all_is_said(self, section):
         assert "Battery unknown" in section._render(CAR, VehicleState(latitude=HOME[0], longitude=HOME[1]))
@@ -124,15 +128,31 @@ class TestRoundedAndHeld:
                  for p in (88, 91, 94, 95, 96, 91, 90)]
         assert shown == ["~90", "~90", "~90", "~95", "~95", "~95", "~90"]
 
-    def test_a_charging_or_driving_car_shows_its_exact_charge(self, section, no_lookups):
-        assert "(88% battery)" in self._parked(section, battery_percent=88, charging=True)
+    def test_a_driving_car_shows_its_exact_charge(self, section, no_lookups):
         line = section._render(CAR, VehicleState(latitude=AWAY[0], longitude=AWAY[1], speed_kmh=50, in_gear=True, battery_percent=88))
         assert "(88% battery)" in line
 
-    def test_unplugging_starts_the_held_charge_afresh_from_the_exact_one(self, section):
+    def test_a_charging_car_says_so_and_shows_ten_percent_steps(self, section):
+        line = self._parked(section, battery_percent=88, charging=True)
+        assert "Charging" in line and "Parked" not in line
+        assert "(~90% battery)" in line
+
+    def test_a_charging_car_holds_its_step_until_a_full_step_away(self, section):
+        shown = [self._parked(section, battery_percent=p, charging=True).split("(")[2].split("%")[0]
+                 for p in (61, 68, 69, 72, 75)]
+        assert shown == ["~60", "~60", "~60", "~70", "~70"]
+
+    def test_a_charging_car_shows_no_range(self, section):
+        assert "range" not in self._parked(section, battery_percent=61, charging=True, range_km=250.0)
+
+    def test_unplugging_goes_back_to_five_percent_steps_from_the_fresh_reading(self, section):
         self._parked(section, battery_percent=70)
         self._parked(section, battery_percent=73, charging=True)
         assert "(~75% battery)" in self._parked(section, battery_percent=73)
+
+    def test_a_parked_range_is_held_to_fifty_kilometres(self, section):
+        shown = [self._parked(section, range_km=km).split("~")[-1].split(" km")[0] for km in (412, 398, 376, 349, 430)]
+        assert shown == ["400", "400", "400", "350", "450"]
 
     def test_each_car_is_held_on_its_own(self, section):
         other = VehicleSpec("work", "Work Model 3", "VIN2")
