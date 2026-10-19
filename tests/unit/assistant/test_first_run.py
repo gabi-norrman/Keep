@@ -570,3 +570,58 @@ class TestSnappiness:
         env.pipeline._run()
         # SETUP → INDEXING ticked straight into INDEXING (no runner yet), only then waited
         assert State.load(env.path).stage == Stage.INDEXING and waits == [0.01]
+
+
+class TestDesktopShortcut:
+    """The shortcut is built the first time the Full Disk Access probe passes, once, and the
+    state remembers the attempt."""
+
+    @pytest.fixture
+    def shortcut(self, env, monkeypatch):
+        knobs = SimpleNamespace(granted=False, built=True, ensure_calls=0)
+
+        def ensure():
+            knobs.ensure_calls += 1
+            return knobs.built
+        monkeypatch.setattr(FirstRun.DesktopShortcut, "full_disk_access_granted", lambda: knobs.granted)
+        monkeypatch.setattr(FirstRun.DesktopShortcut, "ensure", ensure)
+        return knobs
+
+    def test_waits_while_the_access_is_not_granted(self, env, shortcut):
+        state = env.state_at(Stage.SETUP)
+        assert env.pipeline.desktop_shortcut(state, now=0.0) is False
+        assert shortcut.ensure_calls == 0
+        assert State.load(env.path).desktop_shortcut_at is None
+
+    def test_builds_once_the_access_is_granted_and_tells_the_history(self, env, shortcut):
+        state = env.state_at(Stage.SETUP)
+        shortcut.granted = True
+        assert env.pipeline.desktop_shortcut(state, now=0.0) is True
+        assert shortcut.ensure_calls == 1
+        assert State.load(env.path).desktop_shortcut_at is not None
+        assert any("Desktop" in row for row in _rows(env.history))
+
+    def test_never_a_second_attempt_after_the_stamp(self, env, shortcut):
+        state = env.state_at(Stage.SETUP, desktop_shortcut_at=1.0)
+        shortcut.granted = True
+        assert env.pipeline.desktop_shortcut(state, now=1000.0) is False
+        assert shortcut.ensure_calls == 0
+
+    def test_a_failed_build_is_stamped_and_leaves_no_history_row(self, env, shortcut):
+        state = env.state_at(Stage.SETUP)
+        shortcut.granted, shortcut.built = True, False
+        assert env.pipeline.desktop_shortcut(state, now=0.0) is False
+        assert State.load(env.path).desktop_shortcut_at is not None
+        assert _rows(env.history) == []
+
+    def test_the_probe_is_rate_limited_between_polls(self, env, shortcut):
+        state = env.state_at(Stage.SETUP)
+        env.pipeline.desktop_shortcut(state, now=0.0)
+        shortcut.granted = True
+        assert env.pipeline.desktop_shortcut(state, now=1.0) is False
+        assert env.pipeline.desktop_shortcut(state, now=FirstRun.DESKTOP_SHORTCUT_PROBE_SECONDS) is True
+
+    def test_a_done_install_still_gets_the_shortcut(self, env, shortcut):
+        state = env.state_at(Stage.DONE)
+        shortcut.granted = True
+        assert env.pipeline.desktop_shortcut(state, now=0.0) is True

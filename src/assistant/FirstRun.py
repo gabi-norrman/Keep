@@ -33,6 +33,11 @@ feeds among iMessage and Photos to finish their first catch-up) → CURATING (th
 a restart resumes, and published as `curation_progress()` for the Home tab's bar) → EXPANDING (the Photos horizon widened to `FULL_PHOTOS_BACKFILL_MONTHS`
 and the feed restarted, since every photo description carries the bank) → DONE. The nightly
 curation waits until the pipeline has curated once (`curation_pending`).
+
+Beside the stages, every poll of a young install probes for Full Disk Access (`common/DesktopShortcut`:
+can the process read chat.db) and, the first time it is granted, builds the Keep.app shortcut on
+the Desktop — one attempt, stamped in the state — and leaves a system row so the assistant can
+point the user to it.
 """
 import json
 import os
@@ -43,6 +48,7 @@ from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 
+from common import DesktopShortcut
 from common.ConfigManager import config
 from common.FloxyDatabase import FloxyDatabase, PHOTO_HISTORY_SOURCE
 from common.Paths import AISERVER_DIR, CACHE_DIR
@@ -227,6 +233,9 @@ PLACEHOLDER_HEADING = MemoryFile.PLACEHOLDER_HEADING
 FULL_PHOTOS_BACKFILL_MONTHS = 36
 PHOTOS_BACKFILL_KEY = "feeds.photos.backfill_months"
 PIPELINE_POLL_SECONDS = 2     # a tick is a file read and a few cached lookups; the waits log only on change
+DESKTOP_SHORTCUT_PROBE_SECONDS = 60   # how often the Full Disk Access probe opens chat.db while the shortcut is not built
+DESKTOP_SHORTCUT_ROW = ("A Keep shortcut is now on the Desktop: double-clicking it opens the console in a terminal, "
+                        "starting the server first when it is not running.")
 CURATION_RETRY_SECONDS = 600  # how long an all-failed first curation waits before it is run again
 CURATION_STEP_SECONDS = 160.0   # what one curation chunk normally takes: the bar's estimate until one has finished
 PHOTOS_INTEGRATION = "Photos"
@@ -253,6 +262,7 @@ class State:
     curation_end: str | None = None
     chunks_done: int = 0
     chunks_total: int = 0
+    desktop_shortcut_at: float | None = None   # when the Desktop shortcut was attempted; None until Full Disk Access is seen
 
     @classmethod
     def fresh(cls, now: float = None) -> 'State':
@@ -399,6 +409,7 @@ class Pipeline:
         self._stop_event = threading.Event()
         self._waiting_on: str | None = None     # the last wait reason traced, so a poll logs only a change
         self._retry_at: float = 0.0             # monotonic: when an all-failed first curation may run again
+        self._shortcut_probe_at: float = 0.0    # monotonic: when the Full Disk Access probe next runs
         self._thread = threading.Thread(target=self._run, name="first-run-pipeline", daemon=True)
 
     def start(self):
@@ -420,6 +431,11 @@ class Pipeline:
         idle_reported = None
         while not self._stop_event.is_set():
             state = State.load(self._path)
+            if state is not None:
+                try:
+                    self.desktop_shortcut(state)
+                except Exception as e:
+                    error(f"First run: Desktop shortcut step failed: {type(e).__name__}: {e}")
             idle = "state gone" if state is None else ("done" if state.stage == Stage.DONE else None)
             if idle:
                 if idle != idle_reported:
@@ -433,6 +449,32 @@ class Pipeline:
                 except Exception as e:
                     error(f"First run: {state.stage.value} step failed: {type(e).__name__}: {e}")
             self._stop_event.wait(self._poll_seconds)
+
+    # --- the Desktop shortcut -------------------------------------------------------------------
+
+    def desktop_shortcut(self, state: State, now: float = None) -> bool:
+        """Build the Desktop shortcut the first time Full Disk Access is seen granted: the grant
+        is the one setup step made at the Mac itself, and after it the user needs a way back to
+        the console that is not a terminal command. The probe runs every
+        `DESKTOP_SHORTCUT_PROBE_SECONDS`; one build attempt, stamped in the state whatever its
+        outcome (the log says why it failed). Returns whether the shortcut was built now."""
+        if state.desktop_shortcut_at is not None:
+            return False
+        now = now if now is not None else time.monotonic()
+        if now < self._shortcut_probe_at:
+            return False
+        self._shortcut_probe_at = now + DESKTOP_SHORTCUT_PROBE_SECONDS
+        if not DesktopShortcut.full_disk_access_granted():
+            self._waiting("Full Disk Access not granted yet — the Desktop shortcut waits")
+            return False
+        self._waiting_on = None
+        built = DesktopShortcut.ensure()
+        state.desktop_shortcut_at = time.time()
+        state.save(self._path)
+        note(f"First run: Full Disk Access is granted — the Desktop shortcut {'is built' if built else 'could not be built'}")
+        if built and self._history is not None:
+            self._history.add_context_message("system", DESKTOP_SHORTCUT_ROW, time.time(), source=HISTORY_SOURCE)
+        return built
 
     # --- one step ---------------------------------------------------------------------------
 
