@@ -25,6 +25,7 @@ from telegram.error import RetryAfter
 
 from assistant import Destinations
 from assistant.ChannelProfile import SOURCE_TELEGRAM
+from assistant.SystemNote import system_note
 from assistant.integration.Integration import Integration
 from common import ConfigStore
 from common.ConfigManager import config
@@ -389,8 +390,8 @@ class TelegramTransport(Integration, ChatTransport):
 
     async def _start_bot(self):
         from telegram import LinkPreviewOptions, Update
-        from telegram.ext import (ApplicationBuilder, CallbackQueryHandler, CommandHandler, Defaults,
-                                  MessageHandler, MessageReactionHandler, filters)
+        from telegram.ext import (ApplicationBuilder, CallbackQueryHandler, ChatMemberHandler, CommandHandler,
+                                  Defaults, MessageHandler, MessageReactionHandler, filters)
 
         # Bot-wide default for every send and edit (replies, drafts, notifications, fallbacks):
         # a per-call disable_web_page_preview=True still wins, so opt-outs keep working.
@@ -406,6 +407,7 @@ class TelegramTransport(Integration, ChatTransport):
                                                      self._handle_video))
         self._application.add_handler(MessageReactionHandler(self._handle_reaction))
         self._application.add_handler(CallbackQueryHandler(self._handle_callback_query))
+        self._application.add_handler(ChatMemberHandler(self._handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
 
         await self._application.initialize()
         await self._application.start()
@@ -634,6 +636,40 @@ class TelegramTransport(Integration, ChatTransport):
             f"Hello! I'm Keep AI.\n\nYour chat ID is: {chat_id}\n\n"
             f"Send me a message and I'll respond."
         )
+
+    IN_GROUP_STATUSES = ("member", "administrator", "restricted")
+
+    async def _handle_my_chat_member(self, update, context):
+        """The bot's own membership in a chat changed (Telegram sends `my_chat_member` for it
+        whatever the privacy mode). Joining a group is the one moment its id is visible: in
+        privacy mode the bot receives nothing from a group that is not on the allow list, so
+        nothing else would ever log it. A system row in the dialog history carries the title
+        and the id, so "add the group I just created" is enough for the assistant to do it."""
+        change = update.my_chat_member
+        chat = change.chat
+        chat_id = chat.id
+        if chat_id >= 0:
+            trace(f"Telegram [{chat_id}]: membership change in a private chat ({change.new_chat_member.status}), ignored")
+            return
+        was_in = change.old_chat_member.status in self.IN_GROUP_STATUSES
+        is_in = change.new_chat_member.status in self.IN_GROUP_STATUSES
+        if was_in == is_in:
+            trace(f"Telegram [{chat_id}]: membership change keeps the bot {'in' if is_in else 'out of'} the group, ignored")
+            return
+        title = chat.title or str(chat_id)
+        by = self._sender_name(update)
+        allowed = chat_id in self._allowed_chat_ids
+        if is_in:
+            text = (f"Telegram: {by} added the bot to the group '{title}' (chat id {chat_id}). "
+                    + (f"The group is on telegram_bot.allowed_chat_ids, so the bot serves it."
+                       if allowed else
+                       f"The group is not on telegram_bot.allowed_chat_ids, so the bot does not serve it; "
+                       f"the list is read live, config_set adds the id."))
+        else:
+            text = (f"Telegram: {by} removed the bot from the group '{title}' (chat id {chat_id})."
+                    + (" The group is still on telegram_bot.allowed_chat_ids." if allowed else ""))
+        info(text)
+        system_note("telegram", text)
 
     async def _admit(self, update) -> Optional[int]:
         """The chat id when the sender may talk to the bot, else None (after telling them)."""

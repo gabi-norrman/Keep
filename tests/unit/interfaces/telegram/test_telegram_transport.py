@@ -106,6 +106,17 @@ def _bot_in_group(allowed=(42, -5001)):
     return transport, hub
 
 
+def _membership(chat_id, title, old_status, new_status, first_name="Anna"):
+    """A my_chat_member update: the bot's own status in `chat_id` went old → new."""
+    update = MagicMock()
+    update.my_chat_member.chat.id = chat_id
+    update.my_chat_member.chat.title = title
+    update.my_chat_member.old_chat_member.status = old_status
+    update.my_chat_member.new_chat_member.status = new_status
+    update.effective_user.first_name = first_name
+    return update
+
+
 def _bubble_of(user_id, text="earlier"):
     replied = MagicMock()
     replied.text = text
@@ -468,6 +479,38 @@ class TestInboundText:
         with patch(f'{MODULE}.info') as log:
             await transport._handle_start(_update(chat_id=-5001, title="Family"), MagicMock())
         assert "-5001" in log.call_args[0][0] and "Family" in log.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_the_bot_joining_a_group_leaves_the_groups_id_in_the_history(self):
+        # In privacy mode nothing else from an unlisted group ever reaches the bot, so this
+        # row is what "add the group I just created to the allow list" resolves against.
+        transport, _ = _bot_in_group(allowed=[42])
+        with patch(f'{MODULE}.system_note') as note:
+            await transport._handle_my_chat_member(_membership(-5002, "Garden", "left", "member"), MagicMock())
+        source, text = note.call_args[0]
+        assert source == "telegram" and "-5002" in text and "Garden" in text and "Anna" in text
+        assert "not on" in text and "allowed_chat_ids" in text
+
+    @pytest.mark.asyncio
+    async def test_joining_a_listed_group_and_leaving_one_are_told_apart(self):
+        transport, _ = _bot_in_group()
+        with patch(f'{MODULE}.system_note') as note:
+            await transport._handle_my_chat_member(_membership(-5001, "Family", "left", "administrator"), MagicMock())
+            joined = note.call_args[0][1]
+            await transport._handle_my_chat_member(_membership(-5001, "Family", "member", "kicked"), MagicMock())
+            left = note.call_args[0][1]
+        assert "-5001" in joined and "not on" not in joined
+        assert "removed" in left and "-5001" in left
+
+    @pytest.mark.asyncio
+    async def test_membership_changes_that_are_not_a_join_or_leave_leave_no_row(self, transport):
+        with patch(f'{MODULE}.system_note') as note:
+            # promoted to admin, a private chat blocking the bot, and a leave it already made
+            for change in (_membership(-5001, "Family", "member", "administrator"),
+                           _membership(123, None, "member", "kicked"),
+                           _membership(-5001, "Family", "left", "kicked")):
+                await transport._handle_my_chat_member(change, MagicMock())
+        note.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reply_target_text_or_caption_is_carried(self, transport, hub):
