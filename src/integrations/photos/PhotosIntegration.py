@@ -78,12 +78,14 @@ class PhotosIntegration(Integration, Feed):
 
     @property
     def config_keys(self) -> List[str]:
-        """The key of whichever backend the `photo_indexing` tier runs on (Gemini by
-        default). Hardcoding a provider here once had list_integrations tag Photos with
-        the Anthropic key while it indexed on Gemini Flash, and the FTUE assistant "fixed"
-        a problem that did not exist."""
-        key = tier_api_key_name('photo_indexing')
-        return [key] if key else []
+        """The keys of the backends the two indexing tiers run on — `photo_indexing` for the
+        new assets, `photo_backfill` for the backlog (both Claude by default, so one key).
+        Hardcoding a provider here once had list_integrations tag Photos with the Anthropic
+        key while it indexed on Gemini Flash, and the FTUE assistant "fixed" a problem that
+        did not exist. The `video` tier's key is not required: without it the clips stay
+        unindexed and the stills are described all the same."""
+        keys = (tier_api_key_name(tier) for tier in ('photo_indexing', 'photo_backfill'))
+        return list(dict.fromkeys(key for key in keys if key))
 
     def _provider_refused(self, reason: str, out_of_credits: bool, cursor: Optional[str]):
         """A rate limit clears by itself: the feed keeps polling (every POLL_INTERVAL) and each
@@ -107,10 +109,9 @@ class PhotosIntegration(Integration, Feed):
         waiting = self.remaining(cursor)
         note(f"Photos: indexing paused — {reason}")
         system_note("Photos", (
-            "Photo indexing is paused: the Gemini API key's prepaid credits are used up (HTTP 402)."
+            f"Photo indexing is paused: the indexing backend's prepaid credits are used up ({reason})."
             + (f" {waiting} photos and videos are waiting." if waiting else "")
-            + " Nothing is lost — once the Google AI Studio project is topped up, indexing resumes "
-              "by itself within 15 minutes."))
+            + " Nothing is lost — once the account is topped up, indexing resumes by itself within 15 minutes."))
 
     def _provider_back(self):
         from assistant.integration.FeedRunner import Feeds
@@ -119,13 +120,13 @@ class PhotosIntegration(Integration, Feed):
         runner = Feeds.get_instance().runner(self.feed_name)
         if runner is not None:
             runner.resume()
-        note("Photos: the Gemini key takes requests again — indexing resumed")
-        system_note("Photos", "Photo indexing has resumed: the Gemini API key accepts requests again.")
+        note("Photos: the indexing backend takes requests again — indexing resumed")
+        system_note("Photos", "Photo indexing has resumed: the indexing backend accepts requests again.")
 
     def check_health(self) -> bool:
         if self.state == IntegrationState.RATE_LIMITED:
             processor = self._processor or PhotoProcessor()
-            if not processor._get_llm().probe():
+            if not processor.probe_provider():
                 raise RuntimeError(self._last_error or "the indexing LLM still refuses requests")
             self._provider_back()
         if not os.path.exists(PHOTOS_SQLITE_PATH):

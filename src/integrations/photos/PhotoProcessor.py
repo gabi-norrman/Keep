@@ -353,12 +353,15 @@ class PhotoProcessor:
 
     def __init__(self, entry_sink: Optional[Callable[[FeedEntry], None]] = None):
         self._entry_sink = entry_sink
-        self._llm = None
+        self._llm = None             # the `photo_indexing` backend: the new assets, as the feed sees them
+        self._backfill_llm = None    # the `photo_backfill` backend: the catch-up, the sweep, a bulk run
+        self._clip_backend: Optional[AbstractLLM] = None   # the `video` tier's, for the clips those cannot take
+        self._clip_backend_asked = False
         self._llm_lock = threading.Lock()
-        self._pending_icloud: dict[str, tuple[dict, int]] = {}  # uuid -> (row, retry_count)
+        self._pending_icloud: dict[str, tuple[dict, int]] = {}  # uuid -> (row, retry_count); the row carries its pass
         self._icloud_lock = threading.Lock()
         self._refused_last_run: list[str] = []    # uuids the backend refused in the last process_rows
-        self._refuses_reasoning: bool | None = None   # the indexing backend's verdict on the "thinking" field, asked once
+        self._reasoning_logged: set[str] = set()  # backends reported as refusing the prompt's "thinking" field
 
     def remove_hidden_assets(self) -> int:
         """Drop indexed rows for assets the user has since hidden in Photos; returns how many."""
@@ -413,37 +416,90 @@ class PhotoProcessor:
             trace(f"Photos: could not count unindexed photos: {e}")
             return 0
 
-    def _get_llm(self) -> AbstractLLM:
-        """The indexing LLM, one for stills and videos alike: the `photo_indexing` tier, by
-        default Gemini 3.8 Flash — cheap enough for a backlog, and the only backend with native
-        video input. Built through create_llm() like every other backend: the analysis prompt
-        carries all of the memory bank, and only the VaultLLM wrapper keeps its secrets at home."""
-        if self._llm is None:
+    @staticmethod
+    def tier(backfill: bool) -> str:
+        """The LLM tier a pass runs on: `photo_backfill` for the catch-up, the sweep and a bulk
+        run, `photo_indexing` for the new assets the feed sees as they arrive."""
+        return 'photo_backfill' if backfill else 'photo_indexing'
+
+    def _get_llm(self, backfill: bool = False) -> AbstractLLM:
+        """The indexing LLM of a pass: the live one (`photo_indexing`, Sonnet by default — a few
+        new assets a day, described well) or the backfill's (`photo_backfill`, Haiku by default —
+        thousands of stills nobody is waiting for). Built through create_llm() like every other
+        backend: the analysis prompt carries all of the memory bank, and only the VaultLLM
+        wrapper keeps its secrets at home. A Claude model takes stills only; a clip then goes
+        to the `video` tier's backend (_clip_llm)."""
+        llm = self._backfill_llm if backfill else self._llm
+        if llm is None:
             with self._llm_lock:
-                if self._llm is None:
-                    name, model = parse_llm_config('photo_indexing')
+                llm = self._backfill_llm if backfill else self._llm
+                if llm is None:
+                    tier = self.tier(backfill)
+                    name, model = parse_llm_config(tier)
                     llm = create_llm(name, model)
                     llm.initialize()
-                    trace(f"Photos: using {name} ({model}) for photo and video indexing")
-                    self._llm = llm
-        return self._llm
+                    trace(f"Photos: using {name} ({model}) for the {tier} tier")
+                    if backfill:
+                        self._backfill_llm = llm
+                    else:
+                        self._llm = llm
+        return llm
+
+    def _clip_llm(self) -> Optional[AbstractLLM]:
+        """The backend for the clips the indexing backend cannot take: the `video` tier's
+        (Gemini by default; Claude has no video input), or None when that one takes no video
+        either or has no key yet — then the clips stay unindexed, said once."""
+        if not self._clip_backend_asked:
+            with self._llm_lock:
+                if not self._clip_backend_asked:
+                    self._clip_backend = self._build_clip_llm()
+                    self._clip_backend_asked = True
+        return self._clip_backend
+
+    @staticmethod
+    def _build_clip_llm() -> Optional[AbstractLLM]:
+        try:
+            name, model = parse_llm_config('video')
+            llm = create_llm(name, model)
+            if not llm.supports_video():
+                info(f"Photos: the indexing backend takes no video and neither does the video tier's {llm.name()} — clips stay unindexed")
+                return None
+            missing = llm.missing_api_key()
+            if missing:
+                info(f"Photos: clips go to {llm.name()} once {missing} is set — until then they stay unindexed")
+                return None
+            llm.initialize()
+            info(f"Photos: {llm.name()} (the video tier) describes the clips the indexing backend cannot take")
+            return llm
+        except Exception as e:
+            error(f"Photos: the video tier's backend could not be built ({e}) — clips stay unindexed")
+            return None
+
+    def _built_llms(self) -> list[AbstractLLM]:
+        return [llm for llm in (self._llm, self._backfill_llm) if llm is not None]
 
     def provider_unavailable(self) -> Optional[str]:
-        """Why the indexing backend refuses every request right now (out of credits, rate
+        """Why an indexing backend refuses every request right now (out of credits, rate
         limited), or None. Asked before a batch is downloaded and after one ran, so the feed
         can hold its cursor instead of moving past photos nobody described."""
-        return self._llm.unavailable() if self._llm is not None else None
+        return next((reason for llm in self._built_llms() if (reason := llm.unavailable())), None)
 
     def provider_out_of_credits(self) -> bool:
-        return self._llm is not None and self._llm.out_of_credits()
+        return any(llm.out_of_credits() for llm in self._built_llms())
 
-    def _indexing_backend_is_local(self) -> bool:
-        """Whether the indexing backend serves one request at a time. Decided before the first
+    def probe_provider(self) -> bool:
+        """Whether every indexing backend built so far takes requests again — the health
+        check's way out of RATE_LIMITED. With none built yet the live one is built and asked."""
+        return all(llm.probe() for llm in self._built_llms() or [self._get_llm()])
+
+    def _indexing_backend_is_local(self, backfill: bool = False) -> bool:
+        """Whether the pass's backend serves one request at a time. Decided before the first
         asset is touched, so it must not initialize a cloud client (that needs the API key) just
         to pick a worker count: like tier_api_key_name(), it builds the backend uninitialized."""
-        if self._llm is not None:
-            return self._llm.is_local()
-        name, model = parse_llm_config('photo_indexing')
+        llm = self._backfill_llm if backfill else self._llm
+        if llm is not None:
+            return llm.is_local()
+        name, model = parse_llm_config(self.tier(backfill))
         return create_llm(name, model).is_local()
 
     def unindexed_between(self, after_apple_ts: float, before_apple_ts: float, limit: int) -> list[dict]:
@@ -566,7 +622,7 @@ class PhotoProcessor:
             if not target_rows:
                 return ("none", err) if err else ("none", "No unprocessed photos found")
 
-            succeeded, failed = self.process_rows(target_rows, on_progress=on_progress)
+            succeeded, failed = self.process_rows(target_rows, on_progress=on_progress, batched=True)
             total = len(succeeded) + len(failed)
             if failed:
                 return ("error", f"Indexed {len(succeeded)}/{total} ({len(failed)} failed)")
@@ -579,13 +635,16 @@ class PhotoProcessor:
     def process_rows(self, rows: list, on_progress=None, batched: bool = False) -> tuple[list[str], list[str]]:
         """Index `rows` concurrently (PHOTO_THREADS stills, VIDEO_THREADS clips at a time) and
         wait for all of them. Assets whose original is still downloading from iCloud go to the
-        pending set for `_retry_icloud_pending`. With `batched` (the backfill) the stills go
-        through the batch API first and only the ones it did not answer run live; videos always
-        run live. Returns (descriptions stored, filenames failed); the rows the backend refused
+        pending set for `_retry_icloud_pending`. With `batched` (the catch-up, the sweep, a bulk
+        run) the rows go to the `photo_backfill` tier instead of `photo_indexing` — the pass
+        travels with the row, so an iCloud retry keeps it — and the stills through the batch API
+        first when that is on, only the ones it did not answer running one by one; videos
+        always run one by one. Returns (descriptions stored, filenames failed); the rows the backend refused
         (402 / 429) are in neither verdict but in `refused_last_run()`, so the feed holds its
         cursor for them even when a parallel worker's success or a lapsed backoff has cleared
         the shared outage by the time the batch is over."""
         t0 = time.time()
+        rows = [{**row, "backfill": batched} for row in rows]
         self._refused_last_run = []
         reason = self.provider_unavailable()
         if reason:
@@ -593,7 +652,7 @@ class PhotoProcessor:
             self._refused_last_run = [row["uuid"] for row in rows]
             return [], [row["filename"] for row in rows]
         num_videos = sum(1 for row in rows if row.get("kind") == "video")
-        local = self._indexing_backend_is_local()
+        local = self._indexing_backend_is_local(batched)
         photo_threads = LOCAL_PHOTO_THREADS if local else PHOTO_THREADS
         info(f"Photos: processing {len(rows) - num_videos} photo(s) with {photo_threads} threads"
              + (f" and {num_videos} video(s) with {VIDEO_THREADS} threads" if num_videos else "")
@@ -729,9 +788,10 @@ class PhotoProcessor:
         info(f"Photos: {len(prepared)} photo(s) ({size_mb:.1f} MB) go to the batch API, "
              f"{len(settled)} settled while preparing")
         t0 = time.time()
-        system = self._photo_system_prompt()
+        llm = self._get_llm(backfill=True)
+        system = self._photo_system_prompt(llm)
         try:
-            replies = self._get_llm().think_batched_with_images(
+            replies = llm.think_batched_with_images(
                 system, [(p.user_message, p.jpeg) for p in prepared], max_wait_seconds=BATCH_MAX_WAIT_SECONDS)
         except Exception as e:
             error(f"Photos: the batch failed ({e}) — these photos are indexed live")
@@ -908,7 +968,8 @@ class PhotoProcessor:
             return retry
         PhotoProcessor._worker.queued_s = 0.0
         result = self._analyze_with_llm(photo.jpeg, self._home_time(row["creation_ts"]), photo.location_text,
-                                        photo.albums, photo.persons, photo.photo_type)
+                                        photo.albums, photo.persons, photo.photo_type,
+                                        backfill=bool(row.get("backfill")))
         if result is None:
             error(f"Photos: {uuid} permanently failed LLM analysis, skipping")
             self._store_skipped(db, asset_guid, row["creation_ts"], row, reason="LLM analysis failed")
@@ -978,7 +1039,7 @@ class PhotoProcessor:
             self._store_skipped(db, asset_guid, creation_ts, row)
             return None, False
 
-        _, user_message = self._photo_prompt(self._home_time(creation_ts), location_text, albums, persons, photo_type)
+        user_message = self._photo_user_prompt(self._home_time(creation_ts), location_text, albums, persons, photo_type)
         return _PreparedPhoto(row=row, jpeg=jpeg_bytes, photo_type=photo_type, albums=albums, persons=persons,
                               location_text=location_text, user_message=user_message, started=t0), False
 
@@ -1027,11 +1088,13 @@ class PhotoProcessor:
             self._store_skipped(db, asset_guid, creation_ts, row, reason="video too long")
             return False
 
-        llm = self._get_llm()
+        llm = self._get_llm(bool(row.get("backfill")))
         if not llm.supports_video():
-            # Not stored as skipped: only a model swap can leave the clip unindexed, and the next one may take it.
-            info(f"Photos: {uuid} is a video but {llm.name()} cannot take video input, leaving it unindexed")
-            return False
+            llm = self._clip_llm()
+            if llm is None:
+                # Not stored as skipped: only the backends leave the clip unindexed, and a configured one may take it.
+                trace(f"Photos: {uuid} is a video and no backend at hand takes video input, leaving it unindexed")
+                return False
 
         try:
             downloaded = self._get_video_bytes(row, settings.max_bytes)
@@ -1062,7 +1125,7 @@ class PhotoProcessor:
         date_str = self._home_time(creation_ts)
 
         result = self._analyze_video_with_llm(video_bytes, mime_type, date_str, location_text,
-                                              albums, persons, video_type, duration)
+                                              albums, persons, video_type, duration, llm=llm)
         if result is None:
             error(f"Photos: video {uuid} permanently failed LLM analysis, skipping")
             self._store_skipped(db, asset_guid, creation_ts, row, reason="LLM analysis failed")
@@ -1107,9 +1170,11 @@ class PhotoProcessor:
         return f"video, {label}" if label else "video"
 
     def _analyze_video_with_llm(self, video_bytes: bytes, mime_type: str, date_str: str, location: str,
-                                albums: str, persons: str, video_type: str, duration: float) -> Optional[dict]:
+                                albums: str, persons: str, video_type: str, duration: float,
+                                llm: Optional[AbstractLLM] = None) -> Optional[dict]:
+        llm = llm or self._get_llm()
         system = self._for_backend(VIDEO_ANALYSIS_PROMPT_SYSTEM.format(
-            current_memory=self._escape_braces(self._read_memory() or "(no memory available)")))
+            current_memory=self._escape_braces(self._read_memory() or "(no memory available)")), llm)
         user = VIDEO_ANALYSIS_PROMPT_USER.format(
             date=date_str,
             location=self._escape_braces(location or "unknown"),
@@ -1118,7 +1183,6 @@ class PhotoProcessor:
             video_type=video_type,
             duration=f"{duration:.0f}",
         )
-        llm = self._get_llm()
         fps = short_clip_fps(duration)
         if fps:
             info(f"Photos: {duration:.1f}s clip is too short for Gemini's 1 frame/s default, sampling at {fps:.0f} fps")
@@ -1385,49 +1449,43 @@ class PhotoProcessor:
     def _escape_braces(text: str) -> str:
         return text.replace("{", "{{").replace("}", "}}")
 
-    def _photo_system_prompt(self) -> str:
+    def _photo_system_prompt(self, llm: AbstractLLM) -> str:
         """The part of a still's prompt that is the same for every photo: the instructions and the
         memory bank. Identical text from photo to photo is what a provider's prefix or explicit
         cache keys on, so nothing per-photo may go in here."""
         return self._for_backend(ANALYSIS_PROMPT_SYSTEM.format(
-            current_memory=self._escape_braces(self._read_memory() or "(no memory available)")))
+            current_memory=self._escape_braces(self._read_memory() or "(no memory available)")), llm)
 
-    def _for_backend(self, system: str) -> str:
-        """The prompt as the indexing backend can take it: whole for most, without the "thinking"
-        field for a model that refuses to be asked for its reasoning. Same answer for every photo
-        and clip of the process, so the cached prefix stays stable."""
-        return without_reasoning_field(system) if self._backend_refuses_reasoning() else system
-
-    def _backend_refuses_reasoning(self) -> bool:
-        if self._refuses_reasoning is None:
-            try:
-                # The live backend when there is one; otherwise the configured one, built
-                # uninitialized like indexing_is_local() does — no key, no network.
-                llm = self._llm or create_llm(*parse_llm_config('photo_indexing'))
-                self._refuses_reasoning = bool(llm.refuses_reasoning_requests())
-            except Exception as e:
-                trace(f"Photos: could not ask the indexing backend about reasoning requests ({e}), keeping the thinking field")
-                self._refuses_reasoning = False
-            if self._refuses_reasoning:
-                info(f"Photos: {llm.name()} refuses a prompt that asks for its reasoning — indexing without the thinking field")
-        return self._refuses_reasoning
+    def _for_backend(self, system: str, llm: AbstractLLM) -> str:
+        """The prompt as `llm` can take it: whole for most, without the "thinking" field for a
+        model that refuses to be asked for its reasoning (Sonnet, Opus and Fable; Haiku and Gemini
+        answer it). The verdict is the backend's own, by model name, so it costs no request; the
+        same text goes to a backend for every photo and clip, so its cached prefix stays stable."""
+        if not llm.refuses_reasoning_requests():
+            return system
+        if llm.name() not in self._reasoning_logged:
+            self._reasoning_logged.add(llm.name())
+            info(f"Photos: {llm.name()} refuses a prompt that asks for its reasoning — indexing without the thinking field")
+        return without_reasoning_field(system)
 
     def _photo_prompt(self, date_str: str, location: str, albums: str, persons: str,
-                      photo_type: str) -> tuple[str, str]:
-        """(system, user) for one still; the per-photo fields are all in the user half."""
-        user = ANALYSIS_PROMPT_USER.format(
+                      photo_type: str, llm: AbstractLLM) -> tuple[str, str]:
+        """(system, user) for one still on `llm`; the per-photo fields are all in the user half."""
+        return self._photo_system_prompt(llm), self._photo_user_prompt(date_str, location, albums, persons, photo_type)
+
+    def _photo_user_prompt(self, date_str: str, location: str, albums: str, persons: str, photo_type: str) -> str:
+        return ANALYSIS_PROMPT_USER.format(
             date=date_str,
             location=self._escape_braces(location or "unknown"),
             albums=self._escape_braces(albums or "none"),
             persons=self._escape_braces(persons or "none"),
             photo_type=photo_type,
         )
-        return self._photo_system_prompt(), user
 
     def _analyze_with_llm(self, jpeg_bytes: bytes, date_str: str, location: str,
-                          albums: str, persons: str, photo_type: str) -> Optional[dict]:
-        system, user = self._photo_prompt(date_str, location, albums, persons, photo_type)
-        llm = self._get_llm()
+                          albums: str, persons: str, photo_type: str, backfill: bool = False) -> Optional[dict]:
+        llm = self._get_llm(backfill)
+        system, user = self._photo_prompt(date_str, location, albums, persons, photo_type, llm)
 
         for attempt in range(2):
             try:

@@ -67,7 +67,7 @@ class TestParseLLMConfig:
         # No ai block at all: the cloud default (a Claude/Gemini model name) must not leak to Ollama.
         p, _ = self._patch_config(None, local_only=True)
         try:
-            for tier in ('fast', 'smart', 'vision', 'video', 'photo_indexing', 'memory_curator'):
+            for tier in ('fast', 'smart', 'vision', 'video', 'photo_indexing', 'photo_backfill', 'memory_curator'):
                 assert parse_llm_config(tier) == ('OllamaLLM', None)
         finally:
             p.stop()

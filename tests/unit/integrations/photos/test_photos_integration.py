@@ -1280,10 +1280,11 @@ class TestPhotosIntegration:
         return patch(f'{PI}.os.path.exists', return_value=True), patch(f'{PI}.sqlite3.connect', return_value=conn)
 
     @pytest.mark.unit
-    def test_name_and_config_keys_follow_the_photo_indexing_tier(self):
+    def test_name_and_config_keys_follow_the_two_indexing_tiers(self):
         # list_integrations once tagged Photos with the Anthropic key while it indexed on
-        # Gemini Flash (the tier default), and the FTUE assistant "rescued" the user from a
-        # $500 backfill that was never going to happen. The key must be the tier backend's.
+        # Gemini Flash (the tier default then), and the FTUE assistant "rescued" the user from a
+        # $500 backfill that was never going to happen. The keys must be the tier backends' —
+        # one when the live and the backfill tier share a provider, both otherwise.
         from integrations.photos.PhotosIntegration import PhotosIntegration
         integration = PhotosIntegration()
         assert integration.name == "Photos"
@@ -1293,6 +1294,9 @@ class TestPhotosIntegration:
             assert integration.config_keys == ["api_keys.anthropic"]
         with patch('assistant.llm.parse_llm_config', return_value=('OllamaLLM', None)):
             assert integration.config_keys == []
+        tiers = {'photo_indexing': ('ClaudeLLM', None), 'photo_backfill': ('GeminiLLM', None)}
+        with patch('assistant.llm.parse_llm_config', side_effect=tiers.__getitem__):
+            assert integration.config_keys == ["api_keys.anthropic", "api_keys.gemini"]
 
     @pytest.mark.unit
     def test_is_a_feed_under_the_history_source_name(self):
@@ -2077,6 +2081,9 @@ class _FakeVideoLLM:
     def supports_video(self):
         return self.supports
 
+    def refuses_reasoning_requests(self):
+        return False
+
     def name(self):
         return "FakeVideoLLM"
 
@@ -2106,10 +2113,11 @@ class TestPhotoProcessorVideo:
                 "kind_subtype": subtype, "kind": "video", "duration": duration,
                 "cloud_master_guid": "MASTER-1", "cloud_asset_guid": "VID-GUID", "library_scope": 0}
 
-    def _run(self, row, llm, download=None, download_error=None, store_photo_return=7):
+    def _run(self, row, llm, download=None, download_error=None, store_photo_return=7, clip_llm=None):
         from integrations.photos.PhotoProcessor import PhotoProcessor, VideoSettings
         processor = PhotoProcessor()
         processor._llm = llm
+        processor._clip_backend, processor._clip_backend_asked = clip_llm, True   # the `video` tier is never built here
         settings = VideoSettings(enabled=True, max_bytes=20 * 1024 * 1024, max_duration_seconds=300)
         get_bytes = Mock(return_value=download, side_effect=download_error)
 
@@ -2196,11 +2204,24 @@ class TestPhotoProcessorVideo:
 
     @pytest.mark.unit
     def test_llm_without_video_input_leaves_clip_unindexed(self):
+        """Neither the indexing backend nor the `video` tier's takes a clip: nothing is downloaded
+        and nothing stored, so a backend that does take video later finds the clip waiting."""
         llm = _FakeVideoLLM([], supports=False)
         needs_retry, db, get_bytes = self._run(self._row(), llm)
         assert needs_retry is False
         get_bytes.assert_not_called()
         db.store_photo.assert_not_called()
+
+    @pytest.mark.unit
+    def test_a_clip_the_indexing_backend_cannot_take_goes_to_the_video_tier(self):
+        """The default indexing backends are Claude, which has no video input: the clip is described
+        by the `video` tier's backend instead, and the indexing backend never sees it."""
+        indexing, clips = _FakeVideoLLM([], supports=False), _FakeVideoLLM([json.dumps(VIDEO_RESULT)])
+        needs_retry, db, get_bytes = self._run(self._row(), indexing, download=(b"mp4bytes", "video/mp4"),
+                                               clip_llm=clips)
+        assert needs_retry is False
+        assert indexing.calls == [] and len(clips.calls) == 1
+        assert db.store_photo.call_args.kwargs["short_description"] == "Frances sings"
 
     @pytest.mark.unit
     def test_too_large_is_stored_skipped(self):
@@ -2364,14 +2385,14 @@ class TestPhotoProcessorBulkVideoThrottle:
 
 
 # ---------------------------------------------------------------------------
-# PhotoProcessor — one indexing LLM, always Gemini 3.8 Flash, vault-wrapped
+# PhotoProcessor — two indexing LLMs, Sonnet for the new assets and Haiku for the backlog, vault-wrapped
 # ---------------------------------------------------------------------------
 
 class TestPhotoProcessorIndexingLlm:
-    """Backfill, new photos and videos all go to the `photo_indexing` tier — Gemini 3.8 Flash
-    unless config says otherwise — whatever the backlog size. The prompt carries all of
-    memory.md, so the LLM must come from create_llm(): the VaultLLM wrapper is what keeps the
-    vaulted values out of the provider."""
+    """A new asset the feed sees goes to the `photo_indexing` tier (Sonnet 5.5 unless config says
+    otherwise), the backlog — the catch-up, the sweep, a bulk run — to `photo_backfill` (Haiku 5.5),
+    whatever the backlog size. The prompt carries all of memory.md, so both LLMs must come from
+    create_llm(): the VaultLLM wrapper is what keeps the vaulted values out of the provider."""
 
     @staticmethod
     def _fake_backends(*names):
@@ -2388,7 +2409,7 @@ class TestPhotoProcessorIndexingLlm:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("unindexed", [10, 500])
-    def test_indexing_llm_defaults_to_gemini_flash_and_is_vault_wrapped(self, unindexed):
+    def test_indexing_defaults_to_sonnet_live_and_haiku_backfill_vault_wrapped(self, unindexed):
         from integrations.photos.PhotoProcessor import PhotoProcessor
         from assistant.llm.VaultLLM import VaultLLM
         from common.ConfigManager import config
@@ -2399,20 +2420,118 @@ class TestPhotoProcessorIndexingLlm:
                 raise KeyError(key)
             return real_get(key, default)
 
-        backend = Mock()
+        live, backfill = Mock(name="sonnet"), Mock(name="haiku")
         fakes, classes = self._fake_backends("GeminiLLM", "ClaudeLLM", "GrokLLM")
-        classes["GeminiLLM"].return_value = backend
+        classes["ClaudeLLM"].side_effect = [live, backfill]
         with fakes, \
              patch.object(PhotoProcessor, 'count_unindexed_photos', return_value=unindexed), \
              patch('assistant.llm.config.get', side_effect=no_ai_tiers):
             processor = PhotoProcessor()
-            llm = processor._get_llm()
-            assert processor._get_llm() is llm
-        assert isinstance(llm, VaultLLM) and llm.llm is backend
-        classes["GeminiLLM"].assert_called_once_with(model="gemini-3.8-flash")
-        backend.initialize.assert_called_once()
-        classes["ClaudeLLM"].assert_not_called()
+            live_llm, backfill_llm = processor._get_llm(), processor._get_llm(backfill=True)
+            assert processor._get_llm() is live_llm and processor._get_llm(backfill=True) is backfill_llm
+        assert isinstance(live_llm, VaultLLM) and live_llm.llm is live
+        assert isinstance(backfill_llm, VaultLLM) and backfill_llm.llm is backfill
+        assert [c.kwargs["model"] for c in classes["ClaudeLLM"].call_args_list] == ["claude-sonnet-5-5", "claude-haiku-5-5"]
+        live.initialize.assert_called_once()
+        backfill.initialize.assert_called_once()
+        classes["GeminiLLM"].assert_not_called()
         classes["GrokLLM"].assert_not_called()
+
+    def _two_backends(self):
+        """A processor whose live and backfill backends are two recording mocks, each answering
+        one still; returns (processor, live, backfill)."""
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        processor = PhotoProcessor()
+        backends = []
+        for name in ("live", "backfill"):
+            llm = Mock(name=name)
+            llm.is_local.return_value = False
+            llm.unavailable.return_value = None
+            llm.refuses_reasoning_requests.return_value = False
+            llm.background_wait_seconds.return_value = 0.0
+            llm.think.return_value = REPLY
+            backends.append(llm)
+        processor._llm, processor._backfill_llm = backends
+        return processor, backends[0], backends[1]
+
+    @staticmethod
+    def _still(uuid):
+        return {"uuid": uuid, "filename": f"{uuid}.heic", "kind": "photo", "cloud_asset_guid": f"G-{uuid}",
+                "creation_ts": 1_700_000_000.0, "latitude": None, "longitude": None, "kind_subtype": 0,
+                "directory": "0", "duration": None}
+
+    def _index(self, processor, rows, batched, prepare=None):
+        from integrations.photos import PhotoProcessor as module
+
+        def prepared(row, db):
+            return module._PreparedPhoto(row=row, jpeg=b"jpeg", photo_type="photo", albums="", persons="",
+                                         location_text="Home", user_message="photo", started=0.0), False
+
+        with patch.object(processor, '_prepare_photo', side_effect=prepare or prepared), \
+             patch.object(module.PhotoProcessor, '_read_memory', return_value=""), \
+             patch.object(processor, '_store_analysis', return_value=1), \
+             patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
+            mock_db.return_value.photo_exists.side_effect = lambda guid: False
+            processor.process_rows(rows, batched=batched)
+
+    @pytest.mark.unit
+    def test_a_backfill_runs_on_the_backfill_backend_and_a_live_fetch_on_the_live_one(self):
+        """The feed's verdict picks the backend: a catch-up or sweep (`batched`) describes on the
+        backfill tier, the new assets of an ordinary poll on the live tier."""
+        processor, live, backfill = self._two_backends()
+        self._index(processor, [self._still("OLD-1"), self._still("OLD-2")], batched=True)
+        assert backfill.think.call_count == 2 and live.think.call_count == 0
+        self._index(processor, [self._still("NEW-1")], batched=False)
+        assert live.think.call_count == 1 and backfill.think.call_count == 2
+
+    @pytest.mark.unit
+    def test_a_bulk_run_from_the_console_is_backfill_work(self):
+        processor, live, backfill = self._two_backends()
+        with patch.object(processor, '_retry_icloud_pending'), \
+             patch.object(processor, '_find_unprocessed', return_value=([self._still("B-1")], "")), \
+             patch.object(processor, 'process_rows', return_value=(["a barn"], [])) as rows:
+            assert processor.process_bulk_unprocessed(count=1)[0] == "ok"
+        assert rows.call_args.kwargs["batched"] is True
+
+    @pytest.mark.unit
+    def test_an_icloud_retry_keeps_the_pass_of_its_row(self):
+        """A backfill still whose original was not downloadable yet waits in the iCloud retry set;
+        when the download works on a later poll it is still backfill work, not a live asset."""
+        processor, live, backfill = self._two_backends()
+        from integrations.photos import PhotoProcessor as module
+        attempts = []
+
+        def flaky(row, db):
+            attempts.append(row["uuid"])
+            if len(attempts) == 1:
+                return None, True     # not local yet: retry later
+            return module._PreparedPhoto(row=row, jpeg=b"jpeg", photo_type="photo", albums="", persons="",
+                                         location_text="Home", user_message="photo", started=0.0), False
+
+        self._index(processor, [self._still("OLD-1")], batched=True, prepare=flaky)
+        assert "OLD-1" in processor._pending_icloud and backfill.think.call_count == 0
+        with patch.object(processor, '_prepare_photo', side_effect=flaky), \
+             patch.object(module.PhotoProcessor, '_read_memory', return_value=""), \
+             patch.object(processor, '_store_analysis', return_value=1), \
+             patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
+            mock_db.return_value.photo_exists.return_value = False
+            processor._retry_icloud_pending()
+        assert backfill.think.call_count == 1 and live.think.call_count == 0
+        assert "OLD-1" not in processor._pending_icloud
+
+    @pytest.mark.unit
+    def test_the_provider_verdicts_cover_both_backends(self):
+        """A refusal on either backend holds the feed's cursor; the health probe asks both."""
+        processor, live, backfill = self._two_backends()
+        backfill.unavailable.return_value = "prepaid credits are depleted (402)"
+        backfill.out_of_credits.return_value = True
+        live.out_of_credits.return_value = False
+        assert processor.provider_unavailable() == "prepaid credits are depleted (402)"
+        assert processor.provider_out_of_credits() is True
+        live.probe.return_value, backfill.probe.return_value = True, False
+        assert processor.probe_provider() is False
+        backfill.probe.return_value = True
+        assert processor.probe_provider() is True
 
     @pytest.mark.unit
     def test_a_configured_photo_indexing_tier_is_honoured(self):
@@ -2796,8 +2915,7 @@ class TestPhotosFeedProviderRefusal:
         from assistant.integration.Integration import IntegrationState
         integration, processor = self._opened("prepaid credits are depleted (402)", out_of_credits=True)
         self._fetch(integration)
-        llm = processor._get_llm.return_value
-        llm.probe.side_effect = [False, True]
+        processor.probe_provider.side_effect = [False, True]
         with patch('assistant.integration.FeedRunner.Feeds.get_instance') as feeds, \
              patch('assistant.SystemNote.system_note') as note, \
              patch(f'{PI}.os.path.exists', return_value=True), \
@@ -2843,7 +2961,8 @@ class TestPhotosFeedProviderRefusal:
         assert MemoryFile.is_placeholder(stub), "the shipped stub must be recognised as uncurated"
         with patch.object(MemoryFile, "read", return_value=stub):
             assert PhotoProcessor._read_memory() == ""
-            assert "(no memory available)" in PhotoProcessor()._photo_system_prompt()
+            backend = Mock(refuses_reasoning_requests=Mock(return_value=False))
+            assert "(no memory available)" in PhotoProcessor()._photo_system_prompt(backend)
         with patch.object(MemoryFile, "read", return_value="Marcus lives at Storgatan 1"):
             assert PhotoProcessor._read_memory() == "Marcus lives at Storgatan 1"
 
@@ -2853,8 +2972,8 @@ REPLY = '{"short_description":"a barn","detailed_description":"red barn","pretty
 
 @pytest.mark.unit
 class TestBatchedBackfill:
-    """The catch-up's stills go through the batch API (half price); whatever it does not answer,
-    and every video, runs on the live path as before."""
+    """The catch-up's stills go through the batch API (half price) of the backfill backend;
+    whatever it does not answer, and every video, runs one by one as before."""
 
     @staticmethod
     def _rows(n, kind="photo"):
@@ -2870,7 +2989,7 @@ class TestBatchedBackfill:
     def _processor(self, module, llm):
         llm.unavailable.return_value = None
         processor = module.PhotoProcessor()
-        processor._llm = llm
+        processor._llm = processor._backfill_llm = llm
         return processor
 
     def test_stills_go_out_as_one_batch_and_only_the_unanswered_run_live(self):

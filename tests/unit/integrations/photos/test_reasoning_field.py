@@ -33,6 +33,10 @@ class _Backend(AbstractLLM):
     def create_streaming_completion(self, messages, thinking=False, volatile_tail=0):
         yield ""
 
+    def think(self, system_message, user_message, images=None, background=False):
+        self.photo_system = system_message
+        return '{"short_description": "a", "detailed_description": "b", "pretty_score": 1, "family_importance_score": 2}'
+
     def initialize(self):
         return True
 
@@ -54,8 +58,8 @@ def test_only_the_thinking_field_goes(prompt):
 
 def test_a_refusing_backend_gets_the_photo_prompt_without_the_field():
     with patch.object(PhotoProcessor, "_read_memory", return_value="Marcus likes boats"):
-        assert '"thinking"' not in _processor(True)._photo_system_prompt()
-        assert '"thinking"' in _processor(False)._photo_system_prompt()
+        assert '"thinking"' not in PhotoProcessor()._photo_system_prompt(_Backend(True))
+        assert '"thinking"' in PhotoProcessor()._photo_system_prompt(_Backend(False))
 
 
 def test_the_video_prompt_follows_the_same_verdict():
@@ -66,20 +70,16 @@ def test_the_video_prompt_follows_the_same_verdict():
         assert ('"thinking"' in processor._llm.video_system) is not refuses
 
 
-def test_the_verdict_is_asked_once_and_without_building_a_client():
-    """Before the backend is built the question goes to an uninitialized instance of the
-    configured one, the way the worker count is decided; the answer is then kept."""
+def test_each_pass_gets_the_verdict_of_its_own_backend():
+    """The defaults differ on purpose — Sonnet (live) refuses the field, Haiku (backfill) answers
+    it — so the prompt is cut per backend, not once per processor, and no backend is built for
+    the question: the verdict is a property of the model name."""
     processor = PhotoProcessor()
-    backend = _Backend(True)
-    with patch("integrations.photos.PhotoProcessor.parse_llm_config", return_value=("X", "m")) as cfg, \
-         patch("integrations.photos.PhotoProcessor.create_llm", return_value=backend) as build:
-        assert processor._backend_refuses_reasoning() is True
-        assert processor._backend_refuses_reasoning() is True
-    assert cfg.call_count == 1 and build.call_count == 1
-    assert processor._llm is None, "asking must not stand in for building the indexing LLM"
-
-
-def test_a_backend_that_cannot_be_built_keeps_the_field():
-    processor = PhotoProcessor()
-    with patch("integrations.photos.PhotoProcessor.parse_llm_config", side_effect=RuntimeError("no config")):
-        assert processor._backend_refuses_reasoning() is False
+    processor._llm, processor._backfill_llm = _Backend(True), _Backend(False)
+    with patch.object(PhotoProcessor, "_read_memory", return_value=""), \
+         patch("integrations.photos.PhotoProcessor.create_llm") as build:
+        processor._analyze_with_llm(b"jpeg", "2026-10-19", "Home", "none", "none", "photo", backfill=False)
+        processor._analyze_with_llm(b"jpeg", "2026-10-19", "Home", "none", "none", "photo", backfill=True)
+    build.assert_not_called()
+    assert '"thinking"' not in processor._llm.photo_system
+    assert '"thinking"' in processor._backfill_llm.photo_system

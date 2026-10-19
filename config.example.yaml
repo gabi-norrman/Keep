@@ -162,7 +162,7 @@ feeds:
   # last edit. Read live: a change is in force at the next poll.
   google_docs: { backfill_months: 1, poll_seconds: 600 }
   whatsapp: { backfill_months: 36 }    # read at linking time: the phone uploads that much history once, when the device links
-  photos: { backfill_months: 1, backfill_batch: false }   # one LLM call per photo or video, on the ai.photo_indexing tier (Gemini 3.8 Flash by default)
+  photos: { backfill_months: 1, backfill_batch: false }   # one LLM call per photo or video: new ones on the ai.photo_indexing tier (Sonnet), the backlog on ai.photo_backfill (Haiku), clips on ai.video
   # On a fresh install the first-run pipeline raises photos to 36 once the first memory bank is curated
   # (plans/FTUE_PIPELINE_PLAN.md); a wider value set by hand is left alone.
   # backfill_batch: true sends the stills of a catch-up fetch through the provider's batch API — every
@@ -347,12 +347,15 @@ wake_word_near_misses: [mission, missions, we shall]
 #                           # Feed. Unset: no tips are posted.
 #  cache_auditor:
 #    llm: OllamaLLM
-#  photo_indexing:         # indexes Apple Photos stills and videos, one call each (thousands on a backfill).
-#    llm: GeminiLLM         # Needs native video input for the videos, so Gemini is the only full backend.
-#                           # A Claude model indexes the stills only (Haiku 5.5 is the cheapest of all); Sonnet,
-#                           # Opus and Fable refuse to be asked for their reasoning, so the indexer drops the
-#                           # prompt's "thinking" field for them by itself.
-#    # model: gemini-3.8-flash
+#  photo_indexing:         # describes each new Apple Photos still as it arrives, one call each — a few a day,
+#    llm: ClaudeLLM         # so the model that describes best for the money (Sonnet 5.5). A Claude model takes
+#    # model: claude-sonnet-5-5   # stills only: the clips go to the `video` tier's backend (Gemini) when it has a
+#                           # key, and stay unindexed otherwise. Sonnet, Opus and Fable refuse to be asked for
+#                           # their reasoning, so the indexer drops the prompt's "thinking" field for them itself.
+#  photo_backfill:         # the backlog — thousands of stills on a first run, the sweep behind the cursor and a
+#    llm: ClaudeLLM         # bulk run from the console; nobody waits for it, so the cheapest model that describes
+#    # model: claude-haiku-5-5    # well (Haiku 5.5). GeminiLLM / gemini-3.8-flash on either tier indexes its
+#                           # videos natively, no `video` tier needed.
 #  code_quality:            # model for the nightly Claude Code CLI runs (CodeQualityMaintainer)
 #    model: claude-fable-5-1
 
