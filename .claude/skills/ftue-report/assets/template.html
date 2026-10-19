@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TESTER}} FTUE</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1b1f24;--muted:#5f6b7a;--line:#e3e7ec;--accent:#2457c5;--user:#dbe8ff;--asst:#ffffff;--pro:#fff4d6;--warn:#b54708;--ok:#1e7f4f;--bad:#b42318;--sys:#eef1f5;--code:#f1f3f6}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1216;--card:#171b21;--ink:#e6e9ee;--muted:#9aa5b4;--line:#2a313b;--accent:#7fa6ff;--user:#1f3660;--asst:#1d232b;--pro:#3a2f12;--sys:#1a2029;--code:#232a34}}
+:root[data-theme="dark"]{--bg:#0f1216;--card:#171b21;--ink:#e6e9ee;--muted:#9aa5b4;--line:#2a313b;--accent:#7fa6ff;--user:#1f3660;--asst:#1d232b;--pro:#3a2f12;--sys:#1a2029;--code:#232a34}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:32px 16px 80px}
+h1{font-size:28px;margin:0 0 4px}
+h2{font-size:21px;margin:40px 0 12px;padding-top:8px;border-top:1px solid var(--line)}
+h3{font-size:16px;margin:22px 0 8px}
+.sub{color:var(--muted);margin-bottom:20px}
+nav a{margin-right:14px;color:var(--accent);text-decoration:none;font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:12px 0}
+.verdict{border-left:5px solid var(--warn)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.tile .v{font-size:22px;font-weight:600}
+.tile .l{color:var(--muted);font-size:13px}
+.pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600;vertical-align:middle;background:var(--sys)}
+.ok{background:#d7f3e3;color:var(--ok)}.warn{background:#ffe9d1;color:var(--warn)}.bad{background:#fde1df;color:var(--bad)}
+@media (prefers-color-scheme:dark){.ok{background:#15382a}.warn{background:#3d2a12}.bad{background:#3d1a18}}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:13px}
+code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13px}
+pre{white-space:pre-wrap;background:var(--code);padding:12px;border-radius:8px;font-size:12.5px;line-height:1.45;max-height:420px;overflow:auto}
+.tl{list-style:none;margin:0;padding:0 0 0 18px;border-left:2px solid var(--line)}
+.tl li{position:relative;padding:4px 0 10px 16px}
+.tl li::before{content:"";position:absolute;left:-7px;top:12px;width:10px;height:10px;border-radius:50%;background:var(--muted)}
+.tl li.ok::before{background:var(--ok)}.tl li.bad::before{background:var(--bad)}.tl li.warn::before{background:var(--warn)}
+.tl .t{font-variant-numeric:tabular-nums;color:var(--muted);margin-right:8px;font-size:13px}
+.tl h4{margin:18px 0 6px -18px;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;background:var(--bg);display:inline-block;padding-right:8px}
+.finding{border-left:4px solid var(--line)}
+.finding.sev-high{border-left-color:var(--bad)}.finding.sev-med{border-left-color:var(--warn)}.finding.sev-low{border-left-color:var(--muted)}
+.finding h3{margin-top:0}
+.finding .rec{margin-top:8px;padding:8px 10px;background:var(--sys);border-radius:8px}
+.finding .rec b{color:var(--accent)}
+.chat{margin-top:8px}
+.daybreak{text-align:center;margin:28px 0 14px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-size:13px}
+.gap{text-align:center;color:var(--muted);font-size:13px;margin:14px 0}
+.msg{display:flex;flex-direction:column;margin:10px 0;max-width:84%}
+.msg.user{align-self:flex-end;margin-left:auto;align-items:flex-end}
+.msg .who{font-size:12.5px;color:var(--muted);margin:0 6px 3px}
+.msg .bubble{padding:10px 14px;border-radius:14px;border:1px solid var(--line);background:var(--asst)}
+.msg.user .bubble{background:var(--user);border-color:transparent;border-bottom-right-radius:4px;font-size:16px}
+.msg.assistant .bubble{border-bottom-left-radius:4px}
+.msg.proactive .bubble{background:var(--pro)}
+.msg .time{font-variant-numeric:tabular-nums}
+.msg .src{opacity:.7}
+.cmds{font-size:12px;color:var(--muted);margin:0 6px 4px}
+.chip{display:inline-block;background:var(--code);border-radius:5px;padding:0 6px;margin:1px 2px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+.note{font-size:12.5px;color:var(--warn);margin:4px 6px 0;max-width:420px}
+.evt{background:var(--sys);border:1px dashed var(--line);border-radius:10px;padding:8px 12px;margin:14px 0;font-size:13.5px}
+.evt .time{color:var(--muted);font-variant-numeric:tabular-nums;margin-right:6px}
+.evt.restart{border-style:solid}
+.evt.integ{border-color:var(--ok)}
+.evt.tabs ul{margin:6px 0 0;padding-left:18px;columns:2;font-size:12.5px}
+.evt.tabs .dwell{color:var(--muted);margin-left:6px}
+details.prompt{margin-top:6px}
+details.prompt summary{cursor:pointer;color:var(--accent);font-size:13px}
+.chat a{color:var(--accent)}
+.legend{font-size:13px;color:var(--muted);margin-bottom:10px}
+.legend span{display:inline-block;margin-right:14px}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:4px;border:1px solid var(--line)}
+@media (max-width:600px){.msg{max-width:96%}.evt.tabs ul{columns:1}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>{{TESTER}} · first-time user experience</h1>
+<div class="sub">Keep closed beta · install <code>{{DISTINCT_ID}}</code> · {{N_EVENTS}} PostHog events from {{FIRST}} to {{LAST_EV}} · all times Swedish local (Europe/Stockholm) · generated {{GEN}}</div>
+<nav><a href="#summary">Summary</a><a href="#timeline">Timeline</a><a href="#findings">Findings</a><a href="#transcript">Chat transcript</a><a href="#appendix">Appendix</a></nav>
+
+{{ANALYSIS}}
+
+<h2 id="transcript">Chat transcript</h2>
+<div class="legend"><span><i class="sw" style="background:var(--user)"></i>{{USER}}</span><span><i class="sw" style="background:var(--asst)"></i>{{ASSISTANT}} (assistant)</span><span><i class="sw" style="background:var(--pro)"></i>proactive message from the assistant</span><span><i class="sw" style="background:var(--sys)"></i>server event</span></div>
+<p style="color:var(--muted);font-size:13.5px">Every server start injects the FTUE instructions as a hidden "user" turn; those are shown as grey server events and can be expanded. Assistant replies that ran commands show them as chips; the arguments never leave the machine. Status and daily heartbeat events are in the appendix.</p>
+<div class="chat">
+{{TRANSCRIPT}}
+</div>
+
+<h2 id="appendix">Appendix</h2>
+<div class="card"><h3 style="margin-top:0">Event counts</h3><table><tr><th>Event</th><th>Count</th></tr>{{COUNT_TABLE}}</table></div>
+<div class="card"><h3 style="margin-top:0">Server starts and heartbeats</h3><table><tr><th>Time</th><th>Kind</th><th>Version</th><th>Integrations on</th></tr>{{HB_TABLE}}</table></div>
+{{MEMORY_TABLE}}
+<div class="card"><h3 style="margin-top:0">Hourly status events</h3><p style="color:var(--muted);font-size:13.5px;margin-top:0">Prompt size in KB per section. The feeds column shows what each running feed holds; an empty map means no feed reported a count.</p><table><tr><th>Time</th><th>Integrations</th><th>Feeds</th><th>Prompt KB</th><th>History KB</th><th>Memory KB</th></tr>{{STATUS_TABLE}}</table></div>
+<div class="card"><h3 style="margin-top:0">Method</h3><p style="margin:0">Source: PostHog EU project 294736, HogQL <code>select … from events where distinct_id = '{{DISTINCT_ID}}'</code>. Transcript text is what Keep's telemetry sends during the first seven days of an install, after vault redaction. Times converted from UTC to Europe/Stockholm.</p></div>
+</div>
+</body>
+</html>
