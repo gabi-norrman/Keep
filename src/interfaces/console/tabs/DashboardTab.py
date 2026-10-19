@@ -1041,9 +1041,10 @@ class DashboardTab(TabView):
 
     def _draw_cost_summary(self, screen: TUIScreen, x: int, y: int, width: int):
         """The title strip's right end: the month's total, then yesterday's cost per workspace,
-        each figure in the colour its bars have so the reader can tell which is which."""
+        each workspace figure in the colour its bars have so the reader can tell which is
+        which. The totals are in the label grey: a coloured total reads as one workspace's."""
         yesterday = self.daily_costs.get(self.cost_date_strs[-2], {}) if len(self.cost_date_strs) >= 2 else {}
-        pieces = [(f"Month ${self.total_cost_30d:.0f}", Theme.COLOR_CYAN), (" \u00b7 ", Theme.COLOR_FAINT),
+        pieces = [(f"Month ${self.total_cost_30d:.0f}", Theme.COLOR_LABEL), (" \u00b7 ", Theme.COLOR_FAINT),
                   ("Day ", Theme.COLOR_LABEL)]
         for mi, w in enumerate(self.cost_workspaces):
             if mi:
