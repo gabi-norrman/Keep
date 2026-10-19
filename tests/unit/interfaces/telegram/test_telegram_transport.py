@@ -321,7 +321,32 @@ class TestLifecycle:
         assert app.bot.send_message.await_args.kwargs["chat_id"] == 100
         assert app.bot.send_message.await_args.kwargs["text"] == "Server is up again"
 
-    def test_a_bot_that_never_comes_up_drops_what_it_held(self):
+    def test_a_startup_error_is_retried_and_the_held_send_goes_out_once_the_bot_is_up(self):
+        """A 429 on the first getMe after a quick restart must not end the bot for good: the
+        thread tries again after the wait Telegram names, and the announcement held while
+        it connected is still delivered."""
+        from telegram.error import RetryAfter
+        t = _make_transport(running=False)
+        t.START_RETRY_MAX_SECONDS = 0.01
+        app, builder, _ = self._mock_application()
+        app.initialize = AsyncMock(side_effect=[RetryAfter(5), None])
+        app.bot.send_message = AsyncMock(return_value=MagicMock(message_id=42))
+        errors = []
+        with patch('telegram.ext.ApplicationBuilder', return_value=builder), \
+             patch(f'{MODULE}.error', lambda msg: errors.append(msg)):
+            t.start(MagicMock())
+            assert t.send_text(100, "Server is up again") is True
+            deadline = time.monotonic() + 5
+            while t._stop_event is None and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert t._stop_event is not None, "bot never came up"
+            t.stop()
+        assert app.initialize.await_count == 2
+        assert app.bot.send_message.await_args.kwargs["text"] == "Server is up again"
+        assert len(errors) == 1 and "retrying" in errors[0]
+        assert not t._thread.is_alive()
+
+    def test_stop_during_the_retry_wait_ends_the_thread_and_drops_what_it_held(self):
         t = _make_transport(running=False)
         app, builder, _ = self._mock_application()
         app.initialize = AsyncMock(side_effect=OSError("no route to host"))
@@ -331,12 +356,47 @@ class TestLifecycle:
             ran.append(True)
 
         with patch('telegram.ext.ApplicationBuilder', return_value=builder), patch(f'{MODULE}.error'):
-            t._running = True
-            t._connecting = True
+            t.start(MagicMock())
             assert t._schedule(coro(), "send") is True
-            t._run()
+            deadline = time.monotonic() + 5
+            while not app.initialize.await_count and time.monotonic() < deadline:
+                time.sleep(0.005)
+            t.stop()
+        assert not t._thread.is_alive()
         assert ran == [] and t._held == []
         assert t._connecting is False
+
+    def test_the_retry_delay_follows_telegram_then_grows(self):
+        from telegram.error import RetryAfter
+        t = _make_transport(running=False)
+        assert t._start_retry_seconds(RetryAfter(5), 1) == 6
+        assert t._start_retry_seconds(RetryAfter(10_000), 1) == t.START_RETRY_MAX_SECONDS
+        assert t._start_retry_seconds(OSError("x"), 1) == t.START_RETRY_BASE_SECONDS
+        assert t._start_retry_seconds(OSError("x"), 3) == t.START_RETRY_BASE_SECONDS * 4
+        assert t._start_retry_seconds(OSError("x"), 50) == t.START_RETRY_MAX_SECONDS
+
+    def test_a_crash_once_the_bot_is_up_is_not_retried(self):
+        t = _make_transport(running=False)
+        app, builder, _ = self._mock_application()
+        app.updater.stop = AsyncMock(side_effect=RuntimeError("boom"))
+        errors = []
+        with patch('telegram.ext.ApplicationBuilder', return_value=builder), \
+             patch(f'{MODULE}.error', lambda msg: errors.append(msg)), patch(f'{MODULE}.trace') as trace:
+            self._start_and_stop(t, builder)
+        assert not t._thread.is_alive()
+        assert app.initialize.await_count == 1
+        assert errors == [] and any("boom" in str(c) for c in trace.call_args_list)
+
+    def test_health_fails_when_the_bot_thread_is_dead(self):
+        t = _make_transport(running=False)
+        t._running = True
+        t._thread = MagicMock(is_alive=MagicMock(return_value=False))
+        with patch(f'{MODULE}.requests.get') as get, patch(f'{MODULE}.error'):
+            assert t.check_health() is False
+            get.assert_not_called()
+        t._thread.is_alive.return_value = True
+        with patch(f'{MODULE}.requests.get', return_value=MagicMock(status_code=200)):
+            assert t.check_health() is True
 
 
 @pytest.mark.unit
@@ -1154,6 +1214,14 @@ class TestStatusLine:
         t = _make_transport(running=False)
         with patch(f'{MODULE}.asyncio.run_coroutine_threadsafe') as rcts:
             t.set_status_line(111, "x")
+            rcts.assert_not_called()
+
+    def test_a_group_never_gets_a_status_line(self, transport):
+        """The line names what the assistant does (a remember is "Saving to memory: …") in
+        front of the group's guests; it is the owners' like the approval cards."""
+        with patch(f'{MODULE}.asyncio.run_coroutine_threadsafe') as rcts:
+            transport.set_status_line(-100500, " • <i>Saving to memory…</i>")
+            transport.set_status_line(-100500, None)
             rcts.assert_not_called()
 
     @pytest.mark.asyncio
