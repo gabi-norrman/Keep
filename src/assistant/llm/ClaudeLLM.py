@@ -63,6 +63,13 @@ class ClaudeLLM(AbstractLLM):
     # to the top of the prompt (prefers_prepended_user_query) and a byte-stable trailing turn.
     PREFIX_CACHED_MODEL_PREFIXES = ("claude-fable", "claude-opus-5-5")
 
+    # The contract: every Claude request runs at high effort. The API's own default is high
+    # on most models but medium on Opus 5.5 and Haiku 5.5, so it is sent explicitly on the
+    # families that take the parameter. Constant across a conversation — a change mid-dialog
+    # would invalidate the message cache.
+    EFFORT = "high"
+    EFFORT_MODEL_PREFIXES = ALWAYS_THINKING_MODEL_PREFIXES + ("claude-haiku-5",)
+
     # CACHE_BREAKPOINT_MARKER is inherited from AbstractLLM.
     # Anthropic allows 4 cache_control breakpoints per request; _build_api_params
     # reserves one for the message-history breakpoint, leaving 3 for the system
@@ -329,6 +336,8 @@ class ClaudeLLM(AbstractLLM):
 
         if thinking:
             api_params['thinking'] = {"type": "adaptive"}
+        if self.model.startswith(self.EFFORT_MODEL_PREFIXES):
+            api_params['output_config'] = {"effort": self.EFFORT}
 
         return api_params
 

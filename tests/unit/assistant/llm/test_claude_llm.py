@@ -490,6 +490,25 @@ def _batch_llm(statuses: list[str], outcome: str = "succeeded", message=None) ->
 MESSAGES = [{'role': 'system', 'content': 'curate'}, {'role': 'user', 'content': 'now'}]
 
 
+class TestEffort:
+    """The wire contract with the Messages API: every request on a model whose effort default
+    may be below high carries output_config.effort = high; a model without the parameter gets none."""
+
+    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"])
+    def test_api_contract_high_effort_sent_on_5_generation_models(self, model):
+        params = ClaudeLLM(model)._build_api_params(MESSAGES, thinking=False, stream=True)
+        assert params['output_config'] == {"effort": "high"}
+
+    def test_api_contract_no_effort_on_a_model_that_rejects_it(self):
+        params = ClaudeLLM("claude-sonnet-4-5")._build_api_params(MESSAGES, thinking=False, stream=True)
+        assert 'output_config' not in params
+
+    def test_effort_rides_along_with_thinking(self):
+        params = ClaudeLLM("claude-opus-5-5")._build_api_params(MESSAGES, thinking=True, stream=False)
+        assert params['thinking'] == {"type": "adaptive"}
+        assert params['output_config'] == {"effort": "high"}
+
+
 @patch('assistant.llm.ClaudeLLM.time.sleep')
 class TestBatchedCompletion:
     def test_reply_comes_from_the_batch_once_it_has_ended(self, _sleep):
