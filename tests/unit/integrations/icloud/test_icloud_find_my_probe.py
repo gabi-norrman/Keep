@@ -341,7 +341,6 @@ class TestVerdictLifetime:
         assert api.get_auth_status()["status"] == "authenticated"
         assert len(api.get_icloud_devices()) == 1
 
-    @pytest.mark.xfail(strict=True, reason="a reauth or error FindMyProbe is recorded with complete=False, so a complete listing (get_icloud_devices) inside the TTL never takes it from the cache and probes Find My again")
     def test_a_reauth_verdict_inside_the_ttl_serves_the_next_listing_without_a_request(self, api):
         """The verdict is cached so the table and the listing share one request; a refused
         request repeated for a verdict that cannot change is the pattern that got the account

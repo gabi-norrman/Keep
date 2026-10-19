@@ -659,7 +659,10 @@ class ICloudIntegration(Integration):
         calls this on a timer."""
         with self._probe_lock:
             cached = self._find_my_probe
-            if (cached and not force and (cached.complete or not complete)
+            # Only an ok verdict carries a device list that can be incomplete; a reauth or an
+            # error inside the TTL is served as it is — repeating the refused request is what
+            # got the account locked
+            if (cached and not force and (cached.verdict != "ok" or cached.complete or not complete)
                     and time.time() - cached.at < self.FIND_MY_PROBE_TTL_SECONDS):
                 return cached
             probe = self._probe_find_my_now(complete)
