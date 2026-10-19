@@ -1882,9 +1882,6 @@ class TestNightlyUpdateFailures:
             maintainer._run()
         run.assert_called_once()
 
-    @pytest.mark.xfail(strict=True, reason="_merge_test_prs runs outside _step_generate_tests' try/except: a git checkout "
-                                           "that times out in its finally raises out of the step, and the fix list Claude "
-                                           "wrote never reaches the fix step")
     @patch.object(CodeQualityMaintainer, '_run_claude', return_value="| Major | baz.py:7 | test_x pins it | guard None |")
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
     def test_a_merge_that_raises_after_the_test_generation_keeps_the_fix_list(self, mock_run, mock_claude, maintainer):

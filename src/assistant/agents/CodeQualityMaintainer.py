@@ -1069,7 +1069,12 @@ class CodeQualityMaintainer:
         finally:
             CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
         info("CodeQualityMaintainer: merging the test PR before the fix step...")
-        merged, _ = self._merge_test_prs()
+        try:
+            merged, _ = self._merge_test_prs()
+        except Exception as e:
+            # The report holds the fix list the fix step reads; a merge that raises must not lose it
+            error(f"CodeQualityMaintainer: merging the test PR failed, the report is kept: {e}")
+            merged = None
         if merged:
             report += "\n\n## Merged into master\n\n" + "\n".join(merged)
         else:
