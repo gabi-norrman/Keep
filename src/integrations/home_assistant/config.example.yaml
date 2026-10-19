@@ -1,8 +1,30 @@
 # Home Assistant as the house (plans/HOME_ASSISTANT_PLAN.md); enable with `enabled_integrations: [Home Assistant]`.
 # One websocket to the server carries the state, the commands and the event feed.
+#
+# Running HA beside Keep — tips:
+# - HA in Docker or OrbStack on a Mac: --network=host is the VM's network, not the Mac's, so mDNS/zeroconf
+#   discovery never finds anything — add devices by IP. Run the container with --restart unless-stopped so it
+#   comes back after a reboot.
+# - Set internal_url and external_url in HA (Settings → System → Network), e.g. to a Tailscale MagicDNS name;
+#   otherwise the HA phone app and its push notifications fail away from home. `url` below is Keep's own and
+#   may be the same address.
+# - Yes/No push notifications are HA's own: an automation calls notify.mobile_app_<device> with data.actions
+#   and the answer comes back as a mobile_app_notification_action event. Keep neither sends these nor sees
+#   the event (it follows state changes only) — let the automation act on it, or set an input_boolean Keep
+#   can read. On iOS the buttons show when the notification is long-pressed.
+# - Watch sensors in HA, not in Keep: "when sensor X crosses Y, do Z" is an HA automation. Asking Keep to
+#   watch it means a full model round on every check.
 home_assistant:
   url: http://homeassistant.local:8123   # the base URL of the server, http or https; the websocket path is derived
   token: YOUR_HOME_ASSISTANT_LONG_LIVED_TOKEN  # Profile → Security → Long-lived access tokens; an admin user's token also gets the registry events and who acted
-  exposed_only: true    # true: only entities exposed to Assist (Settings → Voice assistants → Expose) reach the prompt — HA exposes lights, switches, covers, fans, scenes and climate by default, but not locks, input helpers, persons, scripts or automations, so expose those there; false: every light, switch, lock, sensor, input helper, person, scene, script and automation
+  # true: only what Assist sees (Settings → Voice assistants → Expose) — your choice per entity, else HA's default:
+  #   lights, switches, covers, fans, climate, media players and scenes, door/window/motion/presence/lock binary
+  #   sensors and temperature/humidity/air-quality sensors; not locks, other sensors, input helpers, persons,
+  #   scripts or automations (expose those there), never a hidden or disabled entity, nothing new when
+  #   "expose new entities" is off.
+  # false: every light, switch, fan, cover, lock, sensor, binary sensor, climate, media player, weather, input
+  #   helper, person, scene, script, button and automation, hidden ones included.
+  # Either way other domains (cameras, device trackers, updates, …) never reach Keep.
+  exposed_only: true
   # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
   prompt_filters: []
