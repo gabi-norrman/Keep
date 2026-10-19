@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import pathlib
@@ -21,6 +22,7 @@ from common.Paths import ICLOUD_SESSION_DIR
 from assistant.tools.Geocoding import reverse_geocode
 from common.RateLimiter import RateLimiter
 from assistant.integration.Integration import Integration, IntegrationState
+from assistant.integration import SmsCodeReader
 from common.logging import info, error, note, trace, fine
 
 _EXC_LOG_LIMIT = 300
@@ -251,8 +253,15 @@ class ICloudIntegration(Integration):
     Find My on a timer (a command does), every password sign-in is one this class runs and
     completes with the code Apple texts (pyicloud's own re-auth is disabled), and a refusal from
     Apple parks sign-ins — in a file, across restarts — until the user confirms the account is
-    usable again."""
+    usable again. A park is tied to the credentials it was earned with: a new apple_id or
+    password lifts it, since a typo on the first set-up is not a security refusal.
+
+    The auto-2FA flow needs a reader of the Mac's text messages (`SmsCodeReader`, iMessage):
+    with none live no code is requested on a timer — the user enters the one Apple sent, through
+    the assistant (icloud_login_code) or the console's iCloud tab."""
     sensitive = True
+    login_hint = ("Apple texted a 6-digit code: the user tells it to the assistant, which runs "
+                  "icloud_login_code(code), or types it in the console's iCloud tab (Ctrl-E)")
 
     SESSION_EXPIRED_2FA_MESSAGE = (
         "iCloud is waiting for a 2FA code: the server submits the one Apple texts on its own, so try again "
@@ -310,7 +319,15 @@ class ICloudIntegration(Integration):
     # so the restarts keep it; Ctrl-R in the iCloud tab and icloud_unlocked delete it.
     PARK_FILE = "parked.json"
     PARK_NOTICE = ("The server will not sign in to iCloud again until you confirm the account works: "
-                   "tell the assistant (it runs icloud_unlocked) or press Ctrl-R in the console's iCloud tab.")
+                   "tell the assistant (it runs icloud_unlocked) or press Ctrl-R in the console's iCloud tab. "
+                   "A corrected apple_id or password lifts it by itself.")
+    CODE_WAITING_NOTICE = ("iCloud signed in and Apple texted a 6-digit code to the account's trusted phone. "
+                           "The server reads it from Messages on this Mac and submits it by itself — nothing to do "
+                           "unless a minute passes; then the user tells the assistant the code (icloud_login_code).")
+    CODE_NEEDED_NOTICE = ("iCloud signed in and Apple texted a 6-digit code to the account's trusted phone. "
+                          "Nothing on this Mac reads text messages (the iMessage feed is not running), so the user "
+                          "enters it: tell the assistant the code (it runs icloud_login_code) or type it in the "
+                          "console's iCloud tab (Ctrl-E).")
 
     def __init__(
         self,
@@ -326,6 +343,7 @@ class ICloudIntegration(Integration):
         self._api: Optional[PyiCloudService] = None
         self._auth_error: Optional[str] = None
         self._park_memory: Optional[str] = None     # the park when its file could not be written
+        self._code_noted_for: Optional[float] = None  # the sign-in whose challenge the chats were told about
         # One Find My sign-in at a time: the LLM runs its commands in parallel, and two that
         # found Find My's cookies rejected at once each ran a password sign-in on the one
         # session until 2026-10-17. The ones that waited take the outcome of the one that ran.
@@ -534,7 +552,25 @@ class ICloudIntegration(Integration):
         self._sms_requested_at = signin_started_at
         info(f"iCloud: password signin needs 2FA — waiting for the code Apple sends to "
              f"{phone.get('obfuscatedNumber', '???')} on its own (no extra SMS request)")
+        self._note_challenge(signin_started_at)
         return True
+
+    def _reader_live(self) -> bool:
+        """Whether something on this Mac reads the codes Apple texts (the iMessage feed)."""
+        readers = SmsCodeReader.live()
+        if readers:
+            trace(f"iCloud: SMS codes are read by {', '.join(readers)}")
+            return True
+        info("iCloud: nothing reads the Mac's text messages now — the 2FA code must be entered by the user")
+        return False
+
+    def _note_challenge(self, signin_started_at: float):
+        """One system row per challenge: the chats (and the LLM) learn that a code is on its way
+        and whether the server reads it by itself or the user has to enter it."""
+        if self._code_noted_for == signin_started_at:
+            return
+        self._code_noted_for = signin_started_at
+        system_note(self.name, self.CODE_WAITING_NOTICE if self._reader_live() else self.CODE_NEEDED_NOTICE)
 
     def _ensure_authenticated(self):
         """Ensure we have an authenticated API connection: the session files when they still
@@ -587,8 +623,16 @@ class ICloudIntegration(Integration):
     def _park_path(self) -> pathlib.Path:
         return pathlib.Path(self._session_dir()) / self.PARK_FILE
 
+    def _credentials_fingerprint(self) -> str:
+        """A digest of the apple_id and password, so the park file can tell whether the user
+        has changed them since — never the values themselves."""
+        raw = f"{self._config.get('apple_id', '')}\n{self._config.get('password', '')}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
     def _parked_reason(self) -> Optional[str]:
-        """Why sign-ins are parked — Apple's refusal and when — or None."""
+        """Why sign-ins are parked — Apple's refusal and when — or None. A park earned with
+        other credentials than the current ones is lifted here: the user corrected them, and a
+        retry with a new password is not what the risk engine objects to."""
         if self._park_memory:
             return self._park_memory
         path = self._park_path()
@@ -596,6 +640,10 @@ class ICloudIntegration(Integration):
             return None
         try:
             data = json.loads(path.read_text())
+            if data.get("credentials") and data["credentials"] != self._credentials_fingerprint():
+                path.unlink(missing_ok=True)
+                info("iCloud: apple_id or password changed since Apple refused the sign-in — park lifted")
+                return None
             when = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(data["at"])))
             return f"{data['reason']} ({when})"
         except (ValueError, KeyError, TypeError, OSError):
@@ -631,7 +679,8 @@ class ICloudIntegration(Integration):
             trace(f"iCloud: sign-ins already parked, not repeating the notice ({reason})")
             return
         try:
-            self._park_path().write_text(json.dumps({"at": time.time(), "reason": reason}))
+            self._park_path().write_text(json.dumps({"at": time.time(), "reason": reason,
+                                                     "credentials": self._credentials_fingerprint()}))
         except OSError as e:
             self._park_memory = reason
             error(f"iCloud: could not write the park file ({e}) — parked in memory, until the next restart")
@@ -923,6 +972,13 @@ class ICloudIntegration(Integration):
             if parked:
                 info(f"iCloud: not auto-requesting SMS 2FA code — sign-ins are parked ({parked})")
                 return
+            if not self._reader_live():
+                info(f"iCloud: not auto-requesting SMS 2FA code ({reason}) — no reader of the Mac's text "
+                     "messages is live, a code would go unread; the user enters it (icloud_login_code or the "
+                     "console's iCloud tab)")
+                if self._api is not None and self._api.requires_2fa:
+                    self._note_challenge(self._sms_requested_at or 0.0)
+                return
             limit = self._auto_sms_limiter.check()
             if limit:
                 info(f"iCloud: not auto-requesting SMS 2FA code ({limit}) — "
@@ -977,6 +1033,28 @@ class ICloudIntegration(Integration):
             self._auto_sms_last_failure_ts = 0.0
             info(f"iCloud: auto-requested SMS 2FA code ({reason}), sent to {obfuscated} — "
                  "will auto-submit when it arrives via iMessage")
+
+    def submit_user_code(self, code: str) -> str:
+        """The code the user read off their phone and told the assistant (icloud_login_code):
+        validated like the tab's Ctrl-E entry, outside the auto-submit's single-shot bookkeeping.
+        Returns the sentence for the LLM."""
+        digits = "".join(ch for ch in code if ch.isdigit())
+        if len(digits) != 6:
+            info(f"icloud_login_code: refused '{code}' — not a 6-digit code")
+            return "iCloud refused the code: Apple's codes are 6 digits."
+        if self._api is None or not self._api.requires_2fa:
+            status = self.get_auth_status()
+            info(f"icloud_login_code: no 2FA challenge open — iCloud is {status['status']}")
+            return f"iCloud is not waiting for a code — it is {status['status']}: {status['message']}"
+        if self.send_2fa_code(digits):
+            self._sms_requested_at = None
+            info("icloud_login_code: Apple accepted the user's code")
+            from assistant.integration.IntegrationMonitor import IntegrationMonitor
+            IntegrationMonitor.get_instance().check_now(self.name)
+            return "iCloud signed in — Apple accepted the code."
+        info("icloud_login_code: Apple rejected the user's code")
+        return ("Apple rejected the code. A code is single-use and lasts a few minutes; the newest text "
+                "on the phone holds the current one — ask for it, or restart the sign-in with icloud_unlocked.")
 
     def send_2fa_code(self, code: str) -> bool:
         """

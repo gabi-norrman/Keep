@@ -22,6 +22,16 @@ class ICloudCommands(CommandSet):
     def cmd_icloud_unlocked(self, parameter_string: str = ""):
         self.background_command(self._run_icloud_unlocked, "")
 
+    def cmd_icloud_login_code(self, parameter_string: str):
+        """The 2FA code the user read off their phone, relayed from the chat."""
+        code = parameter_string.strip().strip("\"'`").strip()
+        if not code:
+            return 'icloud_login_code failed: give the 6-digit code Apple texted, e.g. icloud_login_code("123456")'
+        self.background_command(self._run_icloud_login_code, code, lane=self.commands.CONFIG_LANE)
+
+    def _run_icloud_login_code(self, code: str) -> str:
+        return self._get_icloud_api().submit_user_code(code)
+
     def _run_icloud_unlocked(self, _="") -> str:
         """The user says the Apple Account works again: lift the park a refused sign-in put on
         the server's iCloud sign-ins and sign in now."""
@@ -58,3 +68,4 @@ class ICloudCommands(CommandSet):
     def describe_locate_user(self, p):            return f"Locating {p.strip()}" if p.strip() else "Locating user"
     def describe_icloud_devices(self, p):         return "Listing iCloud devices"
     def describe_icloud_unlocked(self, p):        return "Signing in to iCloud again"
+    def describe_icloud_login_code(self, p):      return "Entering the iCloud 2FA code"

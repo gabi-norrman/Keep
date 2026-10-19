@@ -1183,6 +1183,8 @@ class Commands:
                 line += f'; enable: enable_integration("{status["name"]}")'
             if status["last_error"] and status["state"] in ("warning", "error", "needs_2fa", "rate_limited"):
                 line += f": {status['last_error'][:450]}"
+            if status["state"] == "needs_2fa" and status.get("login_hint"):
+                line += f" — {status['login_hint']}"
             if status["last_check_time"]:
                 line += f" (checked {self._age(status['last_check_time'])})"
             if status["keys"]:

@@ -2200,3 +2200,188 @@ class TestTermsOfServiceNotification:
                     api._ensure_authenticated()
         mock_notify.assert_called_once()
         assert "icloud.com" in mock_notify.call_args.args[0]
+
+
+NOTE_PATH = 'integrations.icloud.ICloudIntegration.system_note'
+LIVE_PATH = 'integrations.icloud.ICloudIntegration.SmsCodeReader.live'
+
+
+class TestReaderGate:
+    """A code requested on a timer while nothing reads the Mac's text messages only SMS-bombs
+    the phone (a beta tester, 2026-10-16): with no live reader the flow requests nothing and
+    tells the chats once that the user enters the code."""
+
+    def _api_with_open_challenge(self):
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = _service_with_sms_challenge()
+        api._challenge_from_fresh_signin = True
+        return api
+
+    def test_no_reader_means_no_sms_request_and_no_fresh_signin(self):
+        api = self._api_with_open_challenge()
+        with patch(LIVE_PATH, return_value=[]), patch(NOTE_PATH), \
+             patch.object(api, 'request_sms_2fa') as mock_request, \
+             patch.object(api, '_fresh_password_signin') as mock_fresh, \
+             patch.object(api, '_ensure_authenticated'):
+            api._auto_request_sms("test")
+            api._auto_request_sms("test", fresh_signin=True)
+        mock_request.assert_not_called()
+        mock_fresh.assert_not_called()
+        assert api._auto_sms_limiter.check() is None, "nothing was requested, so nothing counts"
+
+    def test_the_chats_hear_once_per_challenge_that_the_user_enters_the_code(self):
+        api = self._api_with_open_challenge()
+        with patch(LIVE_PATH, return_value=[]), patch(NOTE_PATH) as note, \
+             patch.object(api, 'request_sms_2fa'), patch.object(api, '_ensure_authenticated'):
+            api._auto_request_sms("test")
+            api.on_needs_2fa()
+            api._auto_request_sms("test")
+        note.assert_called_once()
+        text = note.call_args.args[1]
+        assert "icloud_login_code" in text and "iCloud tab" in text
+
+    def test_no_note_without_an_open_challenge(self):
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = None
+        with patch(LIVE_PATH, return_value=[]), patch(NOTE_PATH) as note:
+            api._auto_request_sms("test")
+        note.assert_not_called()
+
+    def test_a_live_reader_lets_the_request_through(self):
+        api = self._api_with_open_challenge()
+        with patch(NOTE_PATH), patch.object(api, 'request_sms_2fa', return_value="•••05") as mock_request, \
+             patch.object(api, '_ensure_authenticated'):
+            api._auto_request_sms("test")
+        mock_request.assert_called_once()
+
+
+class TestChallengeNote:
+    """The sign-in that ends on a 2FA challenge tells the chats what happens next: the server
+    reads the texted code itself, or the user has to enter it."""
+
+    def test_with_a_reader_the_note_says_the_server_reads_the_code(self):
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = _service_with_sms_challenge()
+        with patch(NOTE_PATH) as note:
+            api._arm_auto_sent_code(1000.0)
+        note.assert_called_once()
+        text = note.call_args.args[1]
+        assert "by itself" in text and "icloud_login_code" in text
+
+    def test_without_a_reader_the_note_asks_the_user_for_the_code(self):
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = _service_with_sms_challenge()
+        with patch(LIVE_PATH, return_value=[]), patch(NOTE_PATH) as note:
+            api._arm_auto_sent_code(1000.0)
+        text = note.call_args.args[1]
+        assert "iMessage feed is not running" in text and "icloud_login_code" in text and "Ctrl-E" in text
+
+    def test_one_note_per_signin_a_new_signin_gets_its_own(self):
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = _service_with_sms_challenge()
+        with patch(NOTE_PATH) as note:
+            api._arm_auto_sent_code(1000.0)
+            api._arm_auto_sent_code(1000.0)
+            assert note.call_count == 1
+            api._arm_auto_sent_code(2000.0)
+        assert note.call_count == 2
+
+    def test_a_signin_without_a_challenge_says_nothing(self):
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = _service_with_sms_challenge(requires_2fa=False)
+        with patch(NOTE_PATH) as note:
+            api._arm_auto_sent_code(1000.0)
+        note.assert_not_called()
+
+
+class TestParkFingerprint:
+    """A park is tied to the credentials Apple refused: new ones lift it (a typo on the first
+    set-up is not a security refusal — a beta tester's corrected password never reached Apple
+    on 2026-10-16), the same ones keep it."""
+
+    _NOTIFY_PATH = 'assistant.Notifier.NullNotifier.send_message'
+
+    def _parked(self, config):
+        from pyicloud.exceptions import PyiCloudFailedLoginException
+        api = iCloudAPI(config=config)
+        with patch(self._NOTIFY_PATH):
+            api._park(PyiCloudFailedLoginException("Invalid email/password combination."))
+        return api
+
+    def test_the_same_credentials_keep_the_park_across_instances(self, icloud_session_dir):
+        self._parked(VALID_CONFIG)
+        again = iCloudAPI(config=dict(VALID_CONFIG))
+        assert "Invalid email/password" in again._parked_reason()
+        assert (icloud_session_dir / again.PARK_FILE).exists()
+
+    @pytest.mark.parametrize("changed", [{"password": "corrected"}, {"apple_id": "other@example.com"}])
+    def test_changed_credentials_lift_the_park_and_remove_the_file(self, icloud_session_dir, changed):
+        self._parked(VALID_CONFIG)
+        corrected = iCloudAPI(config={**VALID_CONFIG, **changed})
+        assert corrected._parked_reason() is None
+        assert not (icloud_session_dir / corrected.PARK_FILE).exists()
+
+    def test_the_park_file_holds_a_digest_not_the_password(self, icloud_session_dir):
+        api = self._parked(VALID_CONFIG)
+        data = json.loads((icloud_session_dir / api.PARK_FILE).read_text())
+        assert data["credentials"] and VALID_CONFIG["password"] not in json.dumps(data)
+        assert VALID_CONFIG["apple_id"] not in json.dumps(data)
+
+    def test_a_park_file_from_before_the_fingerprint_still_parks(self, icloud_session_dir):
+        api = iCloudAPI(config=VALID_CONFIG)
+        icloud_session_dir.mkdir(parents=True, exist_ok=True)
+        (icloud_session_dir / api.PARK_FILE).write_text(json.dumps({"at": time.time(), "reason": "locked for security reasons"}))
+        assert "locked for security reasons" in api._parked_reason()
+
+    def test_a_lifted_park_lets_the_signin_run(self, icloud_session_dir):
+        self._parked(VALID_CONFIG)
+        corrected = iCloudAPI(config={**VALID_CONFIG, "password": "corrected"})
+        with patch.object(corrected, '_new_service', return_value=_service_with_sms_challenge(requires_2fa=False)) as new_service, \
+             patch(NOTE_PATH):
+            corrected._ensure_authenticated()
+        new_service.assert_called_once()
+
+
+class TestSubmitUserCode:
+    """The code the user read off the phone and told the assistant (icloud_login_code)."""
+
+    _MONITOR_PATH = 'assistant.integration.IntegrationMonitor.IntegrationMonitor'
+
+    def _api_awaiting_code(self):
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = _service_with_sms_challenge()
+        api._sms_requested_at = time.time()
+        return api
+
+    @pytest.mark.parametrize("code", ["12345", "1234567", "abcdef", ""])
+    def test_a_non_six_digit_code_is_refused_before_apple_is_asked(self, code):
+        api = self._api_awaiting_code()
+        with patch.object(api, 'send_2fa_code') as send:
+            text = api.submit_user_code(code)
+        send.assert_not_called()
+        assert "6 digits" in text
+
+    def test_without_an_open_challenge_it_says_so(self):
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = None
+        with patch.object(api, 'send_2fa_code') as send:
+            text = api.submit_user_code("123456")
+        send.assert_not_called()
+        assert "not waiting" in text
+
+    def test_an_accepted_code_signs_in_clears_the_pending_request_and_rechecks(self):
+        api = self._api_awaiting_code()
+        with patch.object(api, 'send_2fa_code', return_value=True) as send, patch(self._MONITOR_PATH) as monitor:
+            text = api.submit_user_code("123 456")
+        send.assert_called_once_with("123456")
+        assert api._sms_requested_at is None
+        monitor.get_instance.return_value.check_now.assert_called_once_with("iCloud")
+        assert "accepted" in text
+
+    def test_a_rejected_code_names_the_way_out(self):
+        api = self._api_awaiting_code()
+        with patch.object(api, 'send_2fa_code', return_value=False), patch(self._MONITOR_PATH) as monitor:
+            text = api.submit_user_code("123456")
+        monitor.get_instance.return_value.check_now.assert_not_called()
+        assert "rejected" in text and "icloud_unlocked" in text
+        assert api._sms_requested_at is not None, "a rejected manual code does not consume the auto-submit's shot"

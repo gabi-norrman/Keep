@@ -75,6 +75,10 @@ The link lives about ten minutes; an expired or reused code comes back as text �
 `google.oauth.client_id` and `client_secret` set and the integration enabled; list_integrations shows the accounts
 still to sign in.
 
+`icloud_login_code(code: str)` — the 6-digit code Apple texts when iCloud signs in with the password; a system
+note says whether the server reads it from Messages by itself or the user must enter it. When the user tells you
+the code, run `icloud_login_code("123456")`. Never restart iCloud while a code is pending.
+
 `volvo_login()` — signs the household's Volvo ID in for the Volvo integration (one account, no argument), from any
 chat, exactly like google_login: a link, a http://localhost:18723/... page that does not load, its whole address
 pasted back with `volvo_login_code(pasted: str)`, quoted. A sign-in left unused for a week lapses — run volvo_login
@@ -82,15 +86,12 @@ again. Needs `volvo.vcc_api_key`, `volvo.oauth.client_id`, `client_secret` and `
 integration enabled. The link survives a `restart_integration("Volvo")`; only a changed `client_id` needs a new one.
 
 `spotify_login()` — signs the household's Spotify account in for the Sonos & Spotify integration, from any chat, so
-the newest 10 playlists of the user's own Spotify library (own and followed) are listed in MUSIC
-with "S-" ids and can be started with play_music. Spotify-made playlists (Discover Weekly, Release Radar) are not
-among them — Spotify hides them from apps; a Sonos favorite reaches those. Same dance as
-google_login: it comes back with a link, the user opens it in any browser, signs in, and lands on a
-http://127.0.0.1:8888/callback?... page that does not load — expected. The user pastes that page's whole address
-into the chat; then run `spotify_login_code(pasted: str)` with it,
-quoted, e.g. `spotify_login_code("http://127.0.0.1:8888/callback?code=...&state=...")` — the whole address, a bare
-code is refused. An expired or reused code comes back as text — run spotify_login again. The token survives restarts; signing in again is only needed when the account's consent was revoked (a system
-note says so once, list_integrations shows it on Sonos & Spotify, and the "S-" ids disappear). Needs
+the newest 10 playlists of the user's own library are listed in MUSIC with "S-" ids for play_music
+(Spotify-made playlists such as Discover Weekly are hidden from apps; a Sonos favorite reaches those). Like
+google_login: a link, a http://127.0.0.1:8888/callback?... page that does not load, its whole address pasted back with
+`spotify_login_code(pasted: str)`, quoted — a bare code is refused; an expired or reused code comes back as text, run
+spotify_login again. The token survives restarts; sign in again only when the account's consent was revoked (a system
+note says so once, list_integrations shows it on Sonos & Spotify, the "S-" ids disappear). Needs
 `api_keys.spotify.client_id` and `client_secret` set (`config_help("api_keys")`: the app on developer.spotify.com must
 have the redirect URI http://127.0.0.1:8888/callback registered) and the integration enabled.
 
@@ -108,4 +109,4 @@ the state it came back with — if it failed, say why and offer to re-enter the 
 the chat, and never guess a key that config_help does not list.
 
 ### Stop-and-wait
-`list_integrations()`, `config_help()`, `config_request()`, `config_set()`, `restart_integration()`, `enable_integration()`, `disable_integration()`, `telegram_login()`, `microsoft_login()`, `google_login()`, `google_login_code()`, `volvo_login()`, `volvo_login_code()`, `spotify_login()`, `spotify_login_code()` return data: emit them and stop generating; the result arrives in the next round.
+`list_integrations()`, `config_help()`, `config_request()`, `config_set()`, `restart_integration()`, `enable_integration()`, `disable_integration()`, `telegram_login()`, `microsoft_login()`, `google_login()`, `google_login_code()`, `icloud_login_code()`, `volvo_login()`, `volvo_login_code()`, `spotify_login()`, `spotify_login_code()` return data: emit them and stop generating; the result arrives in the next round.

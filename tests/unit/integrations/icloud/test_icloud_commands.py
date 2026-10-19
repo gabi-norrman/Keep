@@ -44,3 +44,23 @@ class TestCmdIcloudUnlocked:
             text = owner._run_icloud_unlocked()
         icloud_api.refresh_connection.assert_called_once_with(by_user=True)
         assert "authenticated" in text and "Connected to iCloud" in text
+
+
+class TestCmdIcloudLoginCode:
+    def test_the_code_goes_to_the_background_unquoted(self, commands_instance, icloud_api):
+        from assistant.commands.Commands import Commands
+        with patch.object(commands_instance, "background_command") as bg:
+            assert commands_instance.run("icloud_login_code", ['"123456"']) == ""
+        bg.assert_called_once_with(commands_instance._owner("icloud_login_code")._run_icloud_login_code, "123456",
+                                   lane=Commands.CONFIG_LANE)
+
+    def test_without_a_code_it_refuses(self, commands_instance, icloud_api):
+        with patch.object(commands_instance, "background_command") as bg:
+            assert commands_instance.run("icloud_login_code", [""]).startswith("icloud_login_code failed")
+        bg.assert_not_called()
+
+    def test_the_background_run_submits_the_code_and_relays_the_outcome(self, commands_instance, icloud_api):
+        icloud_api.submit_user_code.return_value = "iCloud signed in — Apple accepted the code."
+        text = commands_instance._owner("icloud_login_code")._run_icloud_login_code("123456")
+        icloud_api.submit_user_code.assert_called_once_with("123456")
+        assert "accepted" in text

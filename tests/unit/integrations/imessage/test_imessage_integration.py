@@ -1439,3 +1439,83 @@ class TestFeed:
         refresh.assert_called_once()
         seed.assert_called_once()
         assert integration.open_error is None
+
+
+class TestReadsSmsCodes:
+    """iMessage is the SMS code reader: live while its feed runner polls, dead otherwise."""
+
+    def _with_runner(self, integration, runner):
+        from unittest.mock import Mock
+        feeds = Mock()
+        feeds.runner.return_value = runner
+        with patch('assistant.integration.FeedRunner.Feeds.get_instance', return_value=feeds):
+            return integration.reads_sms_codes()
+
+    def test_no_runner_means_not_reading(self, integration):
+        assert self._with_runner(integration, None) is False
+
+    @pytest.mark.parametrize("state_name", ["FAILED", "STOPPED"])
+    def test_a_dead_feed_is_not_reading(self, integration, state_name):
+        from assistant.integration.FeedRunner import FeedState
+        assert self._with_runner(integration, Mock(state=FeedState[state_name])) is False
+
+    @pytest.mark.parametrize("state_name", ["STARTING", "CATCHING_UP", "LIVE"])
+    def test_a_polling_or_opening_feed_is_reading(self, integration, state_name):
+        from assistant.integration.FeedRunner import FeedState
+        assert self._with_runner(integration, Mock(state=FeedState[state_name])) is True
+
+
+class TestScheduleColumnsFallback:
+    """A chat.db from before macOS 15 has no Send Later columns; the feed reads it as plain
+    messages instead of failing on every poll (a beta tester's Sonoma Mac, 2026-10-16)."""
+
+    def _poll(self, integration, rows):
+        with patch('integrations.imessage.IMessageIntegration.is_prompt_injection', return_value=False), \
+             patch('integrations.imessage.IMessageIntegration.sqlite3') as mock_sqlite:
+            mock_conn = MagicMock()
+            mock_conn.__enter__ = Mock(return_value=mock_conn)
+            mock_conn.__exit__ = Mock(return_value=False)
+            mock_conn.execute.side_effect = _execute_side_effect(rows)
+            mock_sqlite.connect.return_value = mock_conn
+            integration._poll_new_messages()
+        return [call.args[0] for call in mock_conn.execute.call_args_list if "FROM message m" in call.args[0]]
+
+    def test_without_the_columns_the_query_names_none_and_rows_are_still_read(self, integration):
+        integration._has_schedule_columns = False
+        rows = _make_rows((1, "Hello from Alice", None, RECENT_APPLE_TS, 0, "+1234567890", None))
+        queries = self._poll(integration, rows)
+        assert len(queries) == 1
+        assert "m.schedule_type" not in queries[0] and "m.schedule_state" not in queries[0]
+        assert "AS schedule_type" in queries[0]
+        assert integration.produced.call_count == 1
+        assert integration._last_seen_rowid == 1
+
+    def test_with_the_columns_the_query_reads_them(self, integration):
+        rows = _make_rows((1, "Hello from Alice", None, RECENT_APPLE_TS, 0, "+1234567890", None))
+        queries = self._poll(integration, rows)
+        assert "m.schedule_type" in queries[0]
+
+    def test_seeding_scheduled_messages_reads_nothing_without_the_columns(self, integration):
+        integration._has_schedule_columns = False
+        with patch('integrations.imessage.IMessageIntegration.sqlite3') as mock_sqlite:
+            integration._seed_scheduled_messages()
+        mock_sqlite.connect.assert_not_called()
+
+    @staticmethod
+    def _schema(columns):
+        with patch('integrations.imessage.IMessageIntegration.sqlite3') as mock_sqlite:
+            mock_conn = MagicMock()
+            mock_conn.__enter__ = Mock(return_value=mock_conn)
+            mock_conn.__exit__ = Mock(return_value=False)
+            mock_conn.execute.return_value = [(i, name, "INTEGER", 0, None, 0) for i, name in enumerate(columns)]
+            mock_sqlite.connect.return_value = mock_conn
+            return IMessageIntegration._schema_has_schedule_columns()
+
+    def test_a_sonoma_schema_has_no_send_later_columns(self):
+        assert self._schema(["ROWID", "text", "date", "is_from_me", "handle_id"]) is False
+
+    def test_a_sequoia_schema_has_both(self):
+        assert self._schema(["ROWID", "text", "date", "schedule_type", "schedule_state"]) is True
+
+    def test_one_column_alone_is_not_enough(self):
+        assert self._schema(["ROWID", "text", "schedule_type"]) is False

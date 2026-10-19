@@ -9,6 +9,7 @@ from typing import Iterable, List, Optional, Tuple
 from assistant.SystemNote import system_note
 
 from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
+from assistant.integration.SmsCodeReader import SmsCodeReader
 from assistant.integration.Integration import Integration
 from common.ConfigManager import config
 from common.Paths import AISERVER_DIR
@@ -71,6 +72,10 @@ GROUP_HINT_LIMIT = 3            # near-miss groups named in the error for a memb
 SCHEDULE_TYPE_SEND_LATER = 2
 SCHEDULE_STATE_COMPLETED = 3
 SCHEDULE_STATE_FAILED = 4
+# Send Later arrived with macOS 15; a Sonoma chat.db has neither column, and a query naming them
+# failed on every poll there (a beta tester's Mac, 2026-10-16: the feed and the Apple 2FA codes it
+# forwards were both dead from the first fetch)
+SCHEDULE_COLUMNS = ("schedule_type", "schedule_state")
 # a scheduled message still unsent this long after its send time is never going to send
 # from here (Send Later fires from whichever device is online) — stop tracking it
 SCHEDULED_GRACE_PERIOD = 7 * 24 * 3600
@@ -104,7 +109,7 @@ class GroupChat:
         return f"{self.name} ({members})" if self.name else members
 
 
-class IMessageIntegration(Integration, Feed):
+class IMessageIntegration(Integration, Feed, SmsCodeReader):
     """The iMessages and SMS of the server's Mac, read as a feed and sent.
 
     Brings the messages that arrive on the server's Mac into Keep's history, as a feed, and
@@ -142,6 +147,8 @@ class IMessageIntegration(Integration, Feed):
         self._pending_ring_code: Optional[Tuple[float, str]] = None
         # send-later messages composed but not yet sent — see _check_scheduled_messages
         self._scheduled_rowids: set[int] = set()
+        # chat.db has the Send Later columns (macOS 15+); open_feed reads the schema
+        self._has_schedule_columns = True
         # rowids already logged as past-due-but-unsent, so the wait is noted once
         self._past_due_noted: set[int] = set()
 
@@ -156,6 +163,16 @@ class IMessageIntegration(Integration, Feed):
     @property
     def config_keys(self) -> List[str]:
         return []
+
+    def reads_sms_codes(self) -> bool:
+        """The feed is the reader: live while its runner polls (or is still opening), dead when
+        it failed, was stopped or never started."""
+        from assistant.integration.FeedRunner import Feeds, FeedState
+        runner = Feeds.get_instance().runner(self.feed_name)
+        if runner is None:
+            trace("iMessage: no feed runner — not reading SMS codes")
+            return False
+        return runner.state in (FeedState.STARTING, FeedState.CATCHING_UP, FeedState.LIVE)
 
     def check_health(self) -> bool:
         try:
@@ -192,6 +209,7 @@ class IMessageIntegration(Integration, Feed):
             error(f"iMessage: {self._open_error}")
             return False
         self._open_error = None
+        self._has_schedule_columns = self._schema_has_schedule_columns()
         self._refresh_contact_cache()
         self._seed_scheduled_messages()
         info(f"iMessage feed opened (contact cache: {len(self._contact_cache)} entries)")
@@ -222,9 +240,30 @@ class IMessageIntegration(Integration, Feed):
         return FeedBatch(entries, cursor=str(self._last_seen_rowid),
                          exhausted=self._scanned_rows < FETCH_BATCH_SIZE)
 
+    @staticmethod
+    def _schema_has_schedule_columns() -> bool:
+        """Whether this Mac's chat.db has the Send Later columns; without them the feed reads
+        every row as a plain message and tracks no scheduled sends."""
+        try:
+            with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(message)")}
+        except sqlite3.OperationalError as e:
+            info(f"iMessage: could not read the message table's schema ({e}) — assuming the Send Later columns")
+            return True
+        missing = [c for c in SCHEDULE_COLUMNS if c not in columns]
+        if missing:
+            info(f"iMessage: chat.db has no {', '.join(missing)} column(s) (macOS before 15) — "
+                 "send-later tracking off, messages read as usual")
+            return False
+        trace("iMessage: chat.db has the Send Later columns")
+        return True
+
     def _seed_scheduled_messages(self):
         """Track the send-later messages composed before this start, so their eventual send
         is reported once (see _check_scheduled_messages)."""
+        if not self._has_schedule_columns:
+            trace("iMessage: no Send Later columns, nothing to seed")
+            return
         try:
             with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
                 scheduled = conn.execute("""
@@ -273,11 +312,13 @@ class IMessageIntegration(Integration, Feed):
             if not backfill:
                 entries.extend(self._check_scheduled_messages(conn))
 
-            cursor = conn.execute("""
+            schedule_columns = ("m.schedule_type, m.schedule_state" if self._has_schedule_columns
+                                else "0 AS schedule_type, 0 AS schedule_state")
+            cursor = conn.execute(f"""
                 SELECT m.ROWID, m.text, m.attributedBody, m.date, m.is_from_me,
                        h.id AS handle_id,
                        c.display_name AS chat_name,
-                       m.schedule_type, m.schedule_state, cmj.chat_id
+                       {schedule_columns}, cmj.chat_id
                 FROM message m
                 LEFT JOIN handle h ON m.handle_id = h.ROWID
                 LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id

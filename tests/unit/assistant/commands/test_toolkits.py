@@ -204,3 +204,11 @@ def test_a_folder_toolkit_cannot_take_a_name_or_a_command_that_is_owned(tmp_path
     registry = Toolkits.assemble(core, Toolkits.discover(tmp_path), order=())
     assert {t.name: t.commands for t in registry} == {"home": ("turn_on", "turn_off"), "lamp": ("lamp_on",)}
     assert next(t for t in registry if t.name == "lamp").file.parent.name == "a_first"
+
+
+@pytest.mark.unit
+def test_icloud_login_code_is_a_setup_command_contract_with_the_setup_toolkit_text():
+    """The FTUE assistant holds the setup toolkit while iCloud signs in, so the code the user
+    reads off the phone must be a setup command, and setup.md must document it."""
+    assert Toolkits.owner_of("icloud_login_code").name == "setup"
+    assert "icloud_login_code" in _documented(Toolkits.owner_of("icloud_login_code").path.read_text())
