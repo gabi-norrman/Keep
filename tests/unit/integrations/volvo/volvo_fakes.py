@@ -34,7 +34,8 @@ class Call:
 @dataclass
 class FakeVolvo:
     """`route(method, path, body)` answers an API request (path relative to api.volvocars.com);
-    `token_answers` is what the token endpoint answers next, in order. Every request is kept
+    `route_answers` scripts a path's answers in turn and
+`token_answers` is what the token endpoint answers next, in order. Every request is kept
     in `calls`; a routeless request answers 404 as the API does for an endpoint the car lacks."""
     routes: dict = field(default_factory=dict)
     token_answers: list = field(default_factory=list)
@@ -43,6 +44,10 @@ class FakeVolvo:
 
     def route(self, method: str, path: str, body=None, status: int = 200):
         self.routes[(method, path)] = FakeResponse(status, body)
+
+    def route_answers(self, method: str, path: str, *answers: tuple):
+        """(status, body) answers in turn; the last one stands for every later call."""
+        self.routes[(method, path)] = [FakeResponse(status, body) for status, body in answers]
 
     def answer_token(self, body: dict, status: int = 200):
         self.token_answers.append(FakeResponse(status, body))
@@ -54,6 +59,8 @@ class FakeVolvo:
         path = url[len(API_URL):] if url.startswith(API_URL) else url
         self.calls.append(Call(method, path, dict(headers or {}), json))
         answer = self.routes.get((method, path))
+        if isinstance(answer, list):
+            answer = answer.pop(0) if len(answer) > 1 else answer[0]
         return answer if answer is not None else FakeResponse(404, {"error": {"message": "NOT_FOUND", "description": f"nothing at {method} {path}"}})
 
     # requests.post, as the auth calls it for the token endpoint

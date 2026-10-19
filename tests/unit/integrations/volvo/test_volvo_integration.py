@@ -37,7 +37,7 @@ def _config(vehicles=VEHICLES, api_key="vcc-key", client_id="app-id", client_sec
 @pytest.fixture(autouse=True)
 def fresh(tmp_path):
     VolvoIntegration.reset_instance()
-    with patch.object(auth_module, "TOKEN_DIR", tmp_path / "oauth"):
+    with patch.object(auth_module, "TOKEN_DIR", tmp_path / "oauth"), patch.object(module, "RETRY_PAUSE_S", 0):
         yield tmp_path / "oauth"
     VolvoIntegration.reset_instance()
 
@@ -576,3 +576,148 @@ class TestHealthAndSignInEdges:
     def test_an_entry_that_is_not_a_mapping_is_skipped(self):
         with _config(vehicles=["oops", VEHICLES[0]]):
             assert [c.id for c in build(FakeVolvo()).vehicles()] == ["family_xc40"]
+
+
+FLAKY = {"error": {"message": "invalid VCC-API-KEY", "description": ""}}
+
+
+def later(seconds: float):
+    return patch.object(module.time, "time", return_value=time.time() + seconds)
+
+
+@pytest.mark.unit
+class TestFlakyApi:
+    """Volvo answers about half the calls, at random, with 401 "invalid VCC-API-KEY" while key, VIN
+    and token are fine: asked once more, and a read that still fails keeps the last answer."""
+
+    def test_a_random_refusal_is_asked_again_once_after_a_pause_and_the_second_answer_serves(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        fake.route_answers("GET", ENERGY_STATE, (401, FLAKY), (200, {"batteryChargeLevel": energy_value("45", unit="percentage")}))
+        with _config(), patch.object(module.time, "sleep") as sleep:
+            integration = build(fake)
+            state = integration.vehicle_state(spec(integration))
+        assert state.battery_percent == 45
+        assert len(fake.sent("GET", ENERGY_STATE)) == 2
+        sleep.assert_called_once()
+
+    def test_another_refusal_is_not_asked_again(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        fake.route("GET", ENERGY_STATE, {"error": {"message": "FORBIDDEN", "description": "scope missing"}}, status=403)
+        fake.route("GET", CAR_LIST, {"data": [{"vin": VIN}]})
+        with _config():
+            integration = build(fake)
+            integration.vehicle_state(spec(integration))
+        assert len(fake.sent("GET", ENERGY_STATE)) == 1
+
+    def test_a_refusal_that_repeats_on_an_owned_car_says_it_is_volvos_flapping_not_the_vin(self):
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, FLAKY, status=401)
+        fake.route("GET", CAR_LIST, {"data": [{"vin": VIN}]})
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoApiError) as refused:
+                integration.vehicle_state(spec(integration))
+        assert len(fake.sent("GET", CONNECTED)) == 2
+        assert "random" in str(refused.value) and "volvo.vehicles" not in str(refused.value)
+
+    def test_a_vin_configured_in_lowercase_is_the_volvo_ids_car(self):
+        fake = FakeVolvo()
+        lower = VIN.lower()
+        fake.route("GET", f"{CAR_LIST}/{lower}", FLAKY, status=401)
+        fake.route("GET", CAR_LIST, {"data": [{"vin": VIN}]})
+        with _config(vehicles=[{"name": "family_xc40", "vin": lower}]):
+            integration = build(fake)
+            with pytest.raises(VolvoApiError) as refused:
+                integration.vehicle_state(spec(integration))
+        assert "not among" not in str(refused.value) and "volvo.vehicles" not in str(refused.value)
+
+    def test_a_read_that_fails_after_the_retry_keeps_the_last_answer_with_its_own_timestamp(self):
+        fake = FakeVolvo()
+        electric_car(fake, battery="45", stamp="2026-10-09T08:15:00Z")
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            integration.vehicle_state(car)
+            fake.route("GET", ENERGY_STATE, FLAKY, status=401)
+            fake.route("GET", LOCATION, FLAKY, status=401)
+            fake.route("GET", f"{CONNECTED}/statistics", {"data": {"distanceToEmptyBattery": value(280, "2026-10-09T09:15:00Z", "km")}})
+            fake.route("GET", CAR_LIST, {"data": [{"vin": VIN}]})
+            with later(module.STATE_TTL + 1):
+                state = integration.vehicle_state(car)
+        assert state.battery_percent == 45 and state.range_km == 310      # the kept energy answer, not the statistics' range
+        assert state.latitude == 59.3456 and state.longitude == 17.9876
+        assert state.data_time == datetime(2026, 10, 9, 9, 15, tzinfo=timezone.utc).timestamp()
+
+    def test_a_kept_answer_is_dropped_after_a_long_silence(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            integration.vehicle_state(car)
+            fake.route("GET", ENERGY_STATE, FLAKY, status=401)
+            fake.route("GET", LOCATION, {"error": {"message": "INTERNAL_ERROR"}}, status=500)
+            fake.route("GET", CAR_LIST, {"data": [{"vin": VIN}]})
+            with later(module.KEEP_S + 1):
+                state = integration.vehicle_state(car)
+        assert state.battery_percent is None and state.latitude is None
+        assert state.range_km == 290            # the statistics answered afresh
+
+    def test_a_running_engine_is_kept_for_minutes_only(self):
+        fake = FakeVolvo()
+        electric_car(fake, engine="RUNNING")
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            integration.vehicle_state(car)
+            fake.route("GET", f"{CONNECTED}/engine-status", {"error": {"message": "INTERNAL_ERROR"}}, status=500)
+            with later(module.STATE_TTL + 1):
+                assert integration.vehicle_state(car).in_gear
+            with later(module.KEEP_ENGINE_S + 1):
+                assert not integration.vehicle_state(car).in_gear
+
+    def test_a_404_replaces_the_kept_answer_it_is_the_cars_own_answer(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            integration.vehicle_state(car)
+            del fake.routes[("GET", LOCATION)]
+            with later(module.STATE_TTL + 1):
+                integration.vehicle_state(car)
+            fake.route("GET", LOCATION, {"error": {"message": "INTERNAL_ERROR"}}, status=500)
+            with later(2 * module.STATE_TTL + 2):
+                state = integration.vehicle_state(car)
+        assert state.latitude is None
+
+    def test_a_command_refused_at_random_is_sent_again_and_its_status_is_the_reply(self):
+        fake = FakeVolvo()
+        fake.route_answers("POST", f"{CONNECTED}/commands/climatization-start", (401, FLAKY), (200, command_result("COMPLETED")))
+        with _config():
+            integration = build(fake)
+            assert "started" in integration.climate_on(spec(integration))
+        assert len(fake.sent("POST", f"{CONNECTED}/commands/climatization-start")) == 2
+
+    def test_a_command_refused_twice_is_an_error_not_a_success(self):
+        fake = FakeVolvo()
+        fake.route("POST", f"{CONNECTED}/commands/climatization-stop", FLAKY, status=401)
+        fake.route("GET", CAR_LIST, {"data": [{"vin": VIN}]})
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoApiError, match="try again"):
+                integration.climate_off(spec(integration))
+        assert len(fake.sent("POST", f"{CONNECTED}/commands/climatization-stop")) == 2
+
+    def test_a_dropped_connection_names_what_requests_wraps(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        dropped = requests.exceptions.ConnectionError(ConnectionError("RemoteDisconnected: Remote end closed connection"))
+        fake.transport_errors = [dropped] * module.RETRIES
+        with _config(), patch.object(module.time, "sleep") as sleep:
+            integration = build(fake)
+            with pytest.raises(VolvoApiError, match="RemoteDisconnected"):
+                integration.vehicle_state(spec(integration))
+        assert sleep.call_count == module.RETRIES - 1
