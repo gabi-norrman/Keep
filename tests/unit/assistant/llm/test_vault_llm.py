@@ -258,6 +258,32 @@ class TestDelegation:
         assert VaultLLM(TailBackend(), stocked).prefers_byte_prefix_tail() is True
         assert VaultLLM(Backend(), stocked).prefers_byte_prefix_tail() is False
 
+    def test_reasoning_refusal_is_the_wrapped_backends(self, stocked):
+        """Same trap as the tail preference: the photo indexer asks the wrapper whether the
+        backend refuses a "thinking" field, and the AbstractLLM default would answer for it."""
+        class Backend(AbstractLLM):
+            def name(self):
+                return "Backend"
+
+            def create_completion(self, messages, thinking=False, volatile_tail=0):
+                return ""
+
+            def create_completion_with_images(self, messages, images):
+                return ""
+
+            def create_streaming_completion(self, messages, thinking=False, volatile_tail=0):
+                yield ""
+
+            def initialize(self):
+                return True
+
+        class Refusing(Backend):
+            def refuses_reasoning_requests(self):
+                return True
+
+        assert VaultLLM(Refusing(), stocked).refuses_reasoning_requests() is True
+        assert VaultLLM(Backend(), stocked).refuses_reasoning_requests() is False
+
     def test_refusal_fallback_is_wrapped_in_the_same_vault(self, wrapped, inner, stocked, messages):
         """__getattr__ never reaches refusal_fallback (AbstractLLM defines it), so the
         wrapper must delegate explicitly — and the fallback answers the request this vault

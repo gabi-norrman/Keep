@@ -24,6 +24,20 @@ def _make_overloaded_error() -> APIStatusError:
     return APIStatusError("overloaded", response=response, body={"error": {"type": "overloaded_error", "message": "overloaded"}})
 
 
+class TestReasoningRequests:
+    @pytest.mark.parametrize("model, refuses", [
+        ("claude-sonnet-5-5", True), ("claude-opus-5-5", True), ("claude-fable-5-1", True),
+        ("claude-haiku-5-5", False),
+    ])
+    def test_contract_with_anthropics_reasoning_extraction_safeguard(self, model, refuses):
+        """Measured 2026-10-19 on the photo-indexing prompt: the 5-generation Sonnet, Opus and
+        Fable answer a prompt with a "thinking" field by refusing the whole request; Haiku 5.5
+        answers it. The photo indexer drops the field on this verdict."""
+        llm = _make_llm()
+        llm.model = model
+        assert llm.refuses_reasoning_requests() is refuses
+
+
 class TestProvider:
     def test_display_model_is_the_spoken_family(self):
         llm = _make_llm()
