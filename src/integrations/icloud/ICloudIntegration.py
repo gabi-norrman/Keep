@@ -267,8 +267,12 @@ class ICloudIntegration(Integration):
     with none live no code is requested on a timer — the user enters the one Apple sent, through
     the assistant (icloud_login_code) or the console's iCloud tab."""
     sensitive = True
-    login_hint = ("Apple texted a 6-digit code: the user tells it to the assistant, which runs "
-                  "icloud_login_code(code), or types it in the console's iCloud tab (Ctrl-E)")
+    login_hint = ("Apple texted a 6-digit code and nothing on this Mac reads text messages (the iMessage feed "
+                  "is not running), so the user enters it: they tell it to the assistant, which runs "
+                  "icloud_login_code(code), or type it in the console's iCloud tab (Ctrl-E)")
+    AUTO_CODE_LOGIN_HINT = ("Apple texted a 6-digit code to the trusted phone; the iMessage feed reads it from "
+                            "Messages on this Mac and the server submits it by itself — nothing for the user to "
+                            "do unless a minute passes; then they tell the assistant the code (icloud_login_code)")
 
     SESSION_EXPIRED_2FA_MESSAGE = (
         "iCloud is waiting for a 2FA code: the server submits the one Apple texts on its own, so try again "
@@ -561,6 +565,12 @@ class ICloudIntegration(Integration):
              f"{phone.get('obfuscatedNumber', '???')} on its own (no extra SMS request)")
         self._note_challenge(signin_started_at)
         return True
+
+    def current_login_hint(self) -> str:
+        """The 2FA hint the setup commands answer with: with a code reader live the user has
+        nothing to type — the FTUE assistant told the user to type the code the reader was about
+        to submit (2026-10-19), because the class hint cannot know about the reader."""
+        return self.AUTO_CODE_LOGIN_HINT if self._reader_live() else self.login_hint
 
     def _reader_live(self) -> bool:
         """Whether something on this Mac reads the codes Apple texts (the iMessage feed)."""

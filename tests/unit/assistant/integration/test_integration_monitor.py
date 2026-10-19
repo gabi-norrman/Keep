@@ -759,6 +759,21 @@ class TestDisabledIntegrations:
             Mailbox.reset_instance()
         assert flags == {"Mailbox": True, "Lamps": False}
 
+    def test_the_status_asks_a_built_integration_for_its_login_hint_of_the_moment(self):
+        """A built integration may know how the sign-in is done right now (iCloud: whether a
+        code reader is live); a placeholder was never built, so the class's hint stands."""
+        class Watchful(FakeIntegration):
+            login_hint = "enter the code in the tab"
+
+            def current_login_hint(self):
+                return "the server submits the code itself"
+
+        monitor = IntegrationMonitor.get_instance()
+        built = Watchful("Watchful")
+        monitor.register(built)
+        assert monitor._status(built)["login_hint"] == "the server submits the code itself"
+        assert monitor._status(DisabledIntegration(Watchful))["login_hint"] == "enter the code in the tab"
+
     def test_the_status_carries_what_an_integration_says_of_its_accounts(self):
         """An account-holding integration reports its accounts one by one; the rest have none."""
         class Mailboxes(FakeIntegration):

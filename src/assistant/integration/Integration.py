@@ -46,6 +46,8 @@ class Integration(SingletonMixin, ABC):
     sensitive: bool = False
     # What list_integrations says next to "needs 2FA": how the sign-in is done, when the
     # integration has a way of its own (a login command). Empty: the console's tab for it.
+    # `current_login_hint` is the live version, for an integration whose way depends on the
+    # moment (iCloud: whether something on this Mac reads the texted code).
     login_hint: str = ""
     # The integration to sign in before this one, by its config name, and why: a disabled
     # integration's line in `list_integrations` says so after its enable command, and
@@ -54,6 +56,11 @@ class Integration(SingletonMixin, ABC):
     # whole — the first betas enabled Photos next to iMessage, before iCloud was signed in.
     setup_after: str = ""
     setup_after_reason: str = ""
+
+    def current_login_hint(self) -> str:
+        """The login hint for the state the integration is in now; the class attribute unless
+        the integration knows better at the moment."""
+        return self.login_hint
 
     @classmethod
     def wipe_targets(cls) -> list[tuple[Path, str]]:

@@ -2321,6 +2321,17 @@ class TestChallengeNote:
         text = note.call_args.args[1]
         assert "iMessage feed is not running" in text and "icloud_login_code" in text and "Ctrl-E" in text
 
+    def test_the_login_hint_follows_the_reader(self):
+        """The setup commands answer "needs 2FA" with the hint: with a reader live the user has
+        nothing to type, without one the hint names the two ways in."""
+        api = iCloudAPI(config=VALID_CONFIG)
+        with patch(LIVE_PATH, return_value=["iMessage"]):
+            live = api.current_login_hint()
+        with patch(LIVE_PATH, return_value=[]):
+            alone = api.current_login_hint()
+        assert "by itself" in live and "Ctrl-E" not in live
+        assert "icloud_login_code" in alone and "Ctrl-E" in alone and "by itself" not in alone
+
     @pytest.mark.parametrize("in_ftue, pushed", [(True, False), (False, True)])
     def test_during_the_setup_the_note_is_a_history_row_only(self, in_ftue, pushed):
         """The assistant's reply to the setup command that raised the challenge tells the user;

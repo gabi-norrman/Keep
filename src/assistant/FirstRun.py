@@ -115,10 +115,12 @@ in before photos.
 7. Photos: enable_integration("Photos"). The index starts at once on the Claude key the install already has — Sonnet
 for new photos, Haiku for the backlog — so nothing more is needed to begin.
 
-8. While the index runs, explain that Gemini (gemini-3.8-flash) is the better fit for the photo index: cheaper, fast,
-accurate, and it indexes video too. Give the user a price estimate for the full index on both and let them decide;
-nothing breaks if they stay on Claude. A user that takes a lot of photos has 5000 photos per year on average; 
-the backfill is three years. Check the current prices on the web). Token count estimation per indexed asset:
+8. While the index runs, explain that Gemini (gemini-3.8-flash) is the better fit for the photo index, for three
+reasons and no other: it writes better image descriptions, it indexes videos too (Claude takes no video, so the clips
+stay unindexed), and the price is good. Never pitch it as "cheaper" or compare its bill with Claude's — this is not a
+money question. Give the user an estimate of what the full index costs on Gemini (check the current price on the web)
+and let them decide; nothing breaks if they stay on Claude. A user that takes a lot of photos has 5000 photos per year
+on average; the backfill is three years. Token count estimation per indexed asset:
 - 3,000 input tokens, of which about 1,900 are served from the implicit cache for photos (none for videos) — the
   prompt carries the memory bank and the instructions beside the image, so it is far more than the image alone
 - 750 output tokens, so output is normally three quarters of the bill; never price all tokens at the input rate

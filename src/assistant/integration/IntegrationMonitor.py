@@ -447,7 +447,8 @@ class IntegrationMonitor:
             "config_keys": list(integration.config_keys),
             "restartable": restartable,
             "sensitive": cls.sensitive,
-            "login_hint": cls.login_hint,
+            # A placeholder is never constructed, so the class's hint is all there is.
+            "login_hint": cls.login_hint if isinstance(integration, DisabledIntegration) else integration.current_login_hint(),
             "setup_after": cls.setup_after,
             "setup_after_reason": cls.setup_after_reason,
             "accounts": integration.accounts_status(),
