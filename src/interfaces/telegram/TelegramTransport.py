@@ -1163,6 +1163,13 @@ class TelegramTransport(Integration, ChatTransport):
             fine(f"Telegram: command line detail for {ref.text!r} not shown: {e}")
 
     def set_status_line(self, conversation, html: Optional[str]) -> None:
+        """The command status line of one chat. A group never gets one: it names what the
+        assistant is doing (a `remember` is "Saving to memory: …") in front of the guests,
+        and a group reply is usually NO with a note. Like the approval cards it is the owners'."""
+        if conversation < 0:
+            if html is not None:
+                trace(f"Telegram [{conversation}]: status line not shown in a group")
+            return
         if html is None:
             self._schedule(self._clear_status_line(conversation), "status line clear")
         else:

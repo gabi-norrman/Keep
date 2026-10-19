@@ -1219,6 +1219,14 @@ class TestStatusLine:
             t.set_status_line(111, "x")
             rcts.assert_not_called()
 
+    def test_a_group_never_gets_a_status_line(self, transport):
+        """The line names what the assistant does (a remember is "Saving to memory: …") in
+        front of the group's guests; it is the owners' like the approval cards."""
+        with patch(f'{MODULE}.asyncio.run_coroutine_threadsafe') as rcts:
+            transport.set_status_line(-100500, " • <i>Saving to memory…</i>")
+            transport.set_status_line(-100500, None)
+            rcts.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_first_status_sends_new_message(self, transport):
         await transport._update_status_line(111, " • <i>Turning on kitchen…</i>")
