@@ -6,11 +6,12 @@
 #   empty feed.
 # - Reading chat.db needs Full Disk Access. macOS grants it to the app it holds responsible for the
 #   server, which is Terminal whatever terminal the user typed in (start.sh launches the server
-#   from it): System Settings > Privacy & Security > Full Disk Access > turn on Terminal. macOS
-#   applies the grant only to a relaunched Terminal (it offers "quit now" or "later" when the toggle
-#   goes on), so make sure the user quits Terminal, opens a new one and starts the server by typing
-#   the path of start.sh ("~/Keep/start.sh" on a default install) — the chat comes back with it.
-#   The first read can also make macOS show a permission dialog on the Mac's own screen, which has
-#   to be approved there, so the user must be sitting at the Mac when the integration starts — not
-#   over SSH or on a phone.
+#   from it). show_full_disk_access_setting() opens System Settings > Privacy & Security > Full Disk
+#   Access on the Mac's screen; the user turns on Terminal. macOS applies the grant only to a
+#   relaunched Terminal and offers to quit it when the toggle goes on — the user should accept: the
+#   console closes but the server keeps running and Telegram stays up, and restart_server() then
+#   starts a process that has the grant (without Telegram: open Terminal again and type the path of
+#   start.sh, "~/Keep/start.sh" on a default install). The first read can also make macOS show a
+#   permission dialog on the Mac's own screen, which has to be approved there, so the user must be
+#   sitting at the Mac — not over SSH or on a phone.
 #imessage:

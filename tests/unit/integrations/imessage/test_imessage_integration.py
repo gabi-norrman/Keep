@@ -1397,17 +1397,18 @@ class TestFeed:
             assert integration.open_feed() is False
         assert "Full Disk Access" in integration.open_error
 
-    def test_refused_chat_db_names_terminal_quit_and_start_sh_up_front(self, integration):
+    def test_refused_chat_db_names_terminal_its_quit_and_the_restart_up_front(self, integration):
         """sqlite's refusal of an existing chat.db is the TCC refusal: the error the LLM relays
         must say the grant goes to Terminal, that Terminal is quit (macOS applies the grant only
-        to a relaunched one) and that start.sh brings the server back, within the ~80 characters
-        the prompt shows of it — a restart_server from the refused Terminal would fail again."""
+        to a relaunched one) and that a restart brings a server with the grant, within the ~80
+        characters the prompt shows of it — a restart from a Terminal that was not quit would be
+        refused again."""
         with patch('integrations.imessage.IMessageIntegration.sqlite3.connect',
                    side_effect=sqlite3.OperationalError("unable to open database file")), \
              patch('integrations.imessage.IMessageIntegration.os.path.exists', return_value=True):
             assert integration.open_feed() is False
         head = integration.open_error[:80]
-        assert "Terminal" in head and "quit" in head and "start.sh" in head
+        assert "Terminal" in head and "quit" in head and "restart" in head
 
     @pytest.mark.parametrize("folder, expected", [
         ("/Users/marcus/Keep", "~/Keep/start.sh"),

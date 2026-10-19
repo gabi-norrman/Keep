@@ -91,6 +91,7 @@ class ConsoleTransport(ChatTransport):
         self.pane = pane
         self.feed = feed
         self._hub = None
+        self.has_clients = lambda: True   # ConsoleInterface points it at the TUI server's client set
         pane.bind(on_submit=self.submit, on_interrupt=self.interrupt, on_approval=self.answer_approval,
                   on_secret=self.answer_secret)
 
@@ -103,6 +104,14 @@ class ConsoleTransport(ChatTransport):
 
     def owner_conversations(self) -> list:
         return [CONVERSATION]
+
+    def attended(self) -> bool:
+        """A TUI client is connected. With the terminal gone (the Full Disk Access grant quits
+        it) a turn the server starts must go to Telegram, not to a pane nobody sees."""
+        attended = bool(self.has_clients())
+        if not attended:
+            trace("Console chat: no TUI client connected — the console is not attended")
+        return attended
 
     # --- from the pane ----------------------------------------------------------------------
 

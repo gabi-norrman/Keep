@@ -69,6 +69,12 @@ class ChatTransport(ABC):
         route them to a subset (Telegram's `notify_chat_ids`)."""
         return self.owner_conversations()
 
+    def attended(self) -> bool:
+        """Whether somebody can see this chat right now. A phone app always can; the console
+        only while a TUI client is connected. A turn the server starts goes to an attended
+        chat first."""
+        return True
+
     # --- one-shot sends: True when the platform accepted the message for delivery -----------
 
     @abstractmethod

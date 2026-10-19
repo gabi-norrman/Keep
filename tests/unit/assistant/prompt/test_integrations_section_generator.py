@@ -29,6 +29,12 @@ def section():
     return IntegrationsSectionGenerator(prompt_manager=None)
 
 
+@pytest.fixture(autouse=True)
+def no_real_probe():
+    with patch(f"{MODULE}.full_disk_access", return_value=False):
+        yield
+
+
 @pytest.mark.unit
 class TestRender:
     def test_groups_the_enabled_integrations_by_state_and_leaves_the_disabled_out(self):
@@ -40,6 +46,17 @@ class TestRender:
         assert lines[3] == "On with a problem: Self Improvement (error: Claude Code is not installed), Telegram Feed (needs 2FA)."
         assert "Arlo" not in text
 
+    def test_the_last_line_is_the_full_disk_access_verdict(self):
+        assert IntegrationsSectionGenerator.render(STATUSES, True).splitlines()[-1] == \
+            "Full Disk Access for this server process: granted."
+        assert "not granted" in IntegrationsSectionGenerator.render(STATUSES, False).splitlines()[-1]
+        assert "Messages" in IntegrationsSectionGenerator.render(STATUSES, None).splitlines()[-1]
+
+    def test_the_fetched_text_carries_the_probes_verdict(self, section):
+        with patch(f"{MODULE}.in_ftue", return_value=True), patch(f"{MODULE}.statuses", return_value=STATUSES), \
+                patch(f"{MODULE}.full_disk_access", return_value=True):
+            assert "Full Disk Access for this server process: granted." in section._fetch_content()
+
     def test_a_long_error_is_cut(self):
         text = IntegrationsSectionGenerator.render([_status("Gmail", "error", "x" * 500)])
         assert "x" * IntegrationsSectionGenerator.ERROR_CHARS + ")" in text
@@ -47,7 +64,8 @@ class TestRender:
 
     def test_the_problem_and_unconfigured_lines_appear_only_with_members(self):
         text = IntegrationsSectionGenerator.render([_status("Photos", "ok")])
-        assert text.splitlines() == ["# INTEGRATIONS", "On: Photos."]
+        assert text.splitlines()[:2] == ["# INTEGRATIONS", "On: Photos."]
+        assert len(text.splitlines()) == 3     # the grant's line is always there
 
     def test_nothing_enabled_says_so(self):
         assert "nothing yet" in IntegrationsSectionGenerator.render([_status("Arlo", "disabled")])

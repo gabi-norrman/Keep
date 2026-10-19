@@ -127,6 +127,18 @@ def test_a_folder_imports_another_folder_only_where_listed(tree):
     assert tree["folder_to_folder"] == FOLDER_IMPORTS_FOLDER
 
 
+def test_every_setup_prerequisite_names_a_discovered_integration():
+    """`Integration.setup_after` is matched against `list_integrations` names at run time, so a
+    misspelt one would silently never warn."""
+    from assistant.integration import bootstrap
+    classes = bootstrap.integration_classes()
+    names = {cls.config_name() for cls in classes}
+    followers = {cls.config_name(): cls.setup_after for cls in classes if cls.setup_after}
+    assert followers, "Photos follows iCloud"
+    assert all(cls.setup_after_reason for cls in classes if cls.setup_after)
+    assert {name for name in followers.values()} <= names, followers
+
+
 def test_every_folder_is_a_package_the_discovery_walks():
     # A folder git deleted can survive a pull as a __pycache__-only directory: no source, not a folder.
     folders = {p.name for p in (SRC_DIR / "integrations").iterdir()

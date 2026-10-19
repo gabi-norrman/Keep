@@ -233,6 +233,19 @@ class TestFeedStatus:
 
 
 class TestNeeds2FA:
+    def test_status_carries_the_prerequisite_of_a_built_and_of_a_disabled_integration(self, mock_config):
+        class Follower(FakeIntegration):
+            setup_after = "FakeService"
+            setup_after_reason = "its data downloads through it"
+
+        mock_config.register(Follower("Built"))
+        placeholder = DisabledIntegration(Follower)
+        mock_config._integrations[placeholder.name] = placeholder
+        statuses = {s["name"]: s for s in mock_config.get_all_statuses()}
+        for name in ("Built", placeholder.name):
+            assert (statuses[name]["setup_after"], statuses[name]["setup_after_reason"]) \
+                == ("FakeService", "its data downloads through it")
+
     def test_registration_sets_needs_2fa_when_true(self, mock_config):
         integration = Fake2FAIntegration(requires_2fa=True)
         mock_config.register(integration)

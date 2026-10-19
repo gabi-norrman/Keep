@@ -481,6 +481,56 @@ class TestInboundText:
         assert "-5001" in log.call_args[0][0] and "Family" in log.call_args[0][0]
 
     @pytest.mark.asyncio
+    async def test_start_in_a_private_chat_leaves_the_chat_id_and_how_to_list_it_in_the_history(self):
+        # Outside the setup a stranger's Start is a row, never a turn.
+        transport, _ = _bot_in_group(allowed=[42])
+        with patch(f'{MODULE}.system_note') as note, patch(f'{MODULE}.FirstRun.in_ftue', return_value=False), \
+                patch(f'{MODULE}.notifier') as notifier:
+            await transport._handle_start(_update(chat_id=99, first_name="Bob"), MagicMock())
+        source, text = note.call_args[0]
+        assert source == "telegram" and "99" in text and "Bob" in text
+        assert "not on" in text and 'allowed_chat_ids[1]' in text
+        notifier.return_value.open_conversation.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_during_the_setup_opens_the_conversation_instead_of_leaving_a_row(self):
+        # The first-time setup's way to learn the owner's chat id without them copying it over,
+        # and to go on without them typing "done": the assistant gets the fact as a turn.
+        transport, _ = _bot_in_group(allowed=[42])
+        with patch(f'{MODULE}.system_note') as note, patch(f'{MODULE}.FirstRun.in_ftue', return_value=True), \
+                patch(f'{MODULE}.notifier') as notifier:
+            notifier.return_value.open_conversation.return_value = True
+            await transport._handle_start(_update(chat_id=99, first_name="Bob"), MagicMock())
+        turn = notifier.return_value.open_conversation.call_args[0][0]
+        assert "99" in turn and "Bob" in turn and 'allowed_chat_ids[1]' in turn
+        note.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_during_the_setup_falls_back_to_a_row_when_no_chat_takes_the_turn(self):
+        transport, _ = _bot_in_group(allowed=[42])
+        with patch(f'{MODULE}.system_note') as note, patch(f'{MODULE}.FirstRun.in_ftue', return_value=True), \
+                patch(f'{MODULE}.notifier') as notifier:
+            notifier.return_value.open_conversation.return_value = False
+            await transport._handle_start(_update(chat_id=99, first_name="Bob"), MagicMock())
+        assert "99" in note.call_args[0][1]
+
+    @pytest.mark.asyncio
+    async def test_start_from_a_listed_chat_says_they_are_an_owner(self):
+        transport, _ = _bot_in_group(allowed=[42])
+        with patch(f'{MODULE}.system_note') as note:
+            await transport._handle_start(_update(chat_id=42), MagicMock())
+        text = note.call_args[0][1]
+        assert "owner" in text and "not on" not in text
+
+    @pytest.mark.asyncio
+    async def test_start_in_a_group_leaves_no_row_of_its_own(self):
+        # A group's id arrives when the bot joins it (my_chat_member).
+        transport, _ = _bot_in_group()
+        with patch(f'{MODULE}.system_note') as note:
+            await transport._handle_start(_update(chat_id=-5001, title="Family"), MagicMock())
+        note.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_the_bot_joining_a_group_leaves_the_groups_id_in_the_history(self):
         # In privacy mode nothing else from an unlisted group ever reaches the bot, so this
         # row is what "add the group I just created to the allow list" resolves against.

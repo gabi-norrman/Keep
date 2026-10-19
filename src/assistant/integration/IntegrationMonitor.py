@@ -436,6 +436,8 @@ class IntegrationMonitor:
     def _status(self, integration: Integration) -> dict:
         with self._lock:
             restartable = integration.name.lower() in self._restartable
+        # The class attributes come from the real class — a disabled one is a placeholder.
+        cls = integration.cls if isinstance(integration, DisabledIntegration) else type(integration)
         status = {
             "name": integration.name,
             "state": integration.state.value,
@@ -444,8 +446,10 @@ class IntegrationMonitor:
             "consecutive_failures": integration.consecutive_failures,
             "config_keys": list(integration.config_keys),
             "restartable": restartable,
-            "sensitive": (integration.cls if isinstance(integration, DisabledIntegration) else type(integration)).sensitive,
-            "login_hint": (integration.cls if isinstance(integration, DisabledIntegration) else type(integration)).login_hint,
+            "sensitive": cls.sensitive,
+            "login_hint": cls.login_hint,
+            "setup_after": cls.setup_after,
+            "setup_after_reason": cls.setup_after_reason,
             "accounts": integration.accounts_status(),
         }
         if isinstance(integration, Feed):

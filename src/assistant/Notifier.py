@@ -88,6 +88,13 @@ class Notifier(Protocol):
         """Render markdown into the notifier's rich-text dialect (Telegram HTML, plain text, …)."""
         ...
 
+    def open_conversation(self, query: str) -> bool:
+        """A turn the server starts (the first-run brief, the Full Disk Access grant seen):
+        *query* goes to the assistant as a system turn in one owner conversation — the one
+        somebody is sitting at when the chat layer can tell — and the reply is rendered
+        there. Never blocks. False when no owner chat is reachable."""
+        ...
+
     def receive_chat_message(self, source: str, conversation: Any, sender: str, text: str, *,
                              guest: bool = False, sender_is_bot: bool = False,
                              chat_name: Optional[str] = None) -> bool:
@@ -151,6 +158,10 @@ class NullNotifier:
 
     def markdown_to_html(self, md: str) -> str:
         return md
+
+    def open_conversation(self, query: str) -> bool:
+        info(f"no notifier configured — conversation not opened: {query[:120]!r}")
+        return False
 
 
 _notifier: Notifier = NullNotifier()

@@ -47,6 +47,30 @@ class TestOpenConversation:
         assert telegram.calls == []
         hub.stop()
 
+    def test_an_unattended_console_hands_the_turn_to_the_chat_someone_is_at(self):
+        # After the Full Disk Access grant the terminal is gone: the console transport is still
+        # registered first, but nobody sees its pane, and the user is on Telegram.
+        console = FakeTransport(owners=["pane"], name="Console", source="Console")
+        console.attended_now = False
+        telegram = FakeTransport(owners=[1, 2], name="Telegram", source="Telegram")
+        hub = ChatHub(assistant=greeting())
+        hub.register(console)
+        hub.register(telegram)
+        assert hub.open_conversation(BRIEF) is True
+        assert wait_until(lambda: ("reply_finished", 1) in telegram.calls)
+        assert len(hub.assistant.requests) == 1
+        assert console.calls == []
+        hub.stop()
+
+    def test_with_no_attended_chat_the_first_one_still_takes_the_turn(self):
+        console = FakeTransport(owners=["pane"], name="Console", source="Console")
+        console.attended_now = False
+        hub = ChatHub(assistant=greeting())
+        hub.register(console)
+        assert hub.open_conversation(BRIEF) is True
+        assert wait_until(lambda: ("reply_finished", "pane") in console.calls)
+        hub.stop()
+
     def test_without_an_owner_conversation_nothing_is_opened(self):
         hub = ChatHub(assistant=greeting())
         hub.register(FakeTransport(owners=[]))

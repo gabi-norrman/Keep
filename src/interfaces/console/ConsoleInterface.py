@@ -49,6 +49,7 @@ class ConsoleInterface(Interface):
 
         port = int(config.get('interfaces.console.port', DEFAULT_TUI_PORT))
         self.server = TUIServer(self.console.draw_screen, input_callback=self.console.input_callback, port=port)
+        self.transport.has_clients = lambda: bool(self.server.clients)
         self.server.start()
         info(f"Console interface started (TUI server on port {port}, chat transport on the hub).")
 

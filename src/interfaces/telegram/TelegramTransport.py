@@ -23,8 +23,9 @@ from typing import Any, List, Optional
 import requests
 from telegram.error import RetryAfter
 
-from assistant import Destinations
+from assistant import Destinations, FirstRun
 from assistant.ChannelProfile import SOURCE_TELEGRAM
+from assistant.Notifier import notifier
 from assistant.SystemNote import system_note
 from assistant.integration.Integration import Integration
 from common import ConfigStore
@@ -629,6 +630,13 @@ class TelegramTransport(Integration, ChatTransport):
         return title if isinstance(title, str) and title else None
 
     async def _handle_start(self, update, context):
+        """Start pressed. In a private chat the id lands in the dialog history as well: it is
+        how the first-time setup learns the owner's chat id without the user copying it over
+        (the brief's step 1), the way a group's id arrives through `_handle_my_chat_member`.
+        During the setup an unlisted chat opens the conversation with the fact instead
+        (`Notifier.open_conversation`), so the assistant lists the id and moves on without the
+        user typing "done"; the row is the fallback when no chat can take the turn, and the
+        whole of it outside the setup, where a stranger's Start is not worth a turn."""
         chat_id = update.effective_chat.id
         name = self._chat_name(update)
         info(f"Telegram /start from chat_id: {chat_id}" + (f" (group '{name}')" if name else ""))
@@ -636,6 +644,22 @@ class TelegramTransport(Integration, ChatTransport):
             f"Hello! I'm Keep AI.\n\nYour chat ID is: {chat_id}\n\n"
             f"Send me a message and I'll respond."
         )
+        if chat_id <= 0:
+            return
+        by = self._sender_name(update)
+        if chat_id in self._allowed_chat_ids:
+            system_note("telegram", f"Telegram: {by} pressed Start in a private chat with the bot (chat id {chat_id}). "
+                        "The chat is on telegram_bot.allowed_chat_ids: they are an owner.")
+            return
+        fact = (f"Telegram: {by} pressed Start in a private chat with the bot (chat id {chat_id}). "
+                f"The chat is not on telegram_bot.allowed_chat_ids, so the bot cannot reach them on its own; "
+                f"config_set(\"telegram_bot.allowed_chat_ids[{len(self._allowed_chat_ids)}]\", \"{chat_id}\") "
+                f"makes them an owner — the list is read live.")
+        if FirstRun.in_ftue(verbose=False) and notifier().open_conversation(
+                fact + " Add the id, tell the user the bot is now theirs, and go on with the setup."):
+            info(f"Telegram [{chat_id}]: Start during the setup — the assistant takes it as a turn")
+            return
+        system_note("telegram", fact)
 
     IN_GROUP_STATUSES = ("member", "administrator", "restricted")
 

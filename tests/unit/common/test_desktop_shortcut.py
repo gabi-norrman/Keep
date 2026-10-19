@@ -1,26 +1,8 @@
-"""The Desktop shortcut: the Full Disk Access probe on chat.db and the applet built from
-keep.sh with the Keep icon."""
-import sqlite3
+"""The Desktop shortcut: the applet built from keep.sh with the Keep icon."""
 from pathlib import Path
 from types import SimpleNamespace
 
 from common import DesktopShortcut
-
-
-class TestFullDiskAccessProbe:
-    def test_a_readable_messages_database_means_granted(self, tmp_path):
-        db = tmp_path / "chat.db"
-        with sqlite3.connect(db) as conn:
-            conn.execute("CREATE TABLE message (ROWID INTEGER PRIMARY KEY)")
-        assert DesktopShortcut.full_disk_access_granted(db) is True
-
-    def test_a_database_that_cannot_be_opened_means_not_granted(self, tmp_path):
-        db = tmp_path / "chat.db"
-        db.write_text("not a database")
-        assert DesktopShortcut.full_disk_access_granted(db) is False
-
-    def test_no_messages_database_means_not_granted(self, tmp_path):
-        assert DesktopShortcut.full_disk_access_granted(tmp_path / "chat.db") is False
 
 
 def _osacompile(calls, returncode=0, make_bundle=True):

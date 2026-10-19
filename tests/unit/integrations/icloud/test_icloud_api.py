@@ -290,6 +290,51 @@ class TestSubmitAuto2faCode:
         assert "iCloud" in message
         assert "auto-detected" in message
 
+    @staticmethod
+    def _api_awaiting_a_code():
+        api = iCloudAPI(config=VALID_CONFIG)
+        mock_service = Mock()
+        mock_service.requires_2fa = True
+        mock_service.validate_2fa_code.return_value = True
+        mock_service.is_trusted_session = True
+        api._api = mock_service
+        api._sms_requested_at = time.time()
+        return api
+
+    _OPEN_PATH = 'assistant.Notifier.NullNotifier.open_conversation'
+    _FTUE_PATH = 'assistant.FirstRun.in_ftue'
+
+    def test_during_the_setup_the_verified_code_opens_the_conversation_after_the_health_check(self):
+        """The user is waiting on this sign-in (the brief's iCloud step), so the assistant
+        speaks first, as after the Full Disk Access grant — and the turn finds iCloud signed
+        in because the health check ran before it."""
+        api = self._api_awaiting_a_code()
+        order = []
+        with patch(self._MONITOR_PATH) as monitor, patch(self._FTUE_PATH, return_value=True), \
+             patch(self._OPEN_PATH, side_effect=lambda q: order.append("turn") or True) as opened, \
+             patch(NOTE_PATH) as note:
+            monitor.get_instance.return_value.check_now.side_effect = lambda name: order.append("check")
+            api.submit_auto_2fa_code("123456", received_at=time.time())
+        assert order == ["check", "turn"]
+        assert "verified" in opened.call_args.args[0] and "iCloud" in opened.call_args.args[0]
+        note.assert_not_called()
+
+    def test_a_turn_no_chat_takes_falls_back_to_the_system_note(self):
+        api = self._api_awaiting_a_code()
+        with patch(self._MONITOR_PATH), patch(self._FTUE_PATH, return_value=True), \
+             patch(self._OPEN_PATH, return_value=False), patch(NOTE_PATH) as note:
+            api.submit_auto_2fa_code("123456", received_at=time.time())
+        note.assert_called_once()
+        assert "verified" in note.call_args.args[1]
+
+    def test_outside_the_setup_a_re_auth_is_a_system_note_only(self):
+        api = self._api_awaiting_a_code()
+        with patch(self._MONITOR_PATH), patch(self._FTUE_PATH, return_value=False), \
+             patch(self._OPEN_PATH) as opened, patch(NOTE_PATH) as note:
+            api.submit_auto_2fa_code("123456", received_at=time.time())
+        opened.assert_not_called()
+        note.assert_called_once()
+
     def test_validation_failure_notes_the_retry(self):
         # The LLM saw "attempting automatic SMS 2FA"; a rejected code must not leave it
         # thinking the flow stalled — one system note says a fresh code is on its way.
@@ -2275,6 +2320,16 @@ class TestChallengeNote:
             api._arm_auto_sent_code(1000.0)
         text = note.call_args.args[1]
         assert "iMessage feed is not running" in text and "icloud_login_code" in text and "Ctrl-E" in text
+
+    @pytest.mark.parametrize("in_ftue, pushed", [(True, False), (False, True)])
+    def test_during_the_setup_the_note_is_a_history_row_only(self, in_ftue, pushed):
+        """The assistant's reply to the setup command that raised the challenge tells the user;
+        outside the setup nothing else would, so the chats hear the note."""
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = _service_with_sms_challenge()
+        with patch(NOTE_PATH) as note, patch('assistant.FirstRun.in_ftue', return_value=in_ftue):
+            api._arm_auto_sent_code(1000.0)
+        assert note.call_args.kwargs["push"] is pushed
 
     def test_one_note_per_signin_a_new_signin_gets_its_own(self):
         api = iCloudAPI(config=VALID_CONFIG)

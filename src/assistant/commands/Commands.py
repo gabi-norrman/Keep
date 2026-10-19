@@ -20,7 +20,7 @@ from assistant import Destinations, FirstRun, MemoryFile, Procedures, VoiceCandi
 from common.logging import trace, info, note, error, fine
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from common.ConfigManager import ConfigManager
-from common import ConfigSchema, ConfigStore
+from common import ConfigSchema, ConfigStore, FullDiskAccess
 from common.ConfigStore import ConfigStoreError
 from assistant.ChannelProfile import AUTONOMOUS
 from assistant.Notifier import SecretRejected, notifier
@@ -1181,6 +1181,8 @@ class Commands:
             line = f"{status['name']} — {self._STATE_LABELS.get(status['state'], status['state'])}"
             if status["state"] == "disabled":
                 line += f'; enable: enable_integration("{status["name"]}")'
+                if status.get("setup_after"):
+                    line += f' once {status["setup_after"]} is signed in ({status["setup_after_reason"]})'
             if status["last_error"] and status["state"] in ("warning", "error", "needs_2fa", "rate_limited"):
                 line += f": {status['last_error'][:450]}"
             if status["state"] == "needs_2fa" and status.get("login_hint"):
@@ -1196,8 +1198,6 @@ class Commands:
                 # A disabled feed has no runner to describe, but it is still a feed.
                 line += "; feed" if status["state"] == "disabled" else f"; feed: {describe_feed_status(status['feed'])}"
             line += "; restartable" if status["restartable"] else "; needs a server restart to change"
-            if status.get("sensitive"):
-                line += "; private data: enabling it ends the beta's transcript telemetry"
             lines.append(line)
         info(f"list_integrations: {len(lines)} integrations")
         return "\n".join(lines)
@@ -1213,6 +1213,26 @@ class Commands:
 
     def cmd_config_help(self, parameter_string: str = ""):
         self.background_command(self._run_config_help, parameter_string.strip().strip('"\''))
+
+    def cmd_show_full_disk_access_setting(self, parameter_string: str = "") -> str:
+        """Opens System Settings on the Full Disk Access pane, on the Mac's own screen (the first-run
+        brief's step 2), and says whether the grant is in force for this process. `open` returns at
+        once, so no background lane."""
+        granted = FullDiskAccess.granted()
+        if granted:
+            info("show_full_disk_access_setting: the grant is already in force")
+        if not FullDiskAccess.observable():
+            status = ("Full Disk Access cannot be checked from here: there is no Messages database on this Mac "
+                      "(Messages.app is not set up).")
+        elif granted:
+            status = "Full Disk Access is already granted to this server process."
+        else:
+            status = ("Full Disk Access is not granted to this server process yet. Once the user turns Terminal on "
+                      "and lets macOS quit it, restart_server() starts a process that has it.")
+        failure = FullDiskAccess.open_settings()
+        if failure:
+            return f"{failure}. The pane is {FullDiskAccess.SETTINGS_PATH}. {status}"
+        return f"System Settings is open on {FullDiskAccess.SETTINGS_PATH}, on the Mac's screen. {status}"
 
     def _run_config_help(self, section: str = "") -> str:
         if not section:
@@ -1412,10 +1432,34 @@ class Commands:
             trace(f"{verb}_integration: {canonical} was already {verb}d, no telemetry event")
         if result is None:
             return changed
-        return f"{changed}; {self._describe_restart(result['status'], result['restartable'])}"
+        text = f"{changed}; {self._describe_restart(result['status'], result['restartable'])}"
+        warning = self._setup_order_warning(result["status"]) if enable else None
+        return f"{text}. {warning}" if warning else text
+
+    def _setup_order_warning(self, status: dict) -> Optional[str]:
+        """The integration was meant to follow another (`Integration.setup_after`) that is not
+        healthy yet, while setup is in progress: what to set up now, with the reason. Outside
+        the FTUE the order is the user's business."""
+        prerequisite = status.get("setup_after")
+        if not prerequisite:
+            return None
+        if not FirstRun.in_ftue(verbose=False):
+            trace(f"enable_integration: {status['name']} follows {prerequisite}, but setup is not in progress — no warning")
+            return None
+        state = next((s.get("state") for s in self._known_integration_statuses() if s.get("name") == prerequisite), None)
+        if state == "ok":
+            trace(f"enable_integration: {status['name']} follows {prerequisite}, which is signed in")
+            return None
+        label = self._STATE_LABELS.get(state, state) if state else "not registered"
+        info(f"enable_integration: {status['name']} enabled before {prerequisite} ({label}) — warning the LLM")
+        return (f"Note: {status['name']} was meant to be enabled once {prerequisite} is signed in "
+                f"({status['setup_after_reason']}), and {prerequisite} is {label} — set {prerequisite} up now")
+
+    def _known_integration_statuses(self) -> list[dict]:
+        return self._integration_monitor().get_all_statuses()
 
     def _known_integration_names(self) -> list[str]:
-        return [s["name"] for s in self._integration_monitor().get_all_statuses()]
+        return [s["name"] for s in self._known_integration_statuses()]
 
     def _canonical_integration_name(self, name: str) -> Optional[str]:
         """The name as list_integrations shows it for any spelling the config accepts."""
@@ -2016,6 +2060,7 @@ class Commands:
     def describe_vault_request(self, p):      return None  # the masked prompt itself says what is asked for
     def describe_list_integrations(self, p):  return "Listing integrations"
     def describe_config_help(self, p):        return f"Reading the settings for {p.strip()}" if p.strip() else "Listing the settings sections"
+    def describe_show_full_disk_access_setting(self, p): return "Opening the Full Disk Access setting"
     def describe_config_request(self, p):     return f"Asking for setting {p.strip()}" if p.strip() else "Asking for a setting"
     def describe_config_set(self, p):
         key = p.split(",", 1)[0].strip().strip('"\'')

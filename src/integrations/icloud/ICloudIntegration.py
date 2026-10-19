@@ -28,6 +28,13 @@ from common.logging import info, error, note, trace, fine
 _EXC_LOG_LIMIT = 300
 
 
+# The system row a code fished out of iMessage and accepted by Apple leaves, and the system
+# turn that opens the conversation with it during the first-time setup (iCloudAPI._announce_verified).
+VERIFIED_NOTE = "iCloud 2FA code auto-detected from iMessage and verified. ✅"
+VERIFIED_TURN = (VERIFIED_NOTE + " iCloud is signed in. Tell the user in a line and go on with the next step "
+                 "of the setup.")
+
+
 def _brief(e: BaseException, limit: int = _EXC_LOG_LIMIT) -> str:
     """An exception rendered for one log line. pyicloud appends the entire HTTP body
     to its API errors — on 2026-09-06 that put Apple's 940-line 2FA page into
@@ -566,11 +573,19 @@ class ICloudIntegration(Integration):
 
     def _note_challenge(self, signin_started_at: float):
         """One system row per challenge: the chats (and the LLM) learn that a code is on its way
-        and whether the server reads it by itself or the user has to enter it."""
+        and whether the server reads it by itself or the user has to enter it. While setup is in
+        progress the row is not pushed to the chats: the challenge comes from the sign-in a setup
+        command of the assistant is running, and its reply, seconds later, says it in the user's
+        terms — the raw note on Telegram read as the LLM's instructions (2026-10-19)."""
         if self._code_noted_for == signin_started_at:
             return
         self._code_noted_for = signin_started_at
-        system_note(self.name, self.CODE_WAITING_NOTICE if self._reader_live() else self.CODE_NEEDED_NOTICE)
+        from assistant import FirstRun
+        in_ftue = FirstRun.in_ftue(verbose=False)
+        if in_ftue:
+            info("iCloud: setup is in progress — the challenge note is a history row only, the assistant's reply carries it")
+        system_note(self.name, self.CODE_WAITING_NOTICE if self._reader_live() else self.CODE_NEEDED_NOTICE,
+                    push=not in_ftue)
 
     def _ensure_authenticated(self):
         """Ensure we have an authenticated API connection: the session files when they still
@@ -1174,9 +1189,9 @@ class ICloudIntegration(Integration):
             result = self.send_2fa_code(code)
             if result:
                 self._auto_2fa_message = "2FA code auto-detected from iMessage — verified!"
-                system_note(self.name, "iCloud 2FA code auto-detected from iMessage and verified. ✅")
                 from assistant.integration.IntegrationMonitor import IntegrationMonitor
                 IntegrationMonitor.get_instance().check_now("iCloud")
+                self._announce_verified()
             else:
                 self._auto_2fa_message = "2FA code auto-detected but verification failed"
                 if self._stale_session_rejection and self._challenge_from_fresh_signin:
@@ -1206,6 +1221,22 @@ class ICloudIntegration(Integration):
         except Exception as e:
             error(f"iCloud: auto 2FA submission failed: {_brief(e)}")
             self._auto_2fa_message = f"2FA auto-submit error: {e}"
+
+    def _announce_verified(self):
+        """The verified code reaches the user as the turn that opens the conversation while
+        setup is in progress — the user is waiting on this sign-in, as on the Full Disk Access
+        grant — and as a system row otherwise: a re-auth outside the setup is routine. The
+        health check ran first, so the turn sees iCloud signed in."""
+        from assistant import FirstRun
+        from assistant.Notifier import notifier
+        if not FirstRun.in_ftue(verbose=False):
+            trace("iCloud: setup is not in progress — the verified code is a system note")
+        elif notifier().open_conversation(VERIFIED_TURN):
+            info("iCloud: the conversation is opened with the verified-code turn")
+            return
+        else:
+            info("iCloud: no chat took the verified-code turn — a system note carries it")
+        system_note(self.name, VERIFIED_NOTE)
 
     @property
     def auto_2fa_message(self) -> Optional[str]:

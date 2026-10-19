@@ -302,6 +302,23 @@ class TestGetHistoryMessages:
         # head = 75 chars, tail = 25 chars (cap 100), plus the marker between them.
         assert assistant["content"] == "a" * 75 + " […history truncated…] " + "c" * 25
 
+    def test_a_system_row_renders_whole_past_the_cap(self):
+        """The first-run brief is a system row five times the cap, and its setup steps are at
+        the end: cut, every later turn lost them (and the assistant enabled Photos before
+        iCloud). A user row of the same size is still cut."""
+        section = _make_history_section()
+        section.max_render_chars = 100
+        steps = "\n".join(f"{i}. step {i}" for i in range(1, 9))
+        section.history = [
+            {"role": "system", "content": "The server has just started. " * 10 + steps, "timestamp": 1000.0,
+             "source": "console", "location": None},
+            {"role": "assistant", "content": "Hi, who am I talking to?", "timestamp": 1001.0},
+            {"role": "Marcus", "content": "p" * 500, "timestamp": 1002.0, "source": None, "location": None},
+        ]
+        brief, _, user = section.get_history_messages()
+        assert brief["content"].startswith("System (") and brief["content"].endswith("8. step 8")
+        assert "p" * 100 + "..." in user["content"] and "p" * 101 not in user["content"]
+
     def test_assistant_at_cap_not_truncated(self):
         section = _make_history_section()
         section.max_render_chars = 100

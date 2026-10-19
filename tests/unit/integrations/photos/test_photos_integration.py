@@ -2966,6 +2966,21 @@ class TestPhotosFeedProviderRefusal:
         with patch.object(MemoryFile, "read", return_value="Marcus lives at Storgatan 1"):
             assert PhotoProcessor._read_memory() == "Marcus lives at Storgatan 1"
 
+    def test_the_stub_verdict_is_logged_once_not_per_photo(self):
+        from assistant import MemoryFile
+        from integrations.photos import PhotoProcessor as module
+        stub = MemoryFile.FIRST_RUN_STUB.read_text()
+        module.PhotoProcessor._bank_is_stub = None
+        with patch.object(MemoryFile, "read", return_value=stub), patch.object(module, "info") as log:
+            for _ in range(3):
+                module.PhotoProcessor._read_memory()
+        assert log.call_count == 1
+        with patch.object(MemoryFile, "read", return_value="Marcus lives at Storgatan 1"), \
+                patch.object(module, "info") as log:
+            module.PhotoProcessor._read_memory()
+            module.PhotoProcessor._read_memory()
+        assert log.call_count == 1 and "curated" in log.call_args[0][0]
+
 
 REPLY = '{"short_description":"a barn","detailed_description":"red barn","pretty_score":40,"family_importance_score":10}'
 

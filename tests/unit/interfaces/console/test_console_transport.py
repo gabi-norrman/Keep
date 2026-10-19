@@ -284,3 +284,15 @@ class TestSecretPrompts:
         entry = pane.add_secret_prompt("unknown-token", "Old", "")
         transport.answer_secret("unknown-token", None)
         assert pane.pending_secret is None
+
+
+@pytest.mark.unit
+class TestAttended:
+    def test_attended_follows_the_tui_clients(self, pane):
+        transport = ConsoleTransport(pane)
+        assert transport.attended() is True     # nothing wired: the console counts as attended
+        clients = set()
+        transport.has_clients = lambda: bool(clients)
+        assert transport.attended() is False
+        clients.add("a socket")
+        assert transport.attended() is True

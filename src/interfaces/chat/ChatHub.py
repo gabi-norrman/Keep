@@ -141,15 +141,21 @@ class ChatHub(SingletonMixin):
         return True
 
     def open_conversation(self, query: str) -> bool:
-        """A turn the server starts (the first-run brief): *query* goes to the assistant as a
-        system turn in the first owner conversation — one turn, not one per chat, so the
-        history gets a single exchange — and the reply is rendered there like any other.
-        Never blocks. False when no owner chat is reachable."""
+        """A turn the server starts (the first-run brief, the Full Disk Access grant seen):
+        *query* goes to the assistant as a system turn in one owner conversation — one turn,
+        not one per chat, so the history gets a single exchange — and the reply is rendered
+        there like any other. The first attended chat takes it (the console counts only with
+        a TUI client connected: after the grant the terminal is gone and the user is on
+        Telegram), else the first there is. Never blocks. False when no owner chat is
+        reachable."""
         targets = self._targets()
         if not targets:
             info("No owner conversation to open, the assistant waits to be spoken to.")
             return False
-        transport, conversation = targets[0]
+        attended = [t for t in targets if t[0].attended()]
+        if not attended:
+            info(f"No attended owner conversation — opening the first one ({targets[0][0].name})")
+        transport, conversation = (attended or targets)[0]
         info(f"Opening the conversation in {transport.name} [{conversation}]")
         self.session_for(transport, conversation).open(query)
         return True

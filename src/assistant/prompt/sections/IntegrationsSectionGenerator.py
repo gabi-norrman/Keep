@@ -4,8 +4,11 @@ assistant knows its own state only from a `list_integrations` result in the hist
 which a trim takes away: the first beta install's assistant then told the user to create the
 Telegram bot it had set up itself an hour earlier. Names only — which keys are set is
 `list_integrations`' business — so it costs a few dozen tokens. Polled, so an integration the
-user enables, or breaks, reaches the LLM as a delta note."""
+user enables, or breaks, reaches the LLM as a delta note. The last line is the Full Disk Access
+grant (`common/FullDiskAccess`), the one setup step made at the Mac itself: the assistant decides
+from it whether the step is ahead, done, or failed after the restart."""
 from ..PromptSectionGenerator import PromptSectionGenerator
+from common import FullDiskAccess
 from common.logging import info
 
 
@@ -35,6 +38,13 @@ class IntegrationsSectionGenerator(PromptSectionGenerator):
         from assistant.integration.IntegrationMonitor import IntegrationMonitor
         return IntegrationMonitor.get_instance().get_all_statuses()
 
+    @staticmethod
+    def full_disk_access() -> bool | None:
+        """Granted, not granted, or None when the probe cannot tell (no Messages database)."""
+        if not FullDiskAccess.observable():
+            return None
+        return FullDiskAccess.granted()
+
     def _fetch_content(self) -> str:
         """Polled every UPDATE_INTERVAL, so the verdict and the summary are logged only when
         they change — the previous content is the thing to compare with."""
@@ -46,10 +56,12 @@ class IntegrationsSectionGenerator(PromptSectionGenerator):
         if not in_ftue:
             return ""
         statuses = self.statuses()
-        text = self.render(statuses)
+        access = self.full_disk_access()
+        text = self.render(statuses, access)
         if text != self.content:
             on, unconfigured, broken = self.group(statuses)
-            info(f"Integrations section: {len(on)} on, {len(unconfigured)} not configured, {len(broken)} with a problem")
+            info(f"Integrations section: {len(on)} on, {len(unconfigured)} not configured, {len(broken)} with a problem; "
+                 f"Full Disk Access {self.ACCESS[access]}")
         return text
 
     @classmethod
@@ -69,8 +81,10 @@ class IntegrationsSectionGenerator(PromptSectionGenerator):
                 broken.append(f"{status['name']} ({detail})")
         return on, unconfigured, broken
 
+    ACCESS = {True: "granted", False: "not granted", None: "not checkable (no Messages database on this Mac)"}
+
     @classmethod
-    def render(cls, statuses: list[dict]) -> str:
+    def render(cls, statuses: list[dict], full_disk_access: bool | None = None) -> str:
         on, unconfigured, broken = cls.group(statuses)
         lines = [cls.HEADING]
         lines.append("On: " + (", ".join(on) + "." if on else "nothing yet."))
@@ -78,4 +92,5 @@ class IntegrationsSectionGenerator(PromptSectionGenerator):
             lines.append("On but not configured: " + ", ".join(unconfigured) + ".")
         if broken:
             lines.append("On with a problem: " + ", ".join(broken) + ".")
+        lines.append(f"Full Disk Access for this server process: {cls.ACCESS[full_disk_access]}.")
         return "\n".join(lines)

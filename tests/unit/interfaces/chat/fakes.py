@@ -65,12 +65,16 @@ class FakeTransport(ChatTransport):
         self.accept = True
         self.prompt_ref = 101
         self.hub = None
+        self.attended_now = True
 
     def start(self, hub):
         self.hub = hub
 
     def owner_conversations(self):
         return list(self.owners)
+
+    def attended(self):
+        return self.attended_now
 
     def notification_conversations(self):
         return list(self.notify) if self.notify is not None else list(self.owners)

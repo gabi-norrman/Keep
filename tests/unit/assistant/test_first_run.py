@@ -82,6 +82,31 @@ class TestBeginIfFresh:
         path.write_text("garbage")
         assert FirstRun.begin_if_fresh(True, path) is False
 
+    @pytest.fixture
+    def developer(self, monkeypatch):
+        knobs = SimpleNamespace(is_developer=True, pretended=[])
+        monkeypatch.setattr(FirstRun, "config", SimpleNamespace(
+            get=lambda key, default=None: knobs.is_developer if key == "is_developer" else default))
+        monkeypatch.setattr(FirstRun.FullDiskAccess, "pretend_missing", lambda on=True: knobs.pretended.append(on))
+        return knobs
+
+    def test_a_developers_fresh_install_pretends_the_grant_is_missing(self, tmp_path, developer):
+        # The developer's Mac has the grant, so the step would otherwise never be exercised.
+        assert FirstRun.begin_if_fresh(True, tmp_path / "first_run.json") is True
+        assert developer.pretended == [True]
+
+    def test_a_users_fresh_install_probes_for_real(self, tmp_path, developer):
+        developer.is_developer = False
+        assert FirstRun.begin_if_fresh(True, tmp_path / "first_run.json") is True
+        assert developer.pretended == []
+
+    def test_the_restarted_developer_process_probes_for_real(self, tmp_path, developer):
+        # The state file is there from the first process: this is the restart the step ends with.
+        path = tmp_path / "first_run.json"
+        State.fresh().save(path)
+        assert FirstRun.begin_if_fresh(False, path) is True
+        assert developer.pretended == []
+
 
 class TestStageQueries:
     @pytest.mark.parametrize("stage, pending", [(Stage.SETUP, True), (Stage.INDEXING, True), (Stage.CURATING, False),
@@ -583,8 +608,11 @@ class TestDesktopShortcut:
         def ensure():
             knobs.ensure_calls += 1
             return knobs.built
-        monkeypatch.setattr(FirstRun.DesktopShortcut, "full_disk_access_granted", lambda: knobs.granted)
+        monkeypatch.setattr(FirstRun.FullDiskAccess, "granted", lambda: knobs.granted)
         monkeypatch.setattr(FirstRun.DesktopShortcut, "ensure", ensure)
+        knobs.chat = Mock()
+        knobs.chat.open_conversation.return_value = False     # no chat takes the turn unless a test says so
+        monkeypatch.setattr(FirstRun, "notifier", lambda: knobs.chat)
         return knobs
 
     def test_waits_while_the_access_is_not_granted(self, env, shortcut):
@@ -593,12 +621,38 @@ class TestDesktopShortcut:
         assert shortcut.ensure_calls == 0
         assert State.load(env.path).desktop_shortcut_at is None
 
-    def test_builds_once_the_access_is_granted_and_tells_the_history(self, env, shortcut):
+    def test_a_probe_that_finds_the_grant_missing_is_remembered_across_the_restart(self, env, shortcut):
         state = env.state_at(Stage.SETUP)
+        assert env.pipeline.desktop_shortcut(state, now=0.0) is False
+        assert State.load(env.path).full_disk_access_awaited is True
+
+    def test_builds_once_the_awaited_access_is_granted_and_opens_the_conversation(self, env, shortcut):
+        # The grant quit the terminal, so the user hears it from the assistant on Telegram: the
+        # turn tells the assistant the facts, and the history gets that exchange, not a bare row.
+        state = env.state_at(Stage.SETUP, full_disk_access_awaited=True)
         shortcut.granted = True
+        shortcut.chat.open_conversation.return_value = True
         assert env.pipeline.desktop_shortcut(state, now=0.0) is True
         assert shortcut.ensure_calls == 1
         assert State.load(env.path).desktop_shortcut_at is not None
+        turn = shortcut.chat.open_conversation.call_args.args[0]
+        assert "Full Disk Access" in turn and "Desktop" in turn
+        assert _rows(env.history) == []
+
+    def test_without_a_chat_to_take_the_turn_a_history_row_tells_it(self, env, shortcut):
+        state = env.state_at(Stage.SETUP, full_disk_access_awaited=True)
+        shortcut.granted = True
+        assert env.pipeline.desktop_shortcut(state, now=0.0) is True
+        assert any("Desktop" in row for row in _rows(env.history))
+
+    def test_a_grant_present_from_the_start_builds_quietly(self, env, shortcut):
+        # A developer's wipe, a reinstall: the brief opens the conversation, and an "I'm back,
+        # the access works" turn on top of it would be nonsense.
+        state = env.state_at(Stage.SETUP)
+        shortcut.granted = True
+        shortcut.chat.open_conversation.return_value = True
+        assert env.pipeline.desktop_shortcut(state, now=0.0) is True
+        shortcut.chat.open_conversation.assert_not_called()
         assert any("Desktop" in row for row in _rows(env.history))
 
     def test_never_a_second_attempt_after_the_stamp(self, env, shortcut):
@@ -613,6 +667,18 @@ class TestDesktopShortcut:
         assert env.pipeline.desktop_shortcut(state, now=0.0) is False
         assert State.load(env.path).desktop_shortcut_at is not None
         assert _rows(env.history) == []
+        shortcut.chat.open_conversation.assert_not_called()
+
+    def test_the_thread_lets_the_interfaces_come_up_before_the_first_probe(self, env, shortcut):
+        # Telegram is still connecting when the pipeline starts; the turn must follow the
+        # startup note, not race it.
+        env.state_at(Stage.DONE)
+        shortcut.granted = True
+        env.pipeline.start()
+        time.sleep(0.05)
+        env.pipeline.stop()
+        assert shortcut.ensure_calls == 0
+        assert env.pipeline._shortcut_probe_at > time.monotonic()
 
     def test_the_probe_is_rate_limited_between_polls(self, env, shortcut):
         state = env.state_at(Stage.SETUP)
@@ -620,6 +686,7 @@ class TestDesktopShortcut:
         shortcut.granted = True
         assert env.pipeline.desktop_shortcut(state, now=1.0) is False
         assert env.pipeline.desktop_shortcut(state, now=FirstRun.DESKTOP_SHORTCUT_PROBE_SECONDS) is True
+        shortcut.chat.open_conversation.assert_called_once()    # the first probe found the grant missing
 
     def test_a_done_install_still_gets_the_shortcut(self, env, shortcut):
         state = env.state_at(Stage.DONE)

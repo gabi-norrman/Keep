@@ -34,10 +34,17 @@ a restart resumes, and published as `curation_progress()` for the Home tab's bar
 and the feed restarted, since every photo description carries the bank) → DONE. The nightly
 curation waits until the pipeline has curated once (`curation_pending`).
 
-Beside the stages, every poll of a young install probes for Full Disk Access (`common/DesktopShortcut`:
+Beside the stages, every poll of a young install probes for Full Disk Access (`common/FullDiskAccess`:
 can the process read chat.db) and, the first time it is granted, builds the Keep.app shortcut on
-the Desktop — one attempt, stamped in the state — and leaves a system row so the assistant can
-point the user to it.
+the Desktop (`common/DesktopShortcut`) — one attempt, stamped in the state. When the grant
+arrived during the setup (the state remembers a probe that found it missing, which survives the
+restart the grant needs) it also opens the conversation with a system turn, so the assistant tells
+the user it is back with the grant and sends them to the shortcut and the console (the brief's
+step 4; the grant quits the terminal, so the user is on Telegram and `Notifier.open_conversation`
+picks the attended chat). A Mac that had the grant all along (a developer's wipe, a reinstall)
+gets the shortcut quietly, with a history row: the brief is the opening there, and it sees the
+grant in the INTEGRATIONS section. The first probe waits `DESKTOP_SHORTCUT_FIRST_PROBE_SECONDS`
+for the interfaces to come up, so the turn follows the startup note.
 """
 import json
 import os
@@ -48,12 +55,13 @@ from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 
-from common import DesktopShortcut
+from common import DesktopShortcut, FullDiskAccess
 from common.ConfigManager import config
 from common.FloxyDatabase import FloxyDatabase, PHOTO_HISTORY_SOURCE
 from common.Paths import AISERVER_DIR, CACHE_DIR
 from common.logging import trace, info, note, error
 from assistant import MemoryFile
+from assistant.Notifier import notifier
 
 # Below this many enabled integrations setup is in progress and the brief opens the
 # conversation: the brief's three, or any three the user picked instead.
@@ -77,54 +85,67 @@ The server has just started and this install is still being set up. {owner}
 
 Introduce yourself! This is our FTUE, be nice and engage the user, the goal is to keep the user
 from dropping out and have them configure the most important integrations. Once basic integrations
-are in the system starts to shine - before that we're a blank slate and provide no value for the user. 
-  
-First introduce yourself. Then explain the setup process briefly. First setup takes normally around 15-20 minutes. 
+are in the system starts to shine - before that we're a blank slate and provide no value for the user.
+
+First introduce yourself. Then explain the setup process briefly. First setup takes normally around 15-20 minutes.
 Indexing messages and photos gives you deep contextual knowledge of the user — that is what makes you truly smart and helpful.
 
-Guide the user through the setup of one integration at a time, with list_integrations and config_help as your map.
+Guide the user through the setup one step at a time, with list_integrations and config_help as your map. 
 
 Set up in this order:
 
-1. iMessage, the feed only (no sending yet)
+1. Telegram — the chat on the user's phone, and the lifeline for step 2, which closes this terminal.
 
-2. iCloud (needed so that Photos below can download offline photos)
+2. Full Disk Access — needed for Messages database and other integrations. You can open the dialog for the user 
+with run show_full_disk_access_setting(). Once the user selects quit the terminal and the console close; 
+you keep running and the Telegram chat stays up. 
 
-3. Gemini API key
-It's possible for the user to use the existing Anthropic API key for image processing but it will be ridiculously 
-'expensive (50.000 photos -> $2000 on Opus!). Gemini 3.8 flash is FAST, ACCURATE and CHEAP for photo/video processing. 
-So steer the user towards setup of a Gemini API key. A user that takes a lot of photos will have 5000 photos per year 
-at average. The photo backfill will be three years. Give the user a price estimate for full index.
-Check the current Gemini 3.8 Flash prices on the web (https://ai.google.dev/gemini-api/docs/pricing). Token count 
-estimation per indexed asset:
+3. When the user says done (in Telegram), restart so the new process runs with the grant.
+
+4. Tell the user you are back and that the disk access works, and ask them to double-click the shortcut: it opens
+the console in a terminal (starting the server first when it is not running). Ask them to continue there, we want the 
+user to learn the console UI. 
+
+5. Back in terminal UI: iMessage, the feed only (no sending yet): enable_integration("iMessage") — it needs no
+keys. Messages.app on this Mac must be signed in with the user's own Apple ID. WAIT with Photos - we need iCloud logged 
+in before photos.
+
+6. iCloud, needed so that Photos below can download offline photos - and in the future for Find My, user locations, etc.
+
+7. Photos: enable_integration("Photos"). The index starts at once on the Claude key the install already has — Sonnet
+for new photos, Haiku for the backlog — so nothing more is needed to begin.
+
+8. While the index runs, explain that Gemini (gemini-3.8-flash) is the better fit for the photo index: cheaper, fast,
+accurate, and it indexes video too. Give the user a price estimate for the full index on both and let them decide;
+nothing breaks if they stay on Claude. A user that takes a lot of photos has 5000 photos per year on average; 
+the backfill is three years. Check the current prices on the web). Token count estimation per indexed asset:
 - 3,000 input tokens, of which about 1,900 are served from the implicit cache for photos (none for videos) — the
   prompt carries the memory bank and the instructions beside the image, so it is far more than the image alone
 - 750 output tokens, so output is normally three quarters of the bill; never price all tokens at the input rate
-Prefer config_request (the masked prompt) for the key itself — don't ask the user to paste it into the chat. A key you
-created yourself in the browser and can read off the page goes in with config_set.
- 
-3. Photos
+If they choose Gemini: config_request("api_keys.gemini") (the masked prompt — don't ask the user to paste the key
+into the chat), then config_set("ai.photo_indexing.llm", "GeminiLLM"), config_set("ai.photo_backfill.llm", "GeminiLLM") and
+restart_integration("Photos") — the index carries on where it was, on Gemini.
 
 Once you have a deep understanding of the user and his/her family/friends you will be able to be truly helpful and
-be truely intelligent. iMessage and Photos are important because you'll get loads of background/context on the user
-that way. 
+be truly intelligent. iMessage and Photos are important because you'll get loads of background/context on the user
+that way.
 
 Using Photos, iMessage and other Feeds you'll create a comprehensive long term memory of the users life. That's when
-you start being able to be truly helpful and create value. 
+you start being able to be truly helpful and create value.
 
 Then whatever they want.
 
 The user needs to know what each step does and what you need from them, not
 the mechanics: config_help may hand you file paths, database names, permission systems and remote-access caveats -
 translate those into plain language ("the Mac may ask you to allow this once, so it's easiest if you're sitting at it")
-rather than repeating them. 
+rather than repeating them.
 
-In your first message feel free to use bold/italics so the message looks nice (you can always use it but it's nice to 
+In your first message feel free to use bold/italics so the message looks nice (you can always use it but it's nice to
 start with a bit more fancy message). Feel free to use a bit of humor. Examples of whats funny during FTUE:
 "right now I'm about as useful as a very polite brick"
 "so functionally I'm a very charming paperweight right now"
 
-Try to be very concise, users will churn if you write a lot of text. Keep it short. 
+Try to be very concise, users will churn if you write a lot of text. Keep it short.
 
 Rough outline of the setup process:
 * We load the iMessage history and index one month of photos.
@@ -234,8 +255,15 @@ FULL_PHOTOS_BACKFILL_MONTHS = 36
 PHOTOS_BACKFILL_KEY = "feeds.photos.backfill_months"
 PIPELINE_POLL_SECONDS = 2     # a tick is a file read and a few cached lookups; the waits log only on change
 DESKTOP_SHORTCUT_PROBE_SECONDS = 60   # how often the Full Disk Access probe opens chat.db while the shortcut is not built
+DESKTOP_SHORTCUT_FIRST_PROBE_SECONDS = 15   # the first probe waits for the interfaces (Telegram) to come up
 DESKTOP_SHORTCUT_ROW = ("A Keep shortcut is now on the Desktop: double-clicking it opens the console in a terminal, "
                         "starting the server first when it is not running.")
+# The system turn that opens the conversation once the grant is seen — the brief's step 4.
+FULL_DISK_ACCESS_TURN = (
+    "Full Disk Access is granted and the server is up with it. A Keep shortcut (Keep.app) is now on the Desktop: "
+    "double-clicking it opens the console in a terminal, starting the server first when it is not running. "
+    "Tell the user you are back and that the disk access works, and ask them to try the shortcut and continue "
+    "the setup in the console (the Home tab is the chat). Keep it short.")
 CURATION_RETRY_SECONDS = 600  # how long an all-failed first curation waits before it is run again
 CURATION_STEP_SECONDS = 160.0   # what one curation chunk normally takes: the bar's estimate until one has finished
 PHOTOS_INTEGRATION = "Photos"
@@ -263,6 +291,7 @@ class State:
     chunks_done: int = 0
     chunks_total: int = 0
     desktop_shortcut_at: float | None = None   # when the Desktop shortcut was attempted; None until Full Disk Access is seen
+    full_disk_access_awaited: bool = False     # a probe found the grant missing: it is being made during this setup
 
     @classmethod
     def fresh(cls, now: float = None) -> 'State':
@@ -318,6 +347,11 @@ def begin_if_fresh(seeded: bool, path: Path = None) -> bool:
         return False
     State.fresh().save(path)
     note("First run: fresh install — the first-run pipeline is armed (waiting for Photos to be enabled)")
+    if config.get("is_developer", False):
+        # The developer's Mac has the grant, so the grant step would never be exercised. Only the
+        # first process of the setup pretends: the restart the step ends with finds the state file
+        # above and probes for real.
+        FullDiskAccess.pretend_missing()
     return True
 
 
@@ -428,6 +462,7 @@ class Pipeline:
         the thread keeps polling: `//first_run stage <name>` must be able to set it going
         again, and the idle poll costs nothing."""
         note("First run: pipeline started")
+        self._shortcut_probe_at = time.monotonic() + DESKTOP_SHORTCUT_FIRST_PROBE_SECONDS
         idle_reported = None
         while not self._stop_event.is_set():
             state = State.load(self._path)
@@ -457,14 +492,22 @@ class Pipeline:
         is the one setup step made at the Mac itself, and after it the user needs a way back to
         the console that is not a terminal command. The probe runs every
         `DESKTOP_SHORTCUT_PROBE_SECONDS`; one build attempt, stamped in the state whatever its
-        outcome (the log says why it failed). Returns whether the shortcut was built now."""
+        outcome (the log says why it failed). A shortcut built after a probe found the grant
+        missing (`full_disk_access_awaited`, kept across the restart) opens the conversation with
+        `FULL_DISK_ACCESS_TURN`, so the assistant tells the user at once; a grant that was there
+        all along, or no chat to take the turn, leaves a system row instead — the brief is the
+        opening then. Returns whether the shortcut was built now."""
         if state.desktop_shortcut_at is not None:
             return False
         now = now if now is not None else time.monotonic()
         if now < self._shortcut_probe_at:
             return False
         self._shortcut_probe_at = now + DESKTOP_SHORTCUT_PROBE_SECONDS
-        if not DesktopShortcut.full_disk_access_granted():
+        if not FullDiskAccess.granted():
+            if not state.full_disk_access_awaited:
+                state.full_disk_access_awaited = True
+                state.save(self._path)
+                info("First run: Full Disk Access is missing — the grant is part of this setup, the turn follows it")
             self._waiting("Full Disk Access not granted yet — the Desktop shortcut waits")
             return False
         self._waiting_on = None
@@ -472,9 +515,21 @@ class Pipeline:
         state.desktop_shortcut_at = time.time()
         state.save(self._path)
         note(f"First run: Full Disk Access is granted — the Desktop shortcut {'is built' if built else 'could not be built'}")
-        if built and self._history is not None:
-            self._history.add_context_message("system", DESKTOP_SHORTCUT_ROW, time.time(), source=HISTORY_SOURCE)
-        return built
+        if not built:
+            return False
+        if not state.full_disk_access_awaited:
+            info("First run: the grant was there from the start — no turn, the brief opens the conversation")
+            self._row(DESKTOP_SHORTCUT_ROW)
+        elif notifier().open_conversation(FULL_DISK_ACCESS_TURN):
+            info("First run: the conversation is opened with the Full Disk Access turn")
+        else:
+            info("First run: no chat took the Full Disk Access turn — a system row carries it")
+            self._row(DESKTOP_SHORTCUT_ROW)
+        return True
+
+    def _row(self, text: str):
+        if self._history is not None:
+            self._history.add_context_message("system", text, time.time(), source=HISTORY_SOURCE)
 
     # --- one step ---------------------------------------------------------------------------
 

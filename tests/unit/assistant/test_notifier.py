@@ -24,6 +24,10 @@ class TestNullNotifier:
         # with an explanatory error — so no notifier == sensitive commands never run.
         assert NullNotifier().request_approval("send_imessage", details="x", timeout=1) == "unavailable"
 
+    def test_open_conversation_reports_that_no_chat_took_the_turn(self):
+        # FirstRun falls back to a history row on False; True would lose the fact.
+        assert NullNotifier().open_conversation("the grant is in") is False
+
     def test_request_secret_is_unavailable_and_never_calls_accept(self):
         # vault_request / config_request answer "unavailable" with a hint to open a chat UI;
         # the accept callback is what would store the value, so it must not run.

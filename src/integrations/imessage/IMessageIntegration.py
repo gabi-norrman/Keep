@@ -44,10 +44,11 @@ def _start_command() -> str:
     return script
 
 
-FULL_DISK_ACCESS_HINT = ("needs Full Disk Access for Terminal, then quit Terminal and run start.sh. Tell the user: "
-                         "1) System Settings > Privacy & Security > Full Disk Access > turn on Terminal; "
-                         "2) quit Terminal with Cmd+Q (the chat closes, that's fine); "
-                         f"3) open Terminal again, type {_start_command()} and press Enter — the chat comes back")
+FULL_DISK_ACCESS_HINT = ("needs Full Disk Access for Terminal, then quit Terminal and restart_server(). Tell the user, "
+                         "who must be at the Mac: 1) show_full_disk_access_setting() opens System Settings > Privacy & "
+                         "Security > Full Disk Access — turn on Terminal; 2) macOS offers to quit Terminal: accept (the "
+                         "console closes, the server keeps running, Telegram stays up); 3) restart_server() from "
+                         f"Telegram — or, without Telegram, open Terminal again and type {_start_command()}")
 APPLE_EPOCH_OFFSET = 978_307_200
 POLL_INTERVAL = 5
 FETCH_BATCH_SIZE = 500   # chat.db rows read per fetch; a shorter batch means the catch-up is over

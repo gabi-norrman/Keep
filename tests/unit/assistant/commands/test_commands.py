@@ -1843,6 +1843,50 @@ class TestCmdListIntegrations:
             "Web Access — ok; restartable",
         ]
 
+    def test_a_disabled_integration_with_a_prerequisite_says_what_to_sign_in_first(self, commands_instance):
+        monitor = Mock()
+        status = self._status("Photos", "disabled")
+        status.update(setup_after="iCloud", setup_after_reason="offline photos download through it")
+        monitor.describe_all.return_value = [status, self._status("iCloud", "disabled")]
+        with patch.object(Commands, "_integration_monitor", return_value=monitor):
+            icloud, photos = commands_instance._run_list_integrations().splitlines()
+        assert photos.startswith('Photos — disabled; enable: enable_integration("Photos") once iCloud is signed in '
+                                 '(offline photos download through it)')
+        assert "once" not in icloud
+
+    @staticmethod
+    def _enable_with_prerequisite(commands_instance, prerequisite_state, in_ftue=True):
+        monitor = Mock()
+        statuses = [{"name": "Photos", "state": "disabled"}]
+        if prerequisite_state is not None:
+            statuses.append({"name": "iCloud", "state": prerequisite_state})
+        monitor.get_all_statuses.return_value = statuses
+        monitor.restart.return_value = {"restartable": True, "status": {
+            "name": "Photos", "state": "ok", "last_error": None, "config_keys": [],
+            "setup_after": "iCloud", "setup_after_reason": "offline photos download through it"}}
+        with patch.object(Commands, "_integration_monitor", return_value=monitor), \
+             patch("assistant.commands.Commands.ConfigStore.enable_integration", return_value="Photos enabled"), \
+             patch("assistant.commands.Commands.FirstRun.in_ftue", return_value=in_ftue):
+            return commands_instance._run_enable_integration("Photos")
+
+    @pytest.mark.parametrize("prerequisite_state, said", [
+        ("disabled", "iCloud is disabled"),
+        ("needs_2fa", "iCloud is needs 2FA"),
+        (None, "iCloud is not registered"),
+    ])
+    def test_enabling_before_the_prerequisite_is_signed_in_warns_during_setup(self, commands_instance,
+                                                                             prerequisite_state, said):
+        text = self._enable_with_prerequisite(commands_instance, prerequisite_state)
+        assert text.startswith("Photos enabled; Photos restarted: ok. Note: Photos was meant to be enabled once iCloud")
+        assert said in text and "offline photos download through it" in text
+
+    def test_a_signed_in_prerequisite_raises_no_warning(self, commands_instance):
+        assert self._enable_with_prerequisite(commands_instance, "ok") == "Photos enabled; Photos restarted: ok"
+
+    def test_the_setup_order_is_not_policed_after_the_setup(self, commands_instance):
+        assert self._enable_with_prerequisite(commands_instance, "disabled", in_ftue=False) \
+            == "Photos enabled; Photos restarted: ok"
+
     def test_enable_integration_writes_the_name_and_restarts(self, commands_instance):
         monitor = Mock()
         monitor.get_all_statuses.return_value = [{"name": "Ring"}, {"name": "Sonos & Spotify"}]
@@ -1950,20 +1994,19 @@ class TestCmdListIntegrations:
             'Telegram Feed — disabled; enable: enable_integration("Telegram Feed"); feed; restartable',
         ]
 
-    def test_a_private_data_integration_carries_the_warning_and_the_others_do_not(self, commands_instance):
-        """Enabling a sensitive integration ends the beta's transcript telemetry for good, so the
-        assistant must be able to warn before it does — the line has to say so, and only there."""
+    def test_no_integration_claims_to_end_the_transcript_telemetry(self, commands_instance):
+        """The transcript telemetry stops on the install's age (Telemetry.content_allowed), not when a
+        private-data integration is enabled — the line that said so was stale, and the assistant
+        promised users a privacy effect the code did not deliver (2026-10-19)."""
         monitor = Mock()
         monitor.describe_all.return_value = [
             dict(self._status("Gmail", "disabled", [("email.address", False)]), sensitive=True),
             dict(self._status("Tesla", "ok", [("tesla.tessie_access_token", True)]), sensitive=False),
-            self._status("Weather", "ok"),
         ]
         with patch.object(Commands, "_integration_monitor", return_value=monitor):
-            lines = {line.split(" — ")[0]: line for line in commands_instance._run_list_integrations().splitlines()}
-        assert "private data" in lines["Gmail"] and "transcript" in lines["Gmail"]
-        assert 'enable_integration("Gmail")' in lines["Gmail"]   # the warning does not displace the enable line
-        assert "private data" not in lines["Tesla"] and "private data" not in lines["Weather"]
+            text = commands_instance._run_list_integrations()
+        assert "telemetry" not in text and "private data" not in text
+        assert 'enable_integration("Gmail")' in text
 
 class TestCmdConfigHelp:
     @pytest.fixture(autouse=True)
@@ -2514,3 +2557,36 @@ class TestPullRequestTrialCommands:
              patch.object(commands_instance, "background_command") as bg:
             assert "number" in commands_instance.cmd_pr_feedback("works for me")
         bg.assert_not_called()
+
+
+class TestShowFullDiskAccessSetting:
+    """Opens the System Settings pane and tells the LLM whether the grant is in force."""
+
+    def test_opens_the_pane_and_says_the_grant_is_missing(self, commands_instance):
+        with patch("assistant.commands.Commands.FullDiskAccess.observable", return_value=True), \
+                patch("assistant.commands.Commands.FullDiskAccess.granted", return_value=False), \
+                patch("assistant.commands.Commands.FullDiskAccess.open_settings", return_value=None) as opened:
+            result = commands_instance.cmd_show_full_disk_access_setting("")
+        opened.assert_called_once()
+        assert "Full Disk Access" in result and "not granted" in result and "restart_server" in result
+
+    def test_an_already_granted_process_says_so(self, commands_instance):
+        with patch("assistant.commands.Commands.FullDiskAccess.observable", return_value=True), \
+                patch("assistant.commands.Commands.FullDiskAccess.granted", return_value=True), \
+                patch("assistant.commands.Commands.FullDiskAccess.open_settings", return_value=None):
+            result = commands_instance.cmd_show_full_disk_access_setting("")
+        assert "already granted" in result
+
+    def test_a_mac_without_messages_cannot_be_checked(self, commands_instance):
+        with patch("assistant.commands.Commands.FullDiskAccess.observable", return_value=False), \
+                patch("assistant.commands.Commands.FullDiskAccess.granted", return_value=False), \
+                patch("assistant.commands.Commands.FullDiskAccess.open_settings", return_value=None):
+            result = commands_instance.cmd_show_full_disk_access_setting("")
+        assert "cannot be checked" in result
+
+    def test_a_pane_that_will_not_open_names_the_path_to_it_by_hand(self, commands_instance):
+        with patch("assistant.commands.Commands.FullDiskAccess.observable", return_value=True), \
+                patch("assistant.commands.Commands.FullDiskAccess.granted", return_value=False), \
+                patch("assistant.commands.Commands.FullDiskAccess.open_settings", return_value="System Settings could not be opened: no open"):
+            result = commands_instance.cmd_show_full_disk_access_setting("")
+        assert "could not be opened" in result and "Privacy & Security" in result

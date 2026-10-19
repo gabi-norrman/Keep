@@ -39,6 +39,11 @@ def test_start_registers_the_console_transport_and_the_notifier():
         # The console (dashboard numbers) and the feed (incoming voice requests) both observe
         assert [c.args[0] for c in assistant.subscribe.call_args_list] == [get_console.return_value, interface.feed]
         server_cls.return_value.start.assert_called_once()
+        # The transport is attended only while a TUI client is connected to the server
+        server_cls.return_value.clients = set()
+        assert interface.transport.attended() is False
+        server_cls.return_value.clients = {"a socket"}
+        assert interface.transport.attended() is True
         # The history feed backfilled the pane and follows the history from now on
         assert interface.transport.feed is interface.feed
         assert [e.body.text for e in interface.transport.pane.entries] == ["Server started up successfully."]

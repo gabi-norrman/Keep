@@ -49,11 +49,14 @@ class PhotosIntegration(Integration, Feed):
     """The Photos library, indexed by a vision model and searchable by words.
 
     Indexes the macOS Photos library with a vision model, so Keep can search the family's photos
-    and videos and show them. What it indexes also lands in Keep's history, as a feed.
+    and videos and show them. What it indexes also lands in Keep's history, as a feed. Enable it
+    once iCloud is signed in: the photos the library keeps only in iCloud download through it.
 
     Pours one history row per asset into the dialog history, as a Feed. check_health() verifies
     the library database and, once an hour, that iCloud photo downloads still work."""
     sensitive = True
+    setup_after = "iCloud"
+    setup_after_reason = "the photos the library keeps only in iCloud download through it"
 
     poll_interval = POLL_INTERVAL
 

@@ -35,6 +35,11 @@ class MessageHistory:
     stable as before.
     """
 
+    # The cut on a user or assistant row (pasted text, a forwarded mail, a thinking block). A
+    # `system` row is the server's own words, sized by the code that writes it, and rendered
+    # whole: the first-run brief is the opening turn of the FTUE conversation and lists the
+    # setup steps in order — cut at this size it ended mid-step 4 on every later turn, and the
+    # assistant enabled Photos next to iMessage, before iCloud was signed in.
     MAX_RENDER_CHARS = 2000
     # A command's result is stored as its own `command` row after the assistant round that
     # ran it, so the next turn still sees what list_integrations / config_help / a search
@@ -513,6 +518,13 @@ class MessageHistory:
             # re-renders the same prefix. Capped at store time, never cut here.
             return ("user", content)
 
+        if role == "system":
+            # System/home-automation events ride on the user side: the message API has no
+            # in-timeline system role (only the top-level system prompt), so external input
+            # gets the "user" role and the "System (...)" text prefix carries the semantics.
+            # Never cut (MAX_RENDER_CHARS).
+            return ("user", f"System ({MessageFormatter.format_timestamp(timestamp)}): {content}")
+
         if len(content) > max_render_chars:
             if role == "assistant":
                 # Cut from the middle, keeping the tail: assistant turns put the
@@ -530,11 +542,6 @@ class MessageHistory:
             # No timestamp prefix on assistant turns: the model imitates any prefix baked
             # into its own prior content and starts emitting "(HH:MM)" in its replies.
             return ("assistant", content)
-        if role == "system":
-            # System/home-automation events ride on the user side: the message API has no
-            # in-timeline system role (only the top-level system prompt), so external input
-            # gets the "user" role and the "System (...)" text prefix carries the semantics.
-            return ("user", f"System ({MessageFormatter.format_timestamp(timestamp)}): {content}")
         return ("user", MessageFormatter.format_message(
             role, timestamp, entry.get("source"), entry.get("location"), content))
 

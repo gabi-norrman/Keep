@@ -1425,19 +1425,24 @@ class PhotoProcessor:
             error(f"Photos: image extraction failed: {e}")
             return None
 
-    @staticmethod
-    def _read_memory() -> str:
+    _bank_is_stub: Optional[bool] = None   # the last verdict, so the per-photo read logs only a change
+
+    @classmethod
+    def _read_memory(cls) -> str:
         """The memory bank for the description prompts, or "" while the bank is still the first-run
-        stub: its teaching notes and another family's examples would only mislead the vision model."""
+        stub: its teaching notes and another family's examples would only mislead the vision model.
+        Read per photo, so the verdict is logged when it changes, not every time."""
         try:
             bank = MemoryFile.read()
         except Exception as e:
             trace(f"Photos: could not read the memory bank: {e}")
             return ""
-        if MemoryFile.is_placeholder(bank):
-            trace("Photos: the memory bank is still the first-run stub, describing without memory")
-            return ""
-        return bank
+        stub = MemoryFile.is_placeholder(bank)
+        if stub != cls._bank_is_stub:
+            cls._bank_is_stub = stub
+            info("Photos: the memory bank is still the first-run stub, describing without memory" if stub
+                 else "Photos: the memory bank is curated, describing with it")
+        return "" if stub else bank
 
     @staticmethod
     def _home_time(timestamp: float) -> str:

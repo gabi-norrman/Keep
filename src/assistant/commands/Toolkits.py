@@ -214,7 +214,8 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
             ("vault_add", "vault_request")),
     Toolkit("setup", "see which integrations are on, off, broken or unconfigured, and configure one",
             ("list_integrations", "config_help", "config_request", "config_set", "restart_integration",
-             "enable_integration", "disable_integration", "telegram_login", "microsoft_login", "google_login",
+             "enable_integration", "disable_integration", "show_full_disk_access_setting", "telegram_login",
+             "microsoft_login", "google_login",
              "google_login_code", "icloud_login_code", "volvo_login", "volvo_login_code", "spotify_login",
              "spotify_login_code", "hue_pair")),
     Toolkit("developer", "study your own code or the machine you run on (network, disk, updates): analyse a bug or a "

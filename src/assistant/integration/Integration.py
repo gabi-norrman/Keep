@@ -47,6 +47,13 @@ class Integration(SingletonMixin, ABC):
     # What list_integrations says next to "needs 2FA": how the sign-in is done, when the
     # integration has a way of its own (a login command). Empty: the console's tab for it.
     login_hint: str = ""
+    # The integration to sign in before this one, by its config name, and why: a disabled
+    # integration's line in `list_integrations` says so after its enable command, and
+    # `enable_integration` warns when the prerequisite is not healthy while setup is in
+    # progress. The first-run brief orders the steps too, but only the opening turn carries it
+    # whole — the first betas enabled Photos next to iMessage, before iCloud was signed in.
+    setup_after: str = ""
+    setup_after_reason: str = ""
 
     @classmethod
     def wipe_targets(cls) -> list[tuple[Path, str]]:
