@@ -2612,10 +2612,14 @@ class WebAccess(Integration):
             note(f"window.stop() failed (renderer likely hung): {e} — reinitializing driver")
             await self._async_initialize_driver()
 
-    _TAB_DETECT_AND_TAG_JS = r"""
+    # The tab strips of a page: a row of 3–12 sibling buttons with one marked active. Only the
+    # labels are read — never the panels. Clicking through them cost 1.1 s a tab and, on a shop
+    # page whose "tabs" were accessory categories, returned 300k chars of product grids (one
+    # 166k-token cache write, 2026-10-18). The open tab's panel is in the DOM already; the rest is
+    # one browser-toolkit detour away, and the note at the end of the page says so.
+    _TAB_LABELS_JS = r"""
 (function() {
     const MAX_TABS = 12;
-    document.querySelectorAll('[data-floxy-tab-idx]').forEach(e => e.removeAttribute('data-floxy-tab-idx'));
     const activeBtns = Array.from(document.querySelectorAll('button[class*="active"]'));
     let bestGroup = null;
     for (const btn of activeBtns) {
@@ -2626,100 +2630,34 @@ class WebAccess(Integration):
         if (!bestGroup || tabs.length > bestGroup.length) bestGroup = tabs;
     }
     if (!bestGroup) return null;
-    bestGroup.forEach((b, i) => b.setAttribute('data-floxy-tab-idx', String(i)));
-    return {
-        count: bestGroup.length,
-        labels: bestGroup.map(b => (b.innerText || '').trim()),
-    };
+    return bestGroup.map(b => (b.innerText || '').trim());
 })();
 """
 
-    async def _async_collect_tabbed_content(self, tab: 'nodriver.Tab', url: str) -> str | None:
-        """Click through tab groups to collect content from all tabs."""
-        TAB_CLICK_DELAY = 0.8
+    async def _async_tab_labels(self, tab: 'nodriver.Tab') -> list[str]:
+        """The labels of the page's tab strip, [] when it has none. No clicks, one evaluate."""
         try:
-            tab_info = await self._evaluate(tab, self._TAB_DETECT_AND_TAG_JS)
-            if not tab_info or not isinstance(tab_info, dict):
-                return None
-            count = tab_info.get('count', 0)
-            labels = tab_info.get('labels', [])
-            if count < 3:
-                return None
-
-            info(f"Detected tab group with {count} tabs, collecting all content")
-
-            # Scroll first tab into view and click it
-            try:
-                first = await tab.select('[data-floxy-tab-idx="0"]')
-                if first:
-                    await tab.evaluate(
-                        'document.querySelector(\'[data-floxy-tab-idx="0"]\').scrollIntoView({block:"center"});'
-                    )
-                    await asyncio.sleep(0.3)
-                    await tab.evaluate('document.querySelector(\'[data-floxy-tab-idx="0"]\').click();')
-                    await asyncio.sleep(TAB_CLICK_DELAY)
-            except Exception:
-                return None
-
-            first_text = self.extract_text_with_links(await tab.get_content(), url)
-            first_lines = first_text.split('\n')
-
-            await tab.evaluate('document.querySelector(\'[data-floxy-tab-idx="1"]\').click();')
-            await asyncio.sleep(TAB_CLICK_DELAY)
-            second_text = self.extract_text_with_links(await tab.get_content(), url)
-            second_lines = second_text.split('\n')
-
-            prefix_end = 0
-            for i in range(min(len(first_lines), len(second_lines))):
-                if first_lines[i] == second_lines[i]:
-                    prefix_end = i + 1
-                else:
-                    break
-
-            suffix_len = 0
-            max_suffix = min(len(first_lines), len(second_lines)) - prefix_end
-            for i in range(1, max_suffix + 1):
-                if first_lines[-i] == second_lines[-i]:
-                    suffix_len = i
-                else:
-                    break
-
-            content_start = max(0, prefix_end - 1)
-
-            all_dynamic = []
-            for idx in range(count):
-                label = labels[idx] if idx < len(labels) else f"Tab {idx}"
-                try:
-                    if idx == 0:
-                        tab_lines = first_lines
-                    elif idx == 1:
-                        tab_lines = second_lines
-                    else:
-                        await tab.evaluate(
-                            f'document.querySelector(\'[data-floxy-tab-idx="{idx}"]\').click();'
-                        )
-                        await asyncio.sleep(TAB_CLICK_DELAY)
-                        tab_text = self.extract_text_with_links(await tab.get_content(), url)
-                        tab_lines = tab_text.split('\n')
-                    dynamic = tab_lines[content_start:(-suffix_len if suffix_len else None)]
-                    all_dynamic.append(f"[{label}]\n" + '\n'.join(dynamic))
-                except Exception:
-                    fine(f"Failed to collect tab '{label}'")
-
-            if not all_dynamic:
-                return None
-
-            prefix = '\n'.join(first_lines[:content_start])
-            suffix = '\n'.join(first_lines[-suffix_len:]) if suffix_len else ''
-            parts = [prefix] + all_dynamic
-            if suffix:
-                parts.append(suffix)
-            result = '\n'.join(parts)
-            info(f"Collected {len(result)} chars across {len(all_dynamic)} tabs")
-            return result
+            labels = await self._evaluate(tab, self._TAB_LABELS_JS, timeout=5)
         except Exception as e:
-            trace(f"Tab content collection failed: {e}")
-            return None
+            trace(f"Tab strip detection failed: {e}")
+            return []
+        return [str(l) for l in labels] if isinstance(labels, list) else []
+
+    @staticmethod
+    def tab_note(labels: list[str]) -> str:
+        """The line appended to a fetched page naming the tabs whose panels were not read, or ''
+        when fewer than two readable labels remain (icon-only buttons carry no text)."""
+        seen, names = set(), []
+        for label in labels:
+            name = ' '.join(str(label).split())
+            if len(name) > 60 or not any(ch.isalnum() for ch in name) or name in seen:
+                continue
+            seen.add(name); names.append(name)
+        if len(names) < 2:
+            return ''
+        return (f"[This page has tabs whose contents are not shown here: {', '.join(names)}. "
+                f"The `browser` toolkit can open the page and click one "
+                f"(browse_open, browse_act, browse_extract).]")
 
     @staticmethod
     def _eval_number(result) -> Optional[float]:
@@ -5275,16 +5213,17 @@ class WebAccess(Integration):
             if page_source and not self._is_blocked_response(page_source):
                 full_text = self.extract_text_with_links(page_source, url)
                 if full_text:
-                    tabbed_text = None
+                    labels = []
                     try:
-                        tabbed_text = self._loop_thread.submit(
-                            self._async_collect_tabbed_content(self._tab, url),
-                            timeout=60,
-                        )
+                        labels = self._loop_thread.submit(self._async_tab_labels(self._tab), timeout=10) or []
                     except Exception as e:
-                        trace(f"tabbed-content submit failed: {e}")
-                    if tabbed_text and len(tabbed_text) > len(full_text):
-                        full_text = tabbed_text
+                        trace(f"tab-labels submit failed: {e}")
+                    tab_note = self.tab_note(labels)
+                    if tab_note:
+                        info(f"Page has a tab strip of {len(labels)} — panels not read, tabs named: {labels}")
+                        full_text = full_text + "\n\n" + tab_note
+                    else:
+                        trace("No tab strip on the page")
 
                     iframe_text = ''
                     try:

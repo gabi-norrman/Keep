@@ -1,5 +1,7 @@
 You can access websites if needed. Use this command to get the contests of a website:
 `open_url(url: str)`
+A page with a tab strip comes back with the open tab's panel and the names of the other tabs; the `browser`
+toolkit clicks one of those.
 
 You can also Google things:
 `google(query: str)`
