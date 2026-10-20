@@ -719,7 +719,8 @@ class TelegramTransport(Integration, ChatTransport):
         if chat_id < 0 and not self._replies_to_bot(update):
             # A group: the bot answers replies to its own bubbles. Privacy mode delivers nothing
             # else anyway; with it off this keeps her from answering every message. Her name
-            # said in the group reaches her through the Telegram Feed (the owner's account).
+            # said in the group, or a message right after her own, reaches her through the
+            # Telegram Feed (the owner's account).
             trace(f"Telegram [{chat_id}]: group message not replying to the bot, ignored")
             return None
         return chat_id

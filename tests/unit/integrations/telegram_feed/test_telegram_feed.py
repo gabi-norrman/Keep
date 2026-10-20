@@ -493,6 +493,35 @@ class TestWakeAssistant:
         assert len(rows) == 1
 
     @pytest.mark.asyncio
+    async def test_a_message_right_after_the_bots_own_wakes_her_without_her_name(self, wake):
+        # People answer her and forget both her name and the reply button.
+        m, say, fake = wake
+        assert await say("The pasta is in the oven, 20 minutes to go.", sender_id=777, name="Keep") == []
+        rows = await say("thanks, and the salad?")
+        fake.receive_chat_message.assert_called_once_with(
+            "Telegram", -5001, "Alice", "thanks, and the salad?", guest=True, sender_is_bot=False,
+            chat_name="Family")
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_only_the_message_directly_after_the_bots_follows_it(self, wake):
+        m, say, fake = wake
+        await say("Dinner is at seven.", sender_id=777, name="Keep")
+        await say("great")
+        fake.receive_chat_message.reset_mock()
+        rows = await say("I'll be late", sender_id=124, name="Bob")
+        fake.receive_chat_message.assert_not_called()
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_follow_up_rule_is_per_group(self, wake):
+        m, say, fake = wake
+        await say("Dinner is at seven.", sender_id=777, name="Keep")
+        rows = await say("anyone up for a game?", group="Chess club")
+        fake.receive_chat_message.assert_not_called()
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
     async def test_her_name_in_a_private_chat_stays_a_context_row(self, wake):
         # 42 is on the bot's allow list as the owner's private chat; a message there is between
         # the owner and the account, not a group the bot is in, so it is read, not answered.

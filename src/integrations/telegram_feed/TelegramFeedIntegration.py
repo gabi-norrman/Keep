@@ -76,6 +76,7 @@ class TelegramFeedIntegration(Integration, Feed):
         self._directory: dict[str, dict[int, tuple]] = {}   # lowercase name → {entity id: (entity, display)}
         self._directory_built: float = 0.0
         self._bot_wakes: dict[int, deque] = {}   # group chat id → times another bot woke the assistant
+        self._last_sender: dict[int, int] = {}   # group chat id → sender of the last live message there
 
     def _on_reset(self):
         self.shut_down()
@@ -341,23 +342,35 @@ class TelegramFeedIntegration(Integration, Feed):
 
     async def _wake_assistant(self, msg, chat) -> bool:
         """A live message in a group the bot is in (a negative id on telegram_bot.allowed_chat_ids)
-        that names the assistant: handed to the chat layer as a turn of that group, so the
-        reply goes out as the bot. The bot never receives such a message itself — in privacy
-        mode Telegram delivers it only replies to its own bubbles — but the owner's account sees
-        the whole group, other bots included. True when handed over."""
-        text = msg.text or ""
-        if not text or not self._names_assistant(text):
-            return False
+        that names the assistant, or that comes right after a message of the bot's own (people
+        forget her name and the reply button when they answer her): handed to the chat layer
+        as a turn of that group, so the reply goes out as the bot. The bot never receives such a
+        message itself — in privacy mode Telegram delivers it only replies to its own bubbles —
+        but the owner's account sees the whole group, other bots included. True when handed over."""
         from telethon import utils
-        chat_id = utils.get_peer_id(chat)   # the Bot API id: -<id> for a group, -100<id> for a supergroup
+        try:
+            chat_id = utils.get_peer_id(chat)   # the Bot API id: -<id> for a group, -100<id> for a supergroup
+        except Exception as e:
+            trace(f"TelegramFeed: no peer id for '{getattr(chat, 'title', chat)}' ({e}), a context row only")
+            return False
         ids = self._bot_chat_ids()
         if chat_id >= 0 or chat_id not in ids:
-            trace(f"TelegramFeed: '{getattr(chat, 'title', chat_id)}' names the assistant but the bot is not in it")
+            if self._names_assistant(msg.text or ""):
+                trace(f"TelegramFeed: '{getattr(chat, 'title', chat_id)}' names the assistant but the bot is not in it")
             return False
         bot_id = self._bot_user_id()
+        follows_bot = bot_id is not None and self._last_sender.get(chat_id) == bot_id
+        self._last_sender[chat_id] = msg.sender_id
+        text = msg.text or ""
         if bot_id is not None and msg.sender_id == bot_id:
-            trace("TelegramFeed: the bot's own reply names the assistant — not woken by herself")
+            trace("TelegramFeed: the bot's own message in the group — not woken by herself")
             return False
+        if not text:
+            return False
+        named = self._names_assistant(text)
+        if not named and not follows_bot:
+            return False
+        how = "named the assistant" if named else "wrote right after the bot's own message"
         is_from_me = msg.sender_id == self._me.id
         if is_from_me:
             sender_name, is_bot, guest = config.get_owner_name(), False, False
@@ -368,19 +381,19 @@ class TelegramFeedIntegration(Integration, Feed):
             is_bot = getattr(sender, 'bot', False) is True
             guest = msg.sender_id not in ids
             if is_prompt_injection(text):
-                info(f"TelegramFeed: {sender_name} named the assistant in a group, but the message looks "
-                     f"like a prompt injection — not woken")
+                info(f"TelegramFeed: {sender_name} {how} in a group, but the message looks like a prompt "
+                     f"injection — not woken")
                 return False
         if not is_bot and await self._replies_to_the_bot(msg, bot_id):
             trace(f"TelegramFeed: {sender_name} replies to the bot's own bubble — the bot receives it itself, "
                   f"not woken twice")
             return False
         if is_bot and not self._bot_wake_allowed(chat_id):
-            info(f"TelegramFeed: {sender_name} (a bot) named the assistant, but bots woke her {BOT_WAKE_CAP} "
-                 f"times this hour in [{chat_id}] — not woken (loop brake)")
+            info(f"TelegramFeed: {sender_name} (a bot) {how}, but bots woke her {BOT_WAKE_CAP} times this "
+                 f"hour in [{chat_id}] — not woken (loop brake)")
             return False
-        info(f"TelegramFeed: {sender_name}{' (bot)' if is_bot else ''}{' (guest)' if guest else ''} named the "
-             f"assistant in '{getattr(chat, 'title', None)}' [{chat_id}], waking her")
+        info(f"TelegramFeed: {sender_name}{' (bot)' if is_bot else ''}{' (guest)' if guest else ''} {how} "
+             f"in '{getattr(chat, 'title', None)}' [{chat_id}], waking her")
         return notifier().receive_chat_message(SOURCE_TELEGRAM, chat_id, sender_name, text, guest=guest,
                                                sender_is_bot=is_bot, chat_name=getattr(chat, 'title', None))
 
