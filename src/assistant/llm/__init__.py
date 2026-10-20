@@ -14,7 +14,7 @@ def create_llm(llm_class_name: str, model: str | None = None, prompt_cache: bool
 
     prompt_cache is forwarded only to LLMs whose constructor accepts it (e.g. ClaudeLLM);
     other backends silently ignore it. command_format — a format name, `keep` / `qwen` /
-    `dsml` (see command_format_override) — makes the instance's `command_format()` return that
+    `dsml` / `invoke` (see command_format_override) — makes the instance's `command_format()` return that
     class instead of the backend's own; None leaves the backend's choice.
     """
     from .VaultLLM import VaultLLM  # lazy: VaultLLM imports from this package
@@ -112,8 +112,8 @@ def parse_llm_config(tier: str) -> tuple[str, str | None]:
 
 
 def command_format_override(tier: str) -> str | None:
-    """The command format the `ai.<tier>` block names with `command_format:` — `keep`, `qwen` or
-    `dsml`, for an Ollama model that is not a Qwen or to try a syntax —, None when the block
+    """The command format the `ai.<tier>` block names with `command_format:` — `keep`, `qwen`,
+    `dsml` or `invoke`, for an Ollama model that is not a Qwen or to try a syntax —, None when the block
     leaves it to the LLM class. A name no format has is logged and ignored, so a typo costs the
     override, not the start."""
     cfg = _tier_block(tier)

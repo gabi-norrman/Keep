@@ -355,10 +355,12 @@ wake_word_near_misses: [mission, missions, we shall]
 #    # llm: Ds4LLM             # or a local ds4-server (the `ds4:` section above); the model is the one it loaded
 #    # command_format: qwen   # Optional, any tier: the syntax the model writes its commands in — `keep` (Keep's own
 #                           # call text, what the cloud backends use), `qwen` (the <tool_call> block Qwen was
-#                           # trained on, OllamaLLM's own choice) or `dsml` (DeepSeek's block, Ds4LLM's own). Unset,
-#                           # the LLM class decides; set it for an Ollama model that is not a Qwen, or to try a
-#                           # syntax. The smart tier's format is the one every reply is parsed in and the prompt's
-#                           # command texts are rendered in; a name no format has is logged and ignored.
+#                           # trained on, OllamaLLM's own choice), `dsml` (DeepSeek's block, Ds4LLM's own) or
+#                           # `invoke` (the <function_calls>/<invoke> block Claude writes tool calls in; no class's
+#                           # default — set it to try Claude on its trained spelling). Unset, the LLM class decides;
+#                           # set it for an Ollama model that is not a Qwen, or to try a syntax. The smart tier's
+#                           # format is the one every reply is parsed in and the prompt's command texts are
+#                           # rendered in; a name no format has is logged and ignored.
 #  video:                   # describes video clips from iMessage / Telegram / email. Needs an LLM with native
 #    llm: GeminiLLM         # video input — Gemini is the only backend that has one; Claude/ChatGPT/Ollama
 #    # model: gemini-3.8-flash   # cannot take video and videos are then left undescribed ("[Video]")

@@ -112,6 +112,8 @@ class DsmlFormat(NamedParameterFormat):
     to Keep's positional parameters through the signature table."""
 
     name = "dsml"
+    OPEN = OPEN
+    CLOSE = CLOSE
 
     # --- rendering -------------------------------------------------------------------------
 
@@ -138,24 +140,6 @@ class DsmlFormat(NamedParameterFormat):
         return render_call(name, arguments)
 
     # --- parsing ---------------------------------------------------------------------------
-
-    def is_possibly_command(self, buffer: str) -> bool:
-        stripped = buffer.strip()
-        return not stripped or stripped.startswith(OPEN) or OPEN.startswith(stripped)
-
-    def find_start(self, buffer: str) -> int:
-        return buffer.find(OPEN)
-
-    def partial_tail(self, buffer: str) -> int:
-        for length in range(min(len(OPEN) - 1, len(buffer)), 0, -1):
-            if buffer.endswith(OPEN[:length]):
-                pos = len(buffer) - length
-                return pos if pos > 0 else -1
-        return -1
-
-    def complete(self, buffer: str, streaming: bool = False) -> bool:
-        start = buffer.find(OPEN)
-        return start >= 0 and buffer.find(CLOSE, start) >= 0
 
     def extract(self, buffer: str) -> tuple[tuple[str, list[str], str] | None, str | None]:
         start = buffer.find(OPEN)

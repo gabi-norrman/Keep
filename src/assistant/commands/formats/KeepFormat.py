@@ -32,6 +32,19 @@ else is treated as ordinary text, so the action silently never runs.
 NEVER write a command in regular text to the user — it will be executed! To merely mention a command, leave out the parentheses; then it will not run."""
 
 
+def render_declaration(declaration: Declaration) -> str:
+    """A declaration as the texts write it: `` `name(param: type, other: type = default, ...)` ``."""
+    items = [_render_parameter(p) for p in declaration.params]
+    if declaration.variadic:
+        items.append(VARIADIC)
+    return f"`{declaration.command}({', '.join(items)})`"
+
+
+def _render_parameter(parameter: Parameter) -> str:
+    text = f"{parameter.name}: {parameter.type}"
+    return text if parameter.default is None else f"{text} = {parameter.default}"
+
+
 def render_tool_call(name: str, arguments: dict) -> str:
     """A call parsed by a server — `name` with its named `arguments` — as Keep's positional
     call text, `name("value", 1)`: the values in the order the signature table declares the
@@ -77,15 +90,7 @@ class KeepFormat(CommandFormat):
         return INSTRUCTIONS
 
     def render_declaration(self, declaration: Declaration) -> str:
-        items = [self._render_parameter(p) for p in declaration.params]
-        if declaration.variadic:
-            items.append(VARIADIC)
-        return f"`{declaration.command}({', '.join(items)})`"
-
-    @staticmethod
-    def _render_parameter(parameter: Parameter) -> str:
-        text = f"{parameter.name}: {parameter.type}"
-        return text if parameter.default is None else f"{text} = {parameter.default}"
+        return render_declaration(declaration)
 
     def render_example(self, name: str, values: Sequence[Value], declaration: Declaration | None) -> str:
         return f"`{name}({', '.join(self._render_value(v) for v in values)})`"

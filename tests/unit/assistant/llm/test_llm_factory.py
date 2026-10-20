@@ -208,9 +208,9 @@ class TestCommandFormatOverride:
         assert self._smart_llm({'llm': 'OllamaLLM', 'command_format': 'keep'}).command_format() is KeepFormat
         assert self._smart_llm({'llm': 'OllamaLLM'}).command_format() is QwenFormat
 
-    def test_the_override_names_any_of_the_three_formats_whatever_the_class(self):
+    def test_the_override_names_any_of_the_formats_whatever_the_class(self):
         from assistant.commands.formats.CommandFormats import CommandFormats
-        for name in ("keep", "qwen", "dsml", " Qwen "):
+        for name in ("keep", "qwen", "dsml", "invoke", " Qwen "):
             with self._patch_config({'llm': 'OllamaLLM', 'command_format': name}):
                 assert command_format_override('smart') == name.strip().lower()
             assert create_llm("OllamaLLM", command_format=name).command_format() is CommandFormats.by_name(name)

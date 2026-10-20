@@ -1,4 +1,4 @@
-# Command formats — one command system, three call syntaxes
+# Command formats — one command system, three call syntaxes (four with `invoke`, step 7)
 
 ## Why
 
@@ -17,6 +17,8 @@ toolkits stay text, delivered on demand, append-only. Only the *syntax* of the c
 - A `CommandFormat` abstraction with three implementations: `keep` (today's syntax), `qwen`
   (the `<tool_call>` XML Qwen 3.x emits and Ollama's Qwen templates teach), `dsml` (DeepSeek V4's
   `<｜DSML｜tool_calls>` block).
+- Added afterwards (step 7): `invoke`, Claude's `<function_calls>` / `<invoke>` block, offered by
+  name only.
 - Each LLM class selects its format. The prompt and the toolkit references are rendered in that
   format. The parser parses that format only.
 - A local DeepSeek backend class for ds4-server.
@@ -691,6 +693,45 @@ only changes what that instance's `command_format()` returns). Closing it means 
 re-rendering) asking `CommandFormats.active()` and rendering the parsed call in *that* format — one `render_call` swap
 each — which belongs with 5b's wire-shape work on `Ds4LLM`; until then a mixed setup should put every chat tier on one
 model family. The one-format-per-process assumption stands (Open points).
+
+### Step 7 — The `invoke` format: Claude's own call syntax, by name only
+
+Asked 2026-10-20: could one format be Anthropic's native `<invoke>` XML, so Opus writes the
+spelling it was trained on? Two facts first. (1) A year of `log/floxy.out` shows **no** Keep-syntax
+failure from Claude — zero "Could not find command, will truncate" and zero "Stream ended inside an
+unterminated" lines — so there is no observed conformance problem to fix; the gain is a hypothesis.
+(2) The API does pass the block through: `tools/command_format_probes/invoke_probe.py` asks a
+model to answer with a prompt-taught `<function_calls>` block and no tools declared; Opus 5.5 and
+Haiku 5.5, streamed and not, answered `end_turn` with the block byte for byte (the trained spelling
+is namespaced and the API strips the namespace, so a prompt-taught plain `<invoke>` is close
+transfer, not the identical token stream — the probe says the transfer is strong). So the format
+is built, and **no backend defaults to it**: `command_format: invoke` on a tier is the only way in,
+and whether it conforms better than `keep` on Opus is for the private prompt suite to measure
+before any default flips.
+
+- `src/assistant/commands/formats/InvokeFormat.py`: `OPEN` `<function_calls>` / `CLOSE`, one
+  `<invoke name="…">` per call, `<parameter name="…">value</parameter>` elements. A value is raw
+  text — a string without quotes, a number bare, nothing escaped, one leading and one trailing
+  newline stripped so a value may stand on its own line; a variadic last parameter is a JSON list
+  (or a comma list, `split_variadic`). Several invokes in a block come back in order through
+  `rest`, like the other block formats. **A declaration keeps Keep's signature text**
+  (`KeepFormat.render_declaration`, now a module function): it names the parameters an invoke
+  writes and is a fraction of a JSON schema's length — the rendered template plus toolkits is
+  86k chars in `invoke` against 77k in `keep` and 106k in `dsml`. The instruction text is the shape
+  of Anthropic's own tool-use instruction with the declarations in place of the schema listing,
+  plus the no-fence and mention-by-name rules.
+- `NamedParameterFormat` gained `OPEN` / `CLOSE` class attributes and the four stream methods
+  (`is_possibly_command`, `find_start`, `partial_tail`, `complete`) every block format had its own
+  copy of; `QwenFormat` and `DsmlFormat` now set the two attributes and dropped the copies.
+- Registered in `CommandFormats.BY_NAME` as `invoke`; the config comment, `CLAUDE.md`, the atlas
+  blurb and the factory docstrings name it. `ClaudeLLM.default_command_format` is untouched.
+
+Status: DONE 2026-10-20. Unit suite 10134 passed (`tests/unit/assistant/commands/formats/test_invoke_format.py`: the
+probed spelling, rendering of declarations / examples / variadics, parsing with the table, the raw-value and
+newline rules, tag spelling tolerance, several invokes, the opener-prefix buffering, `render_tool_call` round
+trips, and streaming through the real `CommandProcessor` split at every character, in one chunk, in the probe's
+sentence-blank-line-block shape, and cut mid-block). Not done: no measurement on Opus yet — the next step is a
+prompt-suite run with `ai.smart.command_format: invoke` against the `keep` baseline.
 
 ## Open points
 

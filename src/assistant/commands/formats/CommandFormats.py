@@ -15,6 +15,7 @@ from common.logging import info, trace
 
 from .CommandFormat import CommandFormat
 from .DsmlFormat import DsmlFormat
+from .InvokeFormat import InvokeFormat
 from .KeepFormat import KeepFormat
 from .QwenFormat import QwenFormat
 
@@ -24,7 +25,7 @@ class CommandFormats:
     command names it knows (`CommandFormats.active()(names)`)."""
 
     # Every format by the name a tier's `command_format:` config key may hold.
-    BY_NAME: dict[str, type[CommandFormat]] = {cls.name: cls for cls in (KeepFormat, QwenFormat, DsmlFormat)}
+    BY_NAME: dict[str, type[CommandFormat]] = {cls.name: cls for cls in (KeepFormat, QwenFormat, DsmlFormat, InvokeFormat)}
 
     _active: type[CommandFormat] = KeepFormat
     _lock = threading.Lock()
@@ -36,7 +37,7 @@ class CommandFormats:
 
     @classmethod
     def by_name(cls, name: str) -> type[CommandFormat] | None:
-        """The format class called `name` (`keep`, `qwen`, `dsml`; case and surrounding blanks
+        """The format class called `name` (`keep`, `qwen`, `dsml`, `invoke`; case and surrounding blanks
         ignored), None for any other text."""
         return cls.BY_NAME.get(str(name).strip().lower())
 

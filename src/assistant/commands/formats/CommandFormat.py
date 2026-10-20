@@ -1,10 +1,10 @@
 """The call syntax the LLM writes commands in: how a call is found in the reply stream and read out of it.
 
 Keep has one command system, reached by the LLM writing calls as text. Which text — Keep's own
-`turn_on(Kitchen lamp)`, Qwen's `<tool_call>` block, DeepSeek's DSML block — is the format. One
-implementation of this interface parses one syntax, and every one hands `CommandProcessor` the
-same `(name, params, display)`, so the commands, their descriptions and the approval gate never
-see which syntax the model wrote. `CommandFormats.active()` names the one in use.
+`turn_on(Kitchen lamp)`, Qwen's `<tool_call>` block, DeepSeek's DSML block, Claude's `<invoke>`
+block — is the format. One implementation of this interface parses one syntax, and every one
+hands `CommandProcessor` the same `(name, params, display)`, so the commands, their descriptions
+and the approval gate never see which syntax the model wrote. `CommandFormats.active()` names the one in use.
 """
 import json
 from abc import ABC, abstractmethod
@@ -18,7 +18,7 @@ class CommandFormat(ABC):
     renders the texts that teach it (the COMMAND SYSTEM instructions, a declaration, an
     example) in the same syntax."""
 
-    name: str  # "keep" | "qwen" | "dsml"
+    name: str  # "keep" | "qwen" | "dsml" | "invoke"
 
     def __init__(self, possible_commands: list[str]):
         # The command names a call may carry. Kept as the list given, not a copy, so a name a

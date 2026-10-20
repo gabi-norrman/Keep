@@ -42,8 +42,13 @@ def split_variadic(text: str) -> list[str]:
 
 
 class NamedParameterFormat(CommandFormat):
-    """A format whose calls name their parameters: declarations render as JSON function
-    schemas, the named values of a call are ordered through the signature table."""
+    """A format whose calls name their parameters inside one block between two sentinels:
+    declarations render as JSON function schemas, the named values of a call are ordered
+    through the signature table, and the stream is buffered from the opener to the closer."""
+
+    # The sentinels of the block a call is written in; a subclass sets both.
+    OPEN: str
+    CLOSE: str
 
     def __init__(self, possible_commands: list[str], table: dict[str, list[str]] | None = None,
                  variadic: set[str] | None = None):
@@ -90,6 +95,28 @@ class NamedParameterFormat(CommandFormat):
             return json.loads(text)
         except ValueError:
             return text
+
+    # --- the stream: a block between the sentinels ------------------------------------------
+
+    def is_possibly_command(self, buffer: str) -> bool:
+        stripped = buffer.strip()
+        return not stripped or stripped.startswith(self.OPEN) or self.OPEN.startswith(stripped)
+
+    def find_start(self, buffer: str) -> int:
+        return buffer.find(self.OPEN)
+
+    def partial_tail(self, buffer: str) -> int:
+        for length in range(min(len(self.OPEN) - 1, len(buffer)), 0, -1):
+            if buffer.endswith(self.OPEN[:length]):
+                pos = len(buffer) - length
+                return pos if pos > 0 else -1
+        return -1
+
+    def complete(self, buffer: str, streaming: bool = False) -> bool:
+        start = buffer.find(self.OPEN)
+        return start >= 0 and buffer.find(self.CLOSE, start) >= 0
+
+    # --- the parameters ----------------------------------------------------------------------
 
     def _positional(self, name: str, arguments: list[tuple[str, str]]) -> list[str]:
         """The positional parameters of a call: in the declared order when the table knows
