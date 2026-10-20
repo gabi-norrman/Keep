@@ -107,6 +107,14 @@ def test_prompt_carries_the_toolkit_placeholders(prompt_text):
 
 
 @pytest.mark.unit
+def test_command_system_section_carries_the_format_placeholder(prompt_text):
+    """Contract with PromptManager._substitute: the how-to-write-a-call prose is the active
+    command format's (`CommandFormat.instructions()`), filled in through {COMMAND_SYSTEM} inside
+    the COMMAND SYSTEM section, before the toolkits are introduced."""
+    assert prompt_text.index("# COMMAND SYSTEM") < prompt_text.index("{COMMAND_SYSTEM}") < prompt_text.index("## Toolkits")
+
+
+@pytest.mark.unit
 def test_prompt_carries_the_destinations_placeholder_beside_post_message(prompt_text):
     """Contract with PromptManager._substitute: the command block lists where post_message can
     reach through {DESTINATIONS}, filled from assistant.Destinations."""

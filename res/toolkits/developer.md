@@ -83,8 +83,8 @@ the chat with approve/deny); if they deny, the command result says so and nothin
 ### Server logs
 To read this AI server's logs (your own logs) use:
 
-`server_logs()` — the last 200 lines
-`server_logs(2026-10-07 09:26)` — the first 200 lines from that time (also `YYYY-MM-DD` for midnight, or `HH:MM` for today)
+`server_logs(from_time: str = "")` — the last 200 lines
+`server_logs("2026-10-07 09:26")` — the first 200 lines from that time (also `YYYY-MM-DD` for midnight, or `HH:MM` for today)
 
 The lines are the info, note and error levels; the trace detail under them is left out.
 

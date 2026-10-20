@@ -6,7 +6,7 @@ from .AbstractLLM import AbstractLLM
 from common.ConfigManager import config
 from common.logging import note, trace, info
 from common.FloxyDatabase import FloxyDatabase
-from assistant.commands.CommandParser import CommandParser
+from assistant.commands.formats.CommandFormats import CommandFormats
 
 
 class CachedLLM(AbstractLLM):
@@ -20,9 +20,8 @@ class CachedLLM(AbstractLLM):
     def __init__(self, llm: AbstractLLM):
         self.llm = llm
         self.db = FloxyDatabase.get_instance()
-        # Initialize parser with default commands list
-        # Will be updated when actual commands are available
-        self.parser = CommandParser([])
+        # Knows no command until update_command_list brings the real list
+        self.format = CommandFormats.active()([])
         self.last_response_was_cached = False
         # The clean user utterance to key the cache on (e.g. "turn off the kitchen lights").
         # Set by the caller before each request; None means "do not cache this request".
@@ -197,16 +196,27 @@ class CachedLLM(AbstractLLM):
         """Return only responses whose consolidated commands match the target set."""
         return [r for r in responses if self._consolidated_command_set(r) == target_commands]
 
+    @property
+    def parser(self):
+        """The format under its old name, for a caller that still asks for the parser."""
+        return self.format
+
     def extract_all_commands(self, response: str) -> list[tuple[str, str]]:
         """Extract all commands; params are joined back into a single string so the
         cache layer can hash (cmd, params_str) tuples for equality-based matching.
-        The parser's structured form (list[str]) is collapsed here because cache
+        The format's structured form (list[str]) is collapsed here because cache
         keys only need string equality, not parameter-boundary preservation."""
-        return [(name, ", ".join(params)) for name, params in self.parser.extract_all_commands(response)]
+        return [(name, ", ".join(params)) for name, params in self.format.extract_all(response)]
 
     def update_command_list(self, commands_list: list[str]):
-        """Update the parser with the actual list of available commands."""
-        self.parser = CommandParser(commands_list)
+        """Rebuild the format's parser with the actual list of available commands."""
+        self.format = CommandFormats.active()(commands_list)
+
+    def command_format(self):
+        return self.llm.command_format()
+
+    def use_command_format(self, fmt):
+        self.llm.use_command_format(fmt)
 
     @staticmethod
     def consolidate_commands(commands: list[tuple[str, str]]) -> list[tuple[str, str]]:

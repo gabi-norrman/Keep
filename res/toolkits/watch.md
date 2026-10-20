@@ -1,4 +1,4 @@
-The watch list (see "The watch list" in the prompt): `load_watch(name)` loads an item in full — do that before you
+The watch list (see "The watch list" in the prompt): `load_watch(name: str, ...)` loads an item in full — do that before you
 answer a question about it or update it. The commands that change the list:
 
 `save_watch(name: str, note: str, due: str, every: str)` — start watching something, or update the item with that

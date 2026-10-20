@@ -38,7 +38,7 @@ If a click opens a popup or new window (bank payments, BankID, OAuth logins), th
 becomes the active page for all browse commands and the snapshot says so in a NOTE. When it closes you are switched
 back to the parent — keep acting on whatever the latest snapshot shows.
 
-`browse_key(spec)` — press one real keyboard key. `spec` is a key name (`"Enter"` — pressed on the focused element)
+`browse_key(spec: str)` — press one real keyboard key. `spec` is a key name (`"Enter"` — pressed on the focused element)
 or `"<index>,<key>"` (`"3,ArrowDown"` — focus snapshot element 3 first). Keys: Enter, Escape, Tab, Backspace,
 ArrowUp, ArrowDown, ArrowLeft, ArrowRight. Returns a fresh snapshot. Prefer this over dispatching KeyboardEvents
 with `browse_eval` — synthetic JS events are untrusted and most sites ignore them.
@@ -59,20 +59,20 @@ inside cross-origin iframes ARE listed and fillable — they carry an `[in js.st
 re-snapshot rather than concluding they are unreachable. Page JavaScript (`browse_eval` reading `contentDocument`)
 can never see inside a cross-origin iframe; the snapshot can.
 
-`browse_wait(pattern, seconds)` — wait for a handoff (BankID, OAuth login, 3-D Secure) to finish: polls the page's
+`browse_wait(pattern: str, seconds: int = 30)` — wait for a handoff (BankID, OAuth login, 3-D Secure) to finish: polls the page's
 URL, title and visible text once a second, following popups that open or close, until the case-insensitive regex
 matches, then returns a snapshot prefixed `MATCHED …`. `seconds` defaults to 30, max 60; on expiry you get
 `TIMEOUT: …` plus the page as it is now — call again if the user is still signing. Example:
 `browse_wait("bekraftelse|Tack för din|callback", 60)`. Never sleep inside `browse_eval` for this — the eval
 itself times out after 10 s.
 
-`browse_network(url_filter)` — the session's XHR/fetch/document traffic so far (every tab, popups included), oldest
+`browse_network(url_filter: str = "")` — the session's XHR/fetch/document traffic so far (every tab, popups included), oldest
 first: time, tab, method, status, URL, MIME, an excerpt of the request body (`>`) and of JSON/text response bodies
 (`<`). `url_filter` is an optional URL regex. Read-only, no snapshot. This is how you learn what a page that "just
 keeps waiting" is told by its backend — a poll answering `pending`, `complete`, `failed` or a 4xx settles what a
 screenshot cannot.
 
-`browse_click_at(x, y)` — last resort: one REAL mouse click at viewport coordinates (CSS pixels, as
+`browse_click_at(x: int, y: int)` — last resort: one REAL mouse click at viewport coordinates (CSS pixels, as
 `getBoundingClientRect()` reports) for something no snapshot lists. Get the iframe's rect with `browse_eval`, add the
 field's offset inside it, scroll it into view first if needed. Returns what was hit plus a fresh snapshot. Prefer
 `browse_act` on a snapshot index whenever one exists.
@@ -80,7 +80,7 @@ field's offset inside it, scroll it into view first if needed. Returns what was 
 `browse_extract()` — the full readable text of the current page. Call it once you are on the page that holds the
 answer.
 
-`browse_eval(js)` — run JavaScript in the browse session and get the result back as JSON. The argument is forwarded
+`browse_eval(js: str)` — run JavaScript in the browse session and get the result back as JSON. The argument is forwarded
 VERBATIM — do NOT wrap it in quotes, brackets or backticks. The body may be a single expression or a block (use
 `return …` in a block). Strings stay strings; objects/arrays come back as JSON. Output is truncated past ~8000
 chars. Use it when neither the snapshot nor `browse_inspect` exposes what you need: values built dynamically in JS
@@ -97,7 +97,7 @@ optional caption. Only available when the user is on Telegram (not voice). Call 
 there is something to send. Use it when the user asks to "see" or "be sent" something visual.
 
 `browse_close()` — shut down the browser and discard the session. Always call this when done. If browse commands
-persistently fail, `browse_close()` then `browse_open(url)` starts over with a fresh browser.
+persistently fail, `browse_close()` then `browse_open` starts over with a fresh browser.
 
 Worked example. User asks "is there a table for 4 at Gurras saturday at 7pm?":
 You: `browse_open("https://www.bokabord.se/restaurang/gurras")`

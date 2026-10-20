@@ -127,6 +127,13 @@ class VaultLLM(AbstractLLM):
     def prefers_prepended_user_query(self) -> bool:
         return self.llm.prefers_prepended_user_query()
 
+    def command_format(self):
+        # Explicit like prefers_byte_prefix_tail: the AbstractLLM default wins over __getattr__.
+        return self.llm.command_format()
+
+    def use_command_format(self, fmt):
+        self.llm.use_command_format(fmt)
+
     def prefers_byte_prefix_tail(self) -> bool:
         # Explicit like refusal_fallback: the AbstractLLM default (False) wins over
         # __getattr__, and create_llm wraps every backend in a VaultLLM.

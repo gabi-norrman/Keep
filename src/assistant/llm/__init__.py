@@ -1,17 +1,21 @@
 import importlib
 import inspect
 
+from assistant.commands.formats.CommandFormats import CommandFormats
 from common.ConfigManager import config
-from common.logging import info
+from common.logging import error, info
 
 
-def create_llm(llm_class_name: str, model: str | None = None, prompt_cache: bool | None = None):
+def create_llm(llm_class_name: str, model: str | None = None, prompt_cache: bool | None = None,
+               command_format: str | None = None):
     """Create an LLM instance by class name (e.g. 'OllamaLLM') with optional model override,
     wrapped in a VaultLLM so secrets never reach the provider (a pass-through when the
     vault is disabled or empty).
 
     prompt_cache is forwarded only to LLMs whose constructor accepts it (e.g. ClaudeLLM);
-    other backends silently ignore it.
+    other backends silently ignore it. command_format — a format name, `keep` / `qwen` /
+    `dsml` (see command_format_override) — makes the instance's `command_format()` return that
+    class instead of the backend's own; None leaves the backend's choice.
     """
     from .VaultLLM import VaultLLM  # lazy: VaultLLM imports from this package
     try:
@@ -24,7 +28,13 @@ def create_llm(llm_class_name: str, model: str | None = None, prompt_cache: bool
         kwargs['model'] = model
     if prompt_cache is not None and 'prompt_cache' in inspect.signature(cls.__init__).parameters:
         kwargs['prompt_cache'] = prompt_cache
-    return VaultLLM(cls(**kwargs))
+    llm = cls(**kwargs)
+    if command_format:
+        fmt = CommandFormats.by_name(command_format)
+        if fmt is None:
+            raise ValueError(f"Unknown command format '{command_format}' — one of {', '.join(CommandFormats.BY_NAME)}")
+        llm.use_command_format(fmt)
+    return VaultLLM(llm)
 
 
 # Defaults used when the `ai.<tier>` config block is absent — these mirror the
@@ -64,36 +74,72 @@ _LOCAL_ONLY_EXEMPT = {'code_quality'}
 _local_only_logged: set[str] = set()
 
 
+def local_only_class() -> str | None:
+    """The backend `ollama.local_only` routes every tier to: 'OllamaLLM' for `true`, the class
+    named when the key holds a class name (`Ds4LLM` for a local ds4-server), None when the switch
+    is off."""
+    value = config.get('ollama.local_only', False)
+    if value is True:
+        return 'OllamaLLM'
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def local_only_mode() -> bool:
-    """True when `ollama.local_only` routes every tier to the Ollama server (`ollama.base_url`)."""
-    return bool(config.get('ollama.local_only', False))
+    """True when `ollama.local_only` routes every tier to one local backend (see local_only_class)."""
+    return local_only_class() is not None
 
 
 def parse_llm_config(tier: str) -> tuple[str, str | None]:
     """Parse config for an LLM tier (e.g. 'fast', 'smart', 'cache_auditor'). Returns (class_name, model_or_None).
 
-    With `ollama.local_only: true` every tier (except code_quality) runs on OllamaLLM regardless of
-    its `ai.<tier>` block or cloud default: a tier already on OllamaLLM keeps its configured model,
-    any other tier falls back to OllamaLLM's default model — a cloud model name means nothing there."""
+    With `ollama.local_only` set every tier (except code_quality) runs on the one local backend it
+    names — OllamaLLM for `true`, or the class it holds (`Ds4LLM`) — regardless of its `ai.<tier>`
+    block or cloud default: a tier already on that backend keeps its configured model, any other
+    tier falls back to the backend's default model — a cloud model name means nothing there."""
     llm, model = _configured_llm(tier)
-    if tier not in _LOCAL_ONLY_EXEMPT and local_only_mode():
-        if llm != 'OllamaLLM':
+    local = local_only_class()
+    if tier not in _LOCAL_ONLY_EXEMPT and local is not None:
+        if llm != local:
             if tier not in _local_only_logged:
                 _local_only_logged.add(tier)
-                info(f"ollama.local_only: tier '{tier}' runs on OllamaLLM instead of {llm}"
+                info(f"ollama.local_only: tier '{tier}' runs on {local} instead of {llm}"
                      f"{f' ({model})' if model else ''}")
-            return 'OllamaLLM', None
+            return local, None
         return llm, model
     return llm, model
+
+
+def command_format_override(tier: str) -> str | None:
+    """The command format the `ai.<tier>` block names with `command_format:` — `keep`, `qwen` or
+    `dsml`, for an Ollama model that is not a Qwen or to try a syntax —, None when the block
+    leaves it to the LLM class. A name no format has is logged and ignored, so a typo costs the
+    override, not the start."""
+    cfg = _tier_block(tier)
+    name = cfg.get('command_format') if isinstance(cfg, dict) else None
+    if name is None:
+        return None
+    fmt = CommandFormats.by_name(name)
+    if fmt is None:
+        error(f"ai.{tier}.command_format: no format called '{name}' (one of "
+              f"{', '.join(CommandFormats.BY_NAME)}); the LLM class's own format stands")
+        return None
+    return fmt.name
+
+
+def _tier_block(tier: str):
+    """The `ai.<tier>` config value as written — a dict, a class name string — or None."""
+    try:
+        return config.get(f'ai.{tier}')
+    except KeyError:
+        return None
 
 
 def _configured_llm(tier: str) -> tuple[str, str | None]:
     """The (class, model) the `ai.<tier>` block names, or the tier's cloud default."""
     default_class, default_model = _TIER_DEFAULTS.get(tier, ('OllamaLLM', None))
-    try:
-        cfg = config.get(f'ai.{tier}')
-    except KeyError:
-        cfg = None
+    cfg = _tier_block(tier)
     if cfg is None:
         return default_class, default_model
     if isinstance(cfg, str):

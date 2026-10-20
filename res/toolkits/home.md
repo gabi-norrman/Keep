@@ -20,13 +20,13 @@ on the lamp with the last used dim level.
 
 ### Covers (blinds, zipscreens, awnings)
 A cover is listed among the LIGHTS with its position as the value: `open`, `closed`, `40% open`, `opening` or
-`closing`. Control it with the same commands — `turn_on` opens it fully, `turn_off` closes it, `dim(name, percentage)`
+`closing`. Control it with the same commands — `turn_on` opens it fully, `turn_off` closes it, `dim`
 drives it to that position (100 is fully open, 0 closed) — and halt it on its way with:
 
 `stop(cover_name: str)`
 
 When the user refers to a room's lights collectively ("all the kitchen lights", "the bedroom lights"), first look
-through the available ACTIONS for one that already does exactly that and prefer `execute(...)`-ing it. If there is no
+through the available ACTIONS for one that already does exactly that and prefer `execute`-ing it. If there is no
 matching action, apply the command to every light tagged with that room (each light whose name ends in the room tag,
 e.g. `[Kök]`), not just a subset of them.
 

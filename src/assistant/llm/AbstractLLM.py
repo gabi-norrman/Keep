@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from typing import Generator
 
 from common.logging import error, trace
+from assistant.commands.formats.CommandFormat import CommandFormat
+from assistant.commands.formats.KeepFormat import KeepFormat
 
 
 class ThinkingNotSupportedError(Exception):
@@ -101,6 +103,25 @@ class AbstractLLM(ABC):
     def prefers_prepended_user_query(self) -> bool:
         """Returns True if this LLM prefers the user query prepended to the system prompt. Override in subclasses."""
         return True
+
+    # The format a tier's `command_format:` config key named, set by `use_command_format`; a
+    # class attribute so a backend that never calls this constructor still has it.
+    _command_format_override: type[CommandFormat] | None = None
+
+    def command_format(self) -> type[CommandFormat]:
+        """The call syntax this instance writes commands in (see `assistant.commands.formats`):
+        the one its tier's config named with `command_format:`, else the class's own."""
+        return self._command_format_override or self.default_command_format()
+
+    def default_command_format(self) -> type[CommandFormat]:
+        """The call syntax this backend's models write most reliably: Keep's own unless the
+        model family was trained on another. Override in subclasses."""
+        return KeepFormat
+
+    def use_command_format(self, fmt: type[CommandFormat] | None) -> None:
+        """Make `fmt` what `command_format()` returns (None: back to the class's own) — the
+        tier's `command_format:` override, applied by `create_llm` after construction."""
+        self._command_format_override = fmt
 
     def set_prompt_cache(self, enabled: bool):
         """Enable/disable prompt caching for subsequent requests. Default: no-op.

@@ -61,7 +61,7 @@ app, opens the masked prompt for it, then for the two-step verification password
 the feed. An expired code or a cancelled prompt comes back as text; run it again for a new code.
 
 WhatsApp (the user's own account, read into the history and written to) has no keys: enable it; its link —
-`whatsapp_login(phone)`, a code the user types into the phone, from any chat — is in the whatsapp toolkit, and
+`whatsapp_login(phone: str)`, a code the user types into the phone, from any chat — is in the whatsapp toolkit, and
 `dropbox_login()` (as google_login) in the dropbox toolkit.
 
 `microsoft_login(account: str)` — signs a Microsoft 365 account (an entry of `microsoft.accounts`, by its name) in, e.g.
@@ -105,7 +105,7 @@ pressed it says so, run it again after the press.
 
 For a request whose integration is disabled or not configured: `config_help` for its section, tell the user what you
 need and where they get it, ask whether to set it up now, `config_request` each key in turn, then
-`enable_integration(name)` (or `restart_integration(name)` when already enabled) and report the state it came back
+`enable_integration` (or `restart_integration` when already enabled) and report the state it came back
 with — if it failed, say why and offer to re-enter the value. Never ask for a setting's value in the chat, and never
 guess a key that config_help does not list.
 

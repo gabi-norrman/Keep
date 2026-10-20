@@ -13,6 +13,8 @@ from urllib.parse import urlparse
 import requests
 
 from .AbstractLLM import AbstractLLM, LLMPreempted
+from assistant.commands.formats import QwenFormat as qwen
+from assistant.commands.formats.CommandFormats import CommandFormats
 from common.logging import info, trace, note, fine
 from common.ConfigManager import config
 from common.Paths import LOG_DIR
@@ -165,6 +167,23 @@ class OllamaLLM(AbstractLLM):
 
     DEFAULT_MODEL = 'qwen3.8:27b-mlx'  # the model the household's Ollama server serves
 
+    # Ollama picks the tool-call parser from the model and runs it only when the request
+    # declares a tool; with none declared a <tool_call> block is swallowed — in neither
+    # `content` nor `tool_calls`. So every request declares this one, static tool (part of
+    # the stable prefix) and the reader writes each parsed `tool_calls` entry back as call text
+    # in the active command format (Qwen's under an Ollama smart tier), so the command
+    # processor reads what the model wrote in the syntax it parses. The
+    # description is against the drift seen in the probe, where the model held the one
+    # declared tool for its only function and loaded a toolkit instead of calling the
+    # text-declared one.
+    STATIC_TOOL = {"type": "function", "function": {
+        "name": "load_toolkit",
+        "description": "Loads the named toolkits, references of further functions. Only one of your functions: "
+                       "the others are declared in the system prompt and in the toolkits you have loaded, and "
+                       "every one of them is called in exactly the same format as this one.",
+        "parameters": {"type": "object", "required": ["name"],
+                       "properties": {"name": {"type": "array", "items": {"type": "string"}}}}}}
+
     def __init__(self, model: str = DEFAULT_MODEL, base_url: str | None = None):
         self.model = model
         # Explicit base_url wins; otherwise `ollama.base_url` from config.yaml (e.g. the M4
@@ -221,6 +240,10 @@ class OllamaLLM(AbstractLLM):
                 return f.read()
         except OSError:
             return None
+
+    def default_command_format(self):
+        """Qwen's <tool_call> syntax: what the model family Ollama serves here was trained on."""
+        return qwen.QwenFormat
 
     def prefers_prepended_user_query(self) -> bool:
         return False
@@ -279,6 +302,7 @@ class OllamaLLM(AbstractLLM):
             "stream": stream,
             "keep_alive": -1,
             "think": self.thinks(),
+            "tools": [self.STATIC_TOOL],
         }
         if num_predict is not None:
             req["options"] = {"num_predict": num_predict}
@@ -872,6 +896,8 @@ class OllamaLLM(AbstractLLM):
             resp.raise_for_status()
 
             in_thinking = False
+            reply = ""  # everything yielded as reply text so far: the line break before a call needs it
+            content_seen = ""  # the model's own content alone, for the unparsed-<tool_call> check
             for line in resp.iter_lines():
                 if not line:
                     continue
@@ -890,24 +916,71 @@ class OllamaLLM(AbstractLLM):
                     if in_thinking:
                         in_thinking = False
                         yield "</thinking>"
+                    reply += content
+                    content_seen += content
                     yield content
+                for call in message.get("tool_calls") or []:
+                    text = self._render_tool_call(call)
+                    if not text:
+                        continue
+                    self._mark_first_token(token)
+                    if in_thinking:
+                        in_thinking = False
+                        yield "</thinking>"
+                    if reply and not reply.endswith("\n"):
+                        text = "\n" + text
+                    reply += text
+                    yield text
                 if data.get("done"):
                     if in_thinking:
                         trace("Ollama stream ended inside the thinking block — closing it")
                         yield "</thinking>"
+                    self._check_unparsed_calls(content_seen)
                     self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats)
                     OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
         finally:
             self._end_prefill(token)
             self._interactive_end()
 
-    @staticmethod
-    def _content_of(data: dict) -> str:
-        """The reply text of a non-streaming response; its native thinking is logged."""
+    @classmethod
+    def _content_of(cls, data: dict) -> str:
+        """The reply text of a non-streaming response — the content, then every parsed tool
+        call written back as Qwen text; its native thinking is logged."""
         message = data.get("message", {})
         if message.get("thinking"):
             fine(f"Ollama thought:\n{message['thinking'].strip()}")
-        return message.get("content", "")
+        content = message.get("content", "")
+        cls._check_unparsed_calls(content)
+        for call in message.get("tool_calls") or []:
+            if text := cls._render_tool_call(call):
+                content += ("\n" if content and not content.endswith("\n") else "") + text
+        return content
+
+    @staticmethod
+    def _render_tool_call(call: dict) -> str:
+        """A `message.tool_calls` entry written back as call text in the *active* command
+        format, for the command parser; '' for an entry without a function name. The model
+        wrote a <tool_call> block, but the parser reads the smart tier's format — Keep's or
+        DSML under a Claude or ds4 smart tier — so the call is rendered in that one. The
+        arguments arrive as strings (or, when Ollama decoded them, numbers, booleans and
+        lists) and are written back the way the model spelled them."""
+        function = call.get("function") or {}
+        name = function.get("name")
+        if not name:
+            trace(f"Ollama tool call without a function name, dropped: {call!r}")
+            return ""
+        fmt = CommandFormats.active()
+        arguments = fmt.arguments_dict(function.get("arguments") or {})
+        trace(f"Ollama parsed a {name} call ({', '.join(arguments)}) — written back as {fmt.name} call text")
+        return fmt.render_tool_call(name, arguments)
+
+    @staticmethod
+    def _check_unparsed_calls(reply: str):
+        """Ollama parses every well-formed <tool_call> block out of the content, so one left in
+        it is a block the model got wrong; Keep's own parser still reads what it can."""
+        if qwen.OPEN in reply:
+            note(f"Ollama left <tool_call> text in the content — the model wrote a block its parser "
+                 f"did not take; the command parser reads it as written ({reply.count(qwen.OPEN)} opener(s))")
 
     def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0,
                           follow_up: bool = False) -> str:

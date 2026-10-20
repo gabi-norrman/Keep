@@ -23,17 +23,28 @@ class TestCacheAuditorInit:
             mock.cmd_play = lambda: None
             yield mock
 
-    @pytest.fixture
-    def mock_command_parser(self):
-        with patch('assistant.agents.CacheAuditor.CommandParser') as mock:
-            yield mock
-
-    def test_the_parser_knows_core_commands_and_the_ones_integration_folders_add(self, mock_gemini_llm, mock_command_parser):
+    def test_the_parser_knows_core_commands_and_the_ones_integration_folders_add(self, mock_gemini_llm):
         from assistant.agents.CacheAuditor import CacheAuditor
-        CacheAuditor()
-        names = mock_command_parser.call_args[0][0]
+        names = CacheAuditor()._format.possible_commands
         assert {'turn_on', 'load_toolkit', 'car_open_trunk', 'search_x'} <= set(names)
         assert not any(name.startswith(('cmd_', 'describe_', '_')) for name in names)
+
+    def test_reads_replies_in_the_active_format_and_follows_a_change_of_it(self, mock_gemini_llm):
+        from assistant.agents.CacheAuditor import CacheAuditor
+        from assistant.commands.formats.CommandFormats import CommandFormats
+        from assistant.commands.formats.QwenFormat import QwenFormat, render_call
+        CommandFormats.reset()
+        try:
+            auditor = CacheAuditor()
+            assert auditor._has_commands('turn_on("Kitchen lamp")')
+            qwen_call = render_call("turn_on", [("light_name", "Kitchen lamp")])
+            assert not auditor._has_commands(qwen_call)
+            # The launcher builds the auditor before the DialogManager picks the smart tier's format.
+            CommandFormats.set_active(QwenFormat, "a test")
+            assert auditor._has_commands(qwen_call)
+            assert not auditor._has_commands('turn_on("Kitchen lamp")')
+        finally:
+            CommandFormats.reset()
 
 @pytest.mark.unit
 class TestCacheAuditorAuditPass:
@@ -76,21 +87,18 @@ class TestCacheAuditorAuditPass:
     @pytest.fixture
     def cache_auditor(self, mock_gemini_llm, mock_commands, mock_logging):
         mock_llm, _ = mock_gemini_llm
-        with patch('assistant.agents.CacheAuditor.CommandParser') as mock_parser_class:
-            mock_parser = Mock()
-            mock_parser_class.return_value = mock_parser
-            from assistant.agents.CacheAuditor import CacheAuditor
-            auditor = CacheAuditor()
-            auditor._llm = mock_llm
-            auditor._parser = mock_parser
-            auditor._running = True
-            return auditor
+        from assistant.agents.CacheAuditor import CacheAuditor
+        auditor = CacheAuditor()
+        auditor._llm = mock_llm
+        auditor._format = Mock()
+        auditor._running = True
+        return auditor
 
     def test_marks_not_cachable_if_no_commands(self, cache_auditor, mock_database, mock_logging):
         mock_database.get_unaudited_cache_entries.return_value = [
             (1, "query", "response without commands")
         ]
-        cache_auditor._parser.extract_all_commands.return_value = []
+        cache_auditor._format.extract_all.return_value = []
 
         cache_auditor._audit_pass()
         mock_database.mark_not_cachable.assert_called_with(1)
@@ -99,7 +107,7 @@ class TestCacheAuditorAuditPass:
         mock_database.get_unaudited_cache_entries.return_value = [
             (1, "turn off lights", "execute(TurnOffLights)")
         ]
-        cache_auditor._parser.extract_all_commands.return_value = [("execute", "TurnOffLights")]
+        cache_auditor._format.extract_all.return_value = [("execute", "TurnOffLights")]
         cache_auditor._llm.think.return_value = "This is safe to cache.\nSAFE"
 
         cache_auditor._audit_pass()
@@ -109,7 +117,7 @@ class TestCacheAuditorAuditPass:
         mock_database.get_unaudited_cache_entries.return_value = [
             (1, "what time is it", "It's 3pm execute(ShowTime)")
         ]
-        cache_auditor._parser.extract_all_commands.return_value = [("execute", "ShowTime")]
+        cache_auditor._format.extract_all.return_value = [("execute", "ShowTime")]
         cache_auditor._llm.think.return_value = "Time-dependent response.\nUNSAFE"
 
         cache_auditor._audit_pass()
@@ -119,7 +127,7 @@ class TestCacheAuditorAuditPass:
         mock_database.get_unaudited_cache_entries.return_value = [
             (1, "query", "execute(action)")
         ]
-        cache_auditor._parser.extract_all_commands.return_value = [("execute", "action")]
+        cache_auditor._format.extract_all.return_value = [("execute", "action")]
         cache_auditor._llm.think.side_effect = Exception("API error")
 
         cache_auditor._audit_pass()
@@ -141,7 +149,7 @@ class TestCacheAuditorAuditPass:
             (1, "q1", "execute(a)"),
             (2, "q2", "execute(b)"),
         ]
-        cache_auditor._parser.extract_all_commands.return_value = [("execute", "action")]
+        cache_auditor._format.extract_all.return_value = [("execute", "action")]
         cache_auditor._llm.think.return_value = "Safe.\nSAFE"
 
         cache_auditor._audit_pass()
@@ -166,11 +174,6 @@ class TestCacheAuditorStartStop:
             yield mock
 
     @pytest.fixture
-    def mock_command_parser(self):
-        with patch('assistant.agents.CacheAuditor.CommandParser') as mock:
-            yield mock
-
-    @pytest.fixture
     def mock_logging(self):
         with patch('assistant.agents.CacheAuditor.info') as mock_info, \
              patch('assistant.agents.CacheAuditor.error') as mock_error, \
@@ -178,7 +181,7 @@ class TestCacheAuditorStartStop:
              patch('assistant.agents.CacheAuditor.fine') as mock_fine:
             yield
 
-    def test_start_creates_daemon_thread(self, mock_gemini_llm, mock_commands, mock_command_parser, mock_logging):
+    def test_start_creates_daemon_thread(self, mock_gemini_llm, mock_commands, mock_logging):
         from assistant.agents.CacheAuditor import CacheAuditor
         auditor = CacheAuditor()
         with patch.object(threading.Thread, 'start'):
@@ -202,7 +205,6 @@ class TestCacheAuditorWithoutApiKey:
     @pytest.fixture
     def auditor(self, keyless_llm):
         with patch('assistant.agents.CacheAuditor.Commands'), \
-             patch('assistant.agents.CacheAuditor.CommandParser'), \
              patch('assistant.agents.CacheAuditor.info') as mock_info:
             from assistant.agents.CacheAuditor import CacheAuditor
             auditor = CacheAuditor()

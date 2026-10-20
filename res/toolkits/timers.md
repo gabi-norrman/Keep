@@ -10,7 +10,7 @@ It is for the short and the immediate — "TV off in 20 minutes", "remind me abo
 belongs on the watch list with a due time (and needs no additional `schedule_wakeup`).
 
 **Important — schedule the wake up, don't perform the action now.** When the user wants an action done *later*
-("turn off the TV in 20 minutes"), issue ONLY `schedule_wakeup(20)` in this turn and confirm to the user. Do NOT also run the action command (`execute(...)`, `play_music(...)`, etc.) in the same turn — that would perform it immediately.
+("turn off the TV in 20 minutes"), issue ONLY `schedule_wakeup(20)` in this turn and confirm to the user. Do NOT also run the action command (`execute`, `play_music`, etc.) in the same turn — that would perform it immediately.
 
 Other times you'll need to monitor something for the user: the trigger is an EVENT whose time you can't know in
 advance (someone arriving, entering a room, a car getting home). `schedule_wakeup` is ONLY for known times — never

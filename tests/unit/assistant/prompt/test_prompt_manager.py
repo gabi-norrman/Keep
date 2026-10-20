@@ -1853,6 +1853,37 @@ def test_toolkit_placeholders_filled_in_both_prompt_paths(tmp_path, monkeypatch)
 
 
 @pytest.mark.unit
+def test_command_system_filled_and_calls_rewritten_in_both_prompt_paths(tmp_path, monkeypatch):
+    """{COMMAND_SYSTEM} is the active format's instructions and every call of a known command is
+    rendered through that format — in the template and in what load_toolkit renders alike."""
+    from assistant.commands.formats.CommandFormats import CommandFormats
+    from assistant.commands.formats.KeepFormat import KeepFormat
+
+    class Loud(KeepFormat):
+        name = "loud"
+        def instructions(self):
+            return "HOW TO CALL"
+        def render_example(self, name, values, declaration):
+            return f"<{name}:{'|'.join(v.value for v in values)}>"
+
+    res_dir = tmp_path / "res"
+    res_dir.mkdir()
+    template = 'Head\n{COMMAND_SYSTEM}\nSay `load_toolkit("email", "web")`, mention `load_toolkit` and `word(x)`.\n'
+    (res_dir / "prompt.md").write_text(template)
+    (tmp_path / "testsuite_prompt.md").write_text(template)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(PromptManager, "_get_photo_count", lambda self: 0)
+    monkeypatch.setattr(CommandFormats, "active", staticmethod(lambda: Loud))
+
+    for test_suite in (True, False):
+        with patch("assistant.prompt.PromptSectionGenerator.PromptSectionGenerator.start"):
+            manager = PromptManager(test_suite=test_suite)
+        for prompt in (manager.prompt, manager.render_template(template)):
+            assert "{COMMAND_SYSTEM}" not in prompt and "HOW TO CALL" in prompt
+            assert "Say <load_toolkit:email|web>, mention `load_toolkit` and `word(x)`." in prompt
+
+
+@pytest.mark.unit
 def test_render_template_fills_sections_and_config_values(prompt_test_environment):
     manager = PromptManager(test_suite=True)
     manager.sections = {"procedures": DummySection("sunny")}
@@ -2127,3 +2158,24 @@ def test_after_a_rebuild_the_next_change_diffs_from_the_rebuilt_prompt_and_the_o
     assert len(entries) == 2 and entries[0] is first
     assert "-Driving on Kungsgatan" in entries[1]["content"] and "+Parked on Burggrevegatan" in entries[1]["content"]
     assert "car_info_content" not in entries[1]["content"], "the baseline is the rebuilt prompt, not the first one"
+
+
+@pytest.mark.unit
+def test_a_prompt_assembled_before_the_format_was_set_is_rendered_again_in_the_new_one(monkeypatch):
+    """The launcher builds the PromptManager before any DialogManager names the command format,
+    so the prompt in hand is re-rendered when CommandFormats.set_active changes it — the
+    format's instructions in {COMMAND_SYSTEM} and every declaration in its syntax."""
+    from assistant.commands.formats.CommandFormats import CommandFormats
+    from assistant.commands.formats.QwenFormat import QwenFormat
+
+    monkeypatch.setattr(PromptManager, "_test_suite_template_path", staticmethod(lambda: "res/prompt.md"))
+    try:
+        with patch("assistant.prompt.PromptSectionGenerator.PromptSectionGenerator.start"):
+            manager = PromptManager(test_suite=True)
+        assert "<tool_call>" not in manager.prompt and "The commands use python syntax." in manager.prompt
+        CommandFormats.set_active(QwenFormat)
+        assert "<tool_call>" in manager.prompt and '{"type": "function"' in manager.prompt
+        assert "The commands use python syntax." not in manager.prompt
+        assert "<tool_call>" in manager.render_template('`load_toolkit("email")`')
+    finally:
+        CommandFormats.reset()

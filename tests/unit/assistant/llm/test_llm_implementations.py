@@ -2052,9 +2052,27 @@ class TestOllamaLLM:
     @pytest.fixture(autouse=True)
     def _fresh_thinking_probe(self):
         from assistant.llm.OllamaLLM import OllamaLLM
+        from assistant.commands.formats.CommandFormats import CommandFormats
+        from assistant.commands.formats.QwenFormat import QwenFormat
         OllamaLLM._thinking_capable.clear()
+        CommandFormats.set_active(QwenFormat)  # an Ollama smart tier: the parsed calls go back as Qwen text
         yield
         OllamaLLM._thinking_capable.clear()
+        CommandFormats.reset()
+
+    def test_under_another_smart_tier_a_parsed_call_is_written_back_in_that_tiers_format(self):
+        # The mixed-tier case: an Ollama fast tier under a Claude (Keep) or ds4 (DSML) smart tier
+        # must hand the active parser a call it reads, not a <tool_call> block it takes for prose.
+        from assistant.llm.OllamaLLM import OllamaLLM
+        from assistant.commands.formats.CommandFormats import CommandFormats
+        from assistant.commands.formats.DsmlFormat import DsmlFormat
+        from assistant.commands.formats.KeepFormat import KeepFormat
+        call = {"function": {"name": "dim", "arguments": {"light_name": "Lamp", "dim_percentage": "5"}}}
+        for fmt in (KeepFormat, DsmlFormat):
+            CommandFormats.set_active(fmt)
+            text = OllamaLLM._content_of({"message": {"content": "", "tool_calls": [call]}})
+            assert "<tool_call>" not in text
+            assert fmt(["dim"]).extract_all(text) == [("dim", ["Lamp", "5"])]
 
     @patch('assistant.llm.OllamaLLM.config')
     def test_base_url_from_config(self, mock_config):
@@ -2105,7 +2123,80 @@ class TestOllamaLLM:
             "stream": True,
             "keep_alive": -1,
             "think": True,
+            "tools": [type(llm).STATIC_TOOL],
         }
+
+    def test_every_request_declares_one_tool_as_the_contract_with_ollamas_call_parser(self):
+        # Ollama runs its tool-call parser only when the request declares a tool: with none,
+        # a <tool_call> block the model writes is swallowed (plan, host run 2026-10-20). The
+        # declared tool must be the same bytes in every request, pre-heats included, since it
+        # renders into the prefix the KV cache is matched on.
+        llm = self._make_llm()
+        real = llm._build_request([{"role": "user", "content": "hi"}], stream=True)
+        pre_heat = llm._build_request([{"role": "user", "content": "hi"}], stream=True, num_predict=1)
+        assert len(real["tools"]) == 1 and real["tools"][0]["function"]["name"] == "load_toolkit"
+        assert pre_heat["tools"] == real["tools"]
+
+    def test_ollama_runs_the_qwen_command_format(self):
+        from assistant.commands.formats.QwenFormat import QwenFormat
+        assert self._make_llm().command_format() is QwenFormat
+
+    @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
+    @patch('assistant.llm.OllamaLLM.OllamaLLM._rendered_prompt', return_value=None)
+    @patch('assistant.llm.OllamaLLM.requests.post')
+    def test_a_parsed_tool_call_is_written_back_as_qwen_text_the_parser_reads(self, mock_post, mock_rendered, mock_thinks):
+        # Ollama parses the model's <tool_call> block into message.tool_calls (arguments as
+        # strings) in a chunk after the content; the stream must carry it as the text the
+        # model wrote, after the content and outside the thinking block.
+        import json
+        from assistant.commands.formats.QwenFormat import QwenFormat
+        call = {"function": {"index": 0, "name": "turn_on", "arguments": {"light_name": "Kitchen lamp"}}}
+        mock_post.return_value.iter_lines.return_value = [
+            json.dumps({"message": {"thinking": "plan"}}),
+            json.dumps({"message": {"content": "Turning it on."}}),
+            json.dumps({"message": {"content": "", "tool_calls": [call]}}),
+            json.dumps({"message": {"content": ""}, **self.DONE}),
+        ]
+        out = "".join(self._make_llm().create_streaming_completion([{"role": "user", "content": "hi"}]))
+        assert out.startswith("<thinking>plan</thinking>Turning it on.\n<tool_call>")
+        fmt = QwenFormat(["turn_on"], table={"turn_on": ["light_name"]})
+        assert fmt.extract_all(out) == [("turn_on", ["Kitchen lamp"])]
+
+    @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
+    @patch('assistant.llm.OllamaLLM.OllamaLLM._rendered_prompt', return_value=None)
+    @patch('assistant.llm.OllamaLLM.requests.post')
+    def test_a_tool_call_straight_after_thinking_closes_the_block_first(self, mock_post, mock_rendered, mock_thinks):
+        import json
+        from assistant.commands.formats.QwenFormat import QwenFormat
+        call = {"function": {"name": "load_toolkit", "arguments": {"name": ["email", "web"]}}}
+        mock_post.return_value.iter_lines.return_value = [
+            json.dumps({"message": {"thinking": "plan"}}),
+            json.dumps({"message": {"content": "", "tool_calls": [call]}, **self.DONE}),
+        ]
+        out = "".join(self._make_llm().create_streaming_completion([{"role": "user", "content": "hi"}]))
+        assert out.startswith("<thinking>plan</thinking><tool_call>")
+        fmt = QwenFormat(["load_toolkit"], table={"load_toolkit": ["name"]}, variadic={"load_toolkit"})
+        assert fmt.extract_all(out) == [("load_toolkit", ["email", "web"])]
+
+    def test_a_non_streamed_reply_carries_its_tool_calls_as_text_too(self):
+        import json
+        from assistant.llm.OllamaLLM import OllamaLLM
+        from assistant.commands.formats.QwenFormat import QwenFormat
+        data = {"message": {"content": "Dimming.", "tool_calls": [
+            {"function": {"name": "dim", "arguments": json.dumps({"light_name": "Lamp", "dim_percentage": 1})}}]}}
+        text = OllamaLLM._content_of(data)
+        fmt = QwenFormat(["dim"], table={"dim": ["light_name", "dim_percentage"]})
+        assert text.startswith("Dimming.\n") and fmt.extract_all(text) == [("dim", ["Lamp", "1"])]
+
+    @patch('assistant.llm.OllamaLLM.note')
+    def test_tool_call_text_left_in_the_content_is_noted_but_passed_on(self, mock_note):
+        from assistant.llm.OllamaLLM import OllamaLLM
+        text = OllamaLLM._content_of({"message": {"content": "<tool_call>\nbroken\n</tool_call>"}})
+        assert text == "<tool_call>\nbroken\n</tool_call>"
+        assert mock_note.called
+        mock_note.reset_mock()
+        OllamaLLM._content_of({"message": {"content": "fine", "tool_calls": [{"function": {"name": "restart_server", "arguments": {}}}]}})
+        assert not mock_note.called
 
     def test_build_request_flattens_anthropic_image_blocks(self):
         # Ollama's /api/chat rejects list content with a 400. A message whose

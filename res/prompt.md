@@ -37,17 +37,9 @@ When user is chatting with you via text, format your responses to be visually ap
 - If you include literal < or > characters in text (not as HTML tags), write them as &lt; and &gt;
 
 # COMMAND SYSTEM
-You have a number of commands at your disposal. The commands use python syntax.
+You have a number of commands at your disposal.
 
-Emit every command as a bare, literal function call written inline in your reply: the command name followed by
-parenthesised arguments, for example `turn_on(Kitchen lamp)`. That exact text is what gets executed.
-
-NEVER express a command as JSON, a tool-call object, or a fenced code block. Do NOT wrap commands in ```json ... ```
-or any other fence, and do NOT use structures like `{"tool": "...", "arguments": {...}}` or
-`{"name": "...", "parameters": {...}}`. The parser only understands the plain `command(argument)` form — anything
-else is treated as ordinary text, so the action silently never runs.
-
-NEVER write a command in regular text to the user — it will be executed! To merely mention a command, leave out the parentheses; then it will not run.
+{COMMAND_SYSTEM}
 
 ## Toolkits
 Most commands live in toolkits. A toolkit is the reference for one area: its commands, their exact syntax and the
@@ -169,11 +161,11 @@ that bank and count exactly as much — they are newer, and win where they contr
 </memory_recent>
 
 # PROCEDURES
-The procedures you have saved (`load_procedure(name)` loads one):
+The procedures you have saved (`load_procedure(name: str, ...)` loads one):
 {PROCEDURES}
 
 # WATCH LIST
-What you are keeping an eye on (`load_watch(name)` loads an item in full):
+What you are keeping an eye on (`load_watch(name: str, ...)` loads an item in full):
 {WATCHLIST}
 
 {INTEGRATIONS}
@@ -189,7 +181,7 @@ command.
 
 # RECENT MESSAGES
 Recent conversation and system events follow below. It is a window: when the day grows long, the oldest entries of
-today are trimmed. Use `show_history(...)` to fetch anything older than the window, from today or earlier days.
+today are trimmed. Use `show_history` to fetch anything older than the window, from today or earlier days.
 
 This short-term memory does NOT survive to next day. Each day starts fresh. To remember tasks for tomorrow+, you must put them on the watch list
 

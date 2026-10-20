@@ -132,6 +132,12 @@ class PromptManager:
 
         self._section_positions = self._compute_section_positions()
 
+        # The launcher builds this manager before any DialogManager has built the LLM that
+        # names the command format, so a prompt assembled until then is in the Keep syntax
+        # and is rendered again when the format is set.
+        from assistant.commands.formats.CommandFormats import CommandFormats
+        CommandFormats.on_change(self._on_command_format_changed)
+
         if test_suite:
             # For test suite, just load test prompt immediately
             self._load_test_suite_prompt()
@@ -816,8 +822,12 @@ class PromptManager:
         then {TOOLKITS} (assistant.commands.Toolkits, the toolkits offered now), {DESTINATIONS}
         (assistant.Destinations, where post_message can reach), {PHOTO_COUNT}
         (`photo_count` if given, else the DB's, refreshed at most daily), {WAKE_WORD},
-        {WAKE_INTERVAL_MINUTES} and {EMOTION_TAGS} (config-driven)."""
+        {WAKE_INTERVAL_MINUTES} and {EMOTION_TAGS} (config-driven); then {COMMAND_SYSTEM} (the
+        active command format's instructions) and, last, every command declaration and example
+        rendered in that format (formats.Rewriter) — so the template, load_toolkit's rendering,
+        the preloads and the debug commands all speak the syntax the parser reads."""
         from assistant.commands import Toolkits
+        from assistant.commands.formats import Rewriter, Signatures
         for key, content in sections.items():
             text = text.replace("{" + key.upper() + "}", content)
         if self.DATA_BLOCK in text:
@@ -831,7 +841,34 @@ class PromptManager:
         if self.EMOTION_TAGS in text:
             text = re.sub(re.escape(self.EMOTION_TAGS) + r"\n*", lambda _: self._emotion_tags_block(), text)
         text = text.replace("{WAKE_WORD}", config.get('wake_word', 'Michelle'))
-        return text.replace("{WAKE_INTERVAL_MINUTES}", self._wake_interval_minutes_str())
+        text = text.replace("{WAKE_INTERVAL_MINUTES}", self._wake_interval_minutes_str())
+        fmt = self._command_format()
+        if "{COMMAND_SYSTEM}" in text:
+            text = text.replace("{COMMAND_SYSTEM}", fmt.instructions())
+        return Rewriter.rewrite(text, fmt, Signatures.declarations())
+
+    _format = None
+
+    def _on_command_format_changed(self, fmt):
+        """The process's command format changed (CommandFormats.set_active): the prompt in
+        hand speaks the old syntax, so it is rendered again — the test-suite prompt from its
+        template, the live one through a forced assembly."""
+        info(f"Command format is now {fmt.name} — rendering the prompt again in it")
+        if self.test_suite:
+            self._load_test_suite_prompt()
+        else:
+            self._assemble_prompt("command format", force=True)
+
+    def _command_format(self):
+        """The active command format (CommandFormats.active()), built once per class it names:
+        the renderer of the command calls in every text that goes out."""
+        from assistant.commands.Commands import Commands
+        from assistant.commands.formats.CommandFormats import CommandFormats
+        cls = CommandFormats.active()
+        if self._format is None or type(self._format) is not cls:
+            self._format = cls(Commands.command_names())
+            info(f"Prompt texts are rendered in the {self._format.name} command format")
+        return self._format
 
     EMOTION_TAGS = "{EMOTION_TAGS}"
     EMOTION_TAGS_FILE = RES_DIR / "voice_emotions.md"

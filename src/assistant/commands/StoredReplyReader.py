@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from common.logging import trace
 
-from .CommandParser import CommandParser
+from .formats.CommandFormats import CommandFormats
 from .Commands import Commands
 
 WRAP_OPENS = re.compile(r"(`+|<code>)\s*$")
@@ -35,16 +35,16 @@ class StoredReplyReader:
     def __init__(self):
         # Never runs a command: describing one needs no processor behind it.
         self._commands = Commands(None)
-        self._parser = CommandParser(self._commands.list_commands())
+        self._format = CommandFormats.active()(self._commands.list_commands())
 
     def read(self, reply: str) -> StoredReply:
         prose, before, after = "", [], []
         remaining = reply or ""
         while remaining:
-            start = self._parser.find_command_start(remaining)
+            start = self._format.find_start(remaining)
             if start < 0:
                 break
-            call, parsed_rest = self._parser.extract_command_and_params(remaining[start:])
+            call, parsed_rest = self._format.extract(remaining[start:])
             if call is None:
                 # A command name and "(" that never closes: the model was talking about it.
                 prose += remaining[:start + 1]
@@ -53,7 +53,7 @@ class StoredReplyReader:
             rest = self._after_call(remaining[start:], len(parsed_rest or ""))
             lead, remaining = self._unwrap(remaining[:start], rest)
             prose += lead
-            echo = self._commands.echo_text(*call)
+            echo = self._commands.echo_text(*call[:2])
             if echo:
                 (after if prose.strip() else before).append(echo)
             else:

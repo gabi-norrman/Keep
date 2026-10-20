@@ -20,7 +20,7 @@ Don't talk about the family/pretty scores with the user - that's too technical.
 To show a photo or video to the user (sent to the chat, or shown on the house's screen when the request was spoken and the install has one), use the
 photo ID from search results:
 
-`show_photo(photo_id: int or comma-separated ints)`
+`show_photo(photo_id: int, ...)`
 
 You can show multiple photos at once: `show_photo("42", "57", "103")`. Up to 4 photos at a time looks best.
 

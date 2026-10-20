@@ -11,9 +11,10 @@ from google.genai.errors import ServerError as GeminiServerError
 
 from common.RequestKilledException import RequestKilledException
 from assistant.commands.CommandProcessor import CommandProcessor
+from assistant.commands.formats.CommandFormats import CommandFormats
 from assistant.AssistantEvents import AssistantEvent, observers
 from assistant.ChannelProfile import profile_for
-from assistant.llm import create_llm, parse_llm_config, content_blocks_contain_images
+from assistant.llm import create_llm, parse_llm_config, command_format_override, content_blocks_contain_images
 from assistant.llm.AbstractLLM import LLMRefusalError
 from assistant.llm.CachedLLM import CachedLLM
 from assistant.prompt.MessageHistory import MessageHistory
@@ -40,6 +41,7 @@ class DialogManager:
     # reaches the client, so there's nothing to count downstream — but the raw stream is
     # accumulated in llm_response_raw, which gives a cheap, backend-agnostic estimate.
     CHARS_PER_TOKEN_ESTIMATE = 4
+    _format_choices_logged: set[tuple[str, str]] = set()
 
     def __init__(self, web_request_handler, test_suite_mode: bool = False,
                  voice_factory: "Callable[[str | None], VoiceSynthesizer] | None" = None):
@@ -50,11 +52,19 @@ class DialogManager:
         smart_llm_name, smart_model = parse_llm_config('smart')
         vision_llm_name, vision_model = parse_llm_config('vision')
 
-        self.ai_fast = create_llm(fast_llm_name, fast_model)
-        self.ai_smart = create_llm(smart_llm_name, smart_model, prompt_cache=True)
+        self.ai_fast = create_llm(fast_llm_name, fast_model, command_format=command_format_override('fast'))
+        smart_format = command_format_override('smart')
+        self.ai_smart = create_llm(smart_llm_name, smart_model, prompt_cache=True, command_format=smart_format)
+        # The chat tier's model decides the syntax every reply is parsed in — before the cached
+        # wrappers and the command processor below build their parsers from it. A `command_format:`
+        # key in the tier's `ai.smart` block overrides the class's choice.
+        self._command_format_source = (f"the ai.smart command_format override" if smart_format
+                                       else f"the smart tier's {smart_llm_name} class")
+        CommandFormats.set_active(self.ai_smart.command_format(), self._command_format_source)
         # Used whenever a request carries images — Opus 4.8 is much stronger at vision
         # than the 4.6 we run as smart. See select_ai (images always win).
-        self.ai_vision = create_llm(vision_llm_name, vision_model, prompt_cache=True)
+        self.ai_vision = create_llm(vision_llm_name, vision_model, prompt_cache=True,
+                                    command_format=command_format_override('vision'))
 
         TTFTMonitor.get_instance().register_models(
             smart_model=self.ai_smart.model, fast_model=self.ai_fast.model
@@ -72,6 +82,11 @@ class DialogManager:
         for ai in (self.ai_fast, self.ai_smart, self.ai_vision):
             if isinstance(ai, CachedLLM):
                 ai.update_command_list(self.command_processor.possible_commands)
+        choice = (CommandFormats.active().name, self._command_format_source)
+        if choice not in DialogManager._format_choices_logged:   # once per process, not per pool slot
+            DialogManager._format_choices_logged.add(choice)
+            info(f"Command format: {choice[0]}, chosen by {choice[1]} — "
+                 f"the syntax every command in a reply is parsed in")
 
         self.llm_response = ""
         self.llm_response_raw = ""

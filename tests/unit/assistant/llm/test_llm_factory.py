@@ -4,7 +4,7 @@ import types
 import pytest
 from unittest.mock import patch
 
-from assistant.llm import create_llm, parse_llm_config
+from assistant.llm import create_llm, parse_llm_config, command_format_override
 from assistant.llm.VaultLLM import VaultLLM
 from common.vault.Vault import Vault
 
@@ -178,3 +178,65 @@ class TestCreateLLM:
             assert inst.model == "my-model" and inst.prompt_cache is True
         finally:
             del sys.modules["assistant.llm._FakeLLMWithCache"]
+
+
+# ===========================================================================
+# command_format — a tier's `ai.<tier>.command_format` key overrides the syntax the
+# LLM class would write commands in; the plan's check is an Ollama tier pointed at
+# `keep` and back (docs/plans/COMMAND_FORMATS_PLAN.md, step 6).
+# ===========================================================================
+
+class TestCommandFormatOverride:
+    def _patch_config(self, tier_value):
+        def get(key, default=None):
+            if key == 'ollama.local_only':
+                return False
+            if key.startswith('ai.'):
+                return tier_value
+            return default
+        return patch('assistant.llm.config.get', side_effect=get)
+
+    def _smart_llm(self, tier_value):
+        with self._patch_config(tier_value):
+            name, model = parse_llm_config('smart')
+            return create_llm(name, model, command_format=command_format_override('smart'))
+
+    def test_an_ollama_tier_pointed_at_keep_and_back(self):
+        from assistant.commands.formats.KeepFormat import KeepFormat
+        from assistant.commands.formats.QwenFormat import QwenFormat
+        assert self._smart_llm({'llm': 'OllamaLLM'}).command_format() is QwenFormat
+        assert self._smart_llm({'llm': 'OllamaLLM', 'command_format': 'keep'}).command_format() is KeepFormat
+        assert self._smart_llm({'llm': 'OllamaLLM'}).command_format() is QwenFormat
+
+    def test_the_override_names_any_of_the_three_formats_whatever_the_class(self):
+        from assistant.commands.formats.CommandFormats import CommandFormats
+        for name in ("keep", "qwen", "dsml", " Qwen "):
+            with self._patch_config({'llm': 'OllamaLLM', 'command_format': name}):
+                assert command_format_override('smart') == name.strip().lower()
+            assert create_llm("OllamaLLM", command_format=name).command_format() is CommandFormats.by_name(name)
+
+    def test_no_key_leaves_the_class_its_choice(self):
+        with self._patch_config({'llm': 'OllamaLLM', 'model': 'gemma4:26b'}):
+            assert command_format_override('smart') is None
+        with self._patch_config('OllamaLLM'):
+            assert command_format_override('smart') is None
+        with self._patch_config(None):
+            assert command_format_override('smart') is None
+
+    def test_an_unknown_name_is_logged_and_ignored_by_the_reader_but_refused_by_the_factory(self):
+        with self._patch_config({'llm': 'OllamaLLM', 'command_format': 'xml'}), \
+                patch('assistant.llm.error') as logged:
+            assert command_format_override('smart') is None
+            assert logged.call_count == 1 and 'ai.smart' in logged.call_args[0][0]
+        self._inject("_FakeLLMNoCache", _FakeLLMNoCache)
+        try:
+            with pytest.raises(ValueError):
+                create_llm("_FakeLLMNoCache", command_format="xml")
+        finally:
+            del sys.modules["assistant.llm._FakeLLMNoCache"]
+
+    def _inject(self, class_name, cls):
+        module = types.ModuleType(f"assistant.llm.{class_name}")
+        setattr(module, class_name, cls)
+        sys.modules[f"assistant.llm.{class_name}"] = module
+        return module

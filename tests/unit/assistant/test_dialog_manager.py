@@ -61,6 +61,10 @@ class FakeAI:
         self.initialized = False
         self.observed_messages = None
 
+    def command_format(self):
+        from assistant.commands.formats.KeepFormat import KeepFormat
+        return KeepFormat
+
     def initialize(self):
         self.initialized = True
 
@@ -650,7 +654,7 @@ def test_smart_llm_constructed_with_prompt_cache_enabled(monkeypatch):
     monkeypatch.setattr('assistant.prompt.TimeOfDay.TimeOfDay.get_current', staticmethod(lambda: TimeOfDay.DAY))
 
     calls = []
-    def fake_create_llm(class_name, model=None, prompt_cache=None):
+    def fake_create_llm(class_name, model=None, prompt_cache=None, command_format=None):
         calls.append({'class': class_name, 'model': model, 'prompt_cache': prompt_cache})
         fake = FakeAI([])
         fake.model = model or 'fake-model'  # DialogManager reads .model for TTFTMonitor
@@ -1210,6 +1214,10 @@ def test_llms_are_cached_llm_around_vault_llm(monkeypatch):
     class _FakeBackend:
         def __init__(self, model="fake-model", prompt_cache=None):
             self.model = model
+
+        def command_format(self):
+            from assistant.commands.formats.KeepFormat import KeepFormat
+            return KeepFormat
 
     module = types.ModuleType("assistant.llm._FakeBackend")
     module._FakeBackend = _FakeBackend

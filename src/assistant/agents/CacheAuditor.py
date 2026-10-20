@@ -4,8 +4,8 @@ import time
 from common.logging import info, error, trace, fine
 from common.FloxyDatabase import FloxyDatabase
 from ..llm import create_llm, parse_llm_config
-from assistant.commands.CommandParser import CommandParser
 from assistant.commands.Commands import Commands
+from assistant.commands.formats.CommandFormats import CommandFormats
 
 SYSTEM_PROMPT = """
 You are a cache safety classifier for a voice assistant. You will be given a user query and the assistant's response. 
@@ -45,7 +45,14 @@ class CacheAuditor:
             info(f"Cache auditor disabled: no {self.disabled_reason}")
         else:
             self._llm.initialize()
-        self._parser = CommandParser(Commands.command_names())
+        # The launcher builds the auditor before the DialogManager picks the format from the
+        # smart tier, so the parser is rebuilt when that choice lands.
+        self._format = CommandFormats.active()(Commands.command_names())
+        CommandFormats.on_change(self._on_command_format_changed)
+
+    def _on_command_format_changed(self, fmt) -> None:
+        self._format = fmt(Commands.command_names())
+        trace(f"CacheAuditor reads cached replies in the {fmt.name} command format now")
 
     def start(self):
         if self.disabled_reason:
@@ -72,7 +79,7 @@ class CacheAuditor:
 
     def _has_commands(self, response: str) -> bool:
         """Check if a response contains any commands."""
-        return len(self._parser.extract_all_commands(response)) > 0
+        return len(self._format.extract_all(response)) > 0
 
     def _audit_pass(self):
         db = FloxyDatabase.get_instance()

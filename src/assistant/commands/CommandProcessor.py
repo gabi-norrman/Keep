@@ -5,7 +5,7 @@ import threading
 import time
 
 from common.DevelopmentConfig import LOCAL_DEVELOPMENT_MODE
-from .CommandParser import CommandParser
+from .formats.CommandFormats import CommandFormats
 from .CommandEcho import describe_completion
 from .Commands import Commands
 from common.logging import error, trace, info, note, fine, masked_for_log
@@ -61,7 +61,7 @@ class CommandProcessor:
         self.commands_dispatched = 0
         self.commands = Commands(self)
         self.possible_commands = self.commands.list_commands()
-        self.parser = CommandParser(self.possible_commands)
+        self.format = CommandFormats.active()(self.possible_commands)
         self.wait_has_been_done_for_this_request = False
         self.is_killed = False
         # For the orphaned-command handoff (see kill()): the most recently dispatched
@@ -253,8 +253,13 @@ class CommandProcessor:
         self.append_command_reply(error_msg)
         return True
 
+    @property
+    def parser(self):
+        """The format under its old name, for a caller that still asks for the parser."""
+        return self.format
+
     def is_possibly_command(self, content: str) -> bool:
-        return self.parser.is_possibly_command(content)
+        return self.format.is_possibly_command(content)
 
     # Runs on: a background lane thread. `content` is the batch's results — all of the
     # round's so far — and `contains_error` whether one of them failed.
@@ -349,9 +354,9 @@ class CommandProcessor:
         self.command_running_in_background = False
 
     def process_one_command(self, content: str, dialog_manager) -> str:
-        result = self.parser.extract_command_and_params(content)
+        result = self.format.extract(content)
         if result[0] is not None:
-            (command_name, params), remainder = result
+            (command_name, params, _display), remainder = result
             self.invoke_command(command_name, params, dialog_manager)
             return remainder
         else:
@@ -515,7 +520,7 @@ class CommandProcessor:
 
         if self.is_possibly_command(self.previous_content_buffer):
             self.debug(f"  (possibly command)")
-            if self.parser.find_complete_command(self.previous_content_buffer, streaming=self._streaming):
+            if self.format.complete(self.previous_content_buffer, streaming=self._streaming):
                 self.debug(f"Processing command!")
                 self.previous_content_buffer = self.process_one_command(self.previous_content_buffer, dialog_manager)
                 # clean up and go again after we've removed one command
@@ -526,7 +531,7 @@ class CommandProcessor:
             return None
         else:
             # Scan for a command embedded later in the buffer
-            cmd_pos = self.parser.find_command_start(self.previous_content_buffer)
+            cmd_pos = self.format.find_start(self.previous_content_buffer)
             if cmd_pos > 0:
                 self.debug(f"found embedded command at pos {cmd_pos}")
                 before = self.previous_content_buffer[:cmd_pos]
@@ -537,7 +542,7 @@ class CommandProcessor:
             # Before flushing, check if the buffer tail could be the start of a command name.
             # This prevents losing partial command names when they arrive in the same token as preceding text.
             if self._streaming:
-                tail_pos = self.parser.find_partial_command_tail(self.previous_content_buffer)
+                tail_pos = self.format.partial_tail(self.previous_content_buffer)
                 if tail_pos > 0:
                     self.debug(f"retaining partial command tail at pos {tail_pos}")
                     before = self.previous_content_buffer[:tail_pos]
@@ -565,7 +570,7 @@ class CommandProcessor:
             self.previous_content_buffer = ""
             if not leftover.strip():
                 trace(f"Stream ended with whitespace after the last command — dropping it: {leftover!r}")
-            elif command_name := self.parser.unterminated_command(leftover):
+            elif command_name := self.format.unterminated(leftover):
                 self._report_unterminated_command(command_name, leftover, dialog_manager)
             else:
                 # Held back only because it could still have grown into `name(` — it never did.
