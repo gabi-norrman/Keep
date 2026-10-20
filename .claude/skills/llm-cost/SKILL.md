@@ -1,12 +1,12 @@
 ---
 name: llm-cost
-description: Estimate the monthly Claude API cost of this server under the four model setups (Opus or Fable on chat, Opus or Fable on memory curation, and Fable with the prepended user query) from the last days of the local log, and present it as one comparison table. Use when the user asks what the assistant costs to run, what switching a tier between Opus and Fable would save or add, or for a cost table or cost report.
+description: Estimate the monthly Claude API cost of this server under the five model setups (Opus or Fable on chat, Opus or Fable on memory curation, and the prepended user query on Opus or on Fable) from the last days of the local log, and present it as one comparison table. Use when the user asks what the assistant costs to run, what switching a tier between Opus and Fable would save or add, or for a cost table or cost report.
 disable-model-invocation: false
 allowed-tools: Bash(grep *), Bash(awk *), Bash(perl *), Bash(python3 *), Bash(ls *), Bash(wc *), Bash(head *), Bash(tail *), Read, Write
 argument-hint: "[days, default 7]"
 ---
 
-Estimate what this server's Claude usage costs per month under four setups, from the last
+Estimate what this server's Claude usage costs per month under five setups, from the last
 N days of `log/floxy.out` in the repository root. Argument: $ARGUMENTS — the number of days to
 analyse, default 7. Gemini, voice and the photo-indexing calls are out of scope.
 
@@ -33,12 +33,14 @@ have switched mid-window. Price the same token volumes under each setup; the tok
 
 Take the current rates from the claude-api skill, never from memory: uncached input, output,
 cache read, and the 5-minute and 1-hour cache write rates for each model, the batch discount, and
-the long-context tier that applies when a request's total input (cached or not) passes its
-threshold — the nightly curation usually lands there. State the rates used under the table.
+whether a long-context tier applies above some input threshold (none on Opus 5.5 and Fable 5.1 as
+of October 2026 — the 1M window is standard-priced; check again, the nightly curation's 280k
+input would land in one). State the rates used under the table.
 
 The prepended-user-query setup cannot be read from the log while it is off: model it. With it
 on, every chat request writes its whole prompt at the 5-minute write rate and only its own
-follow-up rounds read it back; nothing is shared between requests. Leave the autonomous checks
+follow-up rounds read it back; nothing is shared between requests. Price that modelled volume
+on both models — the table has a prepended row for Opus chat and one for Fable. Leave the autonomous checks
 as measured and say that they would likely cost more too, since chat no longer keeps the shared
 prefix warm.
 
@@ -58,6 +60,7 @@ of nightly runs in the month, written `(n runs)`:
 |---|---|---|---|---|---|
 | Opus chat + Opus curation | $n (n/day) | $n (n/day) | $n (n runs) | **$n** | – |
 | Opus chat + Fable curation | | | | | +n% |
+| Opus chat + prepended user query + Fable curation | | | | | +n% |
 | Fable chat + Fable curation | | | | | +n% |
 | Fable both + prepended user query | | | | | +n% |
 
