@@ -108,8 +108,8 @@ the console in a terminal (starting the server first when it is not running). As
 user to learn the console UI. The server also starts at login from now on (a login item); mention it in a few words. 
 
 5. Back in terminal UI: iMessage, the feed only (no sending yet): enable_integration("iMessage") — it needs no
-keys. Messages.app on this Mac must be signed in with the user's own Apple ID. WAIT with Photos - we need iCloud logged 
-in before photos.
+keys. Move the user back to terminal for this - password input is better in terminal. Messages.app on this Mac
+must be signed in with the user's own Apple ID. WAIT with Photos - we need iCloud logged in before photos.
 
 6. iCloud, needed so that Photos below can download offline photos - and in the future for Find My, user locations, etc.
 
