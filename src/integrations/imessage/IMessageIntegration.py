@@ -170,10 +170,7 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
         it failed, was stopped or never started."""
         from assistant.integration.FeedRunner import Feeds, FeedState
         runner = Feeds.get_instance().runner(self.feed_name)
-        if runner is None:
-            trace("iMessage: no feed runner — not reading SMS codes")
-            return False
-        return runner.state in (FeedState.STARTING, FeedState.CATCHING_UP, FeedState.LIVE)
+        return runner is not None and runner.state in (FeedState.STARTING, FeedState.CATCHING_UP, FeedState.LIVE)
 
     def check_health(self) -> bool:
         try:

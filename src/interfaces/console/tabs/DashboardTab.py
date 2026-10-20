@@ -64,6 +64,7 @@ class DashboardTab(TabView):
     def __init__(self, console: 'TUIFloxyConsole'):
         self.console = console
         self._frame = 0
+        self._statuses: List[dict] = []
         self._cards: List[Tuple[int, int, int, int]] = []
 
         self.device_util = 0
@@ -123,6 +124,8 @@ class DashboardTab(TabView):
     def draw(self, screen: TUIScreen, frame: int):
         self._frame = frame
         self._cards = []
+        # Once per frame: a status row asks each integration for its live login hint.
+        self._statuses = self._integration_rows(IntegrationMonitor.get_instance().get_all_statuses())
         self._sample_cpu()
         y = self._draw_header(screen, Board.LEFT, CONTENT_TOP) + 1
 
@@ -697,7 +700,7 @@ class DashboardTab(TabView):
     def _status_panel_height(self, screen: TUIScreen) -> int:
         """Height of the status tiles: the tallest body plus the tile's own rows, so the chart rows above can shrink to fit it."""
         inner_w = self._columns(screen, 4)[0][1] - 4
-        integrations = self._integration_grid(len(IntegrationMonitor.get_instance().get_all_statuses()), inner_w)[1]
+        integrations = self._integration_grid(len(self._statuses), inner_w)[1]
         pm = self.console.prompt_manager
         prompt_sections = len(pm.get_section_stats()) if pm else 0
         return max(integrations, self.TIMING_ROWS, len(self._resource_rows()), prompt_sections) + Tile.CARD_CHROME
@@ -712,7 +715,7 @@ class DashboardTab(TabView):
 
     def _draw_integrations(self, screen: TUIScreen, x: int, y: int, width: int, height: int):
         inner_w = width - 4
-        statuses = self._integration_rows(IntegrationMonitor.get_instance().get_all_statuses())
+        statuses = self._statuses
         enabled = [s for s in statuses if s["state"] != IntegrationState.DISABLED.value]
         ok = sum(1 for status in enabled if status["state"] == IntegrationState.OK.value)
         Tile.draw_card(screen, self._cards, x, y, width, height, "Integrations", f"{ok}/{len(enabled)} ok" if enabled else "",

@@ -573,13 +573,10 @@ class ICloudIntegration(Integration):
         return self.AUTO_CODE_LOGIN_HINT if self._reader_live() else self.login_hint
 
     def _reader_live(self) -> bool:
-        """Whether something on this Mac reads the codes Apple texts (the iMessage feed)."""
-        readers = SmsCodeReader.live()
-        if readers:
-            trace(f"iCloud: SMS codes are read by {', '.join(readers)}")
-            return True
-        info("iCloud: nothing reads the Mac's text messages now — the 2FA code must be entered by the user")
-        return False
+        """Whether something on this Mac reads the codes Apple texts (the iMessage feed). Quiet:
+        the status rows the console redraws every frame ask it through `current_login_hint`, so
+        the verdict is logged where it decides something, not here (2026-10-20)."""
+        return bool(SmsCodeReader.live())
 
     def _note_challenge(self, signin_started_at: float):
         """One system row per challenge: the chats (and the LLM) learn that a code is on its way
@@ -594,7 +591,10 @@ class ICloudIntegration(Integration):
         in_ftue = FirstRun.in_ftue(verbose=False)
         if in_ftue:
             info("iCloud: setup is in progress — the challenge note is a history row only, the assistant's reply carries it")
-        system_note(self.name, self.CODE_WAITING_NOTICE if self._reader_live() else self.CODE_NEEDED_NOTICE,
+        reader_live = self._reader_live()
+        info("iCloud: the 2FA code is read by the Mac's messages" if reader_live
+             else "iCloud: nothing reads the Mac's text messages now — the 2FA code must be entered by the user")
+        system_note(self.name, self.CODE_WAITING_NOTICE if reader_live else self.CODE_NEEDED_NOTICE,
                     push=not in_ftue)
 
     def _ensure_authenticated(self):

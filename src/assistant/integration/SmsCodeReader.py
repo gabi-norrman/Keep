@@ -25,15 +25,14 @@ class SmsCodeReader(ABC):
 
 def live() -> list[str]:
     """The names of the registered readers that are live now; [] when a texted code would go
-    unread. Resolved per call, so a feed that failed or recovered since counts as it is now."""
+    unread. Resolved per call, so a feed that failed or recovered since counts as it is now.
+    Quiet on the happy and the not-reading path: the console's status rows ask every frame."""
     from assistant.integration.IntegrationMonitor import IntegrationMonitor
     names = []
     for integration in IntegrationMonitor.get_instance().of_type(SmsCodeReader):
         try:
             if integration.reads_sms_codes():
                 names.append(integration.name)
-            else:
-                trace(f"SMS codes: {integration.name} is registered but not reading now")
         except Exception as e:
             trace(f"SMS codes: {integration.name} could not say whether it reads ({e})")
     return names

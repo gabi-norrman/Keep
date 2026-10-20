@@ -485,7 +485,9 @@ class TestIntegrationRows:
         width = 2 * DashboardTab.INTEGRATION_COLUMN_MIN + 4      # two columns
         height = Tile.CARD_CHROME + 3                           # six cells for nine integrations
         screen = TUIScreen(width + 2, height + 2)
-        make_tab()._draw_integrations(screen, 1, 1, width, height)
+        tab = make_tab()
+        tab._statuses = tab._integration_rows(monitor.get_all_statuses())   # what draw() does once per frame
+        tab._draw_integrations(screen, 1, 1, width, height)
         text = "\n".join("".join(cell.char for cell in row) for row in screen.next_frame)
         assert all(f"On{i}" in text for i in range(5)), "every enabled integration is shown"
         assert "Off0" in text and "Off1" not in text, "the disabled ones fill the cells left and are clipped first"
