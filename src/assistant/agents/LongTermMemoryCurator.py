@@ -157,7 +157,7 @@ For example procedures that can be shared:
  * How to use Shopify checkouts (card fields in the pci iframes are fillable, etc)
 Tips are plain-language, in the command block:
 `post_message("{TIPS_DESTINATION}", \"\"\"Tip from {OWNER}'s Keep: ...\"\"\")` — the prefix names whose Keep it comes from.
-Be mindful of privacy: the group is read by other households. Keep tips under 2000 chars. 
+Be mindful of privacy: the group is read by other households. The tip is posted to a Telegram chat so keep it short and use nice telegram formatting. As short at possible, NEVER over 2000 chars.
 """
 
 # Only worth the LLM's attention when a microphone is actually feeding the assistant.
