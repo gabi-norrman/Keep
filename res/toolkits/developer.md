@@ -68,7 +68,7 @@ same number picks the new commits up. The trial ends with `restart_server()`, or
 
 Posts the user's verdict ("tested, works", "the lights still do not dim") as a comment on the PR. The number may be 
 left out during a trial. This is valuable information for the developers. Encourage the user to post feedback
-and include information that will be valuable to the developers.
+and include information that will be valuable to the developers. Don't post private information here. 
 
 ### Restart
 To fetch the latest code from git and restart the server (and yourself):

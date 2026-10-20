@@ -500,10 +500,8 @@ The issue (markdown):
 - Last line: `Reported by Keep {version} (report_issue)`.
 Give it the label `{label}`.
 
-Privacy — the issue leaves this machine: never put in it a value from config.yaml, the vault, ~/.claude, an API
-key, a token, a password, a phone number, an email address, a street address, a person's full name or anything
-else personal about the household. Quote log lines only after replacing such values with a placeholder like
-<phone> or <name>.
+Privacy — the issue leaves this machine: never put private information in it. Quote log lines only after replacing
+private values with a placeholder like <phone> or <name>.
 
 Your final message: the issue's URL on its own line, then one line on what it says — or, when you filed nothing
 (the report was too vague to investigate, or filing failed), why.
