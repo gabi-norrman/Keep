@@ -13,6 +13,7 @@ from assistant.llm.AbstractLLM import LLMRefusalError
 from assistant.agents.AutonomousActionManager import (
     AutonomousActionManager,
     AUTONOMOUS_ACTION_PROMPT,
+    MISSED_WAKEUP_STARTUP_GRACE_SECONDS,
     PERIODIC_CHECK_INTERVAL_MINUTES,
     PERIODIC_CHECK_INTERVAL_SECONDS,
     POSTPONED_CHECK_RETRY_SECONDS,
@@ -40,6 +41,14 @@ def no_destinations():
 def empty_watch_list(tmp_path, monkeypatch):
     monkeypatch.setattr(WatchList, "WATCHLIST_DIR", tmp_path / "watchlist")
     monkeypatch.setattr(WatchList, "LOG_DIR", tmp_path / "log" / "watchlist")
+
+
+@pytest.fixture(autouse=True)
+def own_last_check_file(tmp_path, monkeypatch):
+    """The periodic loop records each check's start; the record of a real run must neither
+    leak into a test nor be overwritten by one."""
+    monkeypatch.setattr('assistant.agents.AutonomousActionManager.LAST_CHECK_FILE',
+                        tmp_path / "last_autonomous_check.json")
 
 
 @pytest.fixture(autouse=True)
@@ -892,6 +901,38 @@ class TestVisionTierRouting:
         assert mgr._llm_for([self.IMAGE_MESSAGE]) is vision_llm
         assert mgr._llm_for([self.IMAGE_MESSAGE]) is vision_llm  # cached, not rebuilt
         vision_llm.initialize.assert_called_once()
+
+
+class TestCadenceAcrossRestarts:
+    """The first periodic check of a process is an interval after the last one of the process
+    before: on 2026-10-20 four restarts between two checks put them 97 minutes apart, past the
+    hour the prompt prefix stays cached, and the check re-wrote the whole prefix."""
+
+    NOW = 1_000_000.0
+
+    def test_first_check_is_an_interval_after_the_recorded_one_not_after_boot(self):
+        AutonomousActionManager._write_last_check(self.NOW - 1200)
+        assert AutonomousActionManager._first_check_at(self.NOW) == self.NOW - 1200 + PERIODIC_CHECK_INTERVAL_SECONDS
+
+    def test_a_record_older_than_an_interval_fires_after_the_startup_grace(self):
+        AutonomousActionManager._write_last_check(self.NOW - 2 * PERIODIC_CHECK_INTERVAL_SECONDS)
+        assert AutonomousActionManager._first_check_at(self.NOW) == self.NOW + MISSED_WAKEUP_STARTUP_GRACE_SECONDS
+
+    def test_without_a_record_the_interval_counts_from_boot(self):
+        assert AutonomousActionManager._first_check_at(self.NOW) == self.NOW + PERIODIC_CHECK_INTERVAL_SECONDS
+
+    def test_a_corrupt_record_counts_as_none(self):
+        from assistant.agents import AutonomousActionManager as module
+        module.LAST_CHECK_FILE.write_text("{not json")
+        assert AutonomousActionManager._first_check_at(self.NOW) == self.NOW + PERIODIC_CHECK_INTERVAL_SECONDS
+
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_the_loop_records_the_start_of_each_check_it_runs(self, mock_claude):
+        """The record is the check's start, the moment the cadence is timed from — not its end."""
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(), test_mode=True)
+        sleeps, _ = TestAutonomousActionManager._run_loop(mgr, iterations=1, check_seconds=600)
+        assert AutonomousActionManager._read_last_check() == self.NOW + sleeps[0]
 
 
 class TestWakeupPersistence:

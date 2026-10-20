@@ -71,6 +71,7 @@ WIPE_TARGETS = [
     (CACHE_DIR / "last_startup.json", "startup tracker"),
     (CACHE_DIR / "tui_state.json", "TUI state"),
     (CACHE_DIR / "audio_restarts.json", "audio recovery state"),
+    (CACHE_DIR / "last_autonomous_check.json", "when the last periodic check ran"),
 ]
 # Deleted without a backup: too big to zip, and rebuilt by logging in again. Deleted
 # only once the browser is closed: Chrome writes into its profile as long as it runs,

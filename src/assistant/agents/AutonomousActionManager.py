@@ -12,10 +12,16 @@ from ..llm.AbstractLLM import LLMRefusalError
 from common.logging import trace, info, note, error, fine
 from assistant import Destinations, MemoryFile, Procedures, WatchList
 from assistant.Telemetry import Telemetry
+from common.Paths import CACHE_DIR
 from ..prompt.PromptManager import PromptManager
 from ..prompt.MessageHistory import MessageHistory
 
 SCHEDULE_FILE = os.path.join(os.path.dirname(__file__), "scheduled_wakeups.json")
+# When the last periodic check started, so a restart keeps the cadence instead of starting it
+# over: the first check used to come a full interval after boot, which put it 68–97 minutes
+# after the one before on a day of restarts — past the hour the prompt prefix stays cached,
+# and every such check re-wrote the whole prefix (28K tokens at the 1h write rate on prod).
+LAST_CHECK_FILE = CACHE_DIR / "last_autonomous_check.json"
 
 # Suppress automatic activity checks for this many seconds after a user
 # interaction so we don't double-reply on top of the user's own request.
@@ -322,7 +328,7 @@ class AutonomousActionManager:
     def _run_periodic_check(self):
         last_memory_curation_date = None
 
-        next_check_at = time.time() + PERIODIC_CHECK_INTERVAL_SECONDS
+        next_check_at = self._first_check_at()
         while self.running:
             time.sleep(max(0.0, next_check_at - time.time()))
 
@@ -348,6 +354,7 @@ class AutonomousActionManager:
             # Timed from the start of the check, so its own duration does not stretch the
             # cadence past the hour the prompt prefix stays cached.
             next_check_at = time.time() + PERIODIC_CHECK_INTERVAL_SECONDS
+            self._write_last_check(time.time())
             try:
                 self.activity_check()
             except Exception as e:
@@ -355,6 +362,43 @@ class AutonomousActionManager:
                 # loop: on 2026-10-04 it did, and no check ran again until the next restart.
                 error(f"Periodic activity check failed: {type(e).__name__}: {e}")
             trace(f"Next periodic activity check at {time.strftime('%H:%M', time.localtime(next_check_at))}")
+
+    @staticmethod
+    def _first_check_at(now: float | None = None) -> float:
+        """When the first periodic check of this process runs: an interval after the last one
+        the previous process started, so a restart neither resets the cadence nor stretches it
+        past the cache hour. Without a record (first boot, a wiped cache) the interval counts
+        from now; a record older than an interval fires after the startup grace, the moment the
+        interfaces are up — the cache is cold by then anyway, but the LLM was promised a check
+        every interval."""
+        now = time.time() if now is None else now
+        last = AutonomousActionManager._read_last_check()
+        if last is None:
+            trace("No record of the last periodic check — the first one is an interval from now")
+            return now + PERIODIC_CHECK_INTERVAL_SECONDS
+        at = max(last + PERIODIC_CHECK_INTERVAL_SECONDS, now + MISSED_WAKEUP_STARTUP_GRACE_SECONDS)
+        info(f"Last periodic check started {_describe_duration(now - last)} ago — "
+             f"the next one at {time.strftime('%H:%M', time.localtime(at))}")
+        return at
+
+    @staticmethod
+    def _read_last_check() -> float | None:
+        try:
+            with open(LAST_CHECK_FILE) as f:
+                return float(json.load(f)["started_at"])
+        except (FileNotFoundError, ValueError, TypeError, KeyError):
+            return None
+        except OSError as e:
+            error(f"Failed to read the last periodic check record: {e}")
+            return None
+
+    @staticmethod
+    def _write_last_check(started_at: float):
+        try:
+            with open(LAST_CHECK_FILE, "w") as f:
+                json.dump({"started_at": started_at}, f)
+        except OSError as e:
+            error(f"Failed to record the periodic check start: {e}")
 
     def activity_check(self, prompt: str | None = None, wakeup: dict | None = None,
                        due: list[tuple[WatchList.Item, datetime]] | None = None) -> str:
