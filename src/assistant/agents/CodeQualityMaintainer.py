@@ -1653,14 +1653,16 @@ class CodeQualityMaintainer:
         return "\n".join(html_lines)
 
     @staticmethod
-    def _send_email(subject: str, html_body: str):
+    def _send_email(subject: str, html_body: str, attachments: list[tuple[str, str]] = ()) -> str | None:
         """The report goes to the household's own address: the account `send_email` sends from
-        (`mail.send_from`, else the first configured one) mails it to itself."""
+        (`mail.send_from`, else the first configured one) mails it to itself. `attachments` are
+        (filename, text) pairs attached as plain-text files. Returns the address it went to,
+        None when no mail account is configured."""
         from assistant.integration.mail.MailAccess import MailAccess
         account = MailAccess.current().sender()
         if account is None or not account.address:
             error("CodeQualityMaintainer: no mail account configured, skipping send.")
-            return
+            return None
         address = account.address
 
         full_html = (
@@ -1673,12 +1675,18 @@ class CodeQualityMaintainer:
             '</body></html>'
         )
 
-        msg = MIMEMultipart("alternative")
+        msg = MIMEMultipart("mixed" if attachments else "alternative")
         msg["Subject"] = subject
         msg["To"] = address
         msg.attach(MIMEText(full_html, "html"))
+        for filename, text in attachments:
+            part = MIMEText(text, "plain", "utf-8")
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(part)
 
         err = account.send_message(msg, [address])
         if err:
             raise RuntimeError(f"report email not sent: {err}")
-        info(f"CodeQualityMaintainer: email sent to {address} from {account.name}")
+        info(f"CodeQualityMaintainer: email sent to {address} from {account.name}"
+             + (f" with {len(attachments)} attachment(s)" if attachments else ""))
+        return address

@@ -29,6 +29,11 @@ from common.ConfigManager import config
 from common.logging import error, info, trace, fine
 from common.Paths import RES_DIR, SRC_DIR
 
+# Every messages array sent to the LLM is dumped (masked) under PROMPTS_DIR, and the latest one
+# again as CURRENT_PROMPT_FILE — what `//testcase` mails. Relative to the repository root, the cwd.
+PROMPTS_DIR = "log/prompts"
+CURRENT_PROMPT_FILE = "log/current_prompt.md"
+
 # Frames from these AIServer/src packages count as "ours" in the section-update trigger trace.
 _OWN_PACKAGE_DIRS = tuple(f"{SRC_DIR / pkg}/" for pkg in ("assistant", "common", "interfaces", "integrations"))
 
@@ -1040,9 +1045,9 @@ class PromptManager:
         if disable_file_logging:
             return
         try:
-            os.makedirs("log/prompts", exist_ok=True)
+            os.makedirs(PROMPTS_DIR, exist_ok=True)
             unique_id = str(uuid.uuid4())
-            prompt_file = f"log/prompts/{unique_id}.md"
+            prompt_file = f"{PROMPTS_DIR}/{unique_id}.md"
 
             # The history holds real values (redaction happens at the LLM boundary), so the
             # dump is masked like every other log artefact.
@@ -1051,8 +1056,7 @@ class PromptManager:
             with open(prompt_file, "w") as f:
                 f.write(formatted)
 
-            prompt_file2 = "log/current_prompt.md"
-            with open(prompt_file2, "w") as f:
+            with open(CURRENT_PROMPT_FILE, "w") as f:
                 f.write(formatted)
 
             trace(f"Prompt saved to {prompt_file} ({len(formatted)} bytes)")

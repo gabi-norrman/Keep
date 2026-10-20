@@ -21,6 +21,7 @@ A command returns a human-readable string that is relayed back as the reply.
     //toolkits      - the toolkits with their size and whether each is in the LLM's history window
     //toolkit <name> - the reference of one toolkit as the LLM receives it
     //voice_discover - run the nightly voice discovery now (the voice interface hands over its run)
+    //testcase [comment] - mail the last prompt sent to the LLM, with the reply and your comment, as a test case
 """
 
 import os
@@ -36,6 +37,7 @@ from pathlib import Path
 from typing import Callable
 
 from assistant import FirstRun
+from assistant.prompt.PromptManager import CURRENT_PROMPT_FILE
 from common.logging import info, error
 from common.Paths import (AISERVER_DIR, CACHE_DIR, CONFIG_PATH, DUMMY_CONFIG_PATH, ICLOUD_SESSION_DIR, LOG_DIR,
                           MEMORY_DIR, MEMORY_LOG_DIR, VAULT_PATH)
@@ -412,6 +414,52 @@ class DebugCommands:
             return
         if outcome is None:
             info("//memory_condense: nothing saved — another curation was running or the pass removed nothing")
+
+    # --- //testcase -----------------------------------------------------------------------
+
+    def cmd_TESTCASE(self, args: str) -> str:
+        """//testcase [comment]: mail the last prompt sent to the LLM (log/current_prompt.md), the reply it got and your comment to the household's address, as a test case to collect."""
+        import html
+        from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
+        prompt_path = Path(CURRENT_PROMPT_FILE)
+        if not prompt_path.is_file():
+            info(f"//testcase: no {prompt_path} — nothing has been sent to the LLM yet")
+            return f"No prompt has been sent to the LLM yet ({prompt_path} is missing)."
+        prompt = prompt_path.read_text()
+        sent_at = datetime.fromtimestamp(prompt_path.stat().st_mtime)
+        comment = args.strip()
+        reply = self._last_assistant_reply()
+
+        body = [f"<p><b>Comment:</b> {html.escape(comment) if comment else '<i>none</i>'}</p>",
+                f"<p>Prompt sent {sent_at:%Y-%m-%d %H:%M:%S}, {len(prompt):,} characters, attached as "
+                f"<code>{html.escape(prompt_path.name)}</code>.</p>"]
+        if reply:
+            body.append(f"<p><b>Last reply:</b></p><pre style=\"white-space:pre-wrap\">{html.escape(reply)}</pre>")
+        else:
+            body.append("<p><i>No assistant reply in the history.</i></p>")
+        subject = f"Keep test case: {comment}" if comment else f"Keep test case {sent_at:%Y-%m-%d %H:%M}"
+        attachment_name = f"prompt-{sent_at:%Y%m%d-%H%M%S}.md"
+
+        try:
+            address = CodeQualityMaintainer._send_email(subject, "\n".join(body), [(attachment_name, prompt)])
+        except Exception as e:
+            error(f"//testcase: the mail failed: {e}")
+            return f"The test case was not mailed: {e}"
+        if address is None:
+            return "No mail account is configured, so the test case cannot be mailed."
+        info(f"//testcase: mailed the prompt of {sent_at:%H:%M:%S} ({len(prompt)} chars) to {address}"
+             + (f" with the comment '{comment}'" if comment else ""))
+        return f"Test case mailed to {address}: the prompt of {sent_at:%H:%M:%S} ({len(prompt):,} characters)" \
+            + (f", comment: {comment}" if comment else ", no comment")
+
+    def _last_assistant_reply(self) -> str | None:
+        """The newest assistant row of the dialog history, None without a history or a reply."""
+        if self.history is None:
+            return None
+        for entry in reversed(self.history.get_merged_entries()):
+            if entry.get("role") == "assistant" and entry.get("content"):
+                return entry["content"]
+        return None
 
     # --- //voice_discover -----------------------------------------------------------------
 

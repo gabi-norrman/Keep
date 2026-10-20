@@ -928,3 +928,82 @@ def test_voice_discover_runs_one_at_a_time_and_a_failed_run_frees_the_slot(monke
     for t in threads:
         t.join(timeout=5)
     assert runs == [1, 1] and "progress" not in third
+
+
+# --- //testcase -------------------------------------------------------------------------
+
+class _ReplyHistory:
+    def __init__(self, entries):
+        self._entries = entries
+
+    def get_merged_entries(self):
+        return self._entries
+
+
+@pytest.fixture
+def testcase_prompt(tmp_path, monkeypatch):
+    prompt = tmp_path / "current_prompt.md"
+    prompt.write_text("# [SYSTEM]\n\nYou are Michelle.\n\n# [USER]\n\nWhere is my car?\n")
+    monkeypatch.setattr(dc_mod, "CURRENT_PROMPT_FILE", str(prompt))
+    return prompt
+
+
+def _mailer(monkeypatch, result="m@mlab.test", side_effect=None):
+    from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
+    sent = {}
+
+    def send(subject, html_body, attachments=()):
+        if side_effect:
+            raise side_effect
+        sent.update(subject=subject, body=html_body, attachments=list(attachments))
+        return result
+
+    monkeypatch.setattr(CodeQualityMaintainer, "_send_email", staticmethod(send))
+    return sent
+
+
+def test_testcase_mails_the_prompt_with_the_comment_and_the_last_reply(testcase_prompt, monkeypatch):
+    sent = _mailer(monkeypatch)
+    history = _ReplyHistory([
+        {"role": "Marcus", "content": "Where is my car?"},
+        {"role": "assistant", "content": "Your car is at home."},
+        {"role": "command", "content": "result: ..."},
+    ])
+    reply = DebugCommands(history=history).handle("//testcase the ai should not have said my car is at home")
+
+    assert "the ai should not have said my car is at home" in sent["subject"]
+    assert "the ai should not have said my car is at home" in sent["body"]
+    assert "Your car is at home." in sent["body"]
+    [(name, text)] = sent["attachments"]
+    assert name.endswith(".md")
+    assert text == testcase_prompt.read_text()
+    assert "m@mlab.test" in reply
+
+
+def test_testcase_without_a_comment_or_history_still_mails_the_prompt(testcase_prompt, monkeypatch):
+    sent = _mailer(monkeypatch)
+    reply = DebugCommands().handle("//TESTCASE")
+
+    assert sent["attachments"][0][1] == testcase_prompt.read_text()
+    assert "no comment" in reply
+    assert "No assistant reply" in sent["body"]
+
+
+def test_testcase_without_a_prompt_dump_says_so(tmp_path, monkeypatch):
+    monkeypatch.setattr(dc_mod, "CURRENT_PROMPT_FILE", str(tmp_path / "missing.md"))
+    sent = _mailer(monkeypatch)
+    reply = DebugCommands().handle("//testcase a comment")
+    assert not sent
+    assert "No prompt has been sent" in reply
+
+
+def test_testcase_without_a_mail_account_says_so(testcase_prompt, monkeypatch):
+    _mailer(monkeypatch, result=None)
+    reply = DebugCommands().handle("//testcase")
+    assert "No mail account" in reply
+
+
+def test_testcase_reports_a_failed_send(testcase_prompt, monkeypatch):
+    _mailer(monkeypatch, side_effect=RuntimeError("report email not sent: SMTP boom"))
+    reply = DebugCommands().handle("//testcase")
+    assert "not mailed" in reply and "SMTP boom" in reply

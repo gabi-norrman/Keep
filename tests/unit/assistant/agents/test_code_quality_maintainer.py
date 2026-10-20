@@ -1185,6 +1185,17 @@ class TestSendEmail:
         assert msg["Subject"] == "Subject"
         assert "<p>Body</p>" in msg.get_payload()[0].get_payload()
 
+    def test_attachments_ride_along_as_files_after_the_html_body(self, maintainer):
+        with patch(self.MAIL_ACCESS) as current:
+            account = self._sender(current)
+            address = CodeQualityMaintainer._send_email("Subject", "<p>Body</p>", [("prompt.md", "# [SYSTEM]\nhi")])
+            msg, _ = account.send_message.call_args[0]
+        assert address == "m@mlab.test"
+        html_part, attachment = msg.get_payload()
+        assert "<p>Body</p>" in html_part.get_payload()
+        assert attachment.get_filename() == "prompt.md"
+        assert attachment.get_payload(decode=True).decode() == "# [SYSTEM]\nhi"
+
     def test_a_refused_send_raises(self, maintainer):
         with patch(self.MAIL_ACCESS) as current:
             self._sender(current, result="SMTP error: boom")
