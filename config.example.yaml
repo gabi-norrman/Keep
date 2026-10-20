@@ -326,8 +326,9 @@ wake_word_near_misses: [mission, missions, we shall]
 #                                 # chat request or pre-heat; a user request arriving mid-image aborts the image
 
 # ds4-server (antirez's DwarfStar engine, github.com/antirez/ds4) used by every Ds4LLM tier: one
-# large open-weight model (DeepSeek V4.1 Flash by default) resident on this machine's GPU, served
-# OpenAI-style on localhost. The assistant then writes its commands in DeepSeek's DSML call syntax
+# large open-weight model (DeepSeek V4.1 Flash by default; GLM 5.3 and Qwen3.8 Flash Next also run)
+# resident on this machine's GPU, served OpenAI-style on localhost — start it in the ds4 folder with
+# `./ds4-server --ctx 32768`. The assistant then writes its commands in DeepSeek's DSML call syntax
 # (the server parses them; see docs/plans/COMMAND_FORMATS_PLAN.md). Optional — defaults to the
 # server's default address and DeepSeek V4.1 Flash. No API key.
 #ds4:

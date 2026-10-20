@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 Floxy AI is a home automation voice assistant: a Python server (`floxy_ai_server.py`) providing an intelligent AI
-assistant that the user can speak to, with multiple LLM backends (GPT, Claude, Gemini, Ollama). This repository is the
+assistant that the user can speak to, with multiple LLM backends (GPT, Claude, Gemini, Ollama, a local ds4-server). This repository is the
 server. Its clients are called "Outposts" — they act as "mics": local ones are microphones on the server machine,
 remote ones (Android / iOS apps, not part of this repository) run on-device STT and send text to the server.
 
