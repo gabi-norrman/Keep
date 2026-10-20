@@ -60,9 +60,17 @@ class ClaudeLLM(AbstractLLM):
     # Sonnet 4.x and Haiku 4.5 do not: without the parameter they do not think at all.
     ALWAYS_THINKING_MODEL_PREFIXES = ("claude-fable", "claude-mythos", "claude-opus-5", "claude-sonnet-5")
 
-    # The models whose chat requests keep the prompt prefix cacheable: no user query prepended
-    # to the top of the prompt (prefers_prepended_user_query) and a byte-stable trailing turn.
+    # The models whose chat requests keep the prompt prefix cacheable across requests: no user
+    # query prepended to the top of the prompt (prefers_prepended_user_query) and a byte-stable
+    # trailing turn.
     PREFIX_CACHED_MODEL_PREFIXES = ("claude-fable", "claude-opus-5-5")
+    # True while the coming request's prefix is shared by no later request (the user query
+    # prepended at byte 0, RequestProcessor → set_per_request_prefix): every block then takes
+    # FOLLOW_UP_CACHE_TTL, since only the request's own follow-up rounds, seconds later, read
+    # it — a 1h write (2x) would die unread where a 5m one (1.25x) serves the same reads. The
+    # autonomous check never prepends and has an LLM instance of its own, so its hourly checks
+    # keep reading each other's 1h blocks.
+    per_request_prefix = False
 
     # The contract: every Claude request runs at high effort. The API's own default is high
     # on most models but medium on Opus 5.5 and Haiku 5.5, so it is sent explicitly on the
@@ -166,11 +174,12 @@ class ClaudeLLM(AbstractLLM):
 
     def prefers_prepended_user_query(self) -> bool:
         """Prepending the user query to the top of the system prompt puts per-request
-        content at byte 0 of the cached prefix, defeating Anthropic prompt caching
-        (every request becomes a cache write, 0 reads). It nudges accuracy up, so it
-        stays on for older Claude models — but on Fable and Opus 5.5 the cache economics
-        are the steepest (1h writes at 2x, reads at 0.025x and 0.05x) and prompt scaffolding
-        helps least, so they opt out and let the shared prefix cache work."""
+        content at byte 0 of the cached prefix: every request writes the whole prefix anew
+        and only its own follow-up rounds read it (per_request_prefix), never the next
+        request or the autonomous check. It nudges accuracy up, so it stays on for older
+        Claude models — but on Fable and Opus 5.5 the cache economics are the steepest (1h
+        writes at 2x, reads at 0.025x and 0.05x) and prompt scaffolding helps least, so they
+        opt out and let the shared prefix cache work."""
         return not self.model.startswith(self.PREFIX_CACHED_MODEL_PREFIXES)
 
     def prefers_byte_prefix_tail(self) -> bool:
@@ -182,6 +191,13 @@ class ClaudeLLM(AbstractLLM):
         no prefix cache to protect, and one that needs the <thinking> tag instruction would
         lose it in this mode, so both keep the old tail."""
         return self.handles_thinking_internally() and not self.prefers_prepended_user_query()
+
+    def set_per_request_prefix(self, per_request: bool):
+        """See per_request_prefix. Sticky instance state like set_prompt_cache: RequestProcessor
+        sets it on every dialog request from whether that request prepends the user query."""
+        self.per_request_prefix = per_request
+        if per_request:
+            trace(f"Claude cache: the prefix is this request's own — every block cached for {self.FOLLOW_UP_CACHE_TTL}")
 
     def _message_cache_index(self, volatile_tail: int = 0, follow_up: bool = False) -> int:
         """Which message carries the history cache breakpoint: the last one when the trailing
@@ -213,9 +229,9 @@ class ClaudeLLM(AbstractLLM):
         """Toggle Anthropic prompt caching for the next request. Prepending the user
         query (see prefers_prepended_user_query) puts per-request content at byte 0 of
         the cached prefix, so caching there only ever writes and never reads — pure
-        waste. RequestProcessor re-sets this flag on every dialog request based on
-        whether it prepends. Note this is sticky instance state: any other consumer
-        reusing this instance inherits the last value set (background agents are
+        waste when nothing later reads it — the memory condenser turns the cache on for its
+        run over one bank and off after. Note this is sticky instance state: any other
+        consumer reusing this instance inherits the last value set (background agents are
         unaffected — they create their own instances, which default to caching on)."""
         self.prompt_cache = enabled
 
@@ -251,7 +267,8 @@ class ClaudeLLM(AbstractLLM):
 
         The system message may contain up to MAX_SYSTEM_CACHE_BLOCKS
         CACHE_BREAKPOINT_MARKERs, ordered stable → volatile. Each marker ends a
-        cached block at self.static_cache_ttl (default 1h). A breakpoint caches
+        cached block at self.static_cache_ttl (default 1h; FOLLOW_UP_CACHE_TTL on a
+        per_request_prefix request, whose blocks no later request reads). A breakpoint caches
         the cumulative prefix up to itself, so when a segment's bytes change only
         that segment's block and the ones after it re-write — earlier breakpoints
         still read. Text after the last marker is the uncached volatile tail
@@ -272,6 +289,7 @@ class ClaudeLLM(AbstractLLM):
             tail_segments = cached_segments[self.MAX_SYSTEM_CACHE_BLOCKS:] + tail_segments
             cached_segments = cached_segments[:self.MAX_SYSTEM_CACHE_BLOCKS]
 
+        ttl = self.FOLLOW_UP_CACHE_TTL if self.per_request_prefix else self.static_cache_ttl
         blocks = []
         for segment in cached_segments:
             text = segment.strip()
@@ -280,7 +298,7 @@ class ClaudeLLM(AbstractLLM):
             blocks.append({
                 "type": "text",
                 "text": text,
-                "cache_control": {"type": "ephemeral", "ttl": self.static_cache_ttl},
+                "cache_control": {"type": "ephemeral", "ttl": ttl},
             })
         tail = "\n\n".join(s.strip() for s in tail_segments if s.strip())
         if tail:
@@ -346,7 +364,7 @@ class ClaudeLLM(AbstractLLM):
             trace("Claude cache: the trailing turn carries an image — history breakpoint on the message before it")
             index = -2
         if self.prompt_cache and len(anthropic_messages) >= max(2, -index):
-            ttl = self.FOLLOW_UP_CACHE_TTL if follow_up else self.history_cache_ttl
+            ttl = self.FOLLOW_UP_CACHE_TTL if follow_up or self.per_request_prefix else self.history_cache_ttl
             cached = self._with_cache_breakpoint(anthropic_messages[index], ttl)
             if cached is not None:
                 anthropic_messages[index] = cached

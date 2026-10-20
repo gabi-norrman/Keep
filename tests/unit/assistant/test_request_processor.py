@@ -1292,6 +1292,21 @@ class TestPrepareContext:
         assert "what is the weather" in system_msg["content"]
         assert "You are a helpful assistant." in system_msg["content"]
 
+    def test_prepending_tells_the_llm_the_prefix_is_this_requests_own(self, full_handler):
+        """A prepended query sits at byte 0, so nothing after this request reads what it
+        caches; the LLM picks its cache tier by the flag. The cache itself stays on — the
+        follow-up rounds of the same request still read the prefix."""
+        prompt_manager = Mock()
+        prompt_manager.get_messages.return_value = [{"role": "system", "content": "You are a helpful assistant."}]
+        for prepend in (True, False):
+            with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf, \
+                 patch("assistant.RequestProcessor.PREPEND_USER_QUERY_OVERRIDE", prepend):
+                mock_mf.format_message.return_value = "User: hello"
+                full_handler.request_context.user_input = "hello"
+                full_handler._prepare_llm_context(prompt_manager)
+            full_handler.dialog_manager.ai.set_per_request_prefix.assert_called_with(prepend)
+        full_handler.dialog_manager.ai.set_prompt_cache.assert_not_called()
+
     def test_prepend_disabled_leaves_system_message_unchanged(self, full_handler):
         prompt_manager = Mock()
         prompt_manager.get_messages.return_value = [

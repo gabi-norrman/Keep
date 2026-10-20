@@ -783,6 +783,33 @@ class TestClaudeLLM:
         assert history_breakpoint['ttl'] == "5m"
 
     @patch('assistant.llm.ClaudeLLM.config')
+    def test_a_per_request_prefix_puts_every_block_on_the_short_tier(self, mock_config):
+        """With the user query prepended at byte 0 no later request shares the prefix: only
+        the request's own follow-up rounds read it, seconds later, so the system blocks and
+        the history breakpoint both take the follow-up TTL instead of the 1h tiers — the
+        same reads for a 1.25x write instead of 2x. Off again, the tiers come back: the flag
+        is set per request on a long-lived instance."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        llm = ClaudeLLM("claude-sonnet-4-5", static_cache_ttl="1h", history_cache_ttl="1h")
+        messages = [
+            {"role": "system", "content": f"Just a heads up: the query{ClaudeLLM.CACHE_BREAKPOINT_MARKER}"
+                                          f"stable{ClaudeLLM.CACHE_BREAKPOINT_MARKER}tail"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "the query"},
+        ]
+        llm.set_per_request_prefix(True)
+        params = llm._build_api_params(messages, thinking=False, stream=True)
+        assert [b['cache_control']['ttl'] for b in params['system'] if 'cache_control' in b] == ["5m", "5m"]
+        history_breakpoint = params['messages'][llm._message_cache_index()]['content'][-1]['cache_control']
+        assert history_breakpoint['ttl'] == ClaudeLLM.FOLLOW_UP_CACHE_TTL
+        llm.set_per_request_prefix(False)
+        params = llm._build_api_params(messages, thinking=False, stream=True)
+        assert [b['cache_control']['ttl'] for b in params['system'] if 'cache_control' in b] == ["1h", "1h"]
+        assert params['messages'][llm._message_cache_index()]['content'][-1]['cache_control']['ttl'] == "1h"
+
+    @patch('assistant.llm.ClaudeLLM.config')
     def test_build_api_params_skips_cache_on_empty_string_block(self, mock_config):
         """A blank [-2] turn (e.g. an interrupted reply stored empty) must not get
         cache_control — Anthropic rejects cache_control on empty text blocks."""

@@ -135,6 +135,9 @@ class VaultLLM(AbstractLLM):
     def set_prompt_cache(self, enabled: bool):
         self.llm.set_prompt_cache(enabled)
 
+    def set_per_request_prefix(self, per_request: bool):
+        self.llm.set_per_request_prefix(per_request)
+
     def supports_native_thinking(self) -> bool:
         return self.llm.supports_native_thinking()
 

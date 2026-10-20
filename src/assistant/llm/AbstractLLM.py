@@ -107,6 +107,13 @@ class AbstractLLM(ABC):
         Override in subclasses that pay for caching (e.g. ClaudeLLM)."""
         pass
 
+    def set_per_request_prefix(self, per_request: bool):
+        """Tell the LLM that the prompt prefix of the coming request is shared by no later
+        request (the user query is prepended to the top of the prompt): a prompt cache then
+        serves only the request's own follow-up rounds. Default: no-op. Override in subclasses
+        that pick a cache tier by it (ClaudeLLM)."""
+        pass
+
     def refuses_reasoning_requests(self) -> bool:
         """True when the backend's safeguards stop a request that asks the model to write out
         its reasoning — as a JSON field, a tag, a "think step by step" line — so that the whole

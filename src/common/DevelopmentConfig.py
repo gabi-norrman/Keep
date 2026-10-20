@@ -13,9 +13,11 @@ RUNNING_UNDER_TEST = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.envi
 
 
 # Prepending the user query to the TOP of the system prompt nudges accuracy up, but it puts
-# per-request content at byte 0 of the cached prefix — which defeats prompt caching entirely
-# (every request becomes a cache write, 0 reads) and balloons Anthropic costs/latency. It also
-# wrecks local Gemma, where a stable KV-cache prefix is critical.
+# per-request content at byte 0 of the cached prefix — so no request reads what the previous
+# one cached: every request writes the whole prefix anew and only its own command follow-up
+# rounds read it (ClaudeLLM then caches every block at its 5m tier, set_per_request_prefix;
+# the autonomous check never prepends and keeps its 1h blocks). That balloons Anthropic
+# costs/latency. It also wrecks local Gemma, where a stable KV-cache prefix is critical.
 #
 # Whether to prepend is now decided PER LLM via AbstractLLM.prefers_prepended_user_query():
 # the base default is ON (prepend), and the LLMs that pay a caching/KV penalty opt out
@@ -46,7 +48,7 @@ PREPEND_USER_QUERY_OVERRIDE = _prepend_user_query_override()
 # history cache breakpoint sits on the last message and each round reads what the previous one wrote.
 BYTE_PREFIX_TAIL = os.environ.get("FLOXY_BYTE_PREFIX_TAIL", "1") != "0"
 
-# TTL of the Anthropic prompt-cache system blocks (one per <<<CACHE_BREAKPOINT>>> marker,
+# TTL of the Anthropic prompt-cOk lache system blocks (one per <<<CACHE_BREAKPOINT>>> marker,
 # ordered stable → volatile; see ClaudeLLM._build_cached_system).
 # A cache read refreshes the TTL, so a block only expires after an idle gap longer than its TTL.
 # "1h" (write costs 2x input) survives the 5–60 min gaps between real user voice queries where a

@@ -561,11 +561,12 @@ class RequestProcessor:
         should_prepend = (PREPEND_USER_QUERY_OVERRIDE
                           if PREPEND_USER_QUERY_OVERRIDE is not None
                           else self.dialog_manager.ai.prefers_prepended_user_query())
-        # Prepending puts per-request content at byte 0, so prompt caching here only ever
-        # writes and never reads — disable it whenever we prepend (no-op for non-caching LLMs).
-        self.dialog_manager.ai.set_prompt_cache(not should_prepend)
+        # Prepending puts per-request content at byte 0, so no later request reads what this
+        # one caches — only its own command follow-up rounds do. The LLM picks its cache tier
+        # by that (ClaudeLLM: 5m on every block instead of 1h; a no-op for the others).
+        self.dialog_manager.ai.set_per_request_prefix(should_prepend)
         if should_prepend:
-            trace("Prepending user query - disabling prompt cache for this request")
+            trace("Prepending user query - the prompt prefix is this request's own")
             # Prepend user query preview at the top of the system prompt - this improves accuracy significantly (see https://x.com/aakashgupta/status/2023998053737541636?s=20)
             messages = self.dialog_manager.messages
             if messages and messages[0].get("role") == "system":

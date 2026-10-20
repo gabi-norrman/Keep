@@ -387,7 +387,7 @@ def _parse_args():
     if PREPEND_USER_QUERY_OVERRIDE is None:
         trace("Prepend user query: per-LLM default — set FLOXY_PREPEND_USER_QUERY=0/1 to override")
     elif PREPEND_USER_QUERY_OVERRIDE:
-        trace("Prepend user query: forced ON for every LLM (FLOXY_PREPEND_USER_QUERY=1) — may defeat prompt/KV caching")
+        trace("Prepend user query: forced ON for every LLM (FLOXY_PREPEND_USER_QUERY=1) — no prompt/KV cache reads across requests")
     else:
         trace("Prepend user query: forced OFF for every LLM (FLOXY_PREPEND_USER_QUERY=0) — caching preserved, accuracy may drop")
     return port, running_as_testsuite
