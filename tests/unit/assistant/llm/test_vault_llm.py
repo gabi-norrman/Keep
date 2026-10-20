@@ -53,7 +53,7 @@ class TestOutbound:
     def test_str_content_reaches_the_inner_llm_redacted(self, wrapped, inner, messages):
         inner.create_completion.return_value = "ok"
         wrapped.create_completion(messages, thinking=True, volatile_tail=1)
-        inner.create_completion.assert_called_once_with(REDACTED, thinking=True, volatile_tail=1)
+        inner.create_completion.assert_called_once_with(REDACTED, thinking=True, volatile_tail=1, follow_up=False)
 
     def test_caller_messages_are_not_mutated(self, wrapped, inner, messages):
         inner.create_completion.return_value = "ok"
@@ -89,7 +89,8 @@ class TestOutbound:
     def test_streaming_sends_redacted_messages(self, wrapped, inner, messages):
         inner.create_streaming_completion.return_value = iter(["ok"])
         list(wrapped.create_streaming_completion(messages, thinking=True))
-        inner.create_streaming_completion.assert_called_once_with(REDACTED, thinking=True, volatile_tail=0)
+        inner.create_streaming_completion.assert_called_once_with(REDACTED, thinking=True, volatile_tail=0,
+                                                                 follow_up=False)
 
 
 @pytest.mark.unit
@@ -174,7 +175,8 @@ class TestBaseClassEntryPoints:
         result = wrapped.think(f"Owner mail: {EMAIL}", f"Owner phone: {MOBILE}")
         inner.create_completion.assert_called_once_with(
             [{"role": "system", "content": f"Owner mail: {PH_EMAIL}"},
-             {"role": "user", "content": f"Owner phone: {PH_MOBILE}"}], thinking=False, volatile_tail=0)
+             {"role": "user", "content": f"Owner phone: {PH_MOBILE}"}], thinking=False, volatile_tail=0,
+            follow_up=False)
         assert result == f"Reach the owner at {MOBILE}"
 
     def test_think_with_images_goes_through_the_wrapper(self, wrapped, inner):
@@ -196,7 +198,8 @@ class TestEmptyVault:
         chunks = ["a ", "{{sec", " b"]
         inner.create_streaming_completion.return_value = iter(chunks)
         assert list(passthrough.create_streaming_completion(messages, thinking=True)) == chunks
-        inner.create_streaming_completion.assert_called_once_with(messages, thinking=True, volatile_tail=0)
+        inner.create_streaming_completion.assert_called_once_with(messages, thinking=True, volatile_tail=0,
+                                                                 follow_up=False)
         assert inner.create_streaming_completion.call_args.args[0] is messages
 
     def test_non_streaming_calls_forward_the_very_same_list(self, passthrough, inner, messages):
@@ -239,13 +242,13 @@ class TestDelegation:
             def name(self):
                 return "Backend"
 
-            def create_completion(self, messages, thinking=False, volatile_tail=0):
+            def create_completion(self, messages, thinking=False, volatile_tail=0, follow_up=False):
                 return ""
 
             def create_completion_with_images(self, messages, images):
                 return ""
 
-            def create_streaming_completion(self, messages, thinking=False, volatile_tail=0):
+            def create_streaming_completion(self, messages, thinking=False, volatile_tail=0, follow_up=False):
                 yield ""
 
             def initialize(self):
@@ -265,13 +268,13 @@ class TestDelegation:
             def name(self):
                 return "Backend"
 
-            def create_completion(self, messages, thinking=False, volatile_tail=0):
+            def create_completion(self, messages, thinking=False, volatile_tail=0, follow_up=False):
                 return ""
 
             def create_completion_with_images(self, messages, images):
                 return ""
 
-            def create_streaming_completion(self, messages, thinking=False, volatile_tail=0):
+            def create_streaming_completion(self, messages, thinking=False, volatile_tail=0, follow_up=False):
                 yield ""
 
             def initialize(self):
@@ -297,7 +300,7 @@ class TestDelegation:
         assert isinstance(result, VaultLLM)
         assert result.redactor.vault is stocked
         result.create_completion(messages)
-        fallback.create_completion.assert_called_once_with(REDACTED, thinking=False, volatile_tail=0)
+        fallback.create_completion.assert_called_once_with(REDACTED, thinking=False, volatile_tail=0, follow_up=False)
 
     def test_refusal_fallback_none_stays_none(self, wrapped, inner):
         inner.refusal_fallback.return_value = None
@@ -312,14 +315,14 @@ class TestDelegation:
             def __init__(self):
                 self._last_stop_reason = None
 
-            def create_completion(self, messages, thinking=False, volatile_tail=0):
+            def create_completion(self, messages, thinking=False, volatile_tail=0, follow_up=False):
                 self._last_stop_reason = 'max_tokens'
                 return "half a memory ba"
 
             def create_completion_with_images(self, messages, images):
                 return ""
 
-            def create_streaming_completion(self, messages, thinking=False, volatile_tail=0):
+            def create_streaming_completion(self, messages, thinking=False, volatile_tail=0, follow_up=False):
                 yield ""
 
             def initialize(self):

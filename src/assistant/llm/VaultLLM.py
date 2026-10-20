@@ -26,22 +26,24 @@ class VaultLLM(AbstractLLM):
         return getattr(self.llm, name)
 
     def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
-                                    volatile_tail: int = 0) -> Generator[str, None, None]:
+                                    volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:
         if not self.redactor.active:
             vault = self.redactor.vault
             if vault.locked:
                 info(f"Vault: LOCKED ({vault.error}) — {self.llm.name()} stream passed through unredacted")
             else:
                 fine(f"Vault: empty — {self.llm.name()} stream passed through without hold-back")
-            yield from self.llm.create_streaming_completion(messages, thinking=thinking, volatile_tail=volatile_tail)
+            yield from self.llm.create_streaming_completion(messages, thinking=thinking, volatile_tail=volatile_tail,
+                                                            follow_up=follow_up)
             return
         inner = self.llm.create_streaming_completion(self.redactor.redact_messages(messages), thinking=thinking,
-                                                    volatile_tail=volatile_tail)
+                                                    volatile_tail=volatile_tail, follow_up=follow_up)
         yield from RestoringStream(inner, self.redactor)
 
-    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
+    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0,
+                          follow_up: bool = False) -> str:
         return self._restored(self.llm.create_completion(self.redactor.redact_messages(messages), thinking=thinking,
-                                                         volatile_tail=volatile_tail))
+                                                         volatile_tail=volatile_tail, follow_up=follow_up))
 
     def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
         return self._restored(self.llm.create_completion_with_images(

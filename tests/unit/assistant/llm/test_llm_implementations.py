@@ -621,6 +621,48 @@ class TestClaudeLLM:
         assert llm._message_cache_index(volatile_tail=0) == -1
 
     @patch('assistant.llm.ClaudeLLM.config')
+    def test_a_follow_up_round_caches_its_whole_tail_for_the_short_tier(self, mock_config):
+        """A round after a command ends in the result the next round repeats verbatim and no
+        later request does: the breakpoint sits on the last message, volatile tail or not, at
+        the follow-up TTL — a 5m write where nothing reads it past the request, instead of a
+        1h write at twice the price or, with the breakpoint moved in front of an oversized
+        result, the whole tail re-sent uncached by every later round."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        llm = ClaudeLLM("claude-fable-5-1", history_cache_ttl="1h")
+        params = llm._build_api_params(self._ROUNDS, thinking=False, stream=True, volatile_tail=3, follow_up=True)
+        assert self._marked(params) == [len(params['messages']) - 1]
+        breakpoint = params['messages'][-1]['content'][-1]['cache_control']
+        assert breakpoint['ttl'] == ClaudeLLM.FOLLOW_UP_CACHE_TTL
+        assert breakpoint['ttl'] != llm.history_cache_ttl
+        first_round = llm._build_api_params(self._ROUNDS, thinking=False, stream=True)
+        assert first_round['messages'][-1]['content'][-1]['cache_control']['ttl'] == "1h"
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_a_follow_up_round_on_a_re_rendered_tail_model_keeps_the_message_before(self, mock_config):
+        """A model whose trailing turn is re-rendered each request still gets the breakpoint
+        one message back on a follow-up round; the follow-up only lifts the volatile tail."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        llm = ClaudeLLM("claude-sonnet-4-5")
+        assert llm._message_cache_index(volatile_tail=3, follow_up=True) == -2
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_the_follow_up_flag_reaches_the_request_through_the_stream(self, mock_config):
+        """A chat round's follow-up is streamed, so the flag must travel that path."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        llm = ClaudeLLM("claude-fable-5-1")
+        llm.client = Mock()
+        seen = {}
+        def capture(api_params):
+            seen['messages'] = api_params['messages']; yield "ok"
+        with patch.object(llm, '_stream_with_status_retry', side_effect=capture):
+            list(llm.create_streaming_completion(self._ROUNDS, volatile_tail=1, follow_up=True))
+        sent = seen['messages']
+        assert sent[-1]['content'][-1]['cache_control'] == {"type": "ephemeral", "ttl": ClaudeLLM.FOLLOW_UP_CACHE_TTL}
+
+    @patch('assistant.llm.ClaudeLLM.config')
     def test_the_volatile_tail_reaches_the_request_through_create_completion(self, mock_config):
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM

@@ -69,7 +69,7 @@ class ChatGPTLLM(AbstractLLM):
         return converted
 
     def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
-                                    volatile_tail: int = 0) -> Generator[str, None, None]:
+                                    volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:
         if thinking:
             raise ThinkingNotSupportedError(f"{self.name()} does not support native thinking mode")
 
@@ -85,7 +85,8 @@ class ChatGPTLLM(AbstractLLM):
             if chunk.choices[0].delta.content is not None:
                 yield chunk.choices[0].delta.content
 
-    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
+    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0,
+                          follow_up: bool = False) -> str:
         if thinking:
             raise ThinkingNotSupportedError(f"{self.name()} does not support native thinking mode")
 

@@ -793,17 +793,10 @@ class RequestProcessor:
                 trace(f"Command result stored uncapped: load_toolkit ran alongside {len(executed) - 1} other command(s)")
             result_text = _command_result_for_history(self.dialog_manager.reply_to_llm)
             prompt_manager.add_command_result(result_text, cap=not loaded_toolkit)
-            # The history keeps a cut copy of an oversized result, so no later request repeats
-            # this round's result turn, nor anything after it: cached, it would be a 1h write
-            # nobody reads (half the price uncached). The model still gets the whole result.
-            # A volatile tail carries into the next round of the same request, grown by the
-            # reply and the result that round appends after it.
-            carried = old_dialog_manager.volatile_tail
-            self.dialog_manager.volatile_tail = carried + 2 if carried else 0
-            if not carried and not loaded_toolkit and len(result_text) > MessageHistory.COMMAND_RESULT_CHARS:
-                info(f"Command result of {len(result_text)} chars goes uncached: the history keeps "
-                     f"{MessageHistory.COMMAND_RESULT_CHARS}, so no later request repeats it")
-                self.dialog_manager.volatile_tail = 1
+            # The model gets the whole result, and so does every later round of this request;
+            # the history keeps a cut copy of an oversized one, so no later request repeats the
+            # tail. ClaudeLLM caches a follow-up round's tail for its short tier accordingly.
+            self.dialog_manager.follow_up = True
             self.dialog_manager.use_vision_for_image_reply()
             try:
                 yield from self.stream_response()

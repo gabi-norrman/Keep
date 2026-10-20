@@ -210,7 +210,8 @@ class AbstractLLM(ABC):
         Only meaningful when supports_video() is True."""
         raise NotImplementedError(f"{self.name()} cannot take video input")
 
-    def think_with_messages(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
+    def think_with_messages(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0,
+                            follow_up: bool = False) -> str:
         """
         Sends a request to the LLM with a full message history, blocks until done, and returns the response.
 
@@ -221,12 +222,17 @@ class AbstractLLM(ABC):
                 (an instruction folded onto the history for this call only). An LLM with a
                 prefix cache keeps its history breakpoint off them — a breakpoint on bytes
                 nobody sends again is a write that never gets its read.
+            follow_up: this call is a later round of one request — it ends in a command result
+                the next round of the same request repeats verbatim, seconds from now, and no
+                request after that one does. An LLM with a prefix cache caches the whole tail
+                for the short tier instead of the long one; volatile_tail is moot then.
         """
-        return self._retry(lambda: self.create_completion(messages, thinking=thinking, volatile_tail=volatile_tail))
+        return self._retry(lambda: self.create_completion(messages, thinking=thinking, volatile_tail=volatile_tail,
+                                                          follow_up=follow_up))
 
     @abstractmethod
     def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
-                                    volatile_tail: int = 0) -> Generator[str, None, None]:
+                                    volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:
         """
         Create a streaming completion from the llm
 
@@ -234,6 +240,7 @@ class AbstractLLM(ABC):
             messages: List of message dictionaries with 'role' and 'content'
             thinking: Enable native thinking mode if supported by this LLM
             volatile_tail: see think_with_messages; only an LLM with a prefix cache acts on it
+            follow_up: see think_with_messages; only an LLM with a prefix cache acts on it
 
         Yields:
             String chunks of the response
@@ -241,7 +248,8 @@ class AbstractLLM(ABC):
         pass
 
     @abstractmethod
-    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
+    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0,
+                          follow_up: bool = False) -> str:
         """
         Create a non-streaming completion from the llm
 
@@ -249,6 +257,7 @@ class AbstractLLM(ABC):
             messages: List of message dictionaries with 'role' and 'content'
             thinking: Enable native thinking mode if supported by this LLM
             volatile_tail: see think_with_messages; only an LLM with a prefix cache acts on it
+            follow_up: see think_with_messages; only an LLM with a prefix cache acts on it
 
         Returns:
             String containing the complete response

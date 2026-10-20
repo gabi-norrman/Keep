@@ -265,7 +265,7 @@ class GeminiLLM(AbstractLLM):
         return system_instruction, gemini_messages
 
     def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
-                                    volatile_tail: int = 0) -> Generator[str, None, None]:
+                                    volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:
         self._ensure_initialized()
 
         system_instruction, gemini_messages = self._convert_messages(messages)
@@ -291,7 +291,8 @@ class GeminiLLM(AbstractLLM):
             if chunk.text:
                 yield chunk.text
 
-    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
+    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0,
+                          follow_up: bool = False) -> str:
         self._ensure_initialized()
 
         system_instruction, gemini_messages = self._convert_messages(messages)

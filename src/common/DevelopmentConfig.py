@@ -62,4 +62,6 @@ CLAUDE_STATIC_CACHE_TTL = os.environ.get("FLOXY_CLAUDE_STATIC_CACHE_TTL", "1h")
 # the untouched transient notes and the frozen eviction stub are for (ClaudeLLM._message_cache_index,
 # MessageHistory). A 2026-10-09 trial of "1h" lost ($2.39 more in writes, $0.75 of rewrites saved)
 # because the window was edited between calls and the 2x writes never got their read.
+# Only a request's first round writes at this TTL: a follow-up round's tail is read by the next
+# round seconds later and by nothing after, so it takes ClaudeLLM.FOLLOW_UP_CACHE_TTL (5m).
 CLAUDE_HISTORY_CACHE_TTL = os.environ.get("FLOXY_CLAUDE_HISTORY_CACHE_TTL", "1h")

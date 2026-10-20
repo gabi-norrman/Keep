@@ -34,7 +34,7 @@ class CachedLLM(AbstractLLM):
         self.last_served_responses: list[str] | None = None
 
     def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
-                                    volatile_tail: int = 0) -> Generator[str, None, None]:
+                                    volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:
         # Key the cache on the clean user utterance supplied via cache_query, NOT on
         # messages[-1]["content"]. The final message carries per-request volatile context
         # (sensor states, temperatures, timestamps, trailing language/brevity directives)
@@ -45,7 +45,8 @@ class CachedLLM(AbstractLLM):
         query = self.cache_query.strip() if isinstance(self.cache_query, str) else ""
         if not query:
             self.last_response_was_cached = False
-            yield from self.llm.create_streaming_completion(messages, thinking=thinking, volatile_tail=volatile_tail)
+            yield from self.llm.create_streaming_completion(messages, thinking=thinking, volatile_tail=volatile_tail,
+                                                            follow_up=follow_up)
             return
         response_counts = self.db.get_response_counts_for_query(query)
         cachable_count = sum(count for _, count in response_counts)
@@ -82,9 +83,10 @@ class CachedLLM(AbstractLLM):
         self.last_served_responses = None
         return marked
 
-    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0) -> str:
+    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0,
+                          follow_up: bool = False) -> str:
         self.last_response_was_cached = False
-        return self.llm.create_completion(messages, thinking=thinking, volatile_tail=volatile_tail)
+        return self.llm.create_completion(messages, thinking=thinking, volatile_tail=volatile_tail, follow_up=follow_up)
 
     def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
         self.last_response_was_cached = False

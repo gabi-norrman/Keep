@@ -1632,20 +1632,43 @@ def Toolkits_header() -> str:
     def test_only_the_first_round_marks_its_tail_volatile(self):
         """The first round ends in the clock note and the instruction, which the history never
         keeps — so the LLM is told to keep its cache breakpoint off that turn. A follow-up
-        round ends in the reply and the command result, both of which the history persists as
-        sent, so the breakpoint may sit on the last message again."""
+        round ends in the reply and the command result, which the next round repeats and no
+        later check reads, so it is a follow-up to the LLM: cached whole, for the short tier."""
         mgr, llm = make_manager()
         llm.think_with_messages.return_value = "NO"
 
         mgr.activity_check(prompt="test prompt")
-        assert llm.think_with_messages.call_args.kwargs == {"volatile_tail": 1}
+        assert llm.think_with_messages.call_args.kwargs == {"volatile_tail": 1, "follow_up": False}
 
         llm.think_with_messages.reset_mock()
         mgr._think([{"role": "system", "content": "test prompt"},
                     {"role": "user", "content": AutonomousActionManager._action_prompt(llm)},
                     {"role": "assistant", "content": "door_state(garage)"},
-                    {"role": "user", "content": "result:\nclosed"}])
-        assert llm.think_with_messages.call_args.kwargs == {"volatile_tail": 0}
+                    {"role": "user", "content": "result:\nclosed"}], follow_up=True)
+        assert llm.think_with_messages.call_args.kwargs == {"volatile_tail": 0, "follow_up": True}
+
+    def test_the_round_after_a_command_goes_to_the_llm_as_a_follow_up(self):
+        """The check loop itself flags its later rounds: the first call carries the volatile
+        instruction, the one after the command result is a follow-up."""
+        mgr, llm = make_manager()
+        llm.think_with_messages.side_effect = ["door_state(garage)", "NO"]
+        with patch('assistant.commands.CommandProcessor.CommandProcessor') as mock_cp:
+            inst = Mock()
+            inst.command_queue = queue.Queue()
+            inst.command_being_processed = False
+            inst.command_running_in_background = False
+            inst.command_reply = "result:\nclosed"
+            inst.clear_command_reply.side_effect = lambda: setattr(inst, "command_reply", None)
+            inst.flush_buffer.return_value = None
+            inst.process.return_value = None
+            mock_cp.return_value = inst
+            mgr.test_mode = False
+            try:
+                mgr.activity_check(prompt="test prompt")
+            finally:
+                mgr.test_mode = True
+        kwargs = [c.kwargs for c in llm.think_with_messages.call_args_list]
+        assert kwargs == [{"volatile_tail": 1, "follow_up": False}, {"volatile_tail": 0, "follow_up": True}]
 
     def test_the_refusal_fallback_gets_the_same_volatile_tail(self):
         mgr, llm = make_manager()
@@ -1656,7 +1679,7 @@ def Toolkits_header() -> str:
 
         mgr._think([{"role": "system", "content": "p"}, {"role": "user", "content": "q"}], volatile_tail=1)
 
-        assert fallback.think_with_messages.call_args.kwargs == {"volatile_tail": 1}
+        assert fallback.think_with_messages.call_args.kwargs == {"volatile_tail": 1, "follow_up": False}
 
     def test_image_follow_up_on_a_self_thinking_vision_tier_loses_the_paragraph(self):
         """The prompt is built for the first round's model. When a later round carries camera

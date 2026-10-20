@@ -64,10 +64,10 @@ class FakeAI:
     def initialize(self):
         self.initialized = True
 
-    def create_streaming_completion(self, messages, thinking: bool = False, volatile_tail=0):
+    def create_streaming_completion(self, messages, thinking: bool = False, volatile_tail=0, follow_up=False):
         # Capture a shallow copy so later mutations don't affect expectations
         self.observed_messages = [msg.copy() for msg in messages]
-        self.observed_volatile_tail = volatile_tail
+        self.observed_follow_up = follow_up
         self.last_response_was_cached = self.cached_flag
         for chunk in self._chunks:
             yield chunk
@@ -137,7 +137,7 @@ def make_dialog_manager(monkeypatch, chunks, cached=False, command_processor=Non
     dm.last_response_was_cached = False
     dm.thinking = False
     dm.cache_query = None
-    dm.volatile_tail = 0
+    dm.follow_up = False
 
     return dm, console
 
@@ -196,13 +196,16 @@ def test_stream_llm_response_merges_query_without_mutating_shared_trailing_turn(
 
 
 @pytest.mark.unit
-def test_stream_llm_response_tells_the_llm_which_trailing_turns_are_volatile(monkeypatch):
-    """A follow-up round whose result the history cuts marks its tail volatile; the LLM
-    needs that with the stream to keep its cache breakpoint off the result."""
+def test_stream_llm_response_tells_the_llm_it_is_a_follow_up_round(monkeypatch):
+    """A command follow-up round ends in a result only the next round repeats; the LLM
+    needs to know with the stream to cache that tail for its short tier."""
     dm, _ = make_dialog_manager(monkeypatch, ["ok"])
-    dm.volatile_tail = 1
+    dm.follow_up = True
     list(dm.stream_llm_response())
-    assert dm.ai.observed_volatile_tail == 1
+    assert dm.ai.observed_follow_up is True
+    dm.follow_up = False
+    list(dm.stream_llm_response())
+    assert dm.ai.observed_follow_up is False
 
 
 @pytest.mark.unit
@@ -303,7 +306,7 @@ class DroppingAI(FakeAI):
         self.attempts = attempts
         self.calls = 0
 
-    def create_streaming_completion(self, messages, thinking: bool = False, volatile_tail=0):
+    def create_streaming_completion(self, messages, thinking: bool = False, volatile_tail=0, follow_up=False):
         self.observed_messages = [msg.copy() for msg in messages]
         attempt = self.attempts[self.calls]
         self.calls += 1
@@ -691,7 +694,7 @@ def test_stream_llm_response_with_thinking_passes_flag(monkeypatch):
             super().__init__(["response"])
             self.thinking_flag = None
 
-        def create_streaming_completion(self, messages, thinking=False, volatile_tail=0):
+        def create_streaming_completion(self, messages, thinking=False, volatile_tail=0, follow_up=False):
             self.thinking_flag = thinking
             self.observed_messages = [msg.copy() for msg in messages]
             self.last_response_was_cached = False

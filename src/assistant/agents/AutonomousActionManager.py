@@ -259,14 +259,15 @@ class AutonomousActionManager:
             return self._get_vision_llm()
         return self.llm
 
-    def _think(self, messages, volatile_tail: int = 0) -> str:
+    def _think(self, messages, volatile_tail: int = 0, follow_up: bool = False) -> str:
         """One blocking LLM turn. A safety refusal (Fable refuses these checks in bursts,
         deterministically) is handed to the tier's refusal_fallback() once, as
         DialogManager does for user turns; without one, or when the fallback refuses
         too, the check yields an empty result and the next interval tries again.
         `volatile_tail` is 1 for the first round: its trailing turn is the clock note and
-        the instruction folded onto the history, which no later request sends — the
-        follow-up rounds end in the reply and the command result, which the history keeps."""
+        the instruction folded onto the history, which no later request sends. A follow-up
+        round ends in the reply and the command result, which the next round repeats and no
+        later check reads — `follow_up` lets the LLM cache it for its short tier."""
         llm = self._llm_for(messages)
         # The action prompt was built for the model of the first round; a follow-up round
         # that carries images goes to the vision tier, which may think on its own.
@@ -275,7 +276,7 @@ class AutonomousActionManager:
             if stripped:
                 info(f"{llm.name()} thinks on its own — <thinking> tag paragraph removed from the autonomous prompt")
         try:
-            return llm.think_with_messages(messages, volatile_tail=volatile_tail)
+            return llm.think_with_messages(messages, volatile_tail=volatile_tail, follow_up=follow_up)
         except LLMRefusalError:
             fallback = llm.refusal_fallback()
             if fallback is None:
@@ -284,7 +285,7 @@ class AutonomousActionManager:
             info(f"{llm.name()} refused the autonomous check (safety filter) — falling back to {fallback.name()}.")
             fallback.initialize()
             try:
-                return fallback.think_with_messages(messages, volatile_tail=volatile_tail)
+                return fallback.think_with_messages(messages, volatile_tail=volatile_tail, follow_up=follow_up)
             except LLMRefusalError:
                 info(f"{fallback.name()} refused the autonomous check too — skipping.")
                 return ""
@@ -511,7 +512,7 @@ class AutonomousActionManager:
 
                 info("Checking with AI again...")
                 start_time = time.time()
-                result = self._think(messages)
+                result = self._think(messages, follow_up=True)
                 trace(f"Follow-up thought for {time.time() - start_time:.2f}s")
                 fine(f"Follow-up raw result:\n {result}")
                 self._save_autonomous_result_to_history(result)

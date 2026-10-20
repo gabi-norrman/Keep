@@ -156,7 +156,7 @@ class TestHandleBackgroundCommands:
         dm.command_processor.executed_commands = []
         dm.command_processor.unterminated_command_report = None
         dm.command_processor.take_unterminated_command_report.return_value = None
-        dm.volatile_tail = 0
+        dm.follow_up = False
         dm.last_response_was_cached = False
         dm.ai = Mock()
         dm.messages = [{"role": "user", "content": "hello"}]
@@ -1819,10 +1819,9 @@ class TestCommandResultPersistence:
     def handler(self):
         return TestHandleBackgroundCommands.handler.__wrapped__(self)
 
-    def _run(self, handler, command_reply, contains_error=False, executed=(), volatile_tail=0):
+    def _run(self, handler, command_reply, contains_error=False, executed=()):
         dm1 = TestHandleBackgroundCommands._make_mock_dm(
             command_running=True, command_reply=command_reply, queue_empty=True)
-        dm1.volatile_tail = volatile_tail
         dm1.command_processor.command_reply_contains_error = contains_error
         dm1.command_processor.executed_commands = list(executed)
         handler.dialog_manager = dm1
@@ -1842,26 +1841,17 @@ class TestCommandResultPersistence:
         assert dm.reply_to_llm == "result: \niMessage — disabled"
         prompt_manager.add_command_result.assert_called_once_with("result: \niMessage — disabled", cap=True)
 
-    def test_a_result_the_history_cuts_makes_the_round_tail_volatile(self, handler):
-        """The history keeps COMMAND_RESULT_CHARS of a page dump, so no later request repeats
-        the result turn: the round tells the LLM so, and the turn goes uncached instead of
-        being a 1h cache write nobody reads. A result the history keeps whole stays cacheable,
-        a toolkit reference too (stored whole, however long)."""
+    def test_every_command_round_is_a_follow_up_to_the_llm(self, handler):
+        """A round after a command ends in the result, which the next round of the request
+        repeats and no later request does (the history keeps a cut copy of a page dump): the
+        LLM caches that tail for its short tier, whatever the result's size. Moving the
+        breakpoint in front of an oversized result made every later round re-send the whole
+        tail uncached (prod 2026-10-20: 32–78K tokens ten times in one question)."""
         from assistant.prompt.MessageHistory import MessageHistory
-        page = "x" * (MessageHistory.COMMAND_RESULT_CHARS + 1)
-        _, dm = self._run(handler, page)
-        assert dm.volatile_tail == 1
-        _, dm = self._run(handler, "x" * (MessageHistory.COMMAND_RESULT_CHARS - 20))
-        assert dm.volatile_tail != 1
-        _, dm = self._run(handler, "# Toolkit: email\n" + page, executed=["load_toolkit(email)"])
-        assert dm.volatile_tail == 0
-
-    def test_a_volatile_tail_carries_into_the_next_round_of_the_request(self, handler):
-        """Once a round's result is cut in the history, every later message of the request
-        follows bytes no later request repeats: the next round counts its own reply and
-        result on top, so the breakpoint stays in front of the first cut result."""
-        _, dm = self._run(handler, "small", volatile_tail=1)
-        assert dm.volatile_tail == 3
+        _, dm = self._run(handler, "x" * (MessageHistory.COMMAND_RESULT_CHARS + 1))
+        assert dm.follow_up is True
+        _, dm = self._run(handler, "small")
+        assert dm.follow_up is True
 
     def test_toolkit_round_persisted_uncapped(self, handler):
         """A round that loaded a toolkit stores its result whole, other commands in the round
