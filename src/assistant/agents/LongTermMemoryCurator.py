@@ -518,7 +518,7 @@ class LongTermMemoryCurator:
     def curate_memory(self,
                       period_start: datetime | date = None,
                       period_end: datetime | date = None,
-                      lookback_days: int = 2,
+                      lookback_days: int = 1,
                       lookahead_days: int = 5):
         """
         Run memory curation over the interactions of a period.
@@ -530,7 +530,7 @@ class LongTermMemoryCurator:
             lookahead_days: How many days of calendar to include (default: 5)
 
         A bare date means midnight at its start. Both ends are accepted as dates or datetimes so a
-        nightly run says "the last two days" and a first-run curation says "since 14:03".
+        nightly run says "since yesterday's midnight" and a first-run curation says "since 14:03".
 
         Returns:
             Tuple of (updated_memory_text, metadata_dict)

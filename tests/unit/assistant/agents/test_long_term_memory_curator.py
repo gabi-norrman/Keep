@@ -182,6 +182,17 @@ class TestCurationPeriod:
         assert start == datetime.combine(before.date() - timedelta(days=2), datetime.min.time())
         assert before <= end <= after
 
+    def test_nightly_default_covers_yesterday_from_midnight(self):
+        """The nightly run passes no period: it curates one day — yesterday from its midnight to now."""
+        curator = self._curator()
+        with patch('assistant.agents.LongTermMemoryCurator.CalendarAccess.current', return_value=_no_events()):
+            before = datetime.now()
+            curator.curate_memory()
+            after = datetime.now()
+        start, end = curator.floxy_db.get_interaction_history.call_args.args
+        assert start == datetime.combine(before.date() - timedelta(days=1), datetime.min.time())
+        assert before <= end <= after
+
     def test_empty_period_is_refused(self):
         curator = self._curator()
         with pytest.raises(ValueError):
