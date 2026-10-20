@@ -11,8 +11,6 @@ and shown as it is.
 import html
 import re
 
-from common.logging import trace
-
 _MESSAGE_RE = re.compile(r"^(iMessage|Telegram) (received|sent):\n(?:From )?(.+?)(?: to (.+?))?: (.*)$", re.DOTALL)
 _DESCRIPTION_RE = re.compile(r"^(?:Video|Image) description: (\[.+?\]) (.+)$", re.DOTALL)
 _PLACEHOLDERS = ("[Photo]", "[Video]")   # what the integrations store when a description was not possible
@@ -28,7 +26,6 @@ def markup(content: str) -> str:
         return html.escape(content, quote=False)
     channel, direction, sender, recipient, body = m.groups()
     parties = f"{sender} → {recipient}" if recipient else sender
-    trace(f"SystemEvents: {channel} {direction} row marked up as {parties!r}")
     return f"<b>{html.escape(parties, quote=False)}</b>{_body(body)}"
 
 
@@ -41,7 +38,6 @@ def _body(body: str) -> str:
         short, description = media, ""
     else:
         return " " + html.escape(body, quote=False)
-    trace(f"SystemEvents: media row laid out as text, {short!r} and a {len(description)}-char description")
     lines = [(" " + html.escape(text, quote=False)) if text else "", "\n" + html.escape(short, quote=False)]
     if description:
         lines.append(f'\n<span class="{CLASS_DESCRIPTION}">{html.escape(description, quote=False)}</span>')
