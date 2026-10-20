@@ -43,7 +43,7 @@ class MicrophoneRoutes:
     """Serves the microphone outposts' HTTP routes and runs the cross-mic vote before dispatching a query."""
 
     # Debounce window for wake-word signals from several mics hearing the same utterance.
-    WAKE_WORD_TIMEOUT = 1.5
+    WAKE_WORD_TIMEOUT = 1.6
 
     def __init__(self, deps: MicrophoneDeps):
         self.deps = deps
@@ -66,7 +66,8 @@ class MicrophoneRoutes:
         # Check if enough time has passed since last wake word detection.
         # Sliding window: a debounced signal still refreshes the timestamp, so late
         # mics finishing the same utterance keep extending the window instead of
-        # triggering a mid-utterance reset once the first mic's 1.5s expires.
+        # triggering a mid-utterance reset once the first mic's window expires (1.6s: a slow mic's
+        # Whisper landed 1.53s after the first on 2026-10-18 and ran 'volume down' twice).
         if current_time - self.last_wake_word_time < self.WAKE_WORD_TIMEOUT:
             trace(f"Wake word debounced ({current_time - self.last_wake_word_time:.2f}s since last) - sliding window.")
             self.last_wake_word_time = current_time
