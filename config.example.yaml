@@ -303,7 +303,9 @@ wake_word_near_misses: [mission, missions, we shall]
 # local_only is the one-line switch between cloud and local AI: true routes every `ai:` tier
 # (except code_quality, the Claude Code CLI) to this server on OllamaLLM's default model,
 # qwen3.8:27b-mlx, whatever the `ai:` block says; a tier that already names OllamaLLM keeps its
-# `model:`. Videos are then left undescribed (Ollama has no video input). Takes effect on restart.
+# `model:`. The name of another local backend class routes every tier there instead —
+# `local_only: Ds4LLM` runs the whole assistant on the ds4-server below. Videos are then left
+# undescribed (no local backend has video input). Takes effect on restart.
 #ollama:
 #  local_only: false
 #  base_url: http://192.168.1.50:11434
@@ -311,6 +313,16 @@ wake_word_near_misses: [mission, missions, we shall]
 #  remote_log_path: /Users/user/Documents/Keep/log/ollama.log  # Optional; defaults to this repo layout
 #  background_idle_seconds: 20    # Photo indexing on Ollama runs only after this much quiet since the last
 #                                 # chat request or pre-heat; a user request arriving mid-image aborts the image
+
+# ds4-server (antirez's DwarfStar engine, github.com/antirez/ds4) used by every Ds4LLM tier: one
+# large open-weight model (DeepSeek V4.1 Flash, GLM 5.3, Qwen3.8 Flash Next) resident on this
+# machine's GPU, served OpenAI-style. Start it in the ds4 folder with `./ds4-server --ctx 32768`.
+# Optional — defaults to the server's default address and DeepSeek V4.1 Flash.
+#ds4:
+#  base_url: http://127.0.0.1:8000/v1
+#  model: deepseek-v4.1-flash      # The id `GET /v1/models` on the server lists; an `ai:` tier's `model:` wins
+#  reasoning_effort: low           # How much the model reasons before an ordinary reply: none, minimal, low,
+#                                  # medium, high, xhigh or max. The memory curator always gets high.
 
 # Where the //FP and //TP debug commands collect the latest conversations' audio as labelled
 # false/true wake-word positives. Optional — defaults to cache/stt_samples/{false-positive,en}.
@@ -323,7 +335,7 @@ wake_word_near_misses: [mission, missions, we shall]
 # Uncomment / edit to override per tier, e.g. to run everything on a local Ollama:
 #ai:
 #  fast:
-#    llm: OllamaLLM          # Class name from assistant/llm/ (OllamaLLM, ClaudeLLM, GeminiLLM, ChatGPTLLM, GrokLLM, OpenRouterLLM)
+#    llm: OllamaLLM          # Class name from assistant/llm/ (OllamaLLM, Ds4LLM, ClaudeLLM, GeminiLLM, ChatGPTLLM, GrokLLM, OpenRouterLLM)
 #    # model: qwen3.8:27b-mlx   # Optional: override the LLM's default model
 #  smart:
 #    llm: OllamaLLM

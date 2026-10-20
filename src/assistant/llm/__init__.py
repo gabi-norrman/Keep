@@ -64,25 +64,39 @@ _LOCAL_ONLY_EXEMPT = {'code_quality'}
 _local_only_logged: set[str] = set()
 
 
+def local_only_class() -> str | None:
+    """The backend `ollama.local_only` routes every tier to: 'OllamaLLM' for `true`, the class
+    named when the key holds a class name (`Ds4LLM` for a local ds4-server), None when the switch
+    is off."""
+    value = config.get('ollama.local_only', False)
+    if value is True:
+        return 'OllamaLLM'
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def local_only_mode() -> bool:
-    """True when `ollama.local_only` routes every tier to the Ollama server (`ollama.base_url`)."""
-    return bool(config.get('ollama.local_only', False))
+    """True when `ollama.local_only` routes every tier to one local backend (see local_only_class)."""
+    return local_only_class() is not None
 
 
 def parse_llm_config(tier: str) -> tuple[str, str | None]:
     """Parse config for an LLM tier (e.g. 'fast', 'smart', 'cache_auditor'). Returns (class_name, model_or_None).
 
-    With `ollama.local_only: true` every tier (except code_quality) runs on OllamaLLM regardless of
-    its `ai.<tier>` block or cloud default: a tier already on OllamaLLM keeps its configured model,
-    any other tier falls back to OllamaLLM's default model — a cloud model name means nothing there."""
+    With `ollama.local_only` set every tier (except code_quality) runs on the one local backend it
+    names — OllamaLLM for `true`, or the class it holds (`Ds4LLM`) — regardless of its `ai.<tier>`
+    block or cloud default: a tier already on that backend keeps its configured model, any other
+    tier falls back to the backend's default model — a cloud model name means nothing there."""
     llm, model = _configured_llm(tier)
-    if tier not in _LOCAL_ONLY_EXEMPT and local_only_mode():
-        if llm != 'OllamaLLM':
+    local = local_only_class()
+    if tier not in _LOCAL_ONLY_EXEMPT and local is not None:
+        if llm != local:
             if tier not in _local_only_logged:
                 _local_only_logged.add(tier)
-                info(f"ollama.local_only: tier '{tier}' runs on OllamaLLM instead of {llm}"
+                info(f"ollama.local_only: tier '{tier}' runs on {local} instead of {llm}"
                      f"{f' ({model})' if model else ''}")
-            return 'OllamaLLM', None
+            return local, None
         return llm, model
     return llm, model
 

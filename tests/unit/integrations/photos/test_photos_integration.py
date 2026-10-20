@@ -2418,6 +2418,8 @@ class TestPhotoProcessorIndexingLlm:
         def no_ai_tiers(key, default=None):
             if key.startswith('ai.'):
                 raise KeyError(key)
+            if key == 'ollama.local_only':  # the cloud defaults are under test, whatever this machine runs on
+                return False
             return real_get(key, default)
 
         live, backfill = Mock(name="sonnet"), Mock(name="haiku")
