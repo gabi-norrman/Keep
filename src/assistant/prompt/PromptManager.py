@@ -323,7 +323,7 @@ class PromptManager:
         all earlier in the conversation — the same two turns production produces."""
         from assistant.commands import Toolkits
         toolkits = Toolkits.TOOLKITS
-        call = "load_toolkit(" + ", ".join(f'"{t.name}"' for t in toolkits) + ")"
+        call = self._command_format().render_tool_call("load_toolkit", {"name": [t.name for t in toolkits]})
         # A fixture like the rest of the test prompt: the count is baked, the DB may be absent.
         substitute = lambda text: self._substitute(text, {}, photo_count=self._TEST_SUITE_PHOTO_COUNT)
         result = "result: \n" + "\n\n".join(Toolkits.render(t, substitute) for t in toolkits)
@@ -848,6 +848,13 @@ class PromptManager:
         return Rewriter.rewrite(text, fmt, Signatures.declarations())
 
     _format = None
+    _test_history_path: str | None = None
+
+    def _render_calls(self, text: str) -> str:
+        """`text` with every canonical call of a known command rendered in the active command
+        format (formats.Rewriter) — what _substitute does last to every prompt text."""
+        from assistant.commands.formats import Rewriter, Signatures
+        return Rewriter.rewrite(text, self._command_format(), Signatures.declarations())
 
     def _on_command_format_changed(self, fmt):
         """The process's command format changed (CommandFormats.set_active): the prompt in
@@ -856,6 +863,8 @@ class PromptManager:
         info(f"Command format is now {fmt.name} — rendering the prompt again in it")
         if self.test_suite:
             self._load_test_suite_prompt()
+            if self._test_history_path:
+                self.load_test_suite_history(self._test_history_path)
         else:
             self._assemble_prompt("command format", force=True)
 
@@ -1034,12 +1043,17 @@ class PromptManager:
 
     def load_test_suite_history(self, path: str):
         """Load the prompt test suite's fixed history fixture (see get_messages). Like
-        testsuite_prompt.md it is built from a real household and absent from a public checkout."""
+        testsuite_prompt.md it is built from a real household and absent from a public checkout.
+        The calls in its assistant turns are written in Keep's syntax and rendered in the active
+        command format like the prompt's examples, so the few-shots speak the syntax the model is
+        asked for; a format change (_on_command_format_changed) renders them again."""
         if not os.path.exists(path):
             info(f"No {path} in this checkout, the test suite runs without a history fixture.")
             return
-        self._test_history_messages = MessageHistory.load_fixture_messages(path)
-        info(f"Loaded {len(self._test_history_messages)} test-suite history turns from {path}")
+        self._test_history_path = path
+        self._test_history_messages = MessageHistory.load_fixture_messages(path, rewrite=self._render_calls)
+        info(f"Loaded {len(self._test_history_messages)} test-suite history turns from {path}, "
+             f"their calls in the {self._command_format().name} command format")
 
     def update_history(self, user_name: str, user_query: str, assistant_reply: str,
                        source: str = None, location: str = None, pre_heat: bool = True,

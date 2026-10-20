@@ -181,7 +181,7 @@ source .venv/bin/activate && python -m pytest tests/ --override-ini="log_cli=fal
 - `requirements.txt` - Python dependencies (it includes each integration folder's own `requirements.txt`)
 - `log/floxy.out` - Log file from latest run on the server GREAT for DEBUGGING!
 - `res/prompt.md` - The prompt template send to the AI; the command references are the toolkits — `res/toolkits/<name>.md` for the ones more than one integration is behind (or none), `src/integrations/<folder>/toolkit.md` for the one an integration owns (shared by both prompts) — only the core commands are in the template, and the integrations' data stands in its one `{INTEGRATION_DATA}` block (each section brings its own heading), never under a heading of the template's own
-- `testsuite_prompt.md` - (private, present only when linked) the prompt the prompt test suite runs against; it is generated, so a change to `prompt.md` is not copied into it by hand
+- `testsuite_prompt.md` - (private, present only when linked) the prompt the prompt test suite runs against. It is built from `res/prompt.md` by the private tree's `testsuite_prompt/build.py` — the template's text with the household's baked data in place of the live sections, `{COMMAND_SYSTEM}` and the other start-time placeholders kept — so it is never edited by hand: after a change to `prompt.md`, run the builder (a private unit test fails until it is run)
 
 ## Architecture Atlas
 

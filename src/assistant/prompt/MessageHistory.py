@@ -593,14 +593,16 @@ class MessageHistory:
         return MessageHistory._finalize_messages(list(reversed(kept_reversed)))
 
     @staticmethod
-    def load_fixture_messages(path: str) -> list[dict]:
+    def load_fixture_messages(path: str, rewrite: Callable[[str], str] | None = None) -> list[dict]:
         """Render a JSON history fixture into LLM message turns (prompt test suite).
 
         The fixture is a list of entries shaped like FloxyDatabase.get_recent_history()
         rows ({role, content, timestamp, source, location}), with timestamp as a local
         'YYYY-MM-DD HH:MM:SS' string converted to Unix time here. The result is rendered
         once and held fixed, so it sends the exact same turns production sends — without
-        the live, mutable history accumulating per-test traffic.
+        the live, mutable history accumulating per-test traffic. `rewrite` is applied to
+        every assistant turn's content before rendering: the PromptManager renders the
+        calls in them in the active command format.
         """
         with open(path, "r") as f:
             raw = json.load(f)
@@ -608,9 +610,12 @@ class MessageHistory:
         entries = []
         for entry in raw:
             ts = datetime.strptime(entry["timestamp"], "%Y-%m-%d %H:%M:%S").timestamp()
+            content = entry["content"]
+            if rewrite is not None and entry["role"] == "assistant":
+                content = rewrite(content)
             entries.append({
                 "role": entry["role"],
-                "content": entry["content"],
+                "content": content,
                 "timestamp": ts,
                 "source": entry.get("source"),
                 "location": entry.get("location"),

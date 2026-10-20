@@ -1884,6 +1884,53 @@ def test_command_system_filled_and_calls_rewritten_in_both_prompt_paths(tmp_path
 
 
 @pytest.mark.unit
+def test_fixture_history_calls_and_the_toolkit_turn_speak_the_active_format(tmp_path, monkeypatch):
+    """The suite's few-shots — the fixture's assistant turns and the fake load_toolkit turn — are
+    written in Keep's syntax and must reach the model in the format it is asked to write, and
+    follow a format change like the prompt does."""
+    import json
+    from assistant.commands.formats.CommandFormats import CommandFormats
+    from assistant.commands.formats.KeepFormat import KeepFormat
+
+    class Loud(KeepFormat):
+        name = "loud"
+        def render_example(self, name, values, declaration):
+            return f"<{name}:{'|'.join(v.value for v in values)}>"
+        @classmethod
+        def render_tool_call(cls, name, arguments):
+            return f"<{name}:{arguments}>"
+
+    res_dir = tmp_path / "res"
+    res_dir.mkdir()
+    (res_dir / "prompt.md").write_text("Head\n")
+    (tmp_path / "testsuite_prompt.md").write_text("Head\n")
+    fixture = tmp_path / "history.json"
+    fixture.write_text(json.dumps([
+        {"role": "Marcus", "content": "any mail about the sofa?", "timestamp": "2025-10-27 09:00:00"},
+        {"role": "assistant", "content": '`search_email("sofa delivery")`\n\nLooking... and `search_email` is the command.',
+         "timestamp": "2025-10-27 09:00:05"},
+    ]))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(PromptManager, "_get_photo_count", lambda self: 0)
+    with patch("assistant.prompt.PromptSectionGenerator.PromptSectionGenerator.start"):
+        manager = PromptManager(test_suite=True)
+    manager.load_test_suite_history(str(fixture))
+
+    def turns():
+        return [m["content"] for m in manager._test_history_messages if m["role"] == "assistant"]
+
+    assert any('`search_email("sofa delivery")`' in turn for turn in turns())
+    assert manager._test_toolkit_messages[0]["content"].startswith('load_toolkit("')
+
+    monkeypatch.setattr(CommandFormats, "active", staticmethod(lambda: Loud))
+    manager._on_command_format_changed(Loud)
+
+    rendered = next(turn for turn in turns() if "sofa" in turn)
+    assert "<search_email:sofa delivery>" in rendered and "`search_email` is the command" in rendered
+    assert manager._test_toolkit_messages[0]["content"].startswith("<load_toolkit:")
+
+
+@pytest.mark.unit
 def test_render_template_fills_sections_and_config_values(prompt_test_environment):
     manager = PromptManager(test_suite=True)
     manager.sections = {"procedures": DummySection("sunny")}
