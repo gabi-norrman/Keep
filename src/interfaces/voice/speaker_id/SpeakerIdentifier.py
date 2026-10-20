@@ -72,6 +72,9 @@ class SpeakerIdentifier:
     EITHER = " or "
     K_NEAREST = 3
     IDENTIFICATION_VOTE_WINDOW = 30.0  # seconds to consider for voting
+    # The mics hearing one utterance record their identifications within this many seconds of
+    # each other; anything older in the window is an earlier utterance, possibly someone else's.
+    UTTERANCE_BURST = 3.0
     # The discovery's candidates live under voice_id/ too (VoiceCandidates); not an enrollment.
     CANDIDATES_FOLDER = "candidates"
     # What the discovery embeds: a clip shorter or quieter than this carries no voice, and halves
@@ -400,12 +403,15 @@ class SpeakerIdentifier:
 
     def get_last_identified_user(self, max_age_seconds: float = 5.0) -> Optional[str]:
         """
-        Return the identified user based on voting over recent identifications.
+        Return the identified user based on voting over the latest utterance's identifications.
 
-        Uses all identifications within the vote window (30 seconds) to determine
-        the most likely user. An "a or b" verdict is half a vote for each; the two tied with
-        only such verdicts between them stay "a or b". Returns None if there's a tie
-        otherwise or no recent identifications.
+        The vote is among the identifications recorded within UTTERANCE_BURST of the newest one
+        (the mics that heard the same wake-word utterance); older ones in the window belong to
+        an earlier utterance, which may have been someone else's, so they never outvote the
+        person speaking now. A follow-up without a wake word records nothing, so it inherits the
+        latest utterance's verdict for max_age_seconds. An "a or b" verdict is half a vote for
+        each; the two tied with only such verdicts between them stay "a or b". Returns None if
+        there's a tie otherwise or no recent identifications.
 
         Args:
             max_age_seconds: Only consider identifications within this time window
@@ -413,13 +419,19 @@ class SpeakerIdentifier:
         with self._history_lock:
             self._prune_old_identifications()
             cutoff = time.time() - max_age_seconds
-            recent = [user for user, conf, ts in self._identification_history if ts >= cutoff]
+            recent = [(user, ts) for user, conf, ts in self._identification_history if ts >= cutoff]
 
         if not recent:
             return None
 
+        newest = max(ts for _, ts in recent)
+        burst = [user for user, ts in recent if ts >= newest - self.UTTERANCE_BURST]
+        if len(burst) < len(recent):
+            trace(f"Speaker vote: {len(recent) - len(burst)} identification(s) of an earlier utterance left out, "
+                  f"the latest utterance's {len(burst)} decide")
+
         vote_counts = Counter()
-        for verdict in recent:
+        for verdict in burst:
             names = self.names_of(verdict)
             for name in names:
                 vote_counts[name] += 1 / len(names)
@@ -429,7 +441,7 @@ class SpeakerIdentifier:
             return most_common[0][0]
 
         tied = {most_common[0][0], most_common[1][0]}
-        if any(set(self.names_of(verdict)) == tied for verdict in recent):
+        if any(set(self.names_of(verdict)) == tied for verdict in burst):
             either = self.either_of(*tied)
             trace(f"Speaker identification cannot split {either}: {most_common[0][1]:g} votes each")
             return either

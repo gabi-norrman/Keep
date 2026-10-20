@@ -134,6 +134,43 @@ class TestGetLastIdentifiedUser:
         assert result == "marcus"
 
     @patch('interfaces.voice.speaker_id.SpeakerIdentifier.time')
+    def test_latest_utterance_outvotes_an_earlier_speaker_in_the_window(self, mock_time):
+        """Marcus asked something 13 s ago; now Charlotte speaks and the one mic that heard her
+        is split between her and an unnamed voice. The earlier full vote must not win."""
+        mock_time.time.return_value = 1000.0
+        si = make_speaker_identifier()
+        si._identification_history = [
+            ("marcus", 0.68, 987.0),
+            ("charlotte or voice-abcd", 0.38, 999.9),
+        ]
+        result = si.get_last_identified_user(max_age_seconds=20.0)
+        assert set(SpeakerIdentifier.names_of(result)) == {"charlotte", "voice-abcd"}
+
+    @patch('interfaces.voice.speaker_id.SpeakerIdentifier.time')
+    def test_mics_of_one_utterance_vote_together(self, mock_time):
+        """Three mics heard the same utterance within a second; one of them split the verdict."""
+        mock_time.time.return_value = 1000.0
+        si = make_speaker_identifier()
+        si._identification_history = [
+            ("marcus", 0.7, 985.0),
+            ("charlotte", 0.6, 999.0),
+            ("charlotte or frances", 0.4, 999.4),
+            ("charlotte", 0.55, 999.9),
+        ]
+        assert si.get_last_identified_user(max_age_seconds=20.0) == "charlotte"
+
+    @patch('interfaces.voice.speaker_id.SpeakerIdentifier.time')
+    def test_follow_up_without_a_wake_word_inherits_the_latest_utterance(self, mock_time):
+        """Nothing was recorded for the follow-up, so the latest utterance still decides."""
+        mock_time.time.return_value = 1010.0
+        si = make_speaker_identifier()
+        si._identification_history = [
+            ("marcus", 0.7, 985.0),
+            ("charlotte", 0.6, 999.0),
+        ]
+        assert si.get_last_identified_user(max_age_seconds=20.0) == "charlotte"
+
+    @patch('interfaces.voice.speaker_id.SpeakerIdentifier.time')
     def test_respects_max_age_seconds(self, mock_time):
         mock_time.time.return_value = 1000.0
         si = make_speaker_identifier()
