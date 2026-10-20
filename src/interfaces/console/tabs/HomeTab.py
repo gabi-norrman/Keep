@@ -1,4 +1,5 @@
 from typing import TYPE_CHECKING, Optional
+from common import Clipboard
 from common.logging import info
 from .TabView import TabView
 from interfaces.console import TUIState
@@ -69,10 +70,29 @@ class HomeTab(TabView):
         return max(0, logo_bottom + 1 + LOGO_MARGIN - TOP_MARGIN)
 
     def handle_input(self, key: str) -> bool:
-        """Ctrl+D toggles show debug; everything else is the chat pane's."""
+        """Ctrl+D toggles show debug, Ctrl+V pastes the clipboard; everything else is the
+        chat pane's."""
         if key == '\x04':  # Ctrl+D - toggle show debug
             self.chat_pane.show_debug = not self.chat_pane.show_debug
             info(f"Home tab: show debug turned {'on' if self.chat_pane.show_debug else 'off'}")
             TUIState.save("home", show_debug=self.chat_pane.show_debug)
             return True
+        if key == '\x16':  # Ctrl+V
+            self.paste()
+            return True
         return self.chat_pane.handle_input(key)
+
+    def paste(self):
+        """The clipboard into the composer: a picture is staged for the next message, text
+        is inserted where the cursor is. The terminal never carries a picture, so this is the
+        one way one gets into the chat; the clipboard read is the server machine's — the TUI
+        and the server share it everywhere but over `tui.py <host>`. A secret prompt takes
+        text only (a pasted API key), never a picture."""
+        if self.chat_pane.pending_secret is None:
+            image = Clipboard.read_image()
+            if image is not None:
+                self.chat_pane.attach_image(*image)
+                return
+        text = Clipboard.read_text()
+        if not self.chat_pane.paste_text(text):
+            info("Home tab: Ctrl+V with nothing to paste")

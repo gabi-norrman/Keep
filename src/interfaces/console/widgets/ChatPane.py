@@ -21,7 +21,11 @@ Keys: printable text edits the composer (`LineEditor`), Enter sends, Shift+Enter
 for a terminal that cannot tell Shift+Enter from Enter) breaks a line, ↑/↓ scroll the transcript
 (a line at a time, as in every other tab), PgUp/PgDn browse the composer's history — only the
 entries containing what is typed, so "//feed" + PgUp recalls the last //feed command — Esc
-interrupts a running reply or clears the composer.
+interrupts a running reply or clears the composer. A picture pasted with Ctrl+V (the Home tab
+reads the clipboard and calls `attach_image`) is staged as a chip on a row of its own above
+the text — `[image 1: 1200×800, 340 kB]` — until Enter sends it with the text as its caption
+(`on_submit(text, images)`) or Esc drops it; the sent turn shows the picture under the `›`
+with the text as its caption, as the assistant's photos show theirs.
 While an approval prompt is pending the pane is modal: y approves, n or Esc denies. While a
 secret prompt is pending the composer becomes a masked field of its own (a history-less
 `LineEditor`, so the value never reaches tui_state.json): Enter hands the value on, Tab
@@ -90,6 +94,17 @@ class Entry:
     _layout: Optional[tuple] = field(default=None, repr=False, compare=False)
 
 
+@dataclass
+class StagedImage:
+    """A picture pasted into the composer, waiting to be sent with the next message."""
+    data: bytes
+    mime_type: str
+    picture: Picture
+
+    def chip(self, number: int) -> str:
+        return f"[image {number}: {self.picture.width}×{self.picture.height}, {len(self.data) / 1024:.0f} kB]"
+
+
 class ImageRow(NamedTuple):
     """One row of a picture laid out in a `cols` × `rows` box: the line shows row `row` of it."""
     picture: Picture
@@ -113,7 +128,8 @@ class ChatPane:
     MAX_ENTRIES = 500
     MAX_INPUT_ROWS = 3
     MIN_TRANSCRIPT_ROWS = 3
-    FOOTER = " ⏎ send  ⇧⏎ newline  ↑↓ scroll  ⇞⇟ history  esc clear · stop"
+    FOOTER = " ⏎ send  ⇧⏎ newline  ^v paste image  ↑↓ scroll  ⇞⇟ history  esc clear · stop"
+    MAX_IMAGES = 10            # pictures one message may carry
     DEBUG_HINT = "^d debug"
     FALLBACK_NOTICE = FallbackNotice.PATTERN
     # A stripped command leaves a whitespace-only line behind ("text\n\n \n\ntext"): drawn
@@ -146,6 +162,7 @@ class ChatPane:
     COLOR_RULE = Theme.COLOR_FAINT
     COLOR_PROMPT = Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_GREEN, 0.8)
     COLOR_CODE = Theme.COLOR_YELLOW
+    COLOR_CHIP = Theme.COLOR_YELLOW    # a staged image's chip above the composer text
     COLOR_LINK = Theme.COLOR_CYAN
     COLOR_QUOTE = Theme.COLOR_LABEL
     COLOR_STRIKE = Theme.mix(Theme.COLOR_DIM, Theme.COLOR_LABEL, 0.5)
@@ -167,6 +184,7 @@ class ChatPane:
         self._secret_editor: Optional[LineEditor] = None
         self._secret_revealed = False
         self.editor = LineEditor()
+        self._images: List[StagedImage] = []       # pasted, not yet sent
         self.scroll_offset = 0
         self.footer_notice: Optional[str] = None   # e.g. "WAITING FOR USER", drawn red at the right
         self.footer_chips: List[FeedChip] = []     # the feed strip (a bar chip per feed), at the right when no notice shows
@@ -185,7 +203,8 @@ class ChatPane:
         self.header_rows = 0
         self.header_scroll = 0
         self._last_window = None                   # (first visible line, top row) of the last frame
-        self.on_submit: Callable[[str], None] = lambda text: trace(f"ChatPane: nothing bound to receive {text!r}")
+        self.on_submit: Callable[[str, List[StagedImage]], None] = lambda text, images: trace(
+            f"ChatPane: nothing bound to receive {text!r} and {len(images)} image(s)")
         self.on_interrupt: Callable[[], None] = lambda: trace("ChatPane: nothing bound to interrupt")
         self.on_approval: Callable[[str, str], None] = lambda token, decision: trace(
             f"ChatPane: nothing bound to resolve approval {token[:8]} ({decision})")
@@ -237,6 +256,41 @@ class ChatPane:
     def secret_revealed(self) -> bool:
         return self._secret_revealed
 
+    @property
+    def images(self) -> List[StagedImage]:
+        return list(self._images)
+
+    def attach_image(self, data: bytes, mime_type: str) -> bool:
+        """Stage a pasted picture for the next message. Refused — False, logged — while a
+        prompt owns the composer, when the picture does not decode, or at MAX_IMAGES."""
+        if self._pending_secret is not None or self._pending_approval is not None:
+            info("ChatPane: a prompt owns the composer, the pasted image is ignored")
+            return False
+        if len(self._images) >= self.MAX_IMAGES:
+            info(f"ChatPane: {self.MAX_IMAGES} images are staged already, the pasted one is ignored")
+            return False
+        picture = Picture.decode(data)
+        if picture is None:
+            info("ChatPane: the pasted image does not decode, ignored")
+            return False
+        self._images.append(StagedImage(data, mime_type, picture))
+        info(f"ChatPane: image staged ({picture.width}×{picture.height}, {len(data) / 1024:.0f} kB), "
+             f"{len(self._images)} in the composer")
+        return True
+
+    def paste_text(self, text: str) -> bool:
+        """Clipboard text into whichever editor has the composer — the masked field while a
+        secret prompt owns it; none while an approval does."""
+        if not text:
+            trace("ChatPane: nothing to paste")
+            return False
+        if self._pending_approval is not None:
+            trace("ChatPane: an approval prompt owns the composer, the pasted text is ignored")
+            return False
+        editor = self._secret_editor if self._pending_secret is not None else self.editor
+        editor.insert(text)
+        return True
+
     def _add(self, entry: Entry) -> Entry:
         with self._lock:
             self._entries.append(entry)
@@ -244,9 +298,14 @@ class ChatPane:
                 del self._entries[:len(self._entries) - self.MAX_ENTRIES]
         return entry
 
-    def add_user(self, text: str) -> Entry:
+    def add_user(self, text: str, pictures: List[Picture] = ()) -> Entry:
+        """The user's turn: its pictures each as an entry of their own, the text as the
+        caption of the last one — or on its own when there is none."""
         self.scroll_offset = 0
-        return self._add(Entry(KIND_USER, TypewriterText(text, reveal=False)))
+        pictures = list(pictures)
+        for picture in pictures[:-1]:
+            self._add(Entry(KIND_USER, TypewriterText("", reveal=False), picture=picture))
+        return self._add(Entry(KIND_USER, TypewriterText(text, reveal=False), picture=pictures[-1] if pictures else None))
 
     def insert(self, kind: str, text: str, timestamp: float, header: Optional[str] = None) -> Entry:
         """A history entry: shown at once (no reveal) and placed by timestamp, after every
@@ -403,8 +462,9 @@ class ChatPane:
             return True
         if key in ('\r', '\n', 'enter'):
             text = self.editor.take()
-            if text:
-                self.on_submit(text)
+            images, self._images = self._images, []
+            if text or images:
+                self.on_submit(text, images)
             else:
                 trace("ChatPane: Enter on an empty composer, nothing to send")
             return True
@@ -412,8 +472,11 @@ class ChatPane:
             if self._working is not None or self._streaming():
                 info("ChatPane: Esc pressed while a reply runs, interrupting it")
                 self.on_interrupt()
-            elif not self.editor.empty:
+            elif not self.editor.empty or self._images:
                 self.editor.clear()
+                if self._images:
+                    info(f"ChatPane: Esc drops {len(self._images)} staged image(s)")
+                    self._images = []
             return True
         return self.editor.handle_key(key)
 
@@ -466,7 +529,8 @@ class ChatPane:
         text_w = max(1, width - len(PROMPT) - 1)
         input_rows_all = [""] if self._pending_secret is not None else self._input_rows(text_w)
         input_rows = max(1, min(self.MAX_INPUT_ROWS, len(input_rows_all)))
-        top_rule_y = bottom_rule_y - input_rows - 1
+        chip_rows = 1 if self._images and self._pending_secret is None else 0
+        top_rule_y = bottom_rule_y - input_rows - chip_rows - 1
         gap_y = top_rule_y - 1              # one blank row keeps the composer off the transcript
         status_y = gap_y - 1 if self._status else None
         transcript_bottom = (status_y if status_y is not None else gap_y) - 1
@@ -480,7 +544,9 @@ class ChatPane:
             self._draw_status(screen, x, status_y, width)
         screen.write_at(x, gap_y, " " * width)
         self._draw_rule(screen, x, top_rule_y, width)
-        self._draw_composer(screen, frame, x, top_rule_y + 1, width, input_rows, input_rows_all, text_w)
+        if chip_rows:
+            self._draw_chips_row(screen, x, top_rule_y + 1, width)
+        self._draw_composer(screen, frame, x, top_rule_y + 1 + chip_rows, width, input_rows, input_rows_all, text_w)
         self._draw_rule(screen, x, bottom_rule_y, width)
         self._draw_footer(screen, x, footer_y, width)
 
@@ -591,12 +657,17 @@ class ChatPane:
 
     @staticmethod
     def _picture_lines(entry: Entry, text: str, width: int, image_rows: int) -> List[Line]:
-        """A media entry with a picture: the picture's rows, the bullet on the first, then the
-        caption dim and italic under it."""
+        """An entry with a picture: the picture's rows, the entry's mark on the first, then
+        the caption under it — dim and italic for a media entry, the user's bold for a
+        pasted picture; a user's picture without a caption is the picture alone."""
+        user = entry.kind == KIND_USER
         cols, rows = entry.picture.fit(width, image_rows)
-        lines = [Line(BULLET if row == 0 else "", [], entry, image=ImageRow(entry.picture, row, cols, rows))
+        mark = PROMPT if user else BULLET
+        lines = [Line(mark if row == 0 else "", [], entry, image=ImageRow(entry.picture, row, cols, rows))
                  for row in range(rows)]
-        for line_spans in wrap_spans([StyledSpan(text=text, italic=True)], width):
+        if user and not text:
+            return lines
+        for line_spans in wrap_spans([StyledSpan(text=text, bold=user, italic=not user)], width):
             lines.append(Line("", line_spans, entry))
         return lines
 
@@ -841,6 +912,16 @@ class ChatPane:
 
     def _input_rows(self, text_w: int) -> List[str]:
         return [row for rows in self._paragraph_rows(text_w) for row in rows]
+
+    def _draw_chips_row(self, screen: TUIScreen, x: int, y: int, width: int):
+        """The staged images as chips on one row under the prompt's indent; a row too narrow
+        for them all clips the last."""
+        screen.reset_color()
+        screen.write_at(x, y, " " * width)
+        chips = "  ".join(image.chip(i + 1) for i, image in enumerate(self._images))
+        screen.set_color(self.COLOR_CHIP)
+        screen.write_at(x + len(PROMPT), y, clip(chips, max(0, width - len(PROMPT))))
+        screen.reset_color()
 
     def _draw_composer(self, screen: TUIScreen, frame: int, x: int, y: int, width: int,
                        rows: int, all_rows: List[str], text_w: int):

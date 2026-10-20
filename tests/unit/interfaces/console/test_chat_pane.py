@@ -5,6 +5,7 @@ import pytest
 from PIL import Image
 
 from interfaces.chat.ChatTypes import PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING, PHASE_WAITING, Progress
+from interfaces.console.framework.Pictures import Picture
 from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.widgets.ChatPane import (BULLET, KIND_ASSISTANT, KIND_DIFF, KIND_SECRET, KIND_SYSTEM,
                                                   KIND_USER, PROMPT, ChatPane, shimmer)
@@ -115,7 +116,7 @@ class TestComposer:
 
     def test_enter_submits_and_clears(self, pane):
         sent = []
-        pane.bind(on_submit=sent.append)
+        pane.bind(on_submit=lambda text, images: sent.append(text))
         for ch in "hi":
             pane.handle_input(ch)
         assert pane.handle_input('\r')
@@ -124,7 +125,7 @@ class TestComposer:
 
     def test_shift_enter_breaks_a_line_and_enter_sends_both(self, pane, screen):
         sent = []
-        pane.bind(on_submit=sent.append)
+        pane.bind(on_submit=lambda text, images: sent.append(text))
         for key in list("one") + ['shift_enter'] + list("two"):
             pane.handle_input(key)
         lines = draw(pane, screen)
@@ -152,7 +153,7 @@ class TestComposer:
 
     def test_enter_on_empty_sends_nothing(self, pane):
         sent = []
-        pane.bind(on_submit=sent.append)
+        pane.bind(on_submit=lambda text, images: sent.append(text))
         pane.handle_input('enter')
         assert sent == []
 
@@ -180,6 +181,78 @@ class TestComposer:
         pane.add_assistant("partial")
         pane.handle_input('escape')
         assert interrupted == [True]
+
+
+class TestStagedImages:
+    """A picture pasted with Ctrl+V waits as a chip above the text until Enter sends it or
+    Esc drops it; the sent turn shows it under the prompt with the text as its caption."""
+
+    def test_a_staged_image_takes_a_chip_row_above_the_text_and_goes_out_with_enter(self, pane, screen):
+        sent = []
+        pane.bind(on_submit=lambda text, images: sent.append((text, images)))
+        assert pane.attach_image(jpeg(300, 200), "image/jpeg")
+        for ch in "hi":
+            pane.handle_input(ch)
+        lines = draw(pane, screen)
+        assert lines[HEIGHT - 4].startswith(" " * len(PROMPT) + "[image 1: 300×200, ")
+        assert lines[HEIGHT - 3] == PROMPT + "hi"
+        assert lines[HEIGHT - 5] == "─" * WIDTH, "the top rule moved up a row for the chips"
+        pane.handle_input('\r')
+        assert [(text, [i.mime_type for i in images]) for text, images in sent] == [("hi", ["image/jpeg"])]
+        assert pane.images == [] and pane.editor.empty
+        assert draw(pane, screen)[HEIGHT - 4] == "─" * WIDTH, "the chip row is gone"
+
+    def test_images_alone_are_sent_and_escape_drops_them(self, pane):
+        sent = []
+        pane.bind(on_submit=lambda text, images: sent.append((text, len(images))))
+        pane.attach_image(jpeg(30, 20), "image/jpeg")
+        pane.attach_image(jpeg(30, 20), "image/jpeg")
+        pane.handle_input('escape')
+        assert pane.images == [] and sent == []
+        pane.attach_image(jpeg(30, 20), "image/jpeg")
+        pane.handle_input('enter')
+        assert sent == [("", 1)]
+
+    def test_bytes_that_are_not_a_picture_and_a_full_composer_are_refused(self, pane):
+        assert not pane.attach_image(b"not a picture", "image/png")
+        for _ in range(ChatPane.MAX_IMAGES):
+            assert pane.attach_image(jpeg(10, 10), "image/jpeg")
+        assert not pane.attach_image(jpeg(10, 10), "image/jpeg")
+        assert len(pane.images) == ChatPane.MAX_IMAGES
+
+    def test_a_prompt_owning_the_composer_refuses_the_picture_but_takes_text_into_its_field(self, pane):
+        pane.add_secret_prompt("t1", "API key", "")
+        assert not pane.attach_image(jpeg(10, 10), "image/jpeg")
+        assert pane.paste_text("sk-123")
+        assert pane._secret_editor.text == "sk-123" and pane.editor.empty
+        pane.close_secret(pane.pending_secret, "✅")
+        pane.add_approval("a1", "Send it?", "")
+        assert not pane.paste_text("yes") and not pane.attach_image(jpeg(10, 10), "image/jpeg")
+
+    def test_pasted_text_lands_at_the_cursor(self, pane):
+        for key in list("ac") + ['left']:
+            pane.handle_input(key)
+        assert pane.paste_text("b")
+        assert pane.editor.text == "abc"
+        assert not pane.paste_text("")
+
+    def test_the_sent_turn_shows_the_picture_under_the_prompt_with_the_text_as_its_caption(self, pane, screen):
+        pane.add_user("what is this", [Picture.decode(jpeg(300, 200))])
+        screen.graphics = True
+        lines = draw(pane, screen)
+        placement = screen._placements[pane.entries[0].picture.id][1]
+        assert lines[0] == PROMPT.rstrip()
+        assert lines[placement[3]] == "  what is this"
+        cell = screen.next_frame[placement[3]][2].style
+        assert cell.bold and not cell.italic and cell.fg == ChatPane.COLOR_USER
+
+    def test_several_pictures_each_get_an_entry_and_the_text_captions_the_last(self, pane, screen):
+        pane.add_user("both", [Picture.decode(jpeg(300, 200)), Picture.decode(jpeg(300, 200))])
+        assert [e.body.text for e in pane.entries] == ["", "both"]
+        assert all(e.picture is not None and e.kind == KIND_USER for e in pane.entries)
+        lines = draw(pane, screen)
+        transcript = lines[:HEIGHT - 5]   # the composer's own prompt is below
+        assert transcript.count(PROMPT.rstrip()) == 2 and "  both" in transcript
 
 
 class TestTranscript:
@@ -328,7 +401,7 @@ class TestTranscript:
     def test_footer_progress_bar_sits_centred_between_the_hints_and_the_strip(self, pane):
         from interfaces.console.widgets.FeedStrip import FeedChip
         from interfaces.console.Theme import COLOR_YELLOW
-        width = 140
+        width = 160
         pane.footer_chips = [FeedChip("●", ChatPane.COLOR_DIM, "Photos")]
         pane.footer_progress, pane.footer_eta = 0.5, 4 * 3600
         screen = TUIScreen(width, HEIGHT)
@@ -349,8 +422,8 @@ class TestTranscript:
 
     def test_footer_progress_bar_drops_its_label_then_the_eta_then_itself_when_squeezed(self, pane):
         pane.footer_progress, pane.footer_eta = 1.0, 34
-        for width, expect_label, expect_eta, expect_bar in ((108, False, True, True), (100, False, False, True),
-                                                            (88, False, False, False)):
+        for width, expect_label, expect_eta, expect_bar in ((124, False, True, True), (116, False, False, True),
+                                                            (104, False, False, False)):
             screen = TUIScreen(width, HEIGHT)
             screen.clear_buffer()
             pane.draw(screen, 0, 1, 1, width, HEIGHT)
@@ -744,7 +817,7 @@ class TestSecretPrompt:
         lines = draw(pane, screen)
         assert lines[0] == BULLET + "Amex (card) — Stored as amex (•••• 1111)"
         assert lines[1] == ""
-        assert lines[HEIGHT - 1].startswith(ChatPane.FOOTER)
+        assert lines[HEIGHT - 1].startswith(ChatPane.FOOTER[:WIDTH // 2])   # the hints are back
         assert "4111" not in "\n".join(lines)
         assert pane.handle_input('x') is True and not pane.editor.empty    # composer is back
 

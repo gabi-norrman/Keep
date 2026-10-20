@@ -175,10 +175,12 @@ class FakeAssistant:
         self.busy = busy
         self.raise_exc = raise_exc
         self.requests = []
+        self.images = []        # one entry per request: the images it carried, or None
         self.stream_obj = None
 
     def stream(self, req, query=None, images=None, request_data=None):
         self.requests.append((req, query))
+        self.images.append(getattr(req, 'images', None) or images)
         if self.raise_exc:
             raise self.raise_exc
         if self.busy:

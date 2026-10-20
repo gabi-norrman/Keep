@@ -9,7 +9,7 @@ from interfaces.console.widgets.FeedStrip import (BAR_EMPTY_DIMMING, COLOR_START
                                                   SYMBOL_RUNNING, FeedChip, FeedStrip, bar_block, chip_for, dimmed, format_eta,
                                                   strip_width)
 
-WIDTH, HEIGHT = 100, 12
+WIDTH, HEIGHT = 130, 12
 
 FILL = dimmed(Theme.COLOR_GREEN)
 BOX = dimmed(Theme.COLOR_GREEN, BAR_EMPTY_DIMMING)

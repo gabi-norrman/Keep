@@ -58,3 +58,42 @@ def test_the_chat_starts_under_the_logo_and_the_header_scrolls_away_with_the_tra
         pane.add_notice(f"line {i}")
     tab.draw(TUIScreen(80, 40), 1)
     assert intro.lifts[-1] == pane.header_rows, "a full transcript has scrolled the header all the way up"
+
+
+class TestPaste:
+    """Ctrl+V: a picture on the clipboard is staged, else the text is inserted; a secret
+    prompt takes text only and the clipboard's picture is not even read."""
+
+    @staticmethod
+    def png() -> bytes:
+        import io
+        from PIL import Image
+        out = io.BytesIO()
+        Image.new("RGB", (20, 10), (0, 0, 200)).save(out, format="PNG")
+        return out.getvalue()
+
+    def test_a_picture_on_the_clipboard_is_staged(self, monkeypatch):
+        from common import Clipboard
+        monkeypatch.setattr(Clipboard, "read_image", lambda: (self.png(), "image/png"))
+        monkeypatch.setattr(Clipboard, "read_text", lambda: "never")
+        pane = ChatPane()
+        assert HomeTab(FakeConsole(), pane).handle_input('\x16')
+        assert [i.mime_type for i in pane.images] == ["image/png"] and pane.editor.empty
+
+    def test_text_on_the_clipboard_goes_into_the_composer(self, monkeypatch):
+        from common import Clipboard
+        monkeypatch.setattr(Clipboard, "read_image", lambda: None)
+        monkeypatch.setattr(Clipboard, "read_text", lambda: "pasted")
+        pane = ChatPane()
+        HomeTab(FakeConsole(), pane).handle_input('\x16')
+        assert pane.editor.text == "pasted" and pane.images == []
+
+    def test_a_secret_prompt_takes_the_text_and_never_asks_for_the_picture(self, monkeypatch):
+        from common import Clipboard
+        reads = []
+        monkeypatch.setattr(Clipboard, "read_image", lambda: reads.append("image"))
+        monkeypatch.setattr(Clipboard, "read_text", lambda: "sk-456")
+        pane = ChatPane()
+        pane.add_secret_prompt("t1", "API key", "")
+        HomeTab(FakeConsole(), pane).handle_input('\x16')
+        assert reads == [] and pane._secret_editor.text == "sk-456" and pane.editor.empty

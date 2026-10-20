@@ -16,8 +16,9 @@ from assistant.ChannelProfile import SOURCE_CONSOLE
 from common.ConfigManager import config
 from common.logging import info, trace
 from interfaces.chat import RichText
+from interfaces.chat.ChatSession import ChatSession
 from interfaces.chat.ChatTransport import ChatTransport
-from interfaces.chat.ChatTypes import PHASE_THINKING, IncomingMessage, Progress
+from interfaces.chat.ChatTypes import KIND_PHOTO, PHASE_THINKING, Attachment, IncomingMessage, Progress
 from interfaces.console.widgets.ChatPane import ChatPane, Entry
 
 if TYPE_CHECKING:
@@ -115,19 +116,28 @@ class ConsoleTransport(ChatTransport):
 
     # --- from the pane ----------------------------------------------------------------------
 
-    def submit(self, text: str):
+    def submit(self, text: str, images: list = ()):
+        """The composer's text and the pictures staged in it (`ChatPane.StagedImage`): a text
+        message, or a photo message carrying every picture with the text as its caption —
+        the session batches them into one request, as it does a Telegram album."""
         text = (text or "").strip()
-        if not text:
+        images = list(images)
+        if not text and not images:
             trace("Console chat: empty submission ignored")
             return
-        self.pane.add_user(text)
+        self.pane.add_user(text, [image.picture for image in images])
         if self._hub is None:
             info("Console chat: no chat hub attached, cannot send the message")
             self.pane.add_notice("Sorry, the chat is not connected to the assistant.")
             return
-        info(f"Console chat: {text}")
+        info(f"Console chat: {text}" + (f" (+{len(images)} image(s))" if images else ""))
         if self.feed is not None:
-            self.feed.user_submitted(text)
+            self.feed.user_submitted(text or ChatSession.IMAGES_ONLY_QUERY)
+        if images:
+            self._hub.receive(self, IncomingMessage(
+                conversation=CONVERSATION, sender=config.get_owner_name(), kind=KIND_PHOTO, text=text,
+                attachments=[Attachment(image.data, image.mime_type, "photo") for image in images]))
+            return
         self._hub.receive(self, IncomingMessage(conversation=CONVERSATION, sender=config.get_owner_name(),
                                                 text=text))
 

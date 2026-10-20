@@ -75,6 +75,7 @@ class _Album:
 
 
 class ChatSession:
+    IMAGES_ONLY_QUERY = "See images"   # the query of a photo batch without a caption
     # How long the reply loop waits for the next assistant event before reporting progress;
     # the visible "still working" signal through slow thinking and commands.
     SPINNER_TICK_SECONDS = 0.5
@@ -271,7 +272,7 @@ class ChatSession:
         if not album.images:
             info(f"{self._log_prefix()}: batch has no images, skipping")
             return
-        query = " ".join(album.captions) if album.captions else "See images"
+        query = " ".join(album.captions) if album.captions else self.IMAGES_ONLY_QUERY
         info(f"{self._log_prefix()} dispatching batch: {len(album.images)} image(s), query: {query}")
         self._start(IncomingMessage(conversation=self._conversation, sender=album.sender, text=query,
                                     guest=album.guest, sender_is_bot=album.sender_is_bot),

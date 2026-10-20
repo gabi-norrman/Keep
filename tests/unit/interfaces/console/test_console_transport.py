@@ -1,12 +1,15 @@
 """ConsoleTransport on a real ChatHub: typed text becomes an assistant request, the reply
 state machine renders into the ChatPane, and the Notifier/approval paths reach the console."""
+import io
 import threading
 from unittest.mock import MagicMock
 
 import pytest
+from PIL import Image
 
 from assistant.AssistantEvents import Done, Notice, RoundEnd, Thinking, ThinkingDone, Token
 from interfaces.chat.ChatHub import ChatHub
+from interfaces.chat.ChatSession import ChatSession
 from interfaces.chat.ChatTypes import PHASE_WAITING, Progress
 from interfaces.console.ConsoleTransport import CONVERSATION, ConsoleDraft, ConsoleTransport
 from interfaces.console.widgets.ChatPane import (KIND_APPROVAL, KIND_ASSISTANT, KIND_MEDIA, KIND_NOTICE,
@@ -39,6 +42,12 @@ def hub(transport):
     return hub
 
 
+def jpeg(width: int, height: int) -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", (width, height), (40, 200, 40)).save(out, format="JPEG")
+    return out.getvalue()
+
+
 def kinds(pane: ChatPane) -> list[str]:
     return [e.kind for e in pane.entries]
 
@@ -54,6 +63,29 @@ class TestSubmit:
         assert pane.entries[0].body.text == "hi there"
         assert pane.entries[1].body.text == "Hello"
         assert pane.working is None
+
+    def test_pasted_images_go_out_as_one_photo_message_with_the_text_as_caption(self, hub, pane):
+        hub.assistant = FakeAssistant([Token("A cat"), RoundEnd("A cat"), Done("A cat")])
+        pane.attach_image(jpeg(40, 30), "image/jpeg")
+        pane.attach_image(jpeg(40, 30), "image/jpeg")
+        for ch in "what":
+            pane.handle_input(ch)
+        pane.handle_input('enter')
+        assert wait_until(lambda: hub.assistant.requests)
+        _, query = hub.assistant.requests[0]
+        assert query == "what"
+        assert [img["media_type"] for img in hub.assistant.images[0]] == ["image/jpeg", "image/jpeg"]
+        assert kinds(pane)[:2] == [KIND_USER, KIND_USER]
+        assert all(e.picture is not None for e in pane.entries[:2])
+        assert pane.entries[1].body.text == "what"
+
+    def test_a_picture_without_text_asks_the_assistant_to_look(self, hub, pane):
+        hub.assistant = FakeAssistant([Token("ok"), RoundEnd("ok"), Done("ok")])
+        pane.attach_image(jpeg(40, 30), "image/jpeg")
+        pane.handle_input('enter')
+        assert wait_until(lambda: hub.assistant.requests)
+        assert hub.assistant.requests[0][1] == ChatSession.IMAGES_ONLY_QUERY
+        assert len(hub.assistant.images[0]) == 1
 
     def test_one_bubble_per_round(self, hub, pane):
         hub.assistant = FakeAssistant([Token("first"), RoundEnd("first"), Token("second"), RoundEnd("second"),
