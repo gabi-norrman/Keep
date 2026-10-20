@@ -1,6 +1,9 @@
 import os
 import sys
 
+from common.ConfigManager import ConfigManager
+from common.logging import trace
+
 # Development mode flag - when True, enables development-friendly behaviors for local development
 LOCAL_DEVELOPMENT_MODE = False
 
@@ -24,10 +27,13 @@ RUNNING_UNDER_TEST = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.envi
 # (Claude on Fable models, where Anthropic cache economics bite hardest; Ollama, which
 # needs a stable KV-cache prefix. Older Claude models keep the accuracy nudge).
 #
-# This env var is a global OVERRIDE of those per-LLM defaults — a tri-state:
+# Two global OVERRIDES of those per-LLM defaults, each a tri-state, the env var over the
+# config key (prepend_user_query_override):
 #   unset            -> None  -> use each LLM's own default (Fable/Ollama off, the rest on)
 #   FLOXY_PREPEND_USER_QUERY=0 -> False -> force OFF for every LLM
 #   FLOXY_PREPEND_USER_QUERY=1 -> True  -> force ON for every LLM (the prompt test runner's A/B knob)
+# and the root config.yaml key `prepend_user_query`: auto (the default) / true / false, read at
+# each request so a config_set is in force from the next request on.
 def _prepend_user_query_override():
     val = os.environ.get("FLOXY_PREPEND_USER_QUERY")
     if val is None:
@@ -36,6 +42,28 @@ def _prepend_user_query_override():
 
 
 PREPEND_USER_QUERY_OVERRIDE = _prepend_user_query_override()
+PREPEND_USER_QUERY_KEY = "prepend_user_query"
+_PREPEND_TRUE = ("true", "yes", "on", "1")
+_PREPEND_FALSE = ("false", "no", "off", "0")
+
+
+def prepend_user_query_override():
+    """The forced prepend setting, or None for each LLM's own default: the env var when it is
+    set, else the `prepend_user_query` config key. A bool is what a hand-edited config.yaml
+    holds, a string what config_set stores (the example's value is the string `auto`)."""
+    if PREPEND_USER_QUERY_OVERRIDE is not None:
+        return PREPEND_USER_QUERY_OVERRIDE
+    value = ConfigManager.get_instance().get(PREPEND_USER_QUERY_KEY, "auto")
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in _PREPEND_TRUE:
+        return True
+    if text in _PREPEND_FALSE:
+        return False
+    if text != "auto":
+        trace(f"{PREPEND_USER_QUERY_KEY}: {value!r} is not auto/true/false — each LLM's own default applies")
+    return None
 
 # Ollama's MLX runner restores its KV cache only at the restore point taken just before the
 # previous reply (and at 8k-token multiples), so a request only hits when the previous one is

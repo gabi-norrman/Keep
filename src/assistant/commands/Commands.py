@@ -22,6 +22,7 @@ from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from common.ConfigManager import ConfigManager
 from common import ConfigSchema, ConfigStore, FullDiskAccess
 from common.ConfigStore import ConfigStoreError
+from common.DevelopmentConfig import PREPEND_USER_QUERY_KEY
 from assistant.ChannelProfile import AUTONOMOUS
 from assistant.Notifier import SecretRejected, notifier
 from assistant.SystemNote import system_note
@@ -1323,6 +1324,7 @@ class Commands:
 
     IS_DEVELOPER_HINT = ("Read at each prompt build: the self_improvement toolkit is offered (true) or "
                          "withdrawn (false) from the next turn on, no restart needed.")
+    PREPEND_HINT = "Read at each request: in force from the next request on, no restart needed."
 
     @classmethod
     def _restart_hint(cls, key: str) -> str:
@@ -1330,6 +1332,8 @@ class Commands:
             return cls.DEVELOPER_RELEASE_HINT
         if key == "is_developer":
             return cls.IS_DEVELOPER_HINT
+        if key == PREPEND_USER_QUERY_KEY:
+            return cls.PREPEND_HINT
         if key == cls.AI_FOOTER_KEY:
             return cls.AI_FOOTER_HINT
         if key.startswith("telemetry."):

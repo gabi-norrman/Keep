@@ -1281,7 +1281,7 @@ class TestPrepareContext:
         ]
 
         with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf, \
-             patch("assistant.RequestProcessor.PREPEND_USER_QUERY_OVERRIDE", True):
+             patch("assistant.RequestProcessor.prepend_user_query_override", return_value=True):
             mock_mf.format_message.return_value = "User: what is the weather"
             full_handler.request_context.user_input = "what is the weather"
             full_handler._prepare_llm_context(prompt_manager)
@@ -1300,7 +1300,7 @@ class TestPrepareContext:
         prompt_manager.get_messages.return_value = [{"role": "system", "content": "You are a helpful assistant."}]
         for prepend in (True, False):
             with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf, \
-                 patch("assistant.RequestProcessor.PREPEND_USER_QUERY_OVERRIDE", prepend):
+                 patch("assistant.RequestProcessor.prepend_user_query_override", return_value=prepend):
                 mock_mf.format_message.return_value = "User: hello"
                 full_handler.request_context.user_input = "hello"
                 full_handler._prepare_llm_context(prompt_manager)
@@ -1314,7 +1314,7 @@ class TestPrepareContext:
         ]
 
         with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf, \
-             patch("assistant.RequestProcessor.PREPEND_USER_QUERY_OVERRIDE", False):
+             patch("assistant.RequestProcessor.prepend_user_query_override", return_value=False):
             mock_mf.format_message.return_value = "User: hello"
             full_handler.request_context.user_input = "hello"
             full_handler._prepare_llm_context(prompt_manager)
@@ -1329,7 +1329,7 @@ class TestPrepareContext:
         ]
 
         with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf, \
-             patch("assistant.RequestProcessor.PREPEND_USER_QUERY_OVERRIDE", True):
+             patch("assistant.RequestProcessor.prepend_user_query_override", return_value=True):
             mock_mf.format_message.return_value = "User: hello"
             full_handler.request_context.user_input = "hello"
             full_handler._prepare_llm_context(prompt_manager)
@@ -1345,7 +1345,7 @@ class TestPrepareContext:
         full_handler.dialog_manager.ai.prefers_prepended_user_query.return_value = True
 
         with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf, \
-             patch("assistant.RequestProcessor.PREPEND_USER_QUERY_OVERRIDE", None):
+             patch("assistant.RequestProcessor.prepend_user_query_override", return_value=None):
             mock_mf.format_message.return_value = "User: what is the weather"
             full_handler.request_context.user_input = "what is the weather"
             full_handler._prepare_llm_context(prompt_manager)
@@ -1362,7 +1362,7 @@ class TestPrepareContext:
         full_handler.dialog_manager.ai.prefers_prepended_user_query.return_value = False
 
         with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf, \
-             patch("assistant.RequestProcessor.PREPEND_USER_QUERY_OVERRIDE", None):
+             patch("assistant.RequestProcessor.prepend_user_query_override", return_value=None):
             mock_mf.format_message.return_value = "User: hello"
             full_handler.request_context.user_input = "hello"
             full_handler._prepare_llm_context(prompt_manager)
@@ -1378,7 +1378,7 @@ class TestPrepareContext:
         full_handler.dialog_manager.ai.prefers_prepended_user_query.return_value = True
 
         with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf, \
-             patch("assistant.RequestProcessor.PREPEND_USER_QUERY_OVERRIDE", False):
+             patch("assistant.RequestProcessor.prepend_user_query_override", return_value=False):
             mock_mf.format_message.return_value = "User: hello"
             full_handler.request_context.user_input = "hello"
             full_handler._prepare_llm_context(prompt_manager)
@@ -1393,7 +1393,7 @@ class TestPrepareContext:
         ]
 
         with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf, \
-             patch("assistant.RequestProcessor.PREPEND_USER_QUERY_OVERRIDE", False):
+             patch("assistant.RequestProcessor.prepend_user_query_override", return_value=False):
             mock_mf.format_message.return_value = "User: What is this?"
             full_handler.request_context.user_input = "What is this?"
             full_handler._prepare_llm_context(prompt_manager)

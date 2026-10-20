@@ -83,3 +83,43 @@ def test_history_cache_ttl_never_outlives_the_system_blocks(isolated_env):
     cfg = _reimport_development_config()
     assert cfg.CLAUDE_HISTORY_CACHE_TTL == "1h"
     assert order[cfg.CLAUDE_HISTORY_CACHE_TTL] <= order[cfg.CLAUDE_STATIC_CACHE_TTL]
+
+
+class _Config:
+    def __init__(self, value):
+        self.value = value
+
+    def get(self, key, default=None):
+        return self.value if key == "prepend_user_query" else default
+
+
+def _resolve_with(monkeypatch, cfg, stored):
+    """prepend_user_query_override() with config.yaml holding *stored* at the key."""
+    monkeypatch.setattr(cfg.ConfigManager, "get_instance", lambda: _Config(stored))
+    return cfg.prepend_user_query_override()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stored, expected", [
+    ("auto", None),          # the example's value: each LLM's own default
+    (None, None),            # key absent
+    (True, True),            # a hand-edited config.yaml holds a bool
+    (False, False),
+    ("true", True),          # config_set stores the typed text
+    ("False", False),
+    ("off", False),
+    ("sometimes", None),     # junk falls back to the LLM defaults rather than forcing either way
+])
+def test_prepend_user_query_config_key(isolated_env, stored, expected):
+    """The root config key `prepend_user_query` is the install's switch (contract with config.yaml)."""
+    cfg = _reimport_development_config()
+    assert _resolve_with(isolated_env, cfg, stored) is expected
+
+
+@pytest.mark.unit
+def test_prepend_user_query_env_beats_config_key(isolated_env):
+    """The prompt test runner's env var must still win: it A/Bs the setting on a checkout whose
+    config.yaml may say otherwise."""
+    isolated_env.setenv("FLOXY_PREPEND_USER_QUERY", "0")
+    cfg = _reimport_development_config()
+    assert _resolve_with(isolated_env, cfg, True) is False

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Callable, Generator, Iterator, Optional
 
 from colorama import Fore
 
-from common.DevelopmentConfig import BYTE_PREFIX_TAIL, PREPEND_USER_QUERY_OVERRIDE
+from common.DevelopmentConfig import BYTE_PREFIX_TAIL, prepend_user_query_override
 from assistant.DialogManager import DialogManager
 from assistant.prompt.MessageHistory import MessageHistory
 from assistant.AssistantRequest import RequestContext
@@ -558,9 +558,8 @@ class RequestProcessor:
                      if self.turn_timestamp is not None else user_input_sent_to_ai)
         fine("Will send to LLM: " + user_input_sent_to_ai)
 
-        should_prepend = (PREPEND_USER_QUERY_OVERRIDE
-                          if PREPEND_USER_QUERY_OVERRIDE is not None
-                          else self.dialog_manager.ai.prefers_prepended_user_query())
+        override = prepend_user_query_override()
+        should_prepend = override if override is not None else self.dialog_manager.ai.prefers_prepended_user_query()
         # Prepending puts per-request content at byte 0, so no later request reads what this
         # one caches — only its own command follow-up rounds do. The LLM picks its cache tier
         # by that (ClaudeLLM: 5m on every block instead of 1h; a no-op for the others).

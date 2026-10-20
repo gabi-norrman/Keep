@@ -235,6 +235,7 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
     from common.vault.Vault import Vault
 
     info(f"Version {Version.detail()}")
+    _trace_prepend_setting()
     TempMonitor.check_installed()
     FloxyDatabase.get_instance()
     # A vault value the LLM writes back through a placeholder (a config_set of an api_hash)
@@ -384,13 +385,22 @@ def _parse_args():
     note("Keep AI Server starting...")
     if DevelopmentConfig.LOCAL_DEVELOPMENT_MODE:
         trace("LOCAL_DEVELOPMENT_MODE enabled")
-    if PREPEND_USER_QUERY_OVERRIDE is None:
-        trace("Prepend user query: per-LLM default — set FLOXY_PREPEND_USER_QUERY=0/1 to override")
-    elif PREPEND_USER_QUERY_OVERRIDE:
-        trace("Prepend user query: forced ON for every LLM (FLOXY_PREPEND_USER_QUERY=1) — no prompt/KV cache reads across requests")
-    else:
-        trace("Prepend user query: forced OFF for every LLM (FLOXY_PREPEND_USER_QUERY=0) — caching preserved, accuracy may drop")
     return port, running_as_testsuite
+
+
+def _trace_prepend_setting():
+    """Which prepend setting the dialog requests start under; the config key is re-read at each
+    request, so this is only how the server boots."""
+    source = ("FLOXY_PREPEND_USER_QUERY" if PREPEND_USER_QUERY_OVERRIDE is not None
+              else f"config key {DevelopmentConfig.PREPEND_USER_QUERY_KEY}")
+    override = DevelopmentConfig.prepend_user_query_override()
+    if override is None:
+        trace("Prepend user query: per-LLM default — set prepend_user_query: true/false in config.yaml "
+              "or FLOXY_PREPEND_USER_QUERY=0/1 to override")
+    elif override:
+        trace(f"Prepend user query: forced ON for every LLM ({source}) — no prompt/KV cache reads across requests")
+    else:
+        trace(f"Prepend user query: forced OFF for every LLM ({source}) — caching preserved, accuracy may drop")
 
 
 def _required_keys() -> tuple[str, ...]:
