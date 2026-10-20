@@ -24,7 +24,7 @@ The interfaces the server starts — `interfaces.voice.enabled`, `interfaces.tel
 `interfaces.console.enabled` (`config_help("interfaces")`) — are set the same way, e.g.
 `config_set("interfaces.voice.enabled", "true")`. Telegram and the console are on by default, voice off. They are read
 at startup only: after flipping one offer `restart_server()` (developer toolkit; the user approves it in the chat).
-Voice needs no installation. The server's microphones are on with it (`local_outposts.enabled`; a phone-only install
+The server's microphones are on with it (`local_outposts.enabled`; a phone-only install
 sets it false); `local_outposts.location` names their room, the destination the speakers answer to in `post_message`
 (read at voice start; set it and restart). The voice speaks through the
 first enabled and configured TTS engine: "ElevenLabs TTS" is on by default and needs only `api_keys.elevenlabs`;
@@ -45,13 +45,13 @@ there on your own. When the user presses Start in the bot their chat id reaches 
 `show_full_disk_access_setting()` — opens System Settings on Privacy & Security > Full Disk Access, on the Mac's own
 screen (the user must be at it), and reports whether the grant is in force for the running server. macOS
 keeps the Messages database behind this grant and gives it to Terminal, the app the server is launched through. The
-user turns Terminal on there; macOS then offers to quit Terminal — they should accept (the terminal and the console
-close, the server keeps running, Telegram stays up). The grant reaches a new process only, so `restart_server()`
+user turns Terminal on there; macOS then offers to quit Terminal — they should accept (the terminal and console
+close; the server and Telegram keep running). The grant reaches a new process only, so `restart_server()`
 (developer toolkit) comes next, from Telegram.
 
 `enable_integration(name: str)` / `disable_integration(name: str)` — switches an integration on or off by the name
 `list_integrations` shows, restarts it and reports its state, e.g. `enable_integration("IMAP Mail")`. Enabling one not
-configured yet is fine: it comes back "not configured" naming the keys it needs.
+yet configured comes back "not configured" naming the keys it needs.
 
 `telegram_login(phone: str)` — signs the Telegram Feed (the user's own account) in, e.g. `telegram_login("+46701234567")`.
 Only from the console chat: Telegram invalidates a login code sent as a Telegram message, so it cannot go through the
@@ -61,11 +61,12 @@ app, opens the masked prompt for it, then for the two-step verification password
 the feed. An expired code or a cancelled prompt comes back as text; run it again for a new code.
 
 WhatsApp (the user's own account, read into the history and written to) has no keys: enable it; its link —
-`whatsapp_login(phone)`, a code the user types into the phone, from any chat — is in the whatsapp toolkit.
+`whatsapp_login(phone)`, a code the user types into the phone, from any chat — is in the whatsapp toolkit, and
+`dropbox_login()` (as google_login) in the dropbox toolkit.
 
 `microsoft_login(account: str)` — signs a Microsoft 365 account (an entry of `microsoft.accounts`, by its name) in, e.g.
 `microsoft_login("Work")`, from any chat. It comes back with a code and the address to type it at
-(microsoft.com/devicelogin); tell the user both, nothing comes back to paste. The code lives about fifteen minutes; a
+(microsoft.com/devicelogin); tell the user both, nothing comes back to paste. The code lives 15 minutes; a
 system note says when the account is signed in (or that the code expired — run it again). Needs
 `microsoft.app.client_id` set and the integration enabled.
 

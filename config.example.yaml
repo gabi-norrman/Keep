@@ -63,6 +63,8 @@ google_service_account:
 
 # >> microsoft: src/integrations/microsoft/config.example.yaml
 
+# >> dropbox: src/integrations/dropbox/config.example.yaml
+
 # Mail, whichever integrations bring the accounts (IMAP Mail today). send_from names the account
 # send_email sends from unless the assistant is told another one; unset, the first configured
 # account sends. The nightly code-quality report is mailed from the same account to its own address.
