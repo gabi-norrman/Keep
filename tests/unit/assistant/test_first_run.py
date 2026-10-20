@@ -610,6 +610,12 @@ class TestDesktopShortcut:
             return knobs.built
         monkeypatch.setattr(FirstRun.FullDiskAccess, "granted", lambda: knobs.granted)
         monkeypatch.setattr(FirstRun.DesktopShortcut, "ensure", ensure)
+        knobs.autostart_failure, knobs.enable_calls = None, 0
+
+        def enable():
+            knobs.enable_calls += 1
+            return knobs.autostart_failure
+        monkeypatch.setattr(FirstRun.Autostart, "enable", enable)
         knobs.chat = Mock()
         knobs.chat.open_conversation.return_value = False     # no chat takes the turn unless a test says so
         monkeypatch.setattr(FirstRun, "notifier", lambda: knobs.chat)
@@ -660,6 +666,23 @@ class TestDesktopShortcut:
         shortcut.granted = True
         assert env.pipeline.desktop_shortcut(state, now=1000.0) is False
         assert shortcut.ensure_calls == 0
+
+    def test_the_login_item_is_registered_with_the_shortcut_and_the_turn_says_so(self, env, shortcut):
+        state = env.state_at(Stage.SETUP, full_disk_access_awaited=True)
+        shortcut.granted = True
+        shortcut.chat.open_conversation.return_value = True
+        assert env.pipeline.desktop_shortcut(state, now=0.0) is True
+        assert shortcut.enable_calls == 1
+        turn = shortcut.chat.open_conversation.call_args.args[0]
+        assert "login" in turn
+
+    def test_a_login_item_that_could_not_be_made_leaves_the_shortcut_step_whole(self, env, shortcut):
+        state = env.state_at(Stage.SETUP)
+        shortcut.granted, shortcut.autostart_failure = True, "the user declined"
+        assert env.pipeline.desktop_shortcut(state, now=0.0) is True
+        assert State.load(env.path).desktop_shortcut_at is not None
+        rows = _rows(env.history)
+        assert any("Desktop" in row for row in rows) and not any("login" in row for row in rows)
 
     def test_a_failed_build_is_stamped_and_leaves_no_history_row(self, env, shortcut):
         state = env.state_at(Stage.SETUP)

@@ -36,7 +36,8 @@ curation waits until the pipeline has curated once (`curation_pending`).
 
 Beside the stages, every poll of a young install probes for Full Disk Access (`common/FullDiskAccess`:
 can the process read chat.db) and, the first time it is granted, builds the Keep.app shortcut on
-the Desktop (`common/DesktopShortcut`) — one attempt, stamped in the state. When the grant
+the Desktop (`common/DesktopShortcut`) and makes the server start at login (`common/Autostart`: an
+applet in the tree registered as a login item) — one attempt, stamped in the state. When the grant
 arrived during the setup (the state remembers a probe that found it missing, which survives the
 restart the grant needs) it also opens the conversation with a system turn, so the assistant tells
 the user it is back with the grant and sends them to the shortcut and the console (the brief's
@@ -55,7 +56,7 @@ from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 
-from common import DesktopShortcut, FullDiskAccess
+from common import Autostart, DesktopShortcut, FullDiskAccess
 from common.ConfigManager import config
 from common.FloxyDatabase import FloxyDatabase, PHOTO_HISTORY_SOURCE
 from common.Paths import AISERVER_DIR, CACHE_DIR
@@ -104,7 +105,7 @@ you keep running and the Telegram chat stays up.
 
 4. Tell the user you are back and that the disk access works, and ask them to double-click the shortcut: it opens
 the console in a terminal (starting the server first when it is not running). Ask them to continue there, we want the 
-user to learn the console UI. 
+user to learn the console UI. The server also starts at login from now on (a login item); mention it in a few words. 
 
 5. Back in terminal UI: iMessage, the feed only (no sending yet): enable_integration("iMessage") — it needs no
 keys. Messages.app on this Mac must be signed in with the user's own Apple ID. WAIT with Photos - we need iCloud logged 
@@ -266,6 +267,10 @@ FULL_DISK_ACCESS_TURN = (
     "double-clicking it opens the console in a terminal, starting the server first when it is not running. "
     "Tell the user you are back and that the disk access works, and ask them to try the shortcut and continue "
     "the setup in the console (the Home tab is the chat). Keep it short.")
+# Appended to either when the login item was registered along with the shortcut.
+AUTOSTART_NOTE = (" The server now also starts by itself when the user logs in on this Mac (a login item, "
+                  f"{Autostart.SETTINGS_PATH}, where it can be removed). After a reboot that means once someone "
+                  "has signed in, or unlocked the disk when FileVault is on, unless the Mac logs in automatically.")
 CURATION_RETRY_SECONDS = 600  # how long an all-failed first curation waits before it is run again
 CURATION_STEP_SECONDS = 160.0   # what one curation chunk normally takes: the bar's estimate until one has finished
 PHOTOS_INTEGRATION = "Photos"
@@ -514,19 +519,22 @@ class Pipeline:
             return False
         self._waiting_on = None
         built = DesktopShortcut.ensure()
+        autostart = Autostart.enable() is None   # a failure is logged there; the setup goes on
         state.desktop_shortcut_at = time.time()
         state.save(self._path)
-        note(f"First run: Full Disk Access is granted — the Desktop shortcut {'is built' if built else 'could not be built'}")
+        note(f"First run: Full Disk Access is granted — the Desktop shortcut {'is built' if built else 'could not be built'}"
+             f"{', the server starts at login' if autostart else ''}")
         if not built:
             return False
+        suffix = AUTOSTART_NOTE if autostart else ""
         if not state.full_disk_access_awaited:
             info("First run: the grant was there from the start — no turn, the brief opens the conversation")
-            self._row(DESKTOP_SHORTCUT_ROW)
-        elif notifier().open_conversation(FULL_DISK_ACCESS_TURN):
+            self._row(DESKTOP_SHORTCUT_ROW + suffix)
+        elif notifier().open_conversation(FULL_DISK_ACCESS_TURN + suffix):
             info("First run: the conversation is opened with the Full Disk Access turn")
         else:
             info("First run: no chat took the Full Disk Access turn — a system row carries it")
-            self._row(DESKTOP_SHORTCUT_ROW)
+            self._row(DESKTOP_SHORTCUT_ROW + suffix)
         return True
 
     def _row(self, text: str):

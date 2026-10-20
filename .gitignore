@@ -11,6 +11,8 @@ memory.md
 memory.txt
 cal.txt
 first_run.json
+# the login item's applet (common/Autostart.py builds it)
+/Keep Autostart.app/
 *.session
 *.session-journal
 voice_id/
