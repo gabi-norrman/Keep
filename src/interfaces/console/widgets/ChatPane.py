@@ -22,10 +22,12 @@ for a terminal that cannot tell Shift+Enter from Enter) breaks a line, ↑/↓ s
 (a line at a time, as in every other tab), PgUp/PgDn browse the composer's history — only the
 entries containing what is typed, so "//feed" + PgUp recalls the last //feed command — Esc
 interrupts a running reply or clears the composer. A picture pasted with Ctrl+V (the Home tab
-reads the clipboard and calls `attach_image`) is staged as a chip on a row of its own above
-the text — `[image 1: 1200×800, 340 kB]` — until Enter sends it with the text as its caption
-(`on_submit(text, images)`) or Esc drops it; the sent turn shows the picture under the `›`
-with the text as its caption, as the assistant's photos show theirs.
+reads the clipboard and calls `attach_image`) is staged above the text as a thumbnail
+(`THUMBNAIL_ROWS` high, the staged pictures side by side) with its chip under it —
+`[image 1: 1200×800, 340 kB]` — until Enter sends it with the text as its caption
+(`on_submit(text, images)`) or Esc drops it; a pane too short for thumbnails shows the chips
+alone on one row. The sent turn shows the picture under the `›` with the text as its caption,
+as the assistant's photos show theirs.
 While an approval prompt is pending the pane is modal: y approves, n or Esc denies. While a
 secret prompt is pending the composer becomes a masked field of its own (a history-less
 `LineEditor`, so the value never reaches tui_state.json): Enter hands the value on, Tab
@@ -130,6 +132,8 @@ class ChatPane:
     MIN_TRANSCRIPT_ROWS = 3
     FOOTER = " ⏎ send  ⇧⏎ newline  ^v paste image  ↑↓ scroll  ⇞⇟ history  esc clear · stop"
     MAX_IMAGES = 10            # pictures one message may carry
+    THUMBNAIL_ROWS = 4         # a staged picture's thumbnail above the composer, as tall as the transcript's smallest
+    THUMBNAIL_GAP = 2          # columns between two thumbnails
     DEBUG_HINT = "^d debug"
     FALLBACK_NOTICE = FallbackNotice.PATTERN
     # A stripped command leaves a whitespace-only line behind ("text\n\n \n\ntext"): drawn
@@ -529,8 +533,8 @@ class ChatPane:
         text_w = max(1, width - len(PROMPT) - 1)
         input_rows_all = [""] if self._pending_secret is not None else self._input_rows(text_w)
         input_rows = max(1, min(self.MAX_INPUT_ROWS, len(input_rows_all)))
-        chip_rows = 1 if self._images and self._pending_secret is None else 0
-        top_rule_y = bottom_rule_y - input_rows - chip_rows - 1
+        staged_rows = self._staged_rows(bottom_rule_y - input_rows - 1 - y)
+        top_rule_y = bottom_rule_y - input_rows - staged_rows - 1
         gap_y = top_rule_y - 1              # one blank row keeps the composer off the transcript
         status_y = gap_y - 1 if self._status else None
         transcript_bottom = (status_y if status_y is not None else gap_y) - 1
@@ -544,9 +548,9 @@ class ChatPane:
             self._draw_status(screen, x, status_y, width)
         screen.write_at(x, gap_y, " " * width)
         self._draw_rule(screen, x, top_rule_y, width)
-        if chip_rows:
-            self._draw_chips_row(screen, x, top_rule_y + 1, width)
-        self._draw_composer(screen, frame, x, top_rule_y + 1 + chip_rows, width, input_rows, input_rows_all, text_w)
+        if staged_rows:
+            self._draw_staged(screen, x, top_rule_y + 1, width, staged_rows)
+        self._draw_composer(screen, frame, x, top_rule_y + 1 + staged_rows, width, input_rows, input_rows_all, text_w)
         self._draw_rule(screen, x, bottom_rule_y, width)
         self._draw_footer(screen, x, footer_y, width)
 
@@ -913,15 +917,43 @@ class ChatPane:
     def _input_rows(self, text_w: int) -> List[str]:
         return [row for rows in self._paragraph_rows(text_w) for row in rows]
 
-    def _draw_chips_row(self, screen: TUIScreen, x: int, y: int, width: int):
-        """The staged images as chips on one row under the prompt's indent; a row too narrow
-        for them all clips the last."""
+    def _staged_rows(self, spare: int) -> int:
+        """The rows the staged images take above the composer text: thumbnails with their
+        chips under them, or the chips alone on one row when thumbnails would leave the
+        transcript fewer than `MIN_TRANSCRIPT_ROWS` of the `spare` rows (the gap included)."""
+        if not self._images or self._pending_secret is not None:
+            return 0
+        if spare - (self.THUMBNAIL_ROWS + 1) - 1 >= self.MIN_TRANSCRIPT_ROWS:
+            return self.THUMBNAIL_ROWS + 1
+        trace(f"ChatPane: {spare} spare rows are too few for thumbnails, the staged images show as chips")
+        return 1
+
+    def _draw_staged(self, screen: TUIScreen, x: int, y: int, width: int, rows: int):
+        """The staged images under the prompt's indent: `rows` - 1 rows of thumbnails side by
+        side, each with its chip under it (on one row, the chips alone); what does not fit
+        the width is clipped, a thumbnail that does not fit is left out."""
         screen.reset_color()
-        screen.write_at(x, y, " " * width)
-        chips = "  ".join(image.chip(i + 1) for i, image in enumerate(self._images))
-        screen.set_color(self.COLOR_CHIP)
-        screen.write_at(x + len(PROMPT), y, clip(chips, max(0, width - len(PROMPT))))
-        screen.reset_color()
+        for r in range(rows):
+            screen.write_at(x, y + r, " " * width)
+        thumb_rows = rows - 1
+        left, right = x + len(PROMPT), x + width
+        for i, image in enumerate(self._images):
+            chip = image.chip(i + 1)
+            if thumb_rows:
+                cols, thumb_rows_fitted = image.picture.fit(right - left, thumb_rows)
+                if left + cols > right:
+                    trace(f"ChatPane: thumbnail {i + 1} of {len(self._images)} does not fit the composer's width")
+                    break
+                screen.image(left, y, image.picture, cols, thumb_rows_fitted)
+                slot = max(cols, len(chip))
+            else:
+                slot = len(chip)
+            screen.set_color(self.COLOR_CHIP)
+            screen.write_at(left, y + thumb_rows, clip(chip, max(0, right - left)))
+            screen.reset_color()
+            left += slot + self.THUMBNAIL_GAP
+            if left >= right:
+                break
 
     def _draw_composer(self, screen: TUIScreen, frame: int, x: int, y: int, width: int,
                        rows: int, all_rows: List[str], text_w: int):

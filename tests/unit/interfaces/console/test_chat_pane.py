@@ -184,23 +184,49 @@ class TestComposer:
 
 
 class TestStagedImages:
-    """A picture pasted with Ctrl+V waits as a chip above the text until Enter sends it or
-    Esc drops it; the sent turn shows it under the prompt with the text as its caption."""
+    """A picture pasted with Ctrl+V waits as a thumbnail with a chip under it above the text
+    until Enter sends it or Esc drops it; the sent turn shows it under the prompt with the
+    text as its caption."""
 
-    def test_a_staged_image_takes_a_chip_row_above_the_text_and_goes_out_with_enter(self, pane, screen):
+    def test_a_staged_image_shows_as_a_thumbnail_over_its_chip_and_goes_out_with_enter(self, pane, screen):
         sent = []
         pane.bind(on_submit=lambda text, images: sent.append((text, images)))
         assert pane.attach_image(jpeg(300, 200), "image/jpeg")
         for ch in "hi":
             pane.handle_input(ch)
+        screen.graphics = True
         lines = draw(pane, screen)
         assert lines[HEIGHT - 4].startswith(" " * len(PROMPT) + "[image 1: 300×200, ")
         assert lines[HEIGHT - 3] == PROMPT + "hi"
-        assert lines[HEIGHT - 5] == "─" * WIDTH, "the top rule moved up a row for the chips"
+        x, y, cols, rows_, first, visible = screen._placements[pane.images[0].picture.id][1]
+        assert (x, y + rows_, rows_) == (1 + len(PROMPT), HEIGHT - 3, ChatPane.THUMBNAIL_ROWS), \
+            "the thumbnail stands over the chip, at the prompt's indent"
+        assert lines[y - 2] == "─" * WIDTH, "the top rule moved up for the band"
         pane.handle_input('\r')
         assert [(text, [i.mime_type for i in images]) for text, images in sent] == [("hi", ["image/jpeg"])]
         assert pane.images == [] and pane.editor.empty
-        assert draw(pane, screen)[HEIGHT - 4] == "─" * WIDTH, "the chip row is gone"
+        assert draw(pane, screen)[HEIGHT - 4] == "─" * WIDTH and screen._placements == {}, "the band is gone"
+
+    def test_staged_images_stand_side_by_side_each_over_its_chip(self, pane, screen):
+        pane.attach_image(jpeg(300, 200), "image/jpeg")
+        pane.attach_image(jpeg(200, 300), "image/jpeg")
+        screen.graphics = True
+        lines = draw(pane, screen)
+        first, second = (screen._placements[image.picture.id][1] for image in pane.images)
+        assert first[1] == second[1], "both thumbnails are on the same rows"
+        assert second[0] > first[0] + first[2], "the second stands right of the first"
+        assert lines[HEIGHT - 4].index("[image 2:") == second[0] - 1
+
+    def test_a_pane_too_short_for_thumbnails_shows_the_chips_on_one_row(self, pane):
+        pane.attach_image(jpeg(300, 200), "image/jpeg")
+        short = TUIScreen(WIDTH, 9)
+        short.graphics = True
+        short.clear_buffer()
+        pane.draw(short, 0, 1, 1, WIDTH, 9)
+        lines = rows(short)
+        assert short._placements == {}
+        assert lines[9 - 4].startswith(" " * len(PROMPT) + "[image 1: 300×200, ")
+        assert lines[9 - 5] == "─" * WIDTH
 
     def test_images_alone_are_sent_and_escape_drops_them(self, pane):
         sent = []
