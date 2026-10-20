@@ -224,3 +224,26 @@ class TestPreBlocks:
     def test_prose_still_collapses_spaces(self):
         lines = wrap_spans(parse("a    b"), 80)
         assert "".join(s.text for s in lines[0]) == "a b"
+
+
+def test_bare_url_links_to_itself_without_the_sentence_punctuation():
+    spans = parse("See https://example.com/a?q=1&x=2, then https://b.example/x.")
+    links = [(s.text, s.href) for s in spans if s.href]
+    assert links == [("https://example.com/a?q=1&x=2", "https://example.com/a?q=1&x=2"),
+                     ("https://b.example/x", "https://b.example/x")]
+    assert "".join(s.text for s in spans) == "See https://example.com/a?q=1&x=2, then https://b.example/x."
+    assert [s.href for s in parse("nothing http:// here")] == [None]
+
+
+def test_bare_url_is_not_linked_inside_code_or_an_anchor():
+    spans = parse('<code>https://c.example/</code> <pre>https://p.example/</pre> '
+                  '<a href="https://real.example/">https://shown.example/</a>')
+    assert [s.href for s in spans if s.text.strip()] == [None, None, "https://real.example/"]
+
+
+def test_wrapped_bare_url_carries_the_whole_href_on_every_row():
+    url = "https://example.com/a/very/long/path/that/goes/on/and/on"
+    rows = wrap_spans(parse(f"Go to {url} now"), 24)
+    linked = [s for row in rows for s in row if s.href]
+    assert len(linked) >= 3 and all(s.href == url for s in linked)
+    assert "".join(s.text for s in linked) == url

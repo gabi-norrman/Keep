@@ -20,16 +20,23 @@ Tags handled (per https://core.telegram.org/bots/api#html-style):
     <tg-emoji emoji-id="...">X</tg-emoji>          → just emit X
 
 Unknown tags are silently stripped (their inner text is kept). HTML entities
-(`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#39;`, ...) are decoded automatically.
+(`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#39;`, ...) are decoded automatically. A bare
+`https://…` in prose (outside `<a>`, `<code>` and `<pre>`) becomes a link to itself.
 """
 
+import re
 from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from typing import Callable, List, Optional, Tuple
 
 from interfaces.console.framework.TUIScreen import Color
 from interfaces.console.framework.TextWidth import char_width, normalize
-from interfaces.console.framework.TextWidth import char_width, normalize
+
+# A bare URL in prose becomes a link of its own text, so the terminal opens it on a click even
+# when the wrap cuts it over several rows (each row's run carries the whole href). Trailing
+# punctuation belongs to the sentence, not the URL.
+URL = re.compile(r"https?://[^\s<>]+")
+_URL_TRAIL = ".,;:!?)\"'"
 
 
 @dataclass
@@ -159,8 +166,15 @@ class _Parser(HTMLParser):
             data = data[1:] if data.startswith("\n") else data
         if not data:
             return
+        if self._href is None and not self._code and not self._pre:
+            for text, href in _autolink(data):
+                self._emit(text, href)
+        else:
+            self._emit(data, self._href)
+
+    def _emit(self, text: str, href: Optional[str]):
         self.spans.append(StyledSpan(
-            text=data,
+            text=text,
             bold=self._bold > 0,
             italic=self._italic > 0,
             underline=self._underline > 0,
@@ -169,7 +183,7 @@ class _Parser(HTMLParser):
             pre=self._pre > 0,
             quote=self._quote > 0,
             spoiler=self._spoiler > 0,
-            href=self._href,
+            href=href,
             cls=self._cls,
         ))
 
@@ -179,6 +193,23 @@ class _Parser(HTMLParser):
         while self._stack:
             _, undo = self._stack.pop()
             undo()
+
+
+def _autolink(text: str) -> List[Tuple[str, Optional[str]]]:
+    """`text` cut into (text, href) pieces: the bare URLs link to themselves, the rest is plain."""
+    pieces: List[Tuple[str, Optional[str]]] = []
+    at = 0
+    for match in URL.finditer(text):
+        url = match.group().rstrip(_URL_TRAIL)
+        if url.endswith("://"):
+            continue
+        if match.start() > at:
+            pieces.append((text[at:match.start()], None))
+        pieces.append((url, url))
+        at = match.start() + len(url)
+    if at < len(text):
+        pieces.append((text[at:], None))
+    return pieces
 
 
 def parse(html: str) -> List[StyledSpan]:
