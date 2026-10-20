@@ -49,8 +49,10 @@ autonomous-check and nightly-curation columns, the bold monthly total, and a "St
 giving each row's increase over the row above (the first row shows a dash). Each of the three
 cost columns carries a count in parentheses after the dollar figure so the reader sees what the
 money bought: chat and autonomous checks as the average per day over the window, written
-`(n/day)` — chat counted in requests, a message the user sent, not in the model rounds a request
-runs — and curation as the number of nightly runs in the month, written `(n runs)`:
+`(n/day)` — chat counted in requests, a message the user sent, and autonomous checks counted
+once per check, never in the model rounds either of them runs (a check that runs commands goes
+back to the model once per result; about half answer in one round) — and curation as the number
+of nightly runs in the month, written `(n runs)`:
 
 | Setup | Chat | Autonomous checks | Nightly curation | **Month** | Step up |
 |---|---|---|---|---|---|
