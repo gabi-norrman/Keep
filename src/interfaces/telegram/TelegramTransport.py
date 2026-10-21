@@ -37,7 +37,7 @@ from interfaces.chat import FallbackNotice, RichText
 from interfaces.chat.ChatTransport import ChatTransport
 from interfaces.chat.ChatTypes import (DECISION_APPROVE, DECISION_CANCEL, DECISION_DENY, KIND_PHOTO, KIND_REACTION,
                                        KIND_TEXT, KIND_VIDEO, KIND_VOICE, PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING,
-                                       Attachment, IncomingMessage, Progress)
+                                       Attachment, IncomingMessage, Progress, describe_rate)
 
 # Telegram's Bot API refuses to serve files above this size to bots.
 TELEGRAM_BOT_MAX_DOWNLOAD = 20 * 1024 * 1024
@@ -91,9 +91,13 @@ class TelegramDraft:
         return f"↓ {n / 1000:.1f}k tokens" if n >= 1000 else f"↓ {n} tokens"
 
     @classmethod
-    def _thinking_label(cls, n: int) -> str:
-        """Spinner prefix while thinking — adds a live token count once tokens start flowing."""
-        return f"Thinking ({cls._format_token_count(n)})…\n" if n > 0 else cls.THINKING_PREFIX
+    def _thinking_label(cls, n: int, rate: float = 0.0) -> str:
+        """Spinner prefix while thinking — adds a live token count, and the rate, once tokens
+        start flowing."""
+        if n <= 0:
+            return cls.THINKING_PREFIX
+        detail = cls._format_token_count(n) + (f" · {describe_rate(rate)}" if rate > 0 else "")
+        return f"Thinking ({detail})…\n"
 
     def _edit_interval(self) -> float:
         # Fast edits early for snappy feedback; once the response runs long, slow down to
@@ -115,9 +119,10 @@ class TelegramDraft:
         frame = self.SPINNER_FRAMES[self._frame % len(self.SPINNER_FRAMES)]
         self._frame += 1
         if progress.phase == PHASE_THINKING:
-            display = f"{self._thinking_label(progress.output_tokens)} {frame}"
+            display = f"{self._thinking_label(progress.output_tokens, progress.rate)} {frame}"
         elif progress.phase == PHASE_PREFILL:
-            display = f"Prefilling ({progress.prefill:.0f}%)…\n {frame}"
+            detail = f"{progress.prefill:.0f}%" + (f" · {describe_rate(progress.rate)}" if progress.rate > 0 else "")
+            display = f"Prefilling ({detail})…\n {frame}"
         elif progress.phase == PHASE_COMMANDS:
             display = f"{self.COMMANDS_PREFIX if progress.commands > 1 else self.COMMAND_PREFIX} {frame}"
         else:

@@ -46,7 +46,7 @@ from common.vault.Redactor import Redactor
 from common.vault.Vault import Vault
 from interfaces.chat import FallbackNotice
 from interfaces.chat.ChatTypes import (DECISION_APPROVE, DECISION_DENY, PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING,
-                                       Progress)
+                                       Progress, describe_rate)
 from interfaces.console import Theme
 from interfaces.console.SystemEvents import CLASS_DESCRIPTION
 from interfaces.console.framework.Pictures import Picture
@@ -751,6 +751,8 @@ class ChatPane:
                          else f"↓ {p.output_tokens} tokens")
         if p.phase == PHASE_PREFILL:
             parts.append(f"{p.prefill:.0f}%")
+        if p.phase in (PHASE_PREFILL, PHASE_THINKING) and p.rate > 0:
+            parts.append(describe_rate(p.rate))
         if p.elapsed >= self.SHOW_ELAPSED_AFTER:
             parts.append(describe_duration(p.elapsed))
         if p.phase == PHASE_COMMANDS:

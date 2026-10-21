@@ -11,9 +11,11 @@ machine), and brackets each request with `begin` / `first_token` / `end`.
 The estimate: 0 until the start line is read (nothing to draw), 100 at once on a full cache hit,
 the engine's own progress lines when it logs them, and otherwise elapsed time against a rolling
 prefill rate (`observe_rate` refines it after each reply) — capped at 99 until the first token
-confirms the prefill is over. Each server runs one request at a time, but ours overlap: a
-pre-heat fired at the end of one turn is often still prefilling when the next user request goes
-out, and the first-run pipeline or the autonomous check may hold the server while the user asks.
+confirms the prefill is over. The rate shown beside the bar (`rate`) is measured from the
+progress lines when the engine logs them, else that rolling estimate. Each server runs one
+request at a time, but ours overlap: a pre-heat fired at the end of one turn is often still
+prefilling when the next user request goes out, and the first-run pipeline or the autonomous
+check may hold the server while the user asks.
 So the tracker keeps every request in flight, in the order they were sent — the order the server
 takes them in — and the bar follows the first one that has no token yet: that is the request the
 server is prefilling, or will prefill next, and whatever it is, it is what the user's reply is
@@ -152,6 +154,7 @@ class _Request:
     first_token: bool = False
     work: tuple[int, int] | None = None       # (cached, remaining) once the workload line is logged
     progress: tuple[int, int] | None = None   # (processed, total) of the latest progress line
+    progress_ts: float = 0.0                  # when that line was read
     read_ts: float = 0.0
 
 
@@ -233,13 +236,17 @@ class PrefillTracker:
         """Whether a user request is among the requests in flight."""
         return any(r.interactive for r in self._requests)
 
+    def _head(self) -> _Request | None:
+        """The request the server is on: the first in line without a token."""
+        with self._lock:
+            return next((r for r in self._requests if not r.first_token), None)
+
     def progress(self) -> float | None:
         """Estimated prefill completion (0-100) of the request the server is on, None when no
         request is in flight. 100 when every request in flight is past its prefill."""
-        with self._lock:
-            if not self._requests:
-                return None
-            head = next((r for r in self._requests if not r.first_token), None)
+        if not self._requests:
+            return None
+        head = self._head()
         if head is None:
             return 100.0
         work, progress = self._poll(head)
@@ -255,6 +262,17 @@ class PrefillTracker:
         if eta <= 0:
             return 99.0
         return min(99.0, (time.monotonic() - head.start_ts) / eta * 100.0)
+
+    def rate(self) -> float:
+        """The prefill rate in tokens/s: measured from the engine's progress lines when the
+        request the server is on has logged any, else the rolling estimate the bar runs on."""
+        head = self._head()
+        if head is None:
+            return self.tps
+        _work, progress = self._poll(head)
+        if progress and progress[0] > 0 and head.progress_ts > head.start_ts:
+            return progress[0] / (head.progress_ts - head.start_ts)
+        return self.tps
 
     def _find(self, token: int | None) -> _Request | None:
         return next((r for r in self._requests if r.token == token), None)
@@ -282,19 +300,30 @@ class PrefillTracker:
         with self._lock:
             if request.work is None:
                 request.work = new_work
-            if new_progress is not None:
-                request.progress = new_progress
+            if new_progress is not None and new_progress != request.progress:
+                request.progress, request.progress_ts = new_progress, now
             return request.work, request.progress
 
     @classmethod
-    def current_progress(cls) -> float | None:
-        """The progress of what a user is waiting for — the backend with a user request in
-        flight, else any backend with a request — or None when the local backends are idle."""
+    def _busy(cls) -> "PrefillTracker | None":
+        """The backend a user is waiting for — one with a user request in flight, else any
+        with a request — or None when the local backends are idle."""
         active = [t for t in cls._trackers if t.active()]
         if not active:
             return None
-        tracker = next((t for t in active if t.interactive()), active[0])
-        return tracker.progress()
+        return next((t for t in active if t.interactive()), active[0])
+
+    @classmethod
+    def current_progress(cls) -> float | None:
+        """The progress of what a user is waiting for, None when the local backends are idle."""
+        tracker = cls._busy()
+        return tracker.progress() if tracker is not None else None
+
+    @classmethod
+    def current_rate(cls) -> float | None:
+        """The prefill rate (tokens/s) of what a user is waiting for, None when idle."""
+        tracker = cls._busy()
+        return tracker.rate() if tracker is not None else None
 
 
 def parse_last(pattern: str, text: str) -> tuple[int, int] | None:

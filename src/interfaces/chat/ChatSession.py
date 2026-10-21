@@ -74,6 +74,30 @@ class _Album:
         self.touched = time.monotonic()
 
 
+class TokenRate:
+    """Tokens per second over the last few seconds, from running token counts — the "45 t/s"
+    beside the thinking indicator. The denominator runs to now, so the rate sinks through a stall
+    instead of freezing at the last chunk's value."""
+    WINDOW_S = 5.0
+
+    def __init__(self):
+        self._samples: list[tuple[float, int]] = []   # (time, running count)
+
+    def add(self, now: float, count: int):
+        self._samples.append((now, count))
+        cutoff = now - self.WINDOW_S
+        while len(self._samples) > 1 and self._samples[1][0] <= cutoff:
+            self._samples.pop(0)
+
+    def rate(self, now: float) -> float:
+        if len(self._samples) < 2:
+            return 0.0
+        first_ts, first = self._samples[0]
+        _last_ts, last = self._samples[-1]
+        span = now - first_ts
+        return (last - first) / span if span > 0 else 0.0
+
+
 class ChatSession:
     IMAGES_ONLY_QUERY = "See images"   # the query of a photo batch without a caption
     # How long the reply loop waits for the next assistant event before reporting progress;
@@ -510,6 +534,8 @@ class ChatSession:
         in_thinking = False
         thinking_text = ""
         token_count = 0
+        thinking_rate = TokenRate()
+        thinking_from = 0   # the output-token estimate when the thinking block opened
 
         def progress():
             nonlocal tick
@@ -520,11 +546,12 @@ class ChatSession:
             # The working line names what the user is actually waiting for: a command the
             # LLM asked for, or the LLM itself — and counts the time in that phase only.
             running, since = self._hub.command_activity(transport, conversation)
-            prefill = 0.0
+            prefill = rate = 0.0
             if running:
                 phase, elapsed = PHASE_COMMANDS, now - since
             elif in_thinking:
                 phase, elapsed = PHASE_THINKING, now - max(round_start, since)
+                rate = thinking_rate.rate(now)
             else:
                 # Until the first token a local model is prefilling the prompt; a local server
                 # serves one request at a time, so whatever it is prefilling is what this reply
@@ -534,11 +561,13 @@ class ChatSession:
                 prefilling = pct is not None and 0.0 < pct < 100.0
                 phase, elapsed = (PHASE_PREFILL if prefilling else PHASE_WAITING), now - max(round_start, since)
                 prefill = pct if prefilling else 0.0
+                rate = (PrefillTracker.current_rate() or 0.0) if prefilling else 0.0
             draft.show_progress(Progress(phase=phase, thinking_text=thinking_text, output_tokens=token_count,
-                                         elapsed=elapsed, tick=tick, commands=running, prefill=prefill))
+                                         elapsed=elapsed, tick=tick, commands=running, prefill=prefill, rate=rate))
 
         def new_round():
             nonlocal buffer, draft, spinner_mode, tick, round_start, in_thinking, thinking_text, token_count
+            nonlocal thinking_rate
             buffer = ""
             draft = transport.begin_draft(conversation)
             spinner_mode = True
@@ -549,6 +578,7 @@ class ChatSession:
             in_thinking = False
             thinking_text = ""
             token_count = 0
+            thinking_rate = TokenRate()
 
         try:
             while True:
@@ -577,13 +607,19 @@ class ChatSession:
                     continue
 
                 if isinstance(event, Thinking):
-                    in_thinking = True
+                    if not in_thinking:
+                        in_thinking = True
+                        thinking_from = event.output_tokens
                     token_count = event.output_tokens
+                    thinking_rate.add(time.time(), token_count)
                     thinking_text += event.text
                     progress()
                     continue
                 if isinstance(event, ThinkingDone):
                     in_thinking = False
+                    thought = token_count - thinking_from
+                    rate_text = f", {thought / event.duration:.0f} t/s" if event.duration > 0 else ""
+                    info(f"{prefix}: thinking done — ~{thought} tokens in {event.duration:.1f}s{rate_text}")
                     continue
                 if not isinstance(event, (Token, Notice)):
                     trace(f"{prefix}: ignoring {type(event).__name__} event")

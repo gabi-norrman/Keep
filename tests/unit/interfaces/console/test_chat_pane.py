@@ -507,6 +507,15 @@ class TestTranscript:
         pane.set_working(Progress(phase=PHASE_PREFILL, prefill=99.0, elapsed=12.0))
         assert draw(pane, screen)[2].endswith("▉ (99% · 12s)")
 
+    def test_working_line_shows_the_token_rate_of_the_prefill_and_the_thinking(self, pane, screen):
+        pane.add_user("hi")
+        pane.set_working(Progress(phase=PHASE_PREFILL, prefill=50.0, elapsed=1.0, rate=1480.0))
+        assert draw(pane, screen)[2].endswith(" (50% · 1.5k t/s)")
+        pane.set_working(Progress(phase=PHASE_THINKING, output_tokens=300, elapsed=1.0, rate=45.4))
+        assert draw(pane, screen)[2].endswith(" (↓ 300 tokens · 45 t/s)")
+        pane.set_working(Progress(phase=PHASE_THINKING, output_tokens=300, elapsed=1.0, rate=0.0))
+        assert draw(pane, screen)[2].endswith(" (↓ 300 tokens)")
+
     def test_working_line_names_the_running_commands(self, pane, screen):
         pane.add_user("hi")
         pane.set_working(Progress(phase=PHASE_COMMANDS, commands=1, elapsed=1.0))

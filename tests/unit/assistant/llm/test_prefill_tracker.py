@@ -76,6 +76,18 @@ class TestEstimate:
         assert tracker.progress() == pytest.approx(50.0)
         tracker.end(token)
 
+    def test_the_rate_is_measured_from_the_progress_lines_else_the_estimate(self, tracker, log_path):
+        assert PrefillTracker.current_rate() is None
+        token = tracker.begin()
+        _append(log_path, "work 0 2000\n")
+        assert tracker.rate() == 1000.0                     # nothing measured yet: the rolling estimate
+        _append(log_path, "step 500 2000\n")
+        tracker._find(token).start_ts = time.monotonic() - 2.0
+        tracker.work(token, force=True)                      # read the progress line now
+        assert 200.0 < tracker.rate() < 300.0               # 500 tokens in ~2 s, from the line's read time
+        assert PrefillTracker.current_rate() == tracker.rate()
+        tracker.end(token)
+
     def test_capped_at_99_until_the_first_token(self, tracker, log_path):
         token = tracker.begin()
         _append(log_path, "work 0 1000\n")

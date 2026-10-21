@@ -1101,6 +1101,13 @@ class TestTelegramDraft:
         d.show_progress(Progress(PHASE_PREFILL, prefill=42.6))
         assert t.texts[0].startswith("Prefilling (43%)…\n")
 
+    def test_labels_carry_the_token_rate_when_there_is_one(self):
+        t, d = self._draft()
+        d.show_progress(Progress(PHASE_PREFILL, prefill=42.6, rate=1480.0))
+        d.show_progress(Progress(PHASE_THINKING, output_tokens=123, rate=45.4))
+        assert t.texts[0].startswith("Prefilling (43% · 1.5k t/s)…\n")
+        assert t.texts[1].startswith("Thinking (↓ 123 tokens · 45 t/s)…\n")
+
     def test_running_command_label(self):
         t, d = self._draft()
         d.show_progress(Progress(PHASE_COMMANDS, commands=1))

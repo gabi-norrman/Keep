@@ -54,6 +54,14 @@ class Progress:
     tick: int = 0               # how many progress updates preceded this one
     commands: int = 0           # commands running right now (phase "commands")
     prefill: float = 0.0        # prompt-prefill completion 0-100 (phase "prefill")
+    rate: float = 0.0           # tokens/s of the current phase: the prefill, or the thinking output
+
+
+def describe_rate(tokens_per_second: float) -> str:
+    """A token rate for a working line: `1.5k t/s` from a thousand up, `45 t/s` below."""
+    if tokens_per_second >= 1000:
+        return f"{tokens_per_second / 1000:.1f}k t/s"
+    return f"{tokens_per_second:.0f} t/s"
 
 
 PHASE_WAITING = "waiting"       # an LLM call is out and nothing has come back yet

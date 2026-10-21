@@ -128,6 +128,33 @@ class TestProgress:
         assert progress[-1].thinking_text == "let me see more"
         assert [p.tick for p in progress] == [1, 2]
 
+    def test_thinking_ticks_carry_the_rate_of_the_last_seconds(self):
+        from interfaces.chat.ChatSession import TokenRate
+        meter = TokenRate()
+        assert meter.rate(now=10.0) == 0.0                 # one sample is no rate
+        meter.add(10.0, 100)
+        meter.add(12.0, 200)
+        assert meter.rate(now=12.0) == pytest.approx(50.0)
+        assert meter.rate(now=14.0) == pytest.approx(25.0)  # a stall sinks the rate
+        meter.add(20.0, 1000)                               # the window drops samples older than 5 s
+        meter.add(21.0, 1100)
+        assert meter.rate(now=21.0) == pytest.approx(100.0)
+
+    def test_thinking_progress_reports_a_rate_once_tokens_flow(self, session, hub, transport):
+        run_reply(session, hub, [Thinking("a", 100), (0.05, Thinking("b", 200)), Token("Hello"), RoundEnd(), None])
+        progress = transport.drafts[0].progress
+        assert progress[0].rate == 0.0
+        assert progress[1].rate > 0
+
+    def test_prefill_progress_carries_the_trackers_rate(self, session, hub, transport):
+        from assistant.llm.PrefillTracker import PrefillTracker
+        session.SPINNER_TICK_SECONDS = 0.01
+        with patch.object(PrefillTracker, "current_progress", return_value=43.0), \
+             patch.object(PrefillTracker, "current_rate", return_value=1200.0):
+            run_reply(session, hub, [(0.05, Token("Hi")), RoundEnd(), None])
+        first = transport.drafts[0].progress[0]
+        assert first.phase == PHASE_PREFILL and first.rate == 1200.0
+
     def test_thinking_done_returns_to_waiting_on_the_next_tick(self, session, hub, transport):
         session.SPINNER_TICK_SECONDS = 0.01
         run_reply(session, hub, [Thinking("x", 5), ThinkingDone(1.0), (0.05, Token("Hi")), RoundEnd(), None])
