@@ -239,6 +239,18 @@ class TestBareInvoke:
     def test_a_bare_element_without_a_name_is_dropped_like_an_empty_block(self, fmt):
         assert fmt.extract(f"{INVOKE_OPEN}>\n{INVOKE_CLOSE}\nDone.") == (None, "\nDone.")
 
+    def test_the_closer_a_model_writes_after_bare_invokes_is_a_block_of_nothing(self, fmt):
+        # The opener forgotten, the closer still written after the last invoke: it belongs to no block.
+        call, rest = fmt.extract(self.BARE + "\n" + CLOSE + "\nDone.")
+        assert call == ("turn_on", ["Lamp"], "Lamp")
+        assert fmt.find_start(rest) == 1 and fmt.complete(rest)
+        assert fmt.extract(rest) == (None, "\nDone.")
+        assert fmt.extract_all(self.BARE + "\n" + CLOSE + "\nDone.") == [("turn_on", ["Lamp"])]
+
+    def test_a_closer_is_held_back_while_it_streams_in(self, fmt):
+        assert fmt.is_possibly_command("</function_c") and fmt.partial_tail("\n</func") == 1
+        assert not fmt.complete("\n</function_call")
+
 
 class TestRenderToolCall:
     def test_a_parsed_tool_call_is_written_back_as_the_block_and_read_again(self, fmt):
@@ -311,6 +323,17 @@ class TestStreaming:
         out = self._stream(processor, [reply[:9], reply[9:50], reply[50:]])
         assert processor.calls == [("turn_on", ["Lamp"]), ("dim", ["Lamp", "40"])]
         assert out.strip().startswith("On it.") and out.strip().endswith("Done.") and INVOKE_OPEN not in out
+
+    @pytest.mark.parametrize("size", range(1, 12))
+    def test_two_bare_invokes_run_at_every_chunk_boundary(self, processor, size):
+        # A chunk ending in `>\n<` once leaked the second invoke as text: the thinking filter held
+        # the `<` back, and it was prepended to the remainder of the first call instead of appended.
+        first = f'{INVOKE_OPEN} name="turn_on">\n{parameter("light_name", "Lamp")}\n{INVOKE_CLOSE}'
+        second = f'{INVOKE_OPEN} name="dim">\n{parameter("light_name", "Lamp")}\n{parameter("dim_percentage", "40")}\n{INVOKE_CLOSE}'
+        reply = first + "\n" + second + "\n" + CLOSE + "\n"
+        out = self._stream(processor, [reply[i:i + size] for i in range(0, len(reply), size)])
+        assert processor.calls == [("turn_on", ["Lamp"]), ("dim", ["Lamp", "40"])]
+        assert out.strip() == ""
 
     def test_a_stream_cut_inside_a_block_reports_the_unterminated_command(self, processor):
         from unittest.mock import Mock

@@ -539,11 +539,13 @@ class CommandProcessor:
                     self.reply_cut = True
                     self.previous_content_buffer = ""
                     return None
-                # clean up and go again after we've removed one command
+                # Go again on what is left. It was filtered for thinking tags before it entered
+                # the buffer, so it goes straight back here: `process` would prepend the partial
+                # tag the filter is holding, text that arrived after this remainder, not before it.
                 self.debug(f"rest: '{self.previous_content_buffer}'")
                 p = self.previous_content_buffer
                 self.previous_content_buffer = ""
-                return self.process(p, dialog_manager)
+                return self._process_commands(p, dialog_manager)
             return None
         else:
             # Scan for a command embedded later in the buffer

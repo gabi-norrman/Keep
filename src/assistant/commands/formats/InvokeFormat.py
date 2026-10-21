@@ -24,7 +24,9 @@ the tier brings Keep's own back.
 A bare `<invoke …>…</invoke>` outside a `<function_calls>` block is read as a block of one: on
 the full prompt Opus 5.5 leaves the wrapper out about one reply in three (measured 2026-10-21,
 the same query on the same cached prompt — the API hands the text back as written, the short
-probe never showed it), and the call inside is complete and correct every time.
+probe never showed it), and the call inside is complete and correct every time. The closer it still writes after the
+last of them is a block of nothing and is dropped, wherever in the reply a closer nothing opened
+stands.
 """
 import json
 import re
@@ -118,7 +120,9 @@ class InvokeFormat(NamedParameterFormat):
     # --- parsing ---------------------------------------------------------------------------
 
     # A block is a `<function_calls>` element, or a bare `<invoke>` element standing outside one.
-    _OPENERS = (OPEN, INVOKE_OPEN)
+    # A `</function_calls>` nothing opened is a block of nothing: a model that leaves the opener
+    # out still writes the closer after its last bare invoke, and it is dropped, never shown.
+    _OPENERS = (OPEN, INVOKE_OPEN, CLOSE)
 
     def is_possibly_command(self, buffer: str) -> bool:
         stripped = buffer.strip()
@@ -149,6 +153,8 @@ class InvokeFormat(NamedParameterFormat):
         start = self._first_opener(buffer, at)
         if start < 0:
             return None
+        if buffer.startswith(CLOSE, start):
+            return start, start + len(CLOSE), start, start
         if buffer.startswith(OPEN, start):
             closer, body = CLOSE, start + len(OPEN)
         else:
@@ -173,7 +179,7 @@ class InvokeFormat(NamedParameterFormat):
         start, end, body, body_end = span
         invokes = self._invokes(buffer[body:body_end])
         if not invokes:
-            trace(f"invoke format: a block without an invoke, dropped: {buffer[start:end]!r}")
+            trace(f"invoke format: a block without an invoke (or a closer nothing opened), dropped: {buffer[start:end]!r}")
             return None, buffer[end:]
         name, arguments = invokes[0]
         params = self._positional(name, arguments)
