@@ -8,9 +8,12 @@ written — probed 2026-10-20 on Opus 5.5 and Haiku 5.5, streaming and not, see 
 value is raw text, a string without quotes and a number bare; nothing is escaped, and one
 leading and one trailing newline are stripped so a value may stand on its own line. The
 parameters are named: `NamedParameterFormat` orders them through the signature table, and a
-variadic last parameter takes a JSON list. A declaration keeps Keep's own signature text —
-`` `dim(light_name: str, dim_percentage: int)` `` names the parameters the invoke writes and is
-a fraction of a JSON schema's length — and an example renders as the block itself.
+variadic last parameter takes a JSON list. A declaration renders as the `<function>{…}</function>`
+line Anthropic's own harness declares a tool with — the name and a JSON-schema `parameters`
+object, no description (the prose after the line is the description here) — and an example as
+the block itself. Until 2026-10-21 a declaration kept Keep's `name(param: type)` line, and Opus
+filled that shape in as a call now and then: a hundred lines of a fillable call shape leak into
+the replies, a schema does not.
 `render_call` is also what a backend that parses the model's calls itself (`OllamaLLM`,
 `Ds4LLM`) writes a parsed call back into when this is the process's format.
 
@@ -29,7 +32,6 @@ from typing import Sequence
 
 from common.logging import trace
 
-from .KeepFormat import render_declaration as keep_declaration
 from .NamedParameterFormat import NamedParameterFormat, argument_text
 from .Signatures import Declaration, Value
 
@@ -42,11 +44,13 @@ PARAMETER_CLOSE = "</parameter>"
 _INVOKE_RE = re.compile(rf'{INVOKE_OPEN}\s+name="([^"]*)"\s*>(.*?){INVOKE_CLOSE}', re.S)
 _PARAMETER_RE = re.compile(rf'{PARAMETER_OPEN}\s+name="([^"]*)"\s*>\n?(.*?)\n?{PARAMETER_CLOSE}', re.S)
 _INVOKE_NAME_RE = re.compile(rf'{INVOKE_OPEN}\s+name="([^"]*)"')
+FUNCTION_OPEN = "<function>"
+FUNCTION_CLOSE = "</function>"
 
-# The shape Anthropic's own tool-use instruction teaches, with Keep's declarations in place of
-# the schema listing: the functions stand throughout the prompt and the toolkits as
-# `name(parameter: type, ...)`, and the parameter names are the ones an invoke writes. No
-# backticked call of a real command stands here: the rewriter would render it.
+# The shape Anthropic's own tool-use instruction teaches, without the `<functions>` listing that
+# follows it there: Keep's functions are declared throughout the prompt and the toolkits, each
+# as the `<function>` line that listing would hold. No backticked call of a real command stands
+# here: the rewriter would render it.
 INSTRUCTIONS = f"""\
 In this environment you have access to a set of functions you can use to act for the user. You invoke a function by \
 writing a block like the following as part of your reply:
@@ -61,9 +65,10 @@ writing a block like the following as part of your reply:
 A string or number value is written as is, without quotes. A parameter declared with a trailing `...` takes any \
 number of values, written as one JSON array (`["email", "web"]`). A block may hold several invokes; they run in order.
 
-Your functions are declared throughout this prompt and in every toolkit you load, each as `name(parameter: type, ...)`: \
-the parameter names are the ones you write in `<parameter name="…">`, a parameter with `= default` is optional, \
-a type like `YYYY-MM-DD` says how the value is spelled. There is one set of functions: a function declared further \
+Your functions are declared throughout this prompt and in every toolkit you load, each as a {FUNCTION_OPEN} line in \
+JSONSchema format: its properties are the parameters you write in `<parameter name="…">`, `required` lists the ones \
+you must give, a property with a `default` is optional, an array property takes its values as one JSON array, and a \
+property's `description` says how its value is spelled. There is one set of functions: a function declared further \
 down in this prompt and one declared in a toolkit you loaded are equally available to you and are invoked in exactly \
 the same format. Never say that a capability is missing because a function was not listed here, and never load a \
 toolkit to look for a function that is already declared in front of you.
@@ -95,8 +100,10 @@ class InvokeFormat(NamedParameterFormat):
         return INSTRUCTIONS
 
     def render_declaration(self, declaration: Declaration) -> str:
-        """Keep's signature text, as written: it names the parameters an invoke writes."""
-        return keep_declaration(declaration)
+        """The `<function>{"name": …, "parameters": {…}}</function>` line of Anthropic's own tool
+        listing: the schema `NamedParameterFormat` builds, without the OpenAI `function` wrapper."""
+        schema = self.function_schema(declaration)["function"]
+        return FUNCTION_OPEN + json.dumps(schema, ensure_ascii=False) + FUNCTION_CLOSE
 
     @classmethod
     def render_tool_call(cls, name: str, arguments) -> str:

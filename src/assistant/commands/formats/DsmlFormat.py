@@ -7,9 +7,15 @@ positional parser hands `CommandProcessor`). The spelling with the spaces is Dee
 `DS41_TOOL_CALLS_START` in ds4_server.c; V4 wrote `<｜DSML｜tool_calls>` — and ds4-server's
 own parser produces the V4.1 spelling in its stream, so the format emits and parses that one
 alone. The parameters are named: `NamedParameterFormat` orders them through the signature
-table. A declaration renders as the JSON function schema DeepSeek's `## Tools` block lists,
-an example as the DSML block itself; `render_call` is also what `Ds4LLM` writes a parsed
-`tool_calls` entry back into, so the stream reaches the processor as this text.
+table. A declaration renders as the line DeepSeek's own encoder (`encoding/encoding.py` of the
+model repository, checked 2026-10-21 for V4.1-Flash) lists a tool under `### Available Tool
+Schemas`: the bare function object, `{"name": …, "parameters": {…}}`, no OpenAI wrapper, no
+backticks, spaced `json.dumps` — ds4-server writes the same line, compact — and an example as
+the DSML block itself; `render_call` is also what `Ds4LLM` writes a parsed `tool_calls` entry
+back into, so the stream reaches the processor as this text. The instructions are DeepSeek's
+own `## Tools` text with Keep's paragraph in place of the schema listing: on ds4 the model also
+reads the server's block with the one tool Keep declares to have the calls parsed at all, so
+the paragraph says the tools in front of the prompt and the ones throughout it are one set.
 """
 import json
 import re
@@ -36,38 +42,43 @@ _PARAMETER_RE = re.compile(rf'{re.escape(PARAMETER_OPEN)}\s+name="([^"]*)"(?:\s+
                            rf'(.*?){re.escape(PARAMETER_CLOSE)}', re.S)
 _INVOKE_NAME_RE = re.compile(rf'{re.escape(INVOKE_OPEN)}\s+name="([^"]*)"')
 
-# ds4-server's own `## Tools` block for a V4.1 model (append_tools_prompt_text in ds4_server.c,
-# which is what the model reads when a request declares tools), without the schema listing —
-# Keep's functions are declared throughout the prompt and the toolkits, and the model must
-# take them all as its tools. No backticked call of a real command stands here: the rewriter
-# would render it.
+# DeepSeek's own `## Tools` text for V4.1 (encoding.py of the model repository), with Keep's
+# paragraph where the schema listing stands there: the tools are declared throughout the prompt
+# and the toolkits, and the one ds4-server lists in its own block in front of the prompt is one
+# of the same set. No backticked call of a real command stands here: the rewriter would render it.
 INSTRUCTIONS = f"""\
 ## Tools
 
-You can invoke tools using this format:
+You have access to a set of tools to help answer the user's question. You can invoke tools by writing a "{OPEN}" block \
+like the following:
 
 {OPEN}
 {INVOKE_OPEN} name="$TOOL_NAME">
 {PARAMETER_OPEN} name="$PARAMETER_NAME" string="true|false">$PARAMETER_VALUE{PARAMETER_CLOSE}
+...
+{INVOKE_CLOSE}
+{INVOKE_OPEN} name="$TOOL_NAME2">
+...
 {INVOKE_CLOSE}
 {CLOSE}
 
-String values use string="true"; all other values use JSON and string="false". Inside string values only, escape a \
-literal {PARAMETER_CLOSE} as {_ESCAPED_CLOSE}. To write that escaped spelling literally, use {_ESCAPED_ESCAPE}. Other \
-HTML entities are unchanged.
+String parameters should be specified as is and set `string="true"`. For all other types (numbers, booleans, arrays, \
+objects), pass the value in JSON format and set `string="false"`.
 
-Finish reasoning with </think> before tool calls or a final response.
+If thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> \
+BEFORE any tool calls or final response.
+
+Otherwise, output directly after </think> with tool calls or final response.
 
 ### Available Tool Schemas
 
-Your tools are declared throughout this prompt and in every toolkit you load, each as a JSON function schema line. \
-There is one set of tools: a function declared further down in this prompt and one declared in a toolkit you loaded \
-are equally available to you and are all invoked in exactly the same format. Never say that a capability is missing \
-because a function was not listed here, and never load a toolkit to look for a function that is already declared in \
-front of you.
+Your tools are declared throughout this prompt and in every toolkit you load, each as a JSON schema line of the shape \
+{{"name": ..., "parameters": ...}}. There is one set of tools: a tool listed in a Tools block in front of this prompt, \
+one declared further down in it and one declared in a toolkit you loaded are equally available to you and are all \
+invoked in exactly the same format. Never say that a capability is missing because a tool was not listed in front of \
+this prompt, and never load a toolkit to look for a tool that is already declared in front of you.
 
-You MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls. Use the exact \
-parameter names from the schemas.
+You MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.
 
 A tool runs the moment you write its {OPEN} block, so never write one you do not mean to run. To merely mention a \
 tool, write its name as a plain word; a name on its own never runs."""
@@ -119,6 +130,11 @@ class DsmlFormat(NamedParameterFormat):
 
     def instructions(self) -> str:
         return INSTRUCTIONS
+
+    def render_declaration(self, declaration: Declaration) -> str:
+        """The schema line of DeepSeek's `### Available Tool Schemas`: the bare function object,
+        spaced as its encoder's `json.dumps` writes it, without the OpenAI wrapper or backticks."""
+        return json.dumps(self.function_schema(declaration)["function"], ensure_ascii=False)
 
     @classmethod
     def render_tool_call(cls, name: str, arguments) -> str:

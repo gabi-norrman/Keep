@@ -51,22 +51,25 @@ class TestSpelling:
 # --- rendering -----------------------------------------------------------------------------
 
 class TestRendering:
-    def test_declaration_becomes_a_function_schema_with_required_and_typed_parameters(self, fmt):
+    def test_declaration_is_the_bare_function_object_deepseeks_encoder_lists(self, fmt):
+        """The contract with DeepSeek's encoding.py: a tool under `### Available Tool Schemas` is
+        `{"name": …, "parameters": …}` on a line of its own — no OpenAI wrapper, no backticks."""
         rendered = fmt.render_declaration(declaration("`dim(light_name: str, dim_percentage: int)`"))
-        schema = json.loads(rendered.strip("`"))
-        assert schema["type"] == "function" and schema["function"]["name"] == "dim"
-        parameters = schema["function"]["parameters"]
+        assert rendered.startswith('{"name": "dim"') and "`" not in rendered
+        schema = json.loads(rendered)
+        assert set(schema) == {"name", "parameters"}
+        parameters = schema["parameters"]
         assert parameters["required"] == ["light_name", "dim_percentage"]
         assert parameters["properties"]["dim_percentage"] == {"type": "integer"}
 
     def test_a_default_makes_the_parameter_optional_and_a_variadic_one_an_array(self, fmt):
         parameters = json.loads(fmt.render_declaration(
-            declaration("`homekit_cover(ref: str, position: open|close|0-100, dry_run: str = \"\")`")).strip("`"))["function"]["parameters"]
+            declaration("`homekit_cover(ref: str, position: open|close|0-100, dry_run: str = \"\")`")))["parameters"]
         assert parameters["required"] == ["ref", "position"]
         assert parameters["properties"]["position"] == {"type": "string", "description": "open|close|0-100"}
         assert parameters["properties"]["dry_run"]["default"] == ""
-        variadic = json.loads(fmt.render_declaration(declaration("`load_toolkit(name: str, ...)`")).strip("`"))
-        assert variadic["function"]["parameters"]["properties"]["name"] == {"type": "array", "items": {"type": "string"}}
+        variadic = json.loads(fmt.render_declaration(declaration("`load_toolkit(name: str, ...)`")))
+        assert variadic["parameters"]["properties"]["name"] == {"type": "array", "items": {"type": "string"}}
 
     def test_example_pairs_values_with_the_declared_names_strings_raw_and_numbers_as_json(self, fmt):
         call = calls('`dim("Kitchen lamp", 40)`')[0]

@@ -46,10 +46,27 @@ class TestSpelling:
 # --- rendering -----------------------------------------------------------------------------
 
 class TestRendering:
-    def test_a_declaration_keeps_keeps_signature_text(self, fmt):
+    def test_a_declaration_is_the_function_line_of_anthropics_tool_listing(self, fmt):
+        import json
         decl = declaration("`homekit_cover(ref: str, position: open|close|0-100, dry_run: str = \"\")`")
-        assert fmt.render_declaration(decl) == '`homekit_cover(ref: str, position: open|close|0-100, dry_run: str = "")`'
-        assert fmt.render_declaration(declaration("`load_toolkit(name: str, ...)`")) == "`load_toolkit(name: str, ...)`"
+        line = fmt.render_declaration(decl)
+        assert line.startswith("<function>{") and line.endswith("}</function>")
+        schema = json.loads(line[len("<function>"):-len("</function>")])
+        assert set(schema) == {"name", "parameters"}, "no OpenAI `function` wrapper, no description — the prose is it"
+        assert schema["name"] == "homekit_cover"
+        params = schema["parameters"]
+        assert params["required"] == ["ref", "position"] and "default" in params["properties"]["dry_run"]
+        assert params["properties"]["position"]["description"] == "open|close|0-100"
+        variadic = json.loads(fmt.render_declaration(declaration("`load_toolkit(name: str, ...)`"))[10:-11])
+        assert variadic["parameters"]["properties"]["name"] == {"type": "array", "items": {"type": "string"}}
+
+    def test_no_keep_shaped_call_survives_in_a_rendered_text(self, fmt):
+        """The leak the schema line closes: a `name(param: type)` declaration is a fillable call shape."""
+        from assistant.commands.formats import Rewriter
+        text = "`dim(light_name: str, dim_percentage: int)` dims. Mention `dim()` or `dim`. Try `dim(\"Lamp\", 40)`."
+        rendered = Rewriter.rewrite(text, fmt, {"dim": declaration("`dim(light_name: str, dim_percentage: int)`")})
+        assert "dim(" not in rendered
+        assert "Mention `dim` or `dim`." in rendered
 
     def test_example_pairs_values_with_the_declared_names_without_quotes(self, fmt):
         call = calls('`dim("Kitchen lamp", 40)`')[0]
@@ -79,7 +96,7 @@ class TestRendering:
         assert "```" not in text
         assert not [c for c in calls(text) if c.name in Signatures.table()]
 
-    def test_real_texts_render_every_example_as_a_block_and_keep_the_declarations(self):
+    def test_real_texts_render_every_example_as_a_block_and_every_declaration_as_a_function_line(self):
         from assistant.commands.formats import Rewriter
         from assistant.commands.Commands import Commands
         fmt = InvokeFormat(Commands.command_names())
@@ -89,9 +106,12 @@ class TestRendering:
             examples = [c for c in calls(rendered) if c.name in table and read_declaration(c) is None
                         and (c.inner or not table[c.name].params)]
             assert not examples, f"{label}: {[c.name for c in examples]}"
-            before = {c.name for c in calls(text) if read_declaration(c) is not None and c.name in table}
-            after = {c.name for c in calls(rendered) if read_declaration(c) is not None and c.name in table}
-            assert after == before, label
+            declared = {c.name for c in calls(text) if read_declaration(c) is not None and c.name in table}
+            assert rendered.count("<function>{") == len([c for c in calls(text) if read_declaration(c) is not None
+                                                          and c.name in table]), label
+            assert not [c for c in calls(rendered) if c.name in table and read_declaration(c) is not None], label
+            for name in declared:
+                assert f'"name": "{name}"' in rendered, (label, name)
 
 
 # --- parsing -------------------------------------------------------------------------------

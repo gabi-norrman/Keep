@@ -82,7 +82,8 @@ class TestRewriter:
         assert "<call browse_eval js=raw:document.querySelector('a, b').href>" in out
 
     def test_mentions_non_commands_and_unreadable_calls_stay_as_written(self, out):
-        assert "Mention `turn_on` or `turn_on()` without calling" in out, "`name()` of a command with parameters is a mention"
+        assert "Mention `turn_on` or `turn_on` without calling" in out, \
+            "`name()` of a command with parameters is a mention: the bare name in every format but Keep's"
         assert "A `word(x)` is not a command." in out
         assert "Not canonical: `turn_on(Kitchen lamp)`." in out
 

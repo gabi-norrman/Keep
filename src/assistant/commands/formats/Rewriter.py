@@ -4,9 +4,11 @@ The texts (`res/prompt.md`, the toolkits) are written in Keep's syntax; `rewrite
 backticked `name(...)` whose name is in the signature table and replaces it with the format's
 rendering — `render_declaration` for a declaration, `render_example` for an example, whose
 values are paired with the declared names in order. A name without parentheses is a mention and
-stays; so does `name()` when the table gives the command parameters (the toolkits mention
-commands that way), a `word(x)` that is no command, and a call the canon cannot read — the
-text is left as written rather than guessed at. For the Keep format the rewrite is the identity.
+stays; `name()` of a command the table gives parameters is a mention too (the toolkits mention
+commands that way) and is rendered by `render_mention` — the bare name in every syntax but
+Keep's, whose instructions say a name without parentheses never runs; a `word(x)` that is no
+command and a call the canon cannot read are left as written rather than guessed at. For the
+Keep format the rewrite is the identity.
 """
 from .CommandFormat import CommandFormat
 from .Signatures import Declaration, calls, read_declaration, read_values
@@ -26,7 +28,14 @@ def rewrite(text: str, fmt: CommandFormat, table: dict[str, Declaration]) -> str
             replacement = fmt.render_declaration(own)
         else:
             if not call.inner and declaration.params:
-                continue  # `name()` of a command with parameters: a mention
+                replacement = fmt.render_mention(call.name)
+                if replacement == text[call.start:call.end]:
+                    continue
+                pieces.append(text[at:call.start])
+                pieces.append(replacement)
+                at = call.end
+                rendered += 1
+                continue
             values = read_values(call)
             if values is None or (len(values) > len(declaration.params) and not declaration.variadic):
                 left.append(call.name)

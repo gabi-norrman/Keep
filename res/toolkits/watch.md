@@ -1,7 +1,7 @@
 The watch list (see "The watch list" in the prompt): `load_watch(name: str, ...)` loads an item in full — do that before you
 answer a question about it or update it. The commands that change the list:
 
-`save_watch(name: str, note: str, due: str, every: str)` — start watching something, or update the item with that
+`save_watch(name: str, note: str, due: str = "", every: str = "")` — start watching something, or update the item with that
 name. `note` is its current state with every detail you will need; it REPLACES the old note, so write the whole state,
 not only what is new. `due` is the date it is due or expected, as YYYY-MM-DD, or the moment to act at as YYYY-MM-DD
 HH:MM: a check wakes you at that minute with the item, and the item stays among the due items of every check until
