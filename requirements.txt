@@ -3,6 +3,7 @@ ruamel.yaml==0.18.17
 colorama==0.4.6
 playsound==1.2.2
 requests==2.34.2
+certifi==2026.10.19   # drops the emSign root behind the eMudhra key compromise (Oct 2026), for a start where truststore is missing
 # TLS verified against the macOS keychain, so a network that inspects HTTPS does not break every call
 truststore==0.10.4
 psutil==7.1.3
