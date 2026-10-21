@@ -487,6 +487,20 @@ class DialogManager:
         self._surface_notice(notice)
         yield notice
 
+    def _leave_stream_at_the_cut(self, response):
+        """The processor hit its cap: close the stream so the model stops generating, and keep
+        of the turn exactly the calls that ran — the text up to the last of them, its block
+        closed — so the follow-up round reads a reply of that many commands and nothing says
+        there were more."""
+        cap = self.command_processor.MAX_COMMANDS_PER_REPLY
+        before = len(self.llm_response_raw)
+        self.llm_response_raw = self.command_processor.format.cut(self.llm_response_raw, cap)
+        info(f"Reply cut after {cap} commands — stream closed, the turn kept as those calls "
+             f"({before} → {len(self.llm_response_raw)} chars received)")
+        close = getattr(response, "close", None)
+        if close is not None:
+            close()
+
     def process_llm_stream(self, response, t: float, time_shown: bool) -> Generator[str, None, None]:
         # Emotion tags ([laughing], [sighing], ...) are synthesis directives, not display
         # text, so strip them before publishing to /stream_text or they render literally in
@@ -560,6 +574,10 @@ class DialogManager:
                 observers().on_tokens(processed_chunk)
                 publish_stream_text(processed_chunk)
                 yield processed_chunk
+
+            if getattr(self.command_processor, "reply_cut", False):
+                self._leave_stream_at_the_cut(response)
+                break
 
         flushed = self.command_processor.flush_buffer(self)
         yield from self.drain_events()

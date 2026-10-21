@@ -230,3 +230,17 @@ class TestStreaming:
         assert processor.calls == []
         assert OPEN not in (out or "")
         assert "dim" in (processor.take_unterminated_command_report() or "")
+
+
+class TestCut:
+    def test_a_block_of_several_functions_is_cut_inside_and_closed_again(self, fmt):
+        functions = "\n".join(f"<function=turn_on>\n<parameter=light_name>lamp {i}</parameter>\n</function>" for i in range(3))
+        kept = fmt.cut(f"{OPEN}\n{functions}\n{CLOSE}\nDone.", 2)
+        assert [p for _, p in fmt.extract_all(kept)] == [["lamp 0"], ["lamp 1"]]
+        assert kept.endswith(CLOSE) and "Done." not in kept
+
+    def test_one_block_per_call_is_cut_between_blocks(self, fmt):
+        blocks = "\n".join(render_call("turn_on", [("light_name", f"lamp {i}")]) for i in range(3))
+        kept = fmt.cut(blocks, 2)
+        assert [p for _, p in fmt.extract_all(kept)] == [["lamp 0"], ["lamp 1"]]
+        assert kept.endswith(CLOSE)

@@ -85,6 +85,7 @@ class QwenFormat(NamedParameterFormat):
     name = "qwen"
     OPEN = OPEN
     CLOSE = CLOSE
+    INVOKE_RE = _FUNCTION_RE
 
     # --- rendering -------------------------------------------------------------------------
 

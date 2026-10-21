@@ -9,6 +9,7 @@ a variadic declaration (`load_toolkit(name: str, ...)`) is one array-typed param
 value — a JSON list, or names separated by commas — is split back into the positional values.
 """
 import json
+import re
 from typing import Sequence
 
 from assistant.commands.CommandParser import CommandParser
@@ -52,9 +53,11 @@ class NamedParameterFormat(CommandFormat):
     declarations render as JSON function schemas, the named values of a call are ordered
     through the signature table, and the stream is buffered from the opener to the closer."""
 
-    # The sentinels of the block a call is written in; a subclass sets both.
+    # The sentinels of the block a call is written in; a subclass sets both, and the pattern
+    # that matches one invoke of the block for the cut.
     OPEN: str
     CLOSE: str
+    INVOKE_RE: "re.Pattern[str]"
 
     def __init__(self, possible_commands: list[str], table: dict[str, list[str]] | None = None,
                  variadic: set[str] | None = None):
@@ -165,6 +168,17 @@ class NamedParameterFormat(CommandFormat):
         if self.extract(buffer)[1] is None:
             return -1
         return buffer.find(self.CLOSE, buffer.find(self.OPEN)) + len(self.CLOSE)
+
+    def _cut_block(self, block: str, keep: int) -> str:
+        """The block's first `keep` invokes, as written, under the closer again."""
+        start = block.find(self.OPEN)
+        if start < 0:
+            return block
+        body = start + len(self.OPEN)
+        matches = list(self.INVOKE_RE.finditer(block, body))
+        if len(matches) <= keep:
+            return block
+        return block[:matches[keep - 1].end()] + "\n" + self.CLOSE
 
     # --- the parameters ----------------------------------------------------------------------
 

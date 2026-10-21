@@ -109,3 +109,31 @@ class CommandFormat(ABC):
     def extract_all(self, text: str) -> list[tuple[str, list[str]]]:
         """Every call in a complete text, in order, as `(name, params)` — the cache layer's
         view of a stored reply, so no display text."""
+
+    def cut(self, text: str, count: int) -> str:
+        """The text up to and including its `count`-th call, every block closed: what the
+        processor keeps of a reply it stopped reading after that call (the runaway guard),
+        so the stored turn shows exactly the calls that ran. A text holding no more calls
+        than that comes back whole, the prose after its last call included."""
+        kept = 0
+        at = 0
+        while (start := self.find_start(text[at:])) >= 0:
+            start += at
+            if kept >= count:
+                return text[:at]
+            end = self.call_end(text[start:])
+            if end < 0:
+                return text
+            end += start
+            block = text[start:end]
+            calls = len(self.extract_all(block))
+            if kept + calls > count:
+                return text[:start] + self._cut_block(block, count - kept)
+            kept += calls
+            at = end
+        return text
+
+    def _cut_block(self, block: str, keep: int) -> str:
+        """One complete block holding more than `keep` calls, shortened to its first `keep`
+        and closed again. A format whose block holds one call is never asked."""
+        return block

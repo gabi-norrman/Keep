@@ -262,3 +262,12 @@ class TestStreaming:
         assert processor.calls == []
         assert out.strip() == "Sure thing."
         assert "dim was not run" in processor.take_unterminated_command_report()
+
+
+class TestCut:
+    def test_a_block_of_several_invokes_is_cut_inside_and_closed_again(self, fmt):
+        invokes = "\n".join(f'{INVOKE_OPEN} name="turn_on">\n{PARAMETER_OPEN} name="light_name" string="true">lamp {i}'
+                            f'{PARAMETER_CLOSE}\n{INVOKE_CLOSE}' for i in range(3))
+        kept = fmt.cut(f"{OPEN}\n{invokes}\n{CLOSE}\nDone.", 2)
+        assert [p for _, p in fmt.extract_all(kept)] == [["lamp 0"], ["lamp 1"]]
+        assert kept.endswith(CLOSE) and "Done." not in kept

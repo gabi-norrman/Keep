@@ -2104,3 +2104,58 @@ class TestUnterminatedCommandAtStreamEnd:
     def test_an_autonomous_run_reports_nothing(self, processor):
         self._reply(processor, None, self.PROD_REPLY)
         assert processor.unterminated_command_report is None
+
+
+@pytest.mark.unit
+class TestCommandCap:
+    """The runaway guard: a reply is read up to MAX_COMMANDS_PER_REPLY calls (2026-10-21: Opus
+    streamed 51 history searches in one reply); what follows in the stream is dropped unread."""
+
+    @pytest.fixture
+    def processor(self):
+        processor = CommandProcessor(test_suite_mode=True)
+        yield processor
+        processor.kill()
+
+    @pytest.fixture
+    def dm(self):
+        dm = Mock()
+        dm.is_killed = False
+        return dm
+
+    def test_the_stream_stops_being_read_after_the_cap(self, processor, dm):
+        cap = CommandProcessor.MAX_COMMANDS_PER_REPLY
+        shown = ""
+        for i in range(cap + 5):
+            if (text := processor.process(f"turn_on(lamp {i}) ", dm)) is not None:
+                shown += text
+        assert processor.commands_dispatched == cap
+        assert processor.reply_cut
+        assert processor.process("and some prose after", dm) is None
+        assert processor.flush_buffer(dm) is None
+        assert processor.unterminated_command_report is None
+        assert shown.strip() == ""
+
+    def test_a_call_half_streamed_at_the_cut_is_dropped_not_reported(self, processor, dm):
+        # The shape of the runaway: bare invokes, the cap-th complete in the same chunk as
+        # the start of the next.
+        from assistant.commands.formats.InvokeFormat import InvokeFormat
+        processor.format = InvokeFormat(processor.possible_commands, table={"turn_on": ["light_name"]}, variadic=set())
+        cap = CommandProcessor.MAX_COMMANDS_PER_REPLY
+        invoke = '<invoke name="turn_on">\n<parameter name="light_name">lamp {}</parameter>\n</invoke>\n\n'
+        for i in range(cap - 1):
+            processor.process(invoke.format(i), dm)
+        processor.process(invoke.format(cap - 1) + '<invoke name="tur', dm)
+        assert processor.commands_dispatched == cap
+        assert processor.reply_cut
+        assert processor.flush_buffer(dm) is None
+        assert processor.unterminated_command_report is None
+
+    def test_a_reply_within_the_cap_reads_on_to_its_text(self, processor, dm):
+        cap = CommandProcessor.MAX_COMMANDS_PER_REPLY
+        calls = " ".join(f"turn_on(lamp {i})" for i in range(cap - 1))
+        shown = processor.process(calls + " all done", dm) or ""
+        shown += processor.flush_buffer(dm) or ""
+        assert processor.commands_dispatched == cap - 1
+        assert not processor.reply_cut
+        assert "all done" in shown

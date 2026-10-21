@@ -320,3 +320,43 @@ class TestStreaming:
         assert processor.calls == []
         assert out.strip() == "Sure thing."
         assert "dim was not run" in processor.take_unterminated_command_report()
+
+
+class TestCut:
+    """`cut` keeps a reply up to its n-th call, the block closed — what the processor's
+    command cap stores of a runaway reply (2026-10-21: 51 bare search invokes in one turn)."""
+
+    @staticmethod
+    def _bare(n: int) -> str:
+        return "\n\n".join(f'{INVOKE_OPEN} name="turn_on">\n{parameter("light_name", f"lamp {i}")}\n{INVOKE_CLOSE}'
+                           for i in range(n))
+
+    @staticmethod
+    def _wrapped(n: int) -> str:
+        invokes = "\n".join(f'{INVOKE_OPEN} name="turn_on">\n{parameter("light_name", f"lamp {i}")}\n{INVOKE_CLOSE}'
+                            for i in range(n))
+        return f"{OPEN}\n{invokes}\n{CLOSE}"
+
+    def test_bare_invokes_are_cut_after_the_nth_and_an_opener_started_after_it_is_dropped(self, fmt):
+        text = "Checking.\n\n" + self._bare(4) + "\n\n" + INVOKE_OPEN + ' name="tur'
+        kept = fmt.cut(text, 2)
+        assert kept.startswith("Checking.")
+        assert [p for _, p in fmt.extract_all(kept)] == [["lamp 0"], ["lamp 1"]]
+        assert kept.endswith(INVOKE_CLOSE)
+
+    def test_a_wrapped_block_is_cut_inside_and_closed_again(self, fmt):
+        kept = fmt.cut(self._wrapped(4) + "\nDone.", 2)
+        assert [p for _, p in fmt.extract_all(kept)] == [["lamp 0"], ["lamp 1"]]
+        assert kept.endswith(CLOSE) and kept.count(OPEN) == 1 and "Done." not in kept
+
+    def test_blocks_before_the_cut_are_kept_as_written(self, fmt):
+        text = self._wrapped(2) + "\n" + self._wrapped(3)
+        kept = fmt.cut(text, 4)
+        assert kept.startswith(self._wrapped(2))
+        assert len(fmt.extract_all(kept)) == 4 and kept.endswith(CLOSE)
+
+    def test_a_reply_within_the_cap_comes_back_whole(self, fmt):
+        text = "Sure.\n\n" + self._wrapped(3) + "\nDone."
+        assert fmt.cut(text, 3) == text
+        assert fmt.cut(text, 10) == text
+        assert fmt.cut("No calls at all.", 10) == "No calls at all."

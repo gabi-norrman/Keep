@@ -91,3 +91,15 @@ class TestEveryFormatRendersAParsedCallItReads:
     def test_arguments_that_are_not_a_json_object_become_one_value(self, cls):
         parser = cls(NAMES)
         assert parser.extract_all(cls.render_tool_call("turn_on", "not json"))[0][1] == ["not json"]
+
+
+class TestCut:
+    def test_a_reply_is_cut_after_the_nth_call_and_the_prose_before_it_kept(self, fmt):
+        kept = fmt.cut("On it. turn_on(a) turn_on(b) turn_on(c) and more", 2)
+        assert kept.startswith("On it.")
+        assert [p for _, p in fmt.extract_all(kept)] == [["a"], ["b"]]
+        assert "turn_on(c)" not in kept and "and more" not in kept
+
+    def test_a_reply_within_the_cap_comes_back_whole(self, fmt):
+        text = "turn_on(a) turn_on(b) done"
+        assert fmt.cut(text, 2) == text

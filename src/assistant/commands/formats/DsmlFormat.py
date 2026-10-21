@@ -125,6 +125,7 @@ class DsmlFormat(NamedParameterFormat):
     name = "dsml"
     OPEN = OPEN
     CLOSE = CLOSE
+    INVOKE_RE = _INVOKE_RE
 
     # --- rendering -------------------------------------------------------------------------
 

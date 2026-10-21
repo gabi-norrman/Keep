@@ -524,18 +524,25 @@ class ClaudeLLM(AbstractLLM):
         block_types = []
         self._last_stop_reason = None
         stream = self._create_message(api_params)
-        for event in stream:
-            if event.type == 'message_start' and hasattr(event.message, 'usage'):
-                self._log_cache_usage(event.message.usage)
-            elif event.type == 'content_block_start':
-                block_types.append(getattr(event.content_block, 'type', '?'))
-            elif event.type == 'content_block_delta' and event.delta.type == 'text_delta':
-                first_token_seen = True
-                yield event.delta.text
-            elif event.type == 'message_delta':
-                stop_reason = getattr(event.delta, 'stop_reason', None) or stop_reason
-                if hasattr(event, 'usage'):
-                    self._log_output_tokens(event.usage)
+        try:
+            for event in stream:
+                if event.type == 'message_start' and hasattr(event.message, 'usage'):
+                    self._log_cache_usage(event.message.usage)
+                elif event.type == 'content_block_start':
+                    block_types.append(getattr(event.content_block, 'type', '?'))
+                elif event.type == 'content_block_delta' and event.delta.type == 'text_delta':
+                    first_token_seen = True
+                    yield event.delta.text
+                elif event.type == 'message_delta':
+                    stop_reason = getattr(event.delta, 'stop_reason', None) or stop_reason
+                    if hasattr(event, 'usage'):
+                        self._log_output_tokens(event.usage)
+        finally:
+            # A consumer that stops reading (the reply cut after the command cap) closes this
+            # generator; closing the SDK stream with it ends the request, and the generation.
+            close = getattr(stream, "close", None)
+            if close is not None:
+                close()
         self._last_stop_reason = stop_reason
         if not first_token_seen:
             info(f"Claude stream ended with no text (stop_reason={stop_reason}, blocks={block_types or 'none'})")

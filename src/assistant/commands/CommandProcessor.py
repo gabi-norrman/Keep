@@ -30,6 +30,11 @@ class CommandProcessor:
     THINKING_TAG_END = "</thinking>"
     THINKING_TAG_START_SPACED = "< thinking >"
     UNTERMINATED_COMMAND_SHOWN_CHARS = 300
+    # The runaway guard: a reply is read up to this many calls and the stream is dropped
+    # there (2026-10-21: Opus wrote 51 history searches in one reply, a 660 KB result).
+    # The calls read run as usual; the stored turn is cut after the last of them
+    # (`CommandFormat.cut`), so the next round looks like a reply of exactly that many.
+    MAX_COMMANDS_PER_REPLY = 10
 
     def __init__(self, test_suite_mode: bool):
         self.previous_content_buffer = ""
@@ -59,6 +64,9 @@ class CommandProcessor:
         # still running from the same reply replaces command_reply wholesale when it finishes.
         self.unterminated_command_report: str | None = None
         self.commands_dispatched = 0
+        # Set when the cap above is reached: the rest of the stream is ignored, and the
+        # dialog closes it.
+        self.reply_cut = False
         self.commands = Commands(self)
         self.possible_commands = self.commands.list_commands()
         self.format = CommandFormats.active()(self.possible_commands)
@@ -500,6 +508,8 @@ class CommandProcessor:
 
     # Runs on: request thread (called from DialogManager.process_llm_stream during LLM token streaming)
     def process(self, content: str, dialog_manager) -> str | None:
+        if self.reply_cut:
+            return None
         content = self.thinking_buffer + content
         self.thinking_buffer = ""
 
@@ -523,6 +533,12 @@ class CommandProcessor:
             if self.format.complete(self.previous_content_buffer, streaming=self._streaming):
                 self.debug(f"Processing command!")
                 self.previous_content_buffer = self.process_one_command(self.previous_content_buffer, dialog_manager)
+                if self.commands_dispatched >= self.MAX_COMMANDS_PER_REPLY:
+                    info(f"Reply cut after {self.commands_dispatched} commands — the rest of the stream is "
+                         f"dropped unread: {self.previous_content_buffer[:80]!r}")
+                    self.reply_cut = True
+                    self.previous_content_buffer = ""
+                    return None
                 # clean up and go again after we've removed one command
                 self.debug(f"rest: '{self.previous_content_buffer}'")
                 p = self.previous_content_buffer

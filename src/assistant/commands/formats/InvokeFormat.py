@@ -93,6 +93,7 @@ class InvokeFormat(NamedParameterFormat):
     name = "invoke"
     OPEN = OPEN
     CLOSE = CLOSE
+    INVOKE_RE = _INVOKE_RE
 
     # --- rendering -------------------------------------------------------------------------
 

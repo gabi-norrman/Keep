@@ -1262,3 +1262,67 @@ def test_select_voice_does_not_memoize_a_language_no_engine_speaks(fake_llm_back
     assert dm.voice is not None
     assert dm._voices["sv-SE"] is dm.voice
     assert built == ["sv-SE", "sv-SE"]
+
+
+# ===========================================================================
+# The command cap: a runaway reply is cut after MAX_COMMANDS_PER_REPLY calls
+# ===========================================================================
+
+class ClosableStream:
+    """A stream that records when the dialog stopped reading it."""
+
+    def __init__(self, chunks):
+        self._chunks = iter(chunks)
+        self.closed = False
+        self.consumed = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        chunk = next(self._chunks)
+        self.consumed += 1
+        return chunk
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.mark.unit
+def test_a_reply_past_the_command_cap_is_cut_and_the_stream_closed(monkeypatch):
+    processor = CommandProcessor(test_suite_mode=True)
+    dm, console = make_dialog_manager(monkeypatch, [], command_processor=processor)
+    monkeypatch.setattr('assistant.DialogManager.time.time', TimeStub([1.0, 1.1]))
+    cap = CommandProcessor.MAX_COMMANDS_PER_REPLY
+    chunks = ["On it. "] + [f"turn_on(lamp {i}) " for i in range(cap + 20)] + ["All done."]
+    stream = ClosableStream(chunks)
+
+    output = list(dm.process_llm_stream(stream, 1.0, False))
+    processor.command_queue.join()
+
+    assert stream.closed
+    assert stream.consumed <= cap + 2  # the cut chunk itself may be read, nothing past it
+    assert processor.commands_dispatched == cap
+    calls = processor.format.extract_all(dm.llm_response_raw)
+    assert [p for _, p in calls] == [[f"lamp {i}"] for i in range(cap)]
+    assert dm.llm_response_raw.startswith("On it.")
+    assert "All done." not in dm.llm_response_raw
+    assert "".join(output).strip() == "On it."
+    processor.kill()
+
+
+@pytest.mark.unit
+def test_a_reply_within_the_command_cap_is_read_to_its_end(monkeypatch):
+    processor = CommandProcessor(test_suite_mode=True)
+    dm, console = make_dialog_manager(monkeypatch, [], command_processor=processor)
+    monkeypatch.setattr('assistant.DialogManager.time.time', TimeStub([1.0, 1.1]))
+    chunks = [f"turn_on(lamp {i}) " for i in range(3)] + ["All done."]
+    stream = ClosableStream(chunks)
+
+    output = list(dm.process_llm_stream(stream, 1.0, False))
+    processor.command_queue.join()
+
+    assert not stream.closed and stream.consumed == len(chunks)
+    assert "".join(output).strip() == "All done."
+    assert dm.llm_response_raw.endswith("All done.")
+    processor.kill()
