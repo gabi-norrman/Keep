@@ -9,8 +9,9 @@ from assistant.commands.formats.CommandFormats import CommandFormats
 from assistant.commands.formats.DsmlFormat import DsmlFormat, OPEN
 from assistant.commands.formats.KeepFormat import KeepFormat
 from assistant.llm import create_llm, local_only_class, parse_llm_config, tier_api_key_name
-from assistant.llm.Ds4LLM import Ds4LLM
+from assistant.llm.Ds4LLM import Ds4LLM, Ds4LogFormat
 from assistant.llm.Ds4Replay import ReplayStore
+from assistant.llm.PrefillTracker import LogSource
 
 CALL_TEXT = ('\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name="turn_on">\n'
              '<｜DSML｜ parameter name="light_name" string="true">kitchen lamp</｜DSML｜ parameter>\n'
@@ -55,12 +56,17 @@ FMT = DsmlFormat(["turn_on", "dim"], table={"turn_on": ["light_name"], "dim": ["
 
 @pytest.fixture(autouse=True)
 def _dsml_active_and_a_memory_store():
-    """A ds4 smart tier: the process format is DSML, and the replay store stays off the disk."""
+    """A ds4 smart tier: the process format is DSML, the replay store stays off the disk, and the
+    prefill tracker's log is unreachable (no anchor, so a request never reads a file or ssh)."""
     CommandFormats.set_active(DsmlFormat)
     Ds4LLM._replay_store = ReplayStore(None)
-    yield
+    saved_log, saved_tps = Ds4LLM._prefill.log, Ds4LLM._prefill.tps
+    with patch.object(LogSource, 'size', return_value=None):
+        yield
     CommandFormats.reset()
     Ds4LLM._replay_store = None
+    Ds4LLM._prefill._requests.clear()
+    Ds4LLM._prefill.log, Ds4LLM._prefill.tps = saved_log, saved_tps
 
 
 class TestSetup:
@@ -275,6 +281,88 @@ class TestNonStreaming:
         assert text.startswith(OPEN) and FMT.extract_all(text) == [("dim", ["Lamp", "1"])]
         text = self._completion(SimpleNamespace(content="Dimming.", reasoning_content=None, tool_calls=[call]))
         assert text.startswith("Dimming.\n") and FMT.extract_all(text) == [("dim", ["Lamp", "1"])]
+
+
+class TestPrefillBar:
+    """The "Prefilling…" bar: ds4's log lines, the tracker bracketed around a request, and the
+    rate each reply's usage teaches."""
+
+    LOG = ('1021 11:39:28 ds4-server: chat ctx=24576..26339:1763 TOOLS prompt start\n'
+           '1021 11:39:44 ds4-server: chat ctx=24576..26339:1763 TOOLS prefill chunk 1024/1763 (58.1%) chunk=0.00 t/s avg=1518.73 t/s 16.182s\n'
+           '1021 11:39:47 ds4-server: chat ctx=24576..26339:1763 TOOLS prefill chunk 1700/1763 (96.4%) chunk=656.29 t/s avg=1396.54 t/s 18.853s\n')
+
+    def test_the_prompt_start_line_gives_cached_and_remaining_tokens(self):
+        assert Ds4LogFormat().work(self.LOG) == (24576, 1763)
+        assert Ds4LogFormat().work("1021 11:39:28 ds4-server: kv cache stored tokens=26329\n") is None
+
+    def test_progress_is_the_last_chunk_line(self):
+        assert Ds4LogFormat().progress(self.LOG) == (1700, 1763)
+        assert Ds4LogFormat().progress(self.LOG.splitlines()[0]) is None
+
+    def test_a_streamed_request_is_bracketed_and_the_first_delta_ends_the_prefill(self):
+        llm, create = _llm_with_stream([_chunk(reasoning="hm"), _chunk(content="Hi."), _chunk(choices=False)])
+        order = []
+        create.side_effect = lambda **kw: (order.append("create"), iter([_chunk(reasoning="hm"), _chunk(content="Hi."), _chunk(choices=False)]))[1]
+        with patch.object(Ds4LLM._prefill, 'begin', side_effect=lambda **kw: (order.append("begin"), 7)[1]), \
+             patch.object(Ds4LLM._prefill, 'first_token', side_effect=lambda t: order.append(("first", t))), \
+             patch.object(Ds4LLM._prefill, 'end', side_effect=lambda t: order.append(("end", t))):
+            _stream(llm)
+        assert order[:3] == ["begin", "create", ("first", 7)], "the tracker runs before the request leaves; the first delta ends the prefill"
+        assert order.count(("first", 7)) == 1 and order[-1] == ("end", 7)
+
+    def test_the_tracker_is_released_when_the_stream_raises(self):
+        def broken():
+            yield _chunk(content="Hi")
+            raise ConnectionError("gone")
+        llm, create = _llm_with_stream([])
+        create.return_value = broken()
+        with patch.object(Ds4LLM._prefill, 'end') as end, pytest.raises(ConnectionError):
+            _stream(llm)
+        end.assert_called_once()
+
+    def test_a_non_streamed_request_is_bracketed_too(self):
+        p1, p2 = _config({})
+        with p1, p2:
+            llm = Ds4LLM()
+        llm.client = MagicMock()
+        message = SimpleNamespace(content="Hi.", reasoning_content=None, tool_calls=None)
+        llm.client.chat.completions.create.return_value = SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+        with patch.object(Ds4LLM._prefill, 'begin', return_value=3) as begin, patch.object(Ds4LLM._prefill, 'end') as end, p1, p2:
+            llm.create_completion([{'role': 'user', 'content': 'hi'}])
+        begin.assert_called_once()
+        end.assert_called_once_with(3)
+
+    def test_the_usage_teaches_the_rate_from_the_uncached_tokens_over_the_time_to_the_first_token(self):
+        usage = SimpleNamespace(prompt_tokens=5000, completion_tokens=3,
+                                prompt_tokens_details=SimpleNamespace(cached_tokens=4000))
+        llm, _ = _llm_with_stream([_chunk(content="Hi."), _chunk(choices=False, usage=usage)])
+        with patch.object(Ds4LLM._prefill, 'observe_rate') as observe:
+            _stream(llm)
+        (tokens, seconds), _ = observe.call_args
+        assert tokens == 1000 and 0 <= seconds < 5
+
+    def test_no_usage_means_no_rate_lesson(self):
+        llm, _ = _llm_with_stream([_chunk(content="Hi."), _chunk(choices=False)])
+        with patch.object(Ds4LLM._prefill, 'observe_rate') as observe:
+            _stream(llm)
+        observe.assert_not_called()
+
+    def test_a_local_server_means_the_log_file_here_and_a_remote_one_ssh_to_its_host(self):
+        p1, p2 = _config({})
+        with p1, p2:
+            Ds4LLM(base_url='http://127.0.0.1:8000/v1')
+            log = Ds4LLM._prefill.log
+            assert log.ssh_host is None and log.path == Ds4LLM.DEFAULT_LOG_PATH
+            Ds4LLM(base_url='http://100.64.0.10:8000/v1')
+            log = Ds4LLM._prefill.log
+            assert log.ssh_host == '100.64.0.10' and log.path == Ds4LLM.DEFAULT_LOG_PATH
+
+    def test_the_log_path_and_ssh_host_keys_override_the_defaults(self):
+        p1, p2 = _config({'ds4.log_path': '/srv/ds4.log', 'ds4.ssh_host': 'user@studio.local'})
+        with p1, p2:
+            Ds4LLM(base_url='http://studio.local:8000/v1')
+        log = Ds4LLM._prefill.log
+        assert (log.path, log.ssh_host) == ('/srv/ds4.log', 'user@studio.local')
 
 
 class TestLocalOnlyRouting:

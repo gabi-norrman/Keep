@@ -136,18 +136,18 @@ class TestProgress:
         assert PHASE_WAITING in phases[1:]
 
     def test_waiting_reads_as_prefill_while_a_local_model_prefills(self, session, hub, transport):
-        from assistant.llm.OllamaLLM import OllamaLLM
+        from assistant.llm.PrefillTracker import PrefillTracker
         session.SPINNER_TICK_SECONDS = 0.01
-        with patch.object(OllamaLLM, "prefill_progress", return_value=43.0):
+        with patch.object(PrefillTracker, "current_progress", return_value=43.0):
             run_reply(session, hub, [(0.05, Token("Hi")), RoundEnd(), None])
         first = transport.drafts[0].progress[0]
         assert first.phase == PHASE_PREFILL and first.prefill == 43.0
 
     @pytest.mark.parametrize("pct", [0.0, 100.0])
     def test_prefill_yields_to_thinking_and_reads_as_waiting_at_either_end(self, session, hub, transport, pct):
-        from assistant.llm.OllamaLLM import OllamaLLM
+        from assistant.llm.PrefillTracker import PrefillTracker
         session.SPINNER_TICK_SECONDS = 0.01
-        with patch.object(OllamaLLM, "prefill_progress", return_value=pct):
+        with patch.object(PrefillTracker, "current_progress", return_value=pct):
             run_reply(session, hub, [(0.03, Thinking("hm", 3)), (0.03, Token("Hi")), RoundEnd(), None])
         phases = [p.phase for p in transport.drafts[0].progress]
         assert phases[0] == PHASE_WAITING and PHASE_THINKING in phases and PHASE_PREFILL not in phases

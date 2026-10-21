@@ -9,6 +9,7 @@ import pytest
 
 from assistant.llm.AbstractLLM import AbstractLLM, LLMPreempted
 from assistant.llm.OllamaLLM import OllamaLLM
+from assistant.llm.PrefillTracker import LogSource
 
 DONE = {"done": True, "prompt_eval_count": 1, "prompt_eval_duration": 1e9,
         "eval_count": 1, "eval_duration": 1e9, "total_duration": 2e9}
@@ -85,7 +86,7 @@ def _fresh_gate():
     reset()
     with patch('http.client.HTTPConnection', FakeConn), \
          patch.object(OllamaLLM, 'background_idle_seconds', return_value=0.0), \
-         patch.object(OllamaLLM, '_log_size', return_value=None):
+         patch.object(LogSource, 'size', return_value=None):   # the tracker gets no anchor, reads nothing
         yield
     reset()
 

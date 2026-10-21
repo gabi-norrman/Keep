@@ -339,6 +339,10 @@ wake_word_near_misses: [mission, missions, we shall]
 #  model: deepseek-v4.1-flash      # The id `GET /v1/models` on the server lists; an `ai:` tier's `model:` wins
 #  reasoning_effort: low           # How much the model reasons before an ordinary reply: none, minimal, low,
 #                                  # medium, high, xhigh or max. The memory curator always gets high.
+#  log_path: ~/Documents/ds4/ds4-server.log   # The file the server's output is redirected to: the chat's
+#                                  # "Prefilling…" bar reads the prefill progress from it. Optional.
+#  ssh_host: user@192.168.1.50     # Where to read that log over ssh when base_url is another machine;
+#                                  # defaults to the base_url host. Optional.
 
 # Where the //FP and //TP debug commands collect the latest conversations' audio as labelled
 # false/true wake-word positives. Optional — defaults to cache/stt_samples/{false-positive,en}.

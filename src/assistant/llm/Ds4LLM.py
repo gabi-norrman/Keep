@@ -45,18 +45,46 @@ Measured on the test host, 2026-10-20, a 16.5k-token prompt: the switch between 
 command diverges at the past call, no saved prefix ends there, and the whole history tail
 (15–35 KB, roughly 4k–9k tokens, a few seconds) is prefilled again every turn — the disk cache
 only brings the fallback down from the whole prompt to that tail.
+
+The "Prefilling…" bar: ds4 says nothing on the wire until the first token (its SSE keepalive is a
+bare comment), so the prefill progress is read from the server's log by the class's one
+`PrefillTracker`, as Ollama's is — `ds4.log_path` (default `~/Documents/ds4/ds4-server.log`),
+over ssh to `ds4.ssh_host` (default: the base_url host) when the server is on another machine.
+The log says the workload at once (`prompt start` with `ctx=cached..total:remaining`) but logs a
+chunk line only at the backend's chunk boundaries — a cold 26k prompt logs its first at 93%, 16 s
+in —, so the bar is mostly the time estimate, refined after each reply from the usage (prompt
+tokens minus the cached ones over the time to the first token).
 """
 import json
+import re
 import time
 from typing import Generator
+from urllib.parse import urlparse
 
 from .ChatGPTLLM import ChatGPTLLM
 from .Ds4Replay import ReplayStore, replay
 from .OllamaLLM import OllamaLLM
+from .PrefillTracker import LogFormat, PrefillTracker, is_local_host, parse_last
 from assistant.commands.formats import DsmlFormat as dsml
 from assistant.commands.formats.CommandFormats import CommandFormats
 from common.ConfigManager import config
 from common.logging import info, trace, fine, note
+
+
+class Ds4LogFormat(LogFormat):
+    """The prefill lines of ds4-server's log. A request opens with its workload —
+    ds4-server: chat ctx=24576..26339:1763 TOOLS prompt start
+    (`ctx=cached..total:remaining`) — then logs a chunk line at each backend chunk boundary, its
+    numbers relative to the cached part —
+    ds4-server: chat ctx=0..26339:26339 TOOLS prefill chunk 24576/26339 (93.3%) chunk=0.00 t/s avg=1518.73 t/s 16.182s
+    — and closes with `prompt done`. A KV restore from disk logs the same chunk line under another phase name.
+    """
+    def work(self, text: str) -> tuple[int, int] | None:
+        match = re.search(r'ctx=(\d+)\.\.(\d+):(\d+)[^\n]*prompt start', text)
+        return (int(match.group(1)), int(match.group(3))) if match else None
+
+    def progress(self, text: str) -> tuple[int, int] | None:
+        return parse_last(r' chunk (\d+)/(\d+) \(', text)
 
 
 class Ds4LLM(ChatGPTLLM):
@@ -64,6 +92,9 @@ class Ds4LLM(ChatGPTLLM):
 
     DEFAULT_MODEL = 'deepseek-v4.1-flash'
     DEFAULT_BASE_URL = 'http://127.0.0.1:8000/v1'
+    DEFAULT_LOG_PATH = '~/Documents/ds4/ds4-server.log'   # where the server's log goes on the host that runs it
+    # Measured on V4.1 Flash, cold 24k–30k prompts, 2026-10-21; each reply's usage refines it.
+    _prefill = PrefillTracker("ds4", Ds4LogFormat(), seed_tps=1400.0)
     DEFAULT_REASONING_EFFORT = 'low'
     THINKING_REASONING_EFFORT = 'high'
     # ds4-server's spellings; "minimal" is the smallest non-zero level, "none" alone disables reasoning.
@@ -83,6 +114,18 @@ class Ds4LLM(ChatGPTLLM):
         if (self.model, self.base_url) not in Ds4LLM._logged_configs:
             Ds4LLM._logged_configs.add((self.model, self.base_url))
             info(f"Ds4LLM '{self.model}' using {self.base_url}, reasoning effort {self.reasoning_effort()}")
+        Ds4LLM._configure_log_access(self.base_url)
+
+    @classmethod
+    def _configure_log_access(cls, base_url: str):
+        """Point the prefill tracker at the server's log: the file on this machine when ds4 runs
+        here, else over ssh to the serving host (`ds4.ssh_host`, default the base_url host)."""
+        host = urlparse(base_url).hostname
+        path = config.get('ds4.log_path', cls.DEFAULT_LOG_PATH)
+        if is_local_host(host):
+            cls._prefill.use_log(path)
+        else:
+            cls._prefill.use_log(path, ssh_host=config.get('ds4.ssh_host', host))
 
     @property
     def api_key(self) -> str:
@@ -152,17 +195,19 @@ class Ds4LLM(ChatGPTLLM):
         return kwargs
 
     @staticmethod
-    def _log_usage(usage, started: float, reasoning_chars: int = 0):
-        """One line per request: prompt tokens with the server's cache hits, output tokens, time."""
+    def _log_usage(usage, started: float, reasoning_chars: int = 0) -> int | None:
+        """One line per request: prompt tokens with the server's cache hits, output tokens, time.
+        Returns the tokens the server prefilled (prompt minus cached), None when it said nothing."""
         if usage is None:
             trace("ds4: response carried no usage")
-            return
+            return None
         details = getattr(usage, 'prompt_tokens_details', None)
         cached = getattr(details, 'cached_tokens', None) if details is not None else None
         cached_text = f", {cached} cached" if cached is not None else ""
         thought = f", {reasoning_chars} reasoning chars" if reasoning_chars else ""
         info(f"ds4 metrics: ↑ {usage.prompt_tokens} tokens{cached_text} | ↓ {usage.completion_tokens} tokens{thought} "
              f"| {time.monotonic() - started:.2f}s")
+        return usage.prompt_tokens - (cached or 0)
 
     # --- the DSML side ----------------------------------------------------------------------
 
@@ -228,8 +273,16 @@ class Ds4LLM(ChatGPTLLM):
         chunk is logged."""
         self._ensure_initialized()
         started = time.monotonic()
+        token = self._prefill.begin()
+        try:
+            yield from self._stream(messages, thinking, started, token)
+        finally:
+            self._prefill.end(token)
+
+    def _stream(self, messages: list[dict], thinking: bool, started: float, token: int | None) -> Generator[str, None, None]:
         response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=True))
         in_thinking, reasoning, usage = False, "", None
+        first_token_at: float | None = None
         reply, pending, withheld = "", "", ""  # text yielded; text held for a split opener; the block text
         calls: dict[int, _ToolCall] = {}
         for chunk in response:
@@ -238,6 +291,10 @@ class Ds4LLM(ChatGPTLLM):
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
+            if first_token_at is None and (delta.content or getattr(delta, 'reasoning_content', None)
+                                           or getattr(delta, 'tool_calls', None)):
+                first_token_at = time.monotonic()
+                self._prefill.first_token(token)
             thought = getattr(delta, 'reasoning_content', None)
             if thought:
                 if not in_thinking:
@@ -278,7 +335,11 @@ class Ds4LLM(ChatGPTLLM):
                 tail = "\n" + tail
             yield tail
         self._remember(reply + tail, reasoning, reply, rendered)
-        self._log_usage(usage, started, len(reasoning))
+        prefilled = self._log_usage(usage, started, len(reasoning))
+        if prefilled is not None and first_token_at is not None:
+            # The time to the first token is the prefill plus one decode step (and any wait in
+            # the server's queue, which only makes the next bar a little slow).
+            self._prefill.observe_rate(prefilled, first_token_at - started)
 
     @staticmethod
     def _hold_opener_prefix(text: str) -> tuple[str, str]:
@@ -295,7 +356,11 @@ class Ds4LLM(ChatGPTLLM):
         reasoning is logged, not returned."""
         self._ensure_initialized()
         started = time.monotonic()
-        response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=False))
+        token = self._prefill.begin()
+        try:
+            response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=False))
+        finally:
+            self._prefill.end(token)
         message = response.choices[0].message
         reasoning = getattr(message, 'reasoning_content', None) or ""
         if reasoning:

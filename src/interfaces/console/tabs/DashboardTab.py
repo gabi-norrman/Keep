@@ -20,7 +20,7 @@ from common.STTConfidenceMonitor import STTConfidenceMonitor
 from assistant.integration.Integration import IntegrationState
 from assistant.integration.FeedRunner import Feeds, FeedState
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
-from assistant.llm.OllamaLLM import OllamaLLM
+from assistant.llm.PrefillTracker import PrefillTracker
 
 if TYPE_CHECKING:
     from interfaces.console.TUIFloxyConsole import TUIFloxyConsole
@@ -788,7 +788,7 @@ class DashboardTab(TabView):
         stt = STTConfidenceMonitor.get_instance()
         mic_accuracy = stt.rolling_avg_12h() if stt.mics else 0.0
 
-        prefill_pct = OllamaLLM.prefill_progress()
+        prefill_pct = PrefillTracker.current_progress()
         kv_ready = prefill_pct is None or prefill_pct == 100.0
         kv_value, kv_frac = ("Hot", 1.0) if prefill_pct is None else (f"{prefill_pct:.0f}%", prefill_pct / 100.0)
 

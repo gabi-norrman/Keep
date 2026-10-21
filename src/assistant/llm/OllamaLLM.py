@@ -2,9 +2,7 @@ import http.client
 import json
 import os
 import re
-import shlex
 import socket
-import subprocess
 import threading
 import time
 from typing import Generator
@@ -13,6 +11,7 @@ from urllib.parse import urlparse
 import requests
 
 from .AbstractLLM import AbstractLLM, LLMPreempted
+from .PrefillTracker import LogFormat, PrefillTracker, is_local_host, parse_last
 from assistant.commands.formats import QwenFormat as qwen
 from assistant.commands.formats.CommandFormats import CommandFormats
 from common.logging import info, trace, note, fine
@@ -20,78 +19,36 @@ from common.ConfigManager import config
 from common.Paths import LOG_DIR
 
 
-class _SshRemoteLog:
-    """Reads Ollama's debug log from a remote host over ssh.
+class OllamaLogFormat(LogFormat):
+    """The prefill lines of Ollama's debug log (OLLAMA_DEBUG=1), in the two runners' spellings.
 
-    Used when ollama.base_url points at another machine — the 'loading cache
-    slot' diagnostics only exist in that machine's log file. Connections are
-    multiplexed over a persistent control socket, so after the first call each
-    read costs tens of milliseconds. Any ssh failure disables further attempts
-    for a cooldown period instead of stalling the request path on repeated
-    connect timeouts.
+    The workload is logged once at the start of a request —
+    llama.cpp: cache.go:151 msg="loading cache slot" id=0 cache=6533 prompt=6344 used=5786 remaining=558
+    MLX:       prefix_cache.go:124 msg="cache hit" total=25572 matched=25553 cached=24575 left=997
+    — and only the MLX engine logs progress after that, every ~2k tokens:
+    pipeline.go:200 msg="Prompt processing progress" processed=2048 total=17531
     """
-    _SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=2",
-                 "-o", "ControlMaster=auto", "-o", "ControlPath=/tmp/floxy-ollama-ssh-%C",
-                 "-o", "ControlPersist=600"]
-    _FAILURE_COOLDOWN_S = 60.0
-    _MAX_READ_BYTES = 1_000_000
+    def work(self, text: str) -> tuple[int, int] | None:
+        match = re.search(r'loading cache slot.*?used=(\d+)\s+remaining=(\d+)', text)
+        if match is None:
+            match = re.search(r'msg="cache (?:hit|miss)".*?cached=(\d+)\s+left=(\d+)', text)
+        return (int(match.group(1)), int(match.group(2))) if match else None
 
-    def __init__(self, host: str, path: str):
-        self.host = host
-        self.path = path
-        self._disabled_until = 0.0
-
-    def size(self) -> int | None:
-        """Remote log size in bytes, 0 if the file doesn't exist, None if ssh failed."""
-        out = self._run(f"wc -c 2>/dev/null < {shlex.quote(self.path)} || echo MISSING")
-        if out is None:
-            return None
-        out = out.strip()
-        if out == "MISSING":
-            trace(f"Ollama remote log {self.host}:{self.path} does not exist (yet).")
-            return 0
-        try:
-            return int(out)
-        except ValueError:
-            self._disable(f"unexpected wc output {out!r}")
-            return None
-
-    def read_from(self, offset: int) -> str | None:
-        """Remote log content from byte offset to EOF (capped), None if empty or ssh failed."""
-        out = self._run(f"(tail -c +{offset + 1} {shlex.quote(self.path)} 2>/dev/null || true)"
-                        f" | head -c {self._MAX_READ_BYTES}")
-        return out or None
-
-    def _run(self, remote_cmd: str) -> str | None:
-        if time.monotonic() < self._disabled_until:
-            return None
-        try:
-            result = subprocess.run(["ssh", *self._SSH_OPTS, self.host, remote_cmd],
-                                    capture_output=True, text=True, errors='replace', timeout=5)
-            if result.returncode != 0:
-                self._disable(f"exit {result.returncode}: {result.stderr.strip()}")
-                return None
-            return result.stdout
-        except (subprocess.SubprocessError, OSError) as e:
-            self._disable(str(e))
-            return None
-
-    def _disable(self, reason: str):
-        self._disabled_until = time.monotonic() + self._FAILURE_COOLDOWN_S
-        info(f"Ollama remote log via ssh {self.host} failed ({reason}) — "
-             f"disabling cache diagnostics for {self._FAILURE_COOLDOWN_S:.0f}s.")
+    def progress(self, text: str) -> tuple[int, int] | None:
+        return parse_last(r'Prompt processing progress.*?processed=(\d+)\s+total=(\d+)', text)
 
 
 class OllamaLLM(AbstractLLM):
     """Runs a local model through Ollama's native API, with KV-cache pre-heating and prefill diagnostics.
 
     Cache-slot metrics and prefill progress are read from Ollama's debug log (over ssh when
-    base_url is remote). Prefill state is class-level because Ollama serves one request at a time;
-    an owner token keeps a pre-heat that overlaps a user request from touching the request's state.
+    base_url is remote) by the class's one `PrefillTracker` — Ollama serves one request at a time,
+    and all OllamaLLM tiers are expected to share one server; the tracker's owner token keeps a
+    pre-heat that overlaps a user request from touching the request's state.
     """
     _ollama_log_path = str(LOG_DIR / 'ollama.log')
-    _ssh_log: _SshRemoteLog | None = None  # set when base_url points at a remote host
-    _LOCAL_HOSTS = {None, '', 'localhost', '127.0.0.1', '::1'}
+    # The seed rate stands for the first request; each reply's prompt_eval_duration refines it.
+    _prefill = PrefillTracker("Ollama", OllamaLogFormat(), seed_tps=350.0)
     _last_payload = ""
     _last_rendered_prompt = ""
     _pre_heat_lock = threading.Lock()
@@ -104,31 +61,6 @@ class OllamaLLM(AbstractLLM):
     # should be quick; a pre-heat prefill of a large prompt can take minutes.
     _RENDER_TIMEOUT = (5, 30)
     _PRE_HEAT_TIMEOUT = (5, 600)
-
-    # --- Prefill progress estimation ---------------------------------------
-    # Ollama logs the prefill workload once at the start of a request
-    # ("loading cache slot ... remaining=N") but emits no incremental progress.
-    # We estimate completion from elapsed time against a measured prefill rate,
-    # pinned below 100% until the first token confirms prefill has actually
-    # finished. State is class-level: Ollama runs at most one request at a time.
-    # Requests can still overlap on our side (a pre-heat fired at the end of one
-    # turn is often still prefilling when the next user request goes out), so
-    # _begin_prefill hands out an owner token and only the owner may end the
-    # state or mark its first token — a stale pre-heat exit must not blank the
-    # bar of the user request that took over.
-    _prefill_lock = threading.Lock()
-    _prefill_active = False
-    _prefill_owner = 0                  # token of the request the state belongs to
-    _prefill_interactive = False        # the owner is a user request, not a pre-heat / background call
-    _prefill_start_ts = 0.0
-    _prefill_first_token = False
-    _prefill_cache_metrics: tuple[int, int] | None = None  # (used, remaining) once parsed
-    _prefill_tps = 350.0  # rolling estimate of prefill tokens/sec (seed for first request)
-    _prefill_log_start: int | None = 0  # log EOF at request start; cache-slot scan anchor (None = log unreachable)
-    _prefill_progress_state: tuple[int, int] | None = None  # (processed, total) from MLX-engine progress lines
-    _prefill_progress_read_ts = 0.0
-    _prefill_metrics_read_ts = 0.0
-    _PROGRESS_POLL_INTERVAL_S = 2.0
 
     # --- Background requests (photo indexing) --------------------------------
     # Ollama serves one request at a time (OLLAMA_NUM_PARALLEL=1, and the model fills the
@@ -199,49 +131,15 @@ class OllamaLLM(AbstractLLM):
 
     @classmethod
     def _configure_log_access(cls, base_url: str):
-        """Point the cache-metric diagnostics at the right log: the local file when
-        Ollama runs on this machine, or ssh to the serving host when base_url is
-        remote (the 'loading cache slot' lines only exist over there).
-
-        Class-level like the rest of the prefill state — Ollama serves one request
-        at a time, and all OllamaLLM tiers are expected to share one server."""
+        """Point the prefill tracker at the right log: the local file when Ollama runs on this
+        machine, or ssh to the serving host when base_url is remote (the 'loading cache slot'
+        lines only exist over there)."""
         host = urlparse(base_url).hostname
-        if host in cls._LOCAL_HOSTS:
-            if cls._ssh_log is not None:
-                info("Ollama log diagnostics: switching back to the local log file.")
-            cls._ssh_log = None
-            return
-        ssh_host = config.get('ollama.ssh_host', host)
-        log_path = config.get('ollama.remote_log_path', os.path.abspath(cls._ollama_log_path))
-        if cls._ssh_log is None or (cls._ssh_log.host, cls._ssh_log.path) != (ssh_host, log_path):
-            info(f"Ollama log diagnostics: remote base_url — reading {log_path} via ssh {ssh_host}.")
-            cls._ssh_log = _SshRemoteLog(ssh_host, log_path)
-
-    @classmethod
-    def _log_size(cls) -> int | None:
-        """Ollama log size in bytes (0 if absent), or None when unreachable."""
-        if cls._ssh_log is not None:
-            return cls._ssh_log.size()
-        try:
-            return os.path.getsize(cls._ollama_log_path) if os.path.exists(cls._ollama_log_path) else 0
-        except OSError:
-            return None
-
-    @classmethod
-    def _log_read_from(cls, offset: int) -> str | None:
-        """Ollama log content from byte offset to EOF, or None when empty/unreachable."""
-        if cls._ssh_log is not None:
-            return cls._ssh_log.read_from(offset)
-        try:
-            if not os.path.exists(cls._ollama_log_path):
-                return None
-            if os.path.getsize(cls._ollama_log_path) <= offset:
-                return None
-            with open(cls._ollama_log_path, 'r', encoding='utf-8', errors='replace') as f:
-                f.seek(offset)
-                return f.read()
-        except OSError:
-            return None
+        if is_local_host(host):
+            cls._prefill.use_log(cls._ollama_log_path)
+        else:
+            cls._prefill.use_log(config.get('ollama.remote_log_path', os.path.abspath(cls._ollama_log_path)),
+                                 ssh_host=config.get('ollama.ssh_host', host))
 
     def default_command_format(self):
         """Qwen's <tool_call> syntax: what the model family Ollama serves here was trained on."""
@@ -408,7 +306,7 @@ class OllamaLLM(AbstractLLM):
         truncated = rendered[:idx]
         if not refresh:
             self._interactive_begin()
-        token = self._begin_prefill(interactive=False)
+        token = self._prefill.begin(interactive=False)
         try:
             resp = requests.post(f"{self.base_url}/api/generate", json={
                 "model": self.model, "prompt": truncated, "raw": True,
@@ -416,7 +314,7 @@ class OllamaLLM(AbstractLLM):
             }, timeout=self._PRE_HEAT_TIMEOUT)
             resp.raise_for_status()
         finally:
-            self._end_prefill(token)
+            self._prefill.end(token)
             if not refresh:
                 self._interactive_end()
         trace(f"Pre-heat: raw prefill of {len(truncated)} chars "
@@ -649,206 +547,8 @@ class OllamaLLM(AbstractLLM):
             info(f"Ollama rendered prompt match: first request ({len(rendered_prompt)} chars), no previous to compare")
             return rendered_prompt, None
 
-    @classmethod
-    def _begin_prefill(cls, interactive: bool = True) -> int | None:
-        """Mark the start of a request's prompt prefill and hand back its owner token.
-        Resets per-request state. A user request always takes the state over; a pre-heat or
-        background request that starts while a user request is prefilling leaves it alone and
-        gets None — its progress is not what the user is waiting for."""
-        # Anchor the cache-slot scan at the current log EOF so we only match
-        # THIS request's line — prior requests and preheats sit below the
-        # anchor and are excluded. The scan stays non-destructive from here.
-        # Fetched before taking the lock: over ssh this can take a moment and
-        # prefill_progress() polls must not block on it. A None anchor (log
-        # unreachable) disables cache metrics for this request.
-        anchor = cls._log_size()
-        if anchor is None:
-            trace("Ollama prefill: log unreachable — cache metrics disabled for this request.")
-        with cls._prefill_lock:
-            if not interactive and cls._prefill_active and cls._prefill_interactive:
-                trace(f"Ollama prefill: a user request (#{cls._prefill_owner}) is prefilling — "
-                      "this background prefill is not tracked.")
-                return None
-            cls._prefill_owner += 1
-            token = cls._prefill_owner
-            cls._prefill_active = True
-            cls._prefill_interactive = interactive
-            cls._prefill_start_ts = time.monotonic()
-            cls._prefill_first_token = False
-            cls._prefill_cache_metrics = None
-            cls._prefill_log_start = anchor
-            cls._prefill_progress_state = None
-            cls._prefill_progress_read_ts = 0.0
-            cls._prefill_metrics_read_ts = 0.0
-        trace(f"Ollama prefill: started (#{token}, {'user request' if interactive else 'background'}).")
-        return token
-
-    @classmethod
-    def _mark_first_token(cls, token: int | None):
-        """First generated token means prefill is complete — pin progress to 100%.
-        Ignored unless `token` still owns the state."""
-        with cls._prefill_lock:
-            if token is None or token != cls._prefill_owner:
-                return
-            if cls._prefill_active and not cls._prefill_first_token:
-                cls._prefill_first_token = True
-                trace(f"Ollama prefill: first token received (prefill #{token} complete).")
-
-    @classmethod
-    def _end_prefill(cls, token: int | None):
-        """Mark the request finished; prefill_progress() returns None when idle.
-        Ignored unless `token` still owns the state — a later request may have taken over."""
-        with cls._prefill_lock:
-            if token is None:
-                return
-            if token != cls._prefill_owner:
-                trace(f"Ollama prefill: #{token} ended but #{cls._prefill_owner} owns the state now — leaving it.")
-                return
-            cls._prefill_active = False
-
-    @classmethod
-    def _consume_prefill_metrics(cls, force: bool = False) -> tuple[int, int] | None:
-        """Return (used, remaining) for the current request, parsing the Ollama log
-        at most once. Safe to call repeatedly from a polling thread: the cache-slot
-        line is parsed lazily and cached for the rest of the request.
-
-        The log read happens OUTSIDE _prefill_lock — over ssh it can take seconds,
-        and _mark_first_token (per streamed token) and the TUI render thread take
-        the same lock. Until the line appears, re-reads are throttled to
-        _PROGRESS_POLL_INTERVAL_S so a slow log doesn't spawn an ssh subprocess
-        per render frame; `force` bypasses the throttle for the done-time read
-        in _log_metrics, where the line has long since been written."""
-        with cls._prefill_lock:
-            if cls._prefill_cache_metrics is not None:
-                return cls._prefill_cache_metrics
-            now = time.monotonic()
-            if not force and now - cls._prefill_metrics_read_ts < cls._PROGRESS_POLL_INTERVAL_S:
-                return None
-            cls._prefill_metrics_read_ts = now
-        parsed = cls._read_cache_metrics()
-        if parsed is None:
-            return None
-        with cls._prefill_lock:
-            if cls._prefill_cache_metrics is None:
-                cls._prefill_cache_metrics = parsed
-            return cls._prefill_cache_metrics
-
-    @classmethod
-    def prefill_progress(cls) -> float | None:
-        """Estimated prompt-prefill completion as a percentage (0-100), or None when
-        no request is currently prefilling.
-
-        The MLX engine logs real incremental progress ("Prompt processing progress"
-        every ~2k tokens) — when those lines exist they are used directly. The
-        llama.cpp runner logs nothing incremental, so there the estimate is
-        time-based: elapsed / (remaining tokens / measured prefill rate). Either
-        way it is capped at 99% until the first generated token confirms prefill
-        actually finished, at which point it reads 100%. A full KV-cache hit
-        (nothing left to prefill) reads 100% immediately."""
-        if not cls._prefill_active:
-            return None
-        if cls._prefill_first_token:
-            return 100.0
-
-        metrics = cls._consume_prefill_metrics()
-        if metrics is None:
-            # Request started but Ollama hasn't logged the cache slot line yet.
-            return 0.0
-
-        _used, remaining = metrics
-        if remaining <= 0:
-            return 100.0  # full cache hit — no prefill work
-
-        progress = cls._poll_prefill_progress()
-        if progress:
-            processed, total = progress
-            if total > 0:
-                return min(99.0, processed / total * 100.0)
-
-        eta = remaining / cls._prefill_tps if cls._prefill_tps > 0 else 0.0
-        if eta <= 0:
-            return 99.0
-        elapsed = time.monotonic() - cls._prefill_start_ts
-        return min(99.0, elapsed / eta * 100.0)
-
-    @classmethod
-    def _read_cache_metrics(cls) -> tuple[int, int] | None:
-        """Parse this request's 'loading cache slot' line from Ollama's debug log.
-
-        Scans from the per-request anchor (_prefill_log_start, captured at
-        _begin_prefill) to EOF without advancing any shared cursor, so the read
-        is idempotent: the render-thread poll and the done-time log read get the
-        same answer, and a partially-written line simply doesn't match yet and is
-        re-read on the next call. Returns (used, remaining) or None if the line
-        has not been logged yet or the log is unreachable."""
-        try:
-            if cls._prefill_log_start is None:
-                return None
-
-            new_content = cls._log_read_from(cls._prefill_log_start)
-            if not new_content:
-                return None
-
-            # First cache line after the anchor belongs to the current request;
-            # prior requests and preheats are below the anchor. Two runner formats:
-            # llama.cpp: cache.go:151 msg="loading cache slot" id=0 cache=6533 prompt=6344 used=5786 remaining=558
-            # MLX:       prefix_cache.go:124 msg="cache hit" total=25572 matched=25553 cached=24575 left=997
-            match = re.search(r'loading cache slot.*?used=(\d+)\s+remaining=(\d+)', new_content)
-            if match is None:
-                match = re.search(r'msg="cache (?:hit|miss)".*?cached=(\d+)\s+left=(\d+)', new_content)
-
-            if match:
-                return int(match.group(1)), int(match.group(2))
-            return None
-        except Exception:
-            return None
-
-    @classmethod
-    def _poll_prefill_progress(cls) -> tuple[int, int] | None:
-        """Throttled read of the MLX engine's incremental progress lines. Over ssh
-        every read is a round trip, and new lines only appear every ~2k tokens, so
-        polling faster than _PROGRESS_POLL_INTERVAL_S buys nothing. Returns the
-        last known (processed, total), or None when no progress line has appeared
-        (e.g. the llama.cpp runner, which logs no incremental progress).
-
-        The log read happens OUTSIDE _prefill_lock — same reasoning as
-        _consume_prefill_metrics: an ssh read held under the lock would stall
-        _mark_first_token and every TUI frame for its duration."""
-        with cls._prefill_lock:
-            now = time.monotonic()
-            due = now - cls._prefill_progress_read_ts >= cls._PROGRESS_POLL_INTERVAL_S
-            if due:
-                cls._prefill_progress_read_ts = now
-            state = cls._prefill_progress_state
-        if not due:
-            return state
-        parsed = cls._read_prefill_progress()
-        if parsed is None:
-            return state
-        with cls._prefill_lock:
-            cls._prefill_progress_state = parsed
-        return parsed
-
-    @classmethod
-    def _read_prefill_progress(cls) -> tuple[int, int] | None:
-        """Parse the LAST 'Prompt processing progress' line after the anchor.
-        Format: pipeline.go:200 msg="Prompt processing progress" processed=2048 total=17531
-        Returns (processed, total) or None if no line has been logged yet."""
-        try:
-            if cls._prefill_log_start is None:
-                return None
-            new_content = cls._log_read_from(cls._prefill_log_start)
-            if not new_content:
-                return None
-            matches = re.findall(r'Prompt processing progress.*?processed=(\d+)\s+total=(\d+)', new_content)
-            if not matches:
-                return None
-            processed, total = matches[-1]
-            return int(processed), int(total)
-        except Exception:
-            return None
-
-    def _log_metrics(self, data: dict, rendered_prefix_stats: tuple[int, int] | None = None):
+    def _log_metrics(self, data: dict, rendered_prefix_stats: tuple[int, int] | None = None,
+                     token: int | None = None):
         prompt_tokens = data.get("prompt_eval_count", 0)
         prompt_dur_ns = data.get("prompt_eval_duration", 0)
         eval_count = data.get("eval_count", 0)
@@ -860,18 +560,13 @@ class OllamaLLM(AbstractLLM):
         total_dur_s = total_dur_ns / 1e9
         gen_tps = eval_count / eval_dur_s if eval_dur_s else 0
 
-        cache_metrics = self._consume_prefill_metrics(force=True)
+        cache_metrics = self._prefill.work(token, force=True)
         if cache_metrics:
             used, remaining = cache_metrics
             total = used + remaining
             cache_pct = (used / total * 100) if total else 0
             prompt_tps = remaining / prompt_dur_s if prompt_dur_s else 0
-            # Refine the prefill-rate estimate (EMA). Skip near-full cache hits,
-            # where a tiny `remaining` over a tiny duration yields a noisy rate.
-            if remaining > 100 and prompt_dur_s > 0:
-                OllamaLLM._prefill_tps = 0.5 * OllamaLLM._prefill_tps + 0.5 * prompt_tps
-                trace(f"Ollama prefill rate estimate updated: {OllamaLLM._prefill_tps:.1f} t/s "
-                      f"(observed {prompt_tps:.1f} t/s)")
+            self._prefill.observe_rate(remaining, prompt_dur_s)
             if rendered_prefix_stats:
                 rendered_shared, rendered_total = rendered_prefix_stats
                 rendered_pct = (rendered_shared / rendered_total * 100) if rendered_total else 0
@@ -883,7 +578,8 @@ class OllamaLLM(AbstractLLM):
                  f"{total_dur_s:.2f}s total.")
         else:
             prompt_tps = prompt_tokens / prompt_dur_s if prompt_dur_s else 0
-            hint = (f"check ssh log access to {OllamaLLM._ssh_log.host}" if OllamaLLM._ssh_log
+            log = OllamaLLM._prefill.log
+            hint = (f"check ssh log access to {log.ssh_host}" if log is not None and log.ssh_host
                     else "start Ollama with ollama.sh")
             note(f"Ollama metrics: ↑ {prompt_tokens} tokens "
                  f"({prompt_tps:.1f} t/s, {prompt_dur_s:.2f}s) | "
@@ -901,7 +597,7 @@ class OllamaLLM(AbstractLLM):
         payload_str = self._log_prefix_match(messages)
         rendered_prompt, rendered_prefix_stats = self._log_rendered_prompt_match(messages, num_predict=num_predict)
         self._interactive_begin()
-        token = self._begin_prefill(interactive=not is_pre_heat)
+        token = self._prefill.begin(interactive=not is_pre_heat)
         try:
             resp = requests.post(
                 f"{self.base_url}/api/chat",
@@ -923,14 +619,14 @@ class OllamaLLM(AbstractLLM):
                 message = data.get("message", {})
                 thought = message.get("thinking", "")
                 if thought:
-                    self._mark_first_token(token)
+                    self._prefill.first_token(token)
                     if not in_thinking:
                         in_thinking = True
                         yield "<thinking>"
                     yield thought
                 content = message.get("content", "")
                 if content:
-                    self._mark_first_token(token)
+                    self._prefill.first_token(token)
                     if in_thinking:
                         in_thinking = False
                         yield "</thinking>"
@@ -941,7 +637,7 @@ class OllamaLLM(AbstractLLM):
                     text = self._render_tool_call(call)
                     if not text:
                         continue
-                    self._mark_first_token(token)
+                    self._prefill.first_token(token)
                     if in_thinking:
                         in_thinking = False
                         yield "</thinking>"
@@ -954,10 +650,10 @@ class OllamaLLM(AbstractLLM):
                         trace("Ollama stream ended inside the thinking block — closing it")
                         yield "</thinking>"
                     self._check_unparsed_calls(content_seen)
-                    self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats)
+                    self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats, token=token)
                     OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
         finally:
-            self._end_prefill(token)
+            self._prefill.end(token)
             self._interactive_end()
 
     @classmethod
@@ -1005,7 +701,7 @@ class OllamaLLM(AbstractLLM):
         payload_str = self._log_prefix_match(messages)
         rendered_prompt, rendered_prefix_stats = self._log_rendered_prompt_match(messages)
         self._interactive_begin()
-        token = self._begin_prefill()
+        token = self._prefill.begin()
         try:
             resp = requests.post(
                 f"{self.base_url}/api/chat",
@@ -1014,11 +710,11 @@ class OllamaLLM(AbstractLLM):
             resp.raise_for_status()
 
             data = resp.json()
-            self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats)
+            self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats, token=token)
             OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
             return self._content_of(data)
         finally:
-            self._end_prefill(token)
+            self._prefill.end(token)
             self._interactive_end()
 
     def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
@@ -1054,7 +750,7 @@ class OllamaLLM(AbstractLLM):
         payload_str = self._log_prefix_match(processed)
         rendered_prompt, rendered_prefix_stats = self._log_rendered_prompt_match(processed)
         self._interactive_begin()
-        token = self._begin_prefill()
+        token = self._prefill.begin()
         try:
             resp = requests.post(
                 f"{self.base_url}/api/chat",
@@ -1063,11 +759,11 @@ class OllamaLLM(AbstractLLM):
             resp.raise_for_status()
 
             data = resp.json()
-            self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats)
+            self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats, token=token)
             OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
             return self._content_of(data)
         finally:
-            self._end_prefill(token)
+            self._prefill.end(token)
             self._interactive_end()
 
     def _background_completion(self, messages: list[dict]) -> str:
@@ -1077,7 +773,7 @@ class OllamaLLM(AbstractLLM):
         payload must stay what the next chat turn compares against."""
         body = json.dumps(self._build_request(messages, stream=True))
         self._acquire_background()
-        token = self._begin_prefill(interactive=False)
+        token = self._prefill.begin(interactive=False)
         chunks: list[str] = []
         try:
             conn = self._open_background_connection()
@@ -1092,10 +788,10 @@ class OllamaLLM(AbstractLLM):
                 data = json.loads(line)
                 content = data.get("message", {}).get("content", "")
                 if content:
-                    self._mark_first_token(token)
+                    self._prefill.first_token(token)
                     chunks.append(content)
                 if data.get("done"):
-                    self._log_metrics(data)
+                    self._log_metrics(data, token=token)
                     break
             else:
                 raise RuntimeError("Ollama closed the stream before the response was done")
@@ -1109,6 +805,6 @@ class OllamaLLM(AbstractLLM):
                 raise LLMPreempted("interactive request took the Ollama slot") from None
             raise
         finally:
-            self._end_prefill(token)
+            self._prefill.end(token)
             self._release_background()
         return "".join(chunks)

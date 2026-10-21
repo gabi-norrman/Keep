@@ -9,6 +9,12 @@ from assistant.llm.AbstractLLM import AbstractLLM, LLMRefusalError, ThinkingNotS
 from assistant.llm.GeminiLLM import GeminiLLM
 
 
+def _reset_tracker(tracker):
+    """A PrefillTracker with no request in flight."""
+    tracker._requests.clear()
+    tracker._last_token = 0
+
+
 # ---------------------------------------------------------------------------
 # Concrete subclass of AbstractLLM for testing base-class behaviour
 # ---------------------------------------------------------------------------
@@ -2507,352 +2513,87 @@ class TestOllamaLLM:
         assert call_json["keep_alive"] == -1
         assert call_json["think"] is True
 
-    def test_read_cache_metrics_parses_log(self, tmp_path):
+    # --- the prefill tracker, fed from Ollama's log ----------------------
+    # The estimate rules live in PrefillTracker (tests/unit/assistant/llm/test_prefill_tracker.py);
+    # here: Ollama's log lines, the anchor at request start, and the rate the done-time metrics teach.
+
+    @pytest.fixture
+    def tracker(self, tmp_path):
+        """OllamaLLM's tracker pointed at a tmp log, fresh, and restored afterwards."""
         from assistant.llm.OllamaLLM import OllamaLLM
+        t = OllamaLLM._prefill
+        saved_log, saved_tps = t.log, t.tps
+        t.use_log(str(tmp_path / "ollama.log"))
+        _reset_tracker(t)
+        yield t
+        _reset_tracker(t)
+        t.log, t.tps = saved_log, saved_tps
+
+    def test_the_llamacpp_cache_slot_line_gives_the_workload(self):
+        from assistant.llm.OllamaLLM import OllamaLogFormat
+        text = ('time=... level=DEBUG source=cache.go:151 msg="loading cache slot" '
+                'id=0 cache=6533 prompt=6344 used=5786 remaining=558\n')
+        assert OllamaLogFormat().work(text) == (5786, 558)
+        assert OllamaLogFormat().progress(text) is None, "the llama.cpp runner logs no progress"
+
+    def test_a_partial_cache_slot_line_is_not_a_workload_yet(self):
+        # A poll landing mid-write sees the line without its remaining= — not a match, so the
+        # tracker re-reads the same bytes on the next poll instead of latching garbage.
+        from assistant.llm.OllamaLLM import OllamaLogFormat
+        assert OllamaLogFormat().work('msg="loading cache slot" id=0 cache=6533 prompt=6344 used=5786 ') is None
+
+    def test_a_stale_line_below_the_anchor_is_excluded_and_the_new_one_found(self, tracker, tmp_path):
+        # begin() runs before the POST, so the anchor lands at the current EOF: the previous
+        # request's line stays below it and the one Ollama logs afterwards is this request's.
         log_file = tmp_path / "ollama.log"
-        log_file.write_text(
-            'time=... level=DEBUG source=cache.go:151 msg="loading cache slot" '
-            'id=0 cache=6533 prompt=6344 used=5786 remaining=558\n'
-        )
-        original_path = OllamaLLM._ollama_log_path
-        original_anchor = OllamaLLM._prefill_log_start
-        try:
-            OllamaLLM._ollama_log_path = str(log_file)
-            OllamaLLM._prefill_log_start = 0
-            result = OllamaLLM._read_cache_metrics()
-            assert result == (5786, 558)
-        finally:
-            OllamaLLM._ollama_log_path = original_path
-            OllamaLLM._prefill_log_start = original_anchor
+        log_file.write_text('msg="loading cache slot" id=0 cache=1 prompt=1 used=999 remaining=999\n')
+        token = tracker.begin()
+        assert tracker._find(token).anchor == log_file.stat().st_size
+        assert tracker.work(token, force=True) is None
+        with open(log_file, 'a') as f:
+            f.write('msg="loading cache slot" id=0 cache=2 prompt=2 used=5786 remaining=558\n')
+        assert tracker.work(token, force=True) == (5786, 558)
+        assert tracker.work(token, force=True) == (5786, 558), "polls never consume the line"
+        tracker.end(token)
 
-    def test_read_cache_metrics_returns_none_when_no_file(self, tmp_path):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        original_path = OllamaLLM._ollama_log_path
-        original_anchor = OllamaLLM._prefill_log_start
-        try:
-            OllamaLLM._ollama_log_path = str(tmp_path / "nonexistent.log")
-            OllamaLLM._prefill_log_start = 0
-            assert OllamaLLM._read_cache_metrics() is None
-        finally:
-            OllamaLLM._ollama_log_path = original_path
-            OllamaLLM._prefill_log_start = original_anchor
-
-    def test_read_cache_metrics_returns_none_when_no_new_content(self, tmp_path):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        log_file = tmp_path / "ollama.log"
-        log_file.write_text("some old content\n")
-        original_path = OllamaLLM._ollama_log_path
-        original_anchor = OllamaLLM._prefill_log_start
-        try:
-            OllamaLLM._ollama_log_path = str(log_file)
-            OllamaLLM._prefill_log_start = log_file.stat().st_size
-            assert OllamaLLM._read_cache_metrics() is None
-        finally:
-            OllamaLLM._ollama_log_path = original_path
-            OllamaLLM._prefill_log_start = original_anchor
-
-    def test_read_cache_metrics_is_idempotent_across_polls(self, tmp_path):
-        # Regression: the read must NOT advance a shared cursor. The render thread
-        # polls this many times per second; every poll must return the same tuple,
-        # never consume the line so a later read (or done-time log) sees None.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        log_file = tmp_path / "ollama.log"
-        log_file.write_text(
-            'msg="loading cache slot" id=0 cache=6533 prompt=6344 used=5786 remaining=558\n'
-        )
-        original_path = OllamaLLM._ollama_log_path
-        original_anchor = OllamaLLM._prefill_log_start
-        try:
-            OllamaLLM._ollama_log_path = str(log_file)
-            OllamaLLM._prefill_log_start = 0
-            assert OllamaLLM._read_cache_metrics() == (5786, 558)
-            assert OllamaLLM._read_cache_metrics() == (5786, 558)
-            assert OllamaLLM._read_cache_metrics() == (5786, 558)
-        finally:
-            OllamaLLM._ollama_log_path = original_path
-            OllamaLLM._prefill_log_start = original_anchor
-
-    def test_read_cache_metrics_recovers_from_partial_line(self, tmp_path):
-        # Regression (stuck-at-0%): a poll landing mid-write sees a partial line
-        # with no remaining= yet. It must return None and leave the bytes for the
-        # next poll to re-read once the line is complete — never discard them.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        log_file = tmp_path / "ollama.log"
-        log_file.write_text('msg="loading cache slot" id=0 cache=6533 prompt=6344 used=5786 ')
-        original_path = OllamaLLM._ollama_log_path
-        original_anchor = OllamaLLM._prefill_log_start
-        try:
-            OllamaLLM._ollama_log_path = str(log_file)
-            OllamaLLM._prefill_log_start = 0
-            assert OllamaLLM._read_cache_metrics() is None  # partial line, no match
-            with open(log_file, 'a') as f:
-                f.write('remaining=558\n')
-            assert OllamaLLM._read_cache_metrics() == (5786, 558)  # re-read, now complete
-        finally:
-            OllamaLLM._ollama_log_path = original_path
-            OllamaLLM._prefill_log_start = original_anchor
-
-    def test_read_cache_metrics_excludes_lines_before_anchor(self, tmp_path):
-        # Regression (stale latching): a cache-slot line from a prior request or a
-        # preheat sits below the anchor and must be ignored; the first line AFTER
-        # the anchor is the one for the current request.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        log_file = tmp_path / "ollama.log"
-        log_file.write_text(
-            'msg="loading cache slot" id=0 cache=1 prompt=1 used=111 remaining=222\n'
-        )
-        original_path = OllamaLLM._ollama_log_path
-        original_anchor = OllamaLLM._prefill_log_start
-        try:
-            OllamaLLM._ollama_log_path = str(log_file)
-            OllamaLLM._prefill_log_start = log_file.stat().st_size  # anchor past stale line
-            with open(log_file, 'a') as f:
-                f.write('msg="loading cache slot" id=0 cache=2 prompt=2 used=5786 remaining=558\n')
-            assert OllamaLLM._read_cache_metrics() == (5786, 558)
-        finally:
-            OllamaLLM._ollama_log_path = original_path
-            OllamaLLM._prefill_log_start = original_anchor
-
-    def test_begin_prefill_anchors_at_current_log_eof(self, tmp_path):
-        # _begin_prefill is called before the POST; the cache-slot line Ollama
-        # logs afterwards is what we want. Verify the anchor lands at EOF so a
-        # pre-existing (prior-request) line is excluded but the new one is found.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        log_file = tmp_path / "ollama.log"
-        log_file.write_text(
-            'msg="loading cache slot" id=0 cache=1 prompt=1 used=999 remaining=999\n'
-        )
-        original_path = OllamaLLM._ollama_log_path
-        original_anchor = OllamaLLM._prefill_log_start
-        try:
-            OllamaLLM._ollama_log_path = str(log_file)
-            token = OllamaLLM._begin_prefill()  # anchors at current EOF (past the stale line)
-            assert OllamaLLM._prefill_log_start == log_file.stat().st_size
-            with open(log_file, 'a') as f:
-                f.write('msg="loading cache slot" id=0 cache=2 prompt=2 used=5786 remaining=558\n')
-            assert OllamaLLM._consume_prefill_metrics() == (5786, 558)
-        finally:
-            OllamaLLM._end_prefill(token)
-            OllamaLLM._ollama_log_path = original_path
-            OllamaLLM._prefill_log_start = original_anchor
-
-    def test_consume_prefill_metrics_parses_log_once_then_caches(self):
-        # prefill_progress() is polled many times per second by the render thread.
-        # _consume_prefill_metrics parses the log only on the first successful poll
-        # and serves a cached value thereafter — an optimization that avoids
-        # re-reading the log file every render frame once the line is found.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        with patch.object(OllamaLLM, '_read_cache_metrics',
-                          side_effect=[(5786, 558), None, None]) as mock_read:
-            token = OllamaLLM._begin_prefill()  # resets _prefill_cache_metrics to None
-            try:
-                assert OllamaLLM._consume_prefill_metrics() == (5786, 558)
-                # Subsequent polls return the cached tuple and never re-read the log.
-                assert OllamaLLM._consume_prefill_metrics() == (5786, 558)
-                assert OllamaLLM._consume_prefill_metrics() == (5786, 558)
-                mock_read.assert_called_once()
-            finally:
-                OllamaLLM._end_prefill(token)
-
-    def test_consume_prefill_metrics_throttles_rereads_until_line_appears(self):
-        # Before the cache-slot line lands in the log, every poll used to re-read
-        # it — over ssh that's a subprocess per TUI render frame. Failed reads
-        # are now throttled to _PROGRESS_POLL_INTERVAL_S; force=True (the
-        # done-time read in _log_metrics) bypasses the throttle.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        with patch.object(OllamaLLM, '_read_cache_metrics', return_value=None) as mock_read:
-            token = OllamaLLM._begin_prefill()
-            try:
-                assert OllamaLLM._consume_prefill_metrics() is None  # first poll reads
-                assert OllamaLLM._consume_prefill_metrics() is None  # throttled
-                assert OllamaLLM._consume_prefill_metrics() is None  # throttled
-                mock_read.assert_called_once()
-                assert OllamaLLM._consume_prefill_metrics(force=True) is None
-                assert mock_read.call_count == 2
-            finally:
-                OllamaLLM._end_prefill(token)
-
-    def test_prefill_log_reads_run_outside_prefill_lock(self):
-        # _mark_first_token takes _prefill_lock per streamed token and the TUI
-        # render thread takes it per frame. Over ssh a log read can take seconds,
-        # so holding the lock across it would freeze token delivery and the TUI.
-        # Pin that both readers are invoked with the lock free: a non-blocking
-        # acquire from inside the (patched) reader must succeed.
-        from assistant.llm.OllamaLLM import OllamaLLM
-
-        def assert_lock_free_and_return(value):
-            def _reader():
-                acquired = OllamaLLM._prefill_lock.acquire(blocking=False)
-                assert acquired, "log read must not run under _prefill_lock"
-                OllamaLLM._prefill_lock.release()
-                return value
-            return _reader
-
-        with patch.object(OllamaLLM, '_read_cache_metrics',
-                          side_effect=assert_lock_free_and_return((100, 50))), \
-             patch.object(OllamaLLM, '_read_prefill_progress',
-                          side_effect=assert_lock_free_and_return((2048, 17531))):
-            token = OllamaLLM._begin_prefill()
-            try:
-                assert OllamaLLM._consume_prefill_metrics() == (100, 50)
-                assert OllamaLLM._poll_prefill_progress() == (2048, 17531)
-            finally:
-                OllamaLLM._end_prefill(token)
-
-    def test_prefill_progress_none_when_idle(self):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        OllamaLLM._end_prefill(OllamaLLM._begin_prefill())
-        assert OllamaLLM.prefill_progress() is None
-
-    def test_pre_heat_overlapping_a_user_request_leaves_its_prefill_state_alone(self):
-        # The pre-heat fired at the end of one turn is often still prefilling when the next
-        # user request goes out. Its exit used to blank the user's progress bar and swallow
-        # the first-token mark; a pre-heat starting mid-request used to restart the clock.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        with patch.object(OllamaLLM, '_log_size', return_value=0), \
-             patch.object(OllamaLLM, '_consume_prefill_metrics', return_value=(0, 1000)), \
-             patch.object(OllamaLLM, '_poll_prefill_progress', return_value=None):
-            # pre-heat first, user request takes over, pre-heat exits
-            pre_heat = OllamaLLM._begin_prefill(interactive=False)
-            user = OllamaLLM._begin_prefill()
-            OllamaLLM._end_prefill(pre_heat)
-            assert OllamaLLM.prefill_progress() is not None
-            OllamaLLM._mark_first_token(pre_heat)
-            assert OllamaLLM.prefill_progress() < 100.0
-            OllamaLLM._mark_first_token(user)
-            assert OllamaLLM.prefill_progress() == 100.0
-            # a pre-heat starting mid-request is not tracked and cannot end the user's state
-            late = OllamaLLM._begin_prefill(interactive=False)
-            assert late is None
-            assert OllamaLLM.prefill_progress() == 100.0
-            OllamaLLM._end_prefill(late)
-            assert OllamaLLM.prefill_progress() == 100.0
-            OllamaLLM._end_prefill(user)
-            assert OllamaLLM.prefill_progress() is None
-            # once the user request is over, a pre-heat is tracked again
-            pre_heat = OllamaLLM._begin_prefill(interactive=False)
-            assert pre_heat is not None and OllamaLLM.prefill_progress() is not None
-            OllamaLLM._end_prefill(pre_heat)
-
-    def test_prefill_progress_zero_before_cache_line(self, tmp_path):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        original_path = OllamaLLM._ollama_log_path
-        original_anchor = OllamaLLM._prefill_log_start
-        try:
-            # Log present but no "loading cache slot" line yet at request start.
-            log_file = tmp_path / "ollama.log"
-            log_file.write_text("nothing useful here\n")
-            OllamaLLM._ollama_log_path = str(log_file)
-            token = OllamaLLM._begin_prefill()
-            assert OllamaLLM.prefill_progress() == 0.0
-        finally:
-            OllamaLLM._end_prefill(token)
-            OllamaLLM._ollama_log_path = original_path
-            OllamaLLM._prefill_log_start = original_anchor
-
-    def test_prefill_progress_full_cache_hit_is_complete(self, tmp_path):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        original_path = OllamaLLM._ollama_log_path
-        original_anchor = OllamaLLM._prefill_log_start
-        try:
-            log_file = tmp_path / "ollama.log"
-            OllamaLLM._ollama_log_path = str(log_file)
-            token = OllamaLLM._begin_prefill()  # anchors before Ollama logs the line
-            log_file.write_text(
-                'msg="loading cache slot" id=0 cache=100 prompt=100 used=100 remaining=0\n'
-            )
-            assert OllamaLLM.prefill_progress() == 100.0
-        finally:
-            OllamaLLM._end_prefill(token)
-            OllamaLLM._ollama_log_path = original_path
-            OllamaLLM._prefill_log_start = original_anchor
-
-    def test_prefill_progress_estimates_from_elapsed(self, tmp_path):
+    def test_progress_follows_the_mlx_progress_lines_in_the_log(self, tracker, tmp_path):
         import time
-        from assistant.llm.OllamaLLM import OllamaLLM
-        original_path = OllamaLLM._ollama_log_path
-        original_anchor = OllamaLLM._prefill_log_start
-        original_tps = OllamaLLM._prefill_tps
-        try:
-            log_file = tmp_path / "ollama.log"
-            OllamaLLM._ollama_log_path = str(log_file)
-            OllamaLLM._prefill_tps = 1000.0  # 1000 tokens @ 1000 t/s => 1.0s eta
-            token = OllamaLLM._begin_prefill()
-            log_file.write_text(
-                'msg="loading cache slot" id=0 cache=0 prompt=1000 used=0 remaining=1000\n'
-            )
-            OllamaLLM._prefill_start_ts = time.monotonic() - 0.5  # half the eta elapsed
-            pct = OllamaLLM.prefill_progress()
-            assert 40.0 < pct < 60.0
-        finally:
-            OllamaLLM._end_prefill(token)
-            OllamaLLM._ollama_log_path = original_path
-            OllamaLLM._prefill_log_start = original_anchor
-            OllamaLLM._prefill_tps = original_tps
-
-    def test_prefill_progress_capped_until_first_token(self, tmp_path):
-        import time
-        from assistant.llm.OllamaLLM import OllamaLLM
-        original_path = OllamaLLM._ollama_log_path
-        original_anchor = OllamaLLM._prefill_log_start
-        try:
-            log_file = tmp_path / "ollama.log"
-            OllamaLLM._ollama_log_path = str(log_file)
-            token = OllamaLLM._begin_prefill()
-            log_file.write_text(
-                'msg="loading cache slot" id=0 cache=0 prompt=1000 used=0 remaining=1000\n'
-            )
-            OllamaLLM._prefill_start_ts = time.monotonic() - 9999  # way past eta
-            assert OllamaLLM.prefill_progress() == 99.0
-            OllamaLLM._mark_first_token(token)
-            assert OllamaLLM.prefill_progress() == 100.0
-        finally:
-            OllamaLLM._end_prefill(token)
-            OllamaLLM._ollama_log_path = original_path
-            OllamaLLM._prefill_log_start = original_anchor
+        token = tracker.begin()
+        (tmp_path / "ollama.log").write_text(
+            'msg="cache miss" total=17531 matched=2 cached=0 left=17531\n'
+            'msg="Prompt processing progress" processed=2048 total=17531\n'
+            'msg="Prompt processing progress" processed=8192 total=17531\n')
+        tracker._find(token).start_ts = time.monotonic() - 9999  # the time estimate alone would say 99
+        assert tracker.progress() == pytest.approx(8192 / 17531 * 100.0)
+        tracker.end(token)
 
     # --- prefill-rate self-calibration (EMA) ----------------------------
-    # The progress estimate's accuracy hinges on _prefill_tps, which
-    # _log_metrics refines via an EMA from each completed request's observed
-    # prefill rate. Near-full cache hits (tiny `remaining` over a tiny
-    # duration) yield a noisy rate and are deliberately skipped so they don't
-    # corrupt the estimate that drives the KV-Cache bar.
+    # The time estimate hinges on the tracker's rate, which _log_metrics refines from each
+    # completed request's prompt_eval_duration over the tokens the cache line said were left.
 
-    def test_log_metrics_refines_prefill_rate_via_ema(self):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        original_tps = OllamaLLM._prefill_tps
-        original_metrics = OllamaLLM._prefill_cache_metrics
-        try:
-            # remaining=558 over 1.0s => observed 558 t/s; EMA blends 50/50.
-            OllamaLLM._prefill_cache_metrics = (5000, 558)
-            OllamaLLM._prefill_tps = 350.0
-            self._make_llm()._log_metrics({
-                "prompt_eval_count": 5558, "prompt_eval_duration": 1_000_000_000,
-                "eval_count": 5, "eval_duration": 500_000_000,
-                "total_duration": 1_500_000_000,
-            })
-            assert OllamaLLM._prefill_tps == pytest.approx(0.5 * 350.0 + 0.5 * 558.0)
-        finally:
-            OllamaLLM._prefill_tps = original_tps
-            OllamaLLM._prefill_cache_metrics = original_metrics
+    def test_log_metrics_refines_prefill_rate_via_ema(self, tracker):
+        token = tracker.begin()
+        request = tracker._find(token)
+        request.work, request.anchor = (5000, 558), None   # remaining=558 over 1.0s => 558 t/s
+        tracker.tps = 350.0
+        self._make_llm()._log_metrics({
+            "prompt_eval_count": 5558, "prompt_eval_duration": 1_000_000_000,
+            "eval_count": 5, "eval_duration": 500_000_000,
+            "total_duration": 1_500_000_000,
+        }, token=token)
+        assert tracker.tps == pytest.approx(0.5 * 350.0 + 0.5 * 558.0)
 
-    def test_log_metrics_skips_rate_update_on_near_full_cache_hit(self):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        original_tps = OllamaLLM._prefill_tps
-        original_metrics = OllamaLLM._prefill_cache_metrics
-        try:
-            # remaining=50 (<=100) is a near-full hit — too noisy to learn from.
-            OllamaLLM._prefill_cache_metrics = (5000, 50)
-            OllamaLLM._prefill_tps = 350.0
-            self._make_llm()._log_metrics({
-                "prompt_eval_count": 5050, "prompt_eval_duration": 1_000_000_000,
-                "eval_count": 5, "eval_duration": 500_000_000,
-                "total_duration": 1_500_000_000,
-            })
-            assert OllamaLLM._prefill_tps == 350.0
-        finally:
-            OllamaLLM._prefill_tps = original_tps
-            OllamaLLM._prefill_cache_metrics = original_metrics
+    def test_log_metrics_skips_rate_update_on_near_full_cache_hit(self, tracker):
+        token = tracker.begin()
+        request = tracker._find(token)
+        request.work, request.anchor = (5000, 50), None   # <=100 tokens left: too noisy to learn from
+        tracker.tps = 350.0
+        self._make_llm()._log_metrics({
+            "prompt_eval_count": 5050, "prompt_eval_duration": 1_000_000_000,
+            "eval_count": 5, "eval_duration": 500_000_000,
+            "total_duration": 1_500_000_000,
+        }, token=token)
+        assert tracker.tps == 350.0
 
     # --- pre-heat in-flight guard ---------------------------------------
     # Ollama processes one request at a time. The guard ensures at most one
@@ -2993,123 +2734,45 @@ class TestOllamaLLM:
 # TestOllamaRemoteLog
 # ===========================================================================
 
-def _ssh_result(returncode=0, stdout='', stderr=''):
-    result = MagicMock()
-    result.returncode = returncode
-    result.stdout = stdout
-    result.stderr = stderr
-    return result
-
-
 class TestOllamaRemoteLog:
-    """Remote-Ollama diagnostics: cache-metric log reads go over ssh when base_url
-    points at another machine."""
+    """Remote-Ollama diagnostics: the tracker reads the log over ssh when base_url points at
+    another machine, and goes back to the local file for a local one. The ssh reader itself is
+    tested in test_prefill_tracker.py."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_log(self):
+        from assistant.llm.OllamaLLM import OllamaLLM
+        saved = OllamaLLM._prefill.log
+        yield
+        OllamaLLM._prefill.log = saved
 
     @patch('assistant.llm.OllamaLLM.config')
-    def test_remote_base_url_enables_ssh_log(self, mock_config):
+    def test_remote_base_url_reads_the_log_over_ssh_to_that_host(self, mock_config):
         mock_config.get.side_effect = lambda key, default=None: default
         from assistant.llm.OllamaLLM import OllamaLLM
-        try:
-            OllamaLLM(base_url='http://100.64.0.10:11434')
-            assert OllamaLLM._ssh_log is not None
-            assert OllamaLLM._ssh_log.host == '100.64.0.10'
-            assert OllamaLLM._ssh_log.path.endswith('/log/ollama.log')
-        finally:
-            OllamaLLM._ssh_log = None
+        OllamaLLM(base_url='http://100.64.0.10:11434')
+        log = OllamaLLM._prefill.log
+        assert log.ssh_host == '100.64.0.10'
+        assert log.path.endswith('/log/ollama.log')
 
     @patch('assistant.llm.OllamaLLM.config')
     def test_ssh_host_and_log_path_from_config(self, mock_config):
-        overrides = {'ollama.ssh_host': 'user@studio', 'ollama.remote_log_path': '/srv/ollama.log'}
+        overrides = {'ollama.ssh_host': 'user@studio.local', 'ollama.remote_log_path': '/srv/ollama.log'}
         mock_config.get.side_effect = lambda key, default=None: overrides.get(key, default)
         from assistant.llm.OllamaLLM import OllamaLLM
-        try:
-            OllamaLLM(base_url='http://studio:11434')
-            assert OllamaLLM._ssh_log.host == 'user@studio'
-            assert OllamaLLM._ssh_log.path == '/srv/ollama.log'
-        finally:
-            OllamaLLM._ssh_log = None
+        OllamaLLM(base_url='http://studio.local:11434')
+        log = OllamaLLM._prefill.log
+        assert (log.ssh_host, log.path) == ('user@studio.local', '/srv/ollama.log')
 
     @patch('assistant.llm.OllamaLLM.config')
-    def test_local_base_url_clears_previous_ssh_log(self, mock_config):
+    def test_local_base_url_goes_back_to_the_local_file(self, mock_config):
         mock_config.get.side_effect = lambda key, default=None: default
         from assistant.llm.OllamaLLM import OllamaLLM
-        try:
-            OllamaLLM(base_url='http://studio:11434')
-            assert OllamaLLM._ssh_log is not None
-            OllamaLLM(base_url='http://localhost:11434')
-            assert OllamaLLM._ssh_log is None
-        finally:
-            OllamaLLM._ssh_log = None
-
-    @patch('assistant.llm.OllamaLLM.subprocess.run')
-    def test_ssh_size_parses_wc_output(self, mock_run):
-        from assistant.llm.OllamaLLM import _SshRemoteLog
-        mock_run.return_value = _ssh_result(stdout='   1234\n')
-        assert _SshRemoteLog('studio', '/srv/ollama.log').size() == 1234
-
-    @patch('assistant.llm.OllamaLLM.subprocess.run')
-    def test_ssh_size_zero_when_remote_file_missing(self, mock_run):
-        from assistant.llm.OllamaLLM import _SshRemoteLog
-        mock_run.return_value = _ssh_result(stdout='MISSING\n')
-        assert _SshRemoteLog('studio', '/srv/ollama.log').size() == 0
-
-    @patch('assistant.llm.OllamaLLM.subprocess.run')
-    def test_ssh_read_from_tails_at_offset(self, mock_run):
-        from assistant.llm.OllamaLLM import _SshRemoteLog
-        line = 'msg="loading cache slot" id=0 cache=6533 prompt=6344 used=5786 remaining=558\n'
-        mock_run.return_value = _ssh_result(stdout=line)
-        assert _SshRemoteLog('studio', '/srv/ollama.log').read_from(100) == line
-        remote_cmd = mock_run.call_args[0][0][-1]
-        assert 'tail -c +101' in remote_cmd  # tail offsets are 1-based
-
-    @patch('assistant.llm.OllamaLLM.subprocess.run')
-    def test_ssh_failure_engages_cooldown(self, mock_run):
-        # A dead ssh connection must not stall the request path: after one
-        # failure, further calls return None without spawning ssh again.
-        from assistant.llm.OllamaLLM import _SshRemoteLog
-        mock_run.return_value = _ssh_result(returncode=255, stderr='Connection refused')
-        log = _SshRemoteLog('studio', '/srv/ollama.log')
-        assert log.size() is None
-        assert log.read_from(0) is None
-        mock_run.assert_called_once()
-
-    @patch('assistant.llm.OllamaLLM.subprocess.run')
-    def test_ssh_cooldown_expires_and_retries(self, mock_run):
-        from assistant.llm.OllamaLLM import _SshRemoteLog
-        mock_run.side_effect = [_ssh_result(returncode=255, stderr='down'),
-                                _ssh_result(stdout='42\n')]
-        log = _SshRemoteLog('studio', '/srv/ollama.log')
-        assert log.size() is None
-        log._disabled_until = 0.0  # simulate cooldown expiry
-        assert log.size() == 42
-
-    def test_read_cache_metrics_via_ssh_log(self):
-        from assistant.llm.OllamaLLM import OllamaLLM, _SshRemoteLog
-        line = 'msg="loading cache slot" id=0 cache=6533 prompt=6344 used=5786 remaining=558\n'
-        original_anchor = OllamaLLM._prefill_log_start
-        try:
-            OllamaLLM._ssh_log = MagicMock(spec=_SshRemoteLog)
-            OllamaLLM._ssh_log.read_from.return_value = line
-            OllamaLLM._prefill_log_start = 500
-            assert OllamaLLM._read_cache_metrics() == (5786, 558)
-            OllamaLLM._ssh_log.read_from.assert_called_with(500)
-        finally:
-            OllamaLLM._ssh_log = None
-            OllamaLLM._prefill_log_start = original_anchor
-
-    def test_begin_prefill_disables_metrics_when_log_unreachable(self):
-        # A None anchor (ssh down at request start) must disable cache metrics
-        # for the request instead of scanning the log from byte 0.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        original_anchor = OllamaLLM._prefill_log_start
-        try:
-            with patch.object(OllamaLLM, '_log_size', return_value=None):
-                token = OllamaLLM._begin_prefill()
-            assert OllamaLLM._prefill_log_start is None
-            assert OllamaLLM._read_cache_metrics() is None
-        finally:
-            OllamaLLM._end_prefill(token)
-            OllamaLLM._prefill_log_start = original_anchor
+        OllamaLLM(base_url='http://studio.local:11434')
+        assert OllamaLLM._prefill.log.ssh_host is not None
+        OllamaLLM(base_url='http://localhost:11434')
+        log = OllamaLLM._prefill.log
+        assert log.ssh_host is None and log.path == OllamaLLM._ollama_log_path
 
 
 # ===========================================================================
@@ -3121,84 +2784,28 @@ class TestOllamaMlxLogFormat:
     runner: 'cache hit/miss ... cached=C left=L' instead of 'loading cache slot
     ... used=N remaining=M', plus real incremental prefill progress lines."""
 
-    def _with_log(self, tmp_path, content):
-        log_file = tmp_path / "ollama.log"
-        log_file.write_text(content)
-        return log_file
+    def _format(self):
+        from assistant.llm.OllamaLLM import OllamaLogFormat
+        return OllamaLogFormat()
 
-    def _patched_state(self, tmp_path):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        return patch.multiple(OllamaLLM,
-                              _ollama_log_path=str(tmp_path / "ollama.log"),
-                              _prefill_log_start=0)
+    def test_parses_mlx_cache_hit(self):
+        text = ('time=... level=INFO source=prefix_cache.go:124 '
+                'msg="cache hit" total=25572 matched=25553 cached=24575 left=997\n')
+        assert self._format().work(text) == (24575, 997)
 
-    def test_read_cache_metrics_parses_mlx_cache_hit(self, tmp_path):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        self._with_log(tmp_path,
-                       'time=... level=INFO source=prefix_cache.go:124 '
-                       'msg="cache hit" total=25572 matched=25553 cached=24575 left=997\n')
-        with self._patched_state(tmp_path):
-            assert OllamaLLM._read_cache_metrics() == (24575, 997)
+    def test_parses_mlx_cache_miss(self):
+        text = ('time=... level=INFO source=prefix_cache.go:124 '
+                'msg="cache miss" total=17531 matched=2 cached=0 left=17531\n')
+        assert self._format().work(text) == (0, 17531)
 
-    def test_read_cache_metrics_parses_mlx_cache_miss(self, tmp_path):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        self._with_log(tmp_path,
-                       'time=... level=INFO source=prefix_cache.go:124 '
-                       'msg="cache miss" total=17531 matched=2 cached=0 left=17531\n')
-        with self._patched_state(tmp_path):
-            assert OllamaLLM._read_cache_metrics() == (0, 17531)
+    def test_progress_is_the_last_progress_line(self):
+        text = ('msg="cache miss" total=17531 matched=2 cached=0 left=17531\n'
+                'msg="Prompt processing progress" processed=2048 total=17531\n'
+                'msg="Prompt processing progress" processed=4096 total=17531\n')
+        assert self._format().progress(text) == (4096, 17531)
 
-    def test_read_cache_metrics_still_parses_llamacpp_format(self, tmp_path):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        self._with_log(tmp_path,
-                       'msg="loading cache slot" id=0 cache=6533 prompt=6344 used=5786 remaining=558\n')
-        with self._patched_state(tmp_path):
-            assert OllamaLLM._read_cache_metrics() == (5786, 558)
-
-    def test_read_prefill_progress_returns_last_line(self, tmp_path):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        self._with_log(tmp_path,
-                       'msg="cache miss" total=17531 matched=2 cached=0 left=17531\n'
-                       'msg="Prompt processing progress" processed=2048 total=17531\n'
-                       'msg="Prompt processing progress" processed=4096 total=17531\n')
-        with self._patched_state(tmp_path):
-            assert OllamaLLM._read_prefill_progress() == (4096, 17531)
-
-    def test_read_prefill_progress_none_without_progress_lines(self, tmp_path):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        self._with_log(tmp_path,
-                       'msg="loading cache slot" id=0 cache=1 prompt=1 used=1 remaining=1\n')
-        with self._patched_state(tmp_path):
-            assert OllamaLLM._read_prefill_progress() is None
-
-    def test_prefill_progress_uses_mlx_progress_lines(self):
-        from assistant.llm.OllamaLLM import OllamaLLM
-        with patch.object(OllamaLLM, '_log_size', return_value=0):
-            token = OllamaLLM._begin_prefill()
-        try:
-            with patch.object(OllamaLLM, '_read_cache_metrics', return_value=(0, 17531)), \
-                 patch.object(OllamaLLM, '_read_prefill_progress', return_value=(8192, 17531)):
-                progress = OllamaLLM.prefill_progress()
-            assert progress == pytest.approx(8192 / 17531 * 100.0)
-        finally:
-            OllamaLLM._end_prefill(token)
-
-    def test_prefill_progress_throttles_progress_log_reads(self):
-        # Over ssh every progress read is a round trip; polls inside the
-        # throttle window must serve the cached value without re-reading.
-        from assistant.llm.OllamaLLM import OllamaLLM
-        with patch.object(OllamaLLM, '_log_size', return_value=0):
-            token = OllamaLLM._begin_prefill()
-        try:
-            with patch.object(OllamaLLM, '_read_cache_metrics', return_value=(0, 17531)), \
-                 patch.object(OllamaLLM, '_read_prefill_progress',
-                              return_value=(2048, 17531)) as mock_read:
-                first = OllamaLLM.prefill_progress()
-                second = OllamaLLM.prefill_progress()
-            assert first == second == pytest.approx(2048 / 17531 * 100.0)
-            mock_read.assert_called_once()
-        finally:
-            OllamaLLM._end_prefill(token)
+    def test_no_progress_without_progress_lines(self):
+        assert self._format().progress('msg="loading cache slot" id=0 cache=1 prompt=1 used=1 remaining=1\n') is None
 
 # ===========================================================================
 # missing_api_key — the question a caller asks before initialize() when it would rather

@@ -19,7 +19,7 @@ from assistant.AssistantEvents import Done, Notice, RoundEnd, Thinking, Thinking
 from assistant.AssistantRequest import SYSTEM_USER, RequestContext
 from assistant.PromptInjectionDetector import is_prompt_injection
 from assistant.commands.DebugCommands import DebugCommands
-from assistant.llm.OllamaLLM import OllamaLLM
+from assistant.llm.PrefillTracker import PrefillTracker
 from common.ConfigManager import config
 from common.logging import error, info, note, trace
 from common.vault.Redactor import Redactor
@@ -526,11 +526,11 @@ class ChatSession:
             elif in_thinking:
                 phase, elapsed = PHASE_THINKING, now - max(round_start, since)
             else:
-                # Until the first token a local model is prefilling the prompt; Ollama serves
-                # one request at a time, so whatever it is prefilling is what this reply waits
-                # for. Plain waiting at both ends: 0% (Ollama hasn't logged the cache slot
+                # Until the first token a local model is prefilling the prompt; a local server
+                # serves one request at a time, so whatever it is prefilling is what this reply
+                # waits for. Plain waiting at both ends: 0% (the server hasn't logged the workload
                 # yet, so there is nothing to draw) and 100% (a full KV-cache hit).
-                pct = OllamaLLM.prefill_progress()
+                pct = PrefillTracker.current_progress()
                 prefilling = pct is not None and 0.0 < pct < 100.0
                 phase, elapsed = (PHASE_PREFILL if prefilling else PHASE_WAITING), now - max(round_start, since)
                 prefill = pct if prefilling else 0.0
