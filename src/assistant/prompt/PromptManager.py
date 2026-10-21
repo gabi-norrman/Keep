@@ -328,6 +328,10 @@ class PromptManager:
         substitute = lambda text: self._substitute(text, {}, photo_count=self._TEST_SUITE_PHOTO_COUNT)
         result = "result: \n" + "\n\n".join(Toolkits.render(t, substitute) for t in toolkits)
         info(f"Test suite: all {len(toolkits)} toolkits appended to the history ({len(result)} chars)")
+        # Every test merges its query into this turn; Claude caches the turn up to here
+        # instead of writing the toolkits anew for each test (ClaudeLLM.TEST_SUITE_CACHED_TAIL).
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        ClaudeLLM.TEST_SUITE_CACHED_TAIL = result
         return [{"role": "assistant", "content": call}, {"role": "user", "content": result}]
 
     @staticmethod

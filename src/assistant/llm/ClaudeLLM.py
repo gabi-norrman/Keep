@@ -94,6 +94,15 @@ class ClaudeLLM(AbstractLLM):
     FOLLOW_UP_CACHE_TTL = "5m"
     # The TTLs Anthropic offers, shortest first: a request's breakpoints may only get shorter.
     CACHE_TTL_RANK = {"5m": 0, "1h": 1}
+    # Prompt test suite only — None in production. The text of the toolkit-result turn the
+    # suite appends to its fixture history (PromptManager._all_toolkits_loaded): every test
+    # resets the dialog, so the query is merged into that turn and the history breakpoint on
+    # it wrote the fixture, the toolkits and the query anew for every test — ~16K tokens a
+    # test, read by nobody (69.6% hit rate on 178 tests, 2026-10-21). A user turn starting
+    # with this text is split in two blocks with a breakpoint on the first, so the stable
+    # part is read from the second test on. Set by the suite's prompt loader, never by the
+    # server.
+    TEST_SUITE_CACHED_TAIL: str | None = None
     _ttl_cuts_logged: set[tuple[str, str]] = set()  # the pool builds one LLM per handler: say it once
 
     # Output caps. With adaptive thinking the thinking tokens count against max_tokens too,
@@ -350,6 +359,32 @@ class ClaudeLLM(AbstractLLM):
             'content': [{"type": "text", "text": content, "cache_control": {"type": "ephemeral", "ttl": ttl}}],
         }
 
+    def _split_test_suite_tail(self, anthropic_messages: list[dict], system) -> None:
+        """See TEST_SUITE_CACHED_TAIL: the user turn starting with it becomes two text blocks —
+        the toolkit result with a breakpoint, the rest (the test's query, or on an older model
+        the query and the trailing directives) after it. The same bytes, one more breakpoint;
+        skipped when the request's four are spoken for (three cached system blocks plus the
+        history one)."""
+        cached_system = sum(1 for block in system if "cache_control" in block) if isinstance(system, list) else 0
+        if cached_system + 2 > 4:
+            trace("Claude cache: no breakpoint left for the test suite's toolkit turn")
+            return
+        tail = self.TEST_SUITE_CACHED_TAIL
+        for i, message in enumerate(anthropic_messages):
+            content = message.get('content')
+            if message['role'] != 'user' or not isinstance(content, str) or not content.startswith(tail):
+                continue
+            ttl = self.FOLLOW_UP_CACHE_TTL if self.per_request_prefix else self.history_cache_ttl
+            blocks = [{"type": "text", "text": tail, "cache_control": {"type": "ephemeral", "ttl": ttl}}]
+            rest = content[len(tail):]
+            if rest.strip():
+                blocks.append({"type": "text", "text": rest})
+            anthropic_messages[i] = {'role': 'user', 'content': blocks}
+            trace(f"Claude cache: test suite — breakpoint on the toolkit turn (message {i}), "
+                  f"{len(rest)} chars of query after it")
+            return
+        trace("Claude cache: test suite — no turn starts with the toolkit result, nothing split")
+
     def _build_api_params(self, messages: list[dict], thinking: bool, stream: bool, volatile_tail: int = 0,
                           follow_up: bool = False) -> dict:
         """Build common API call parameters."""
@@ -374,6 +409,8 @@ class ClaudeLLM(AbstractLLM):
             # turn as sent never comes back: the breakpoint goes on the message before it.
             trace("Claude cache: the trailing turn carries an image — history breakpoint on the message before it")
             index = -2
+        if self.prompt_cache and self.TEST_SUITE_CACHED_TAIL:
+            self._split_test_suite_tail(anthropic_messages, system)
         if self.prompt_cache and len(anthropic_messages) >= max(2, -index):
             ttl = self.FOLLOW_UP_CACHE_TTL if follow_up or self.per_request_prefix else self.history_cache_ttl
             cached = self._with_cache_breakpoint(anthropic_messages[index], ttl)

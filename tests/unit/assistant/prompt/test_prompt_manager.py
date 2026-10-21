@@ -96,6 +96,9 @@ def test_testsuite_prompt_loaded_and_logged(prompt_test_environment, monkeypatch
     assert manager._test_toolkit_messages[0]["content"].startswith('load_toolkit("home", "cameras", "web", ')
     assert manager._test_toolkit_messages[1]["content"].startswith("result: \n# Toolkit: home\n")
     assert "# Toolkit: timers" in manager._test_toolkit_messages[1]["content"]
+    # Claude puts a breakpoint at the end of that turn for every test's merged query.
+    from assistant.llm.ClaudeLLM import ClaudeLLM
+    assert ClaudeLLM.TEST_SUITE_CACHED_TAIL == manager._test_toolkit_messages[1]["content"]
 
     # Simulate the full messages array sent to the LLM (system + user turn)
     full_messages = messages + [{"role": "user", "content": "Hello Floxy"}]

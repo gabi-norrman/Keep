@@ -672,3 +672,70 @@ class TestWorkspace:
         with pytest.raises(APIStatusError) as excinfo:
             llm.create_completion([{"role": "user", "content": "hi"}])
         assert excinfo.value is error
+
+
+TOOLKIT_TAIL = "result: \n# Toolkit: home\n\nhome_status()\n\n# Toolkit: web\n\nweb_search(query)"
+SYSTEM_TWO_BLOCKS = f"stable{ClaudeLLM.CACHE_BREAKPOINT_MARKER}volatile{ClaudeLLM.CACHE_BREAKPOINT_MARKER}[THINKING]"
+
+
+def _breakpoints(params: dict) -> int:
+    count = sum(1 for block in params["system"] if "cache_control" in block)
+    for message in params["messages"]:
+        if isinstance(message["content"], list):
+            count += sum(1 for block in message["content"] if "cache_control" in block)
+    return count
+
+
+def _test_suite_messages(system: str) -> list[dict]:
+    """A prompt test's request: the fixture history, the all-toolkits round and the query
+    merged into its result turn, as DialogManager sends it after a reset."""
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": "Marcus (Console): hello"},
+        {"role": "assistant", "content": "Hi."},
+        {"role": "assistant", "content": 'load_toolkit("home", "web")'},
+        {"role": "user", "content": TOOLKIT_TAIL + "\n\nMarcus (Console): lights on"},
+    ]
+
+
+class TestTestSuiteCachedTail:
+    """The prompt test suite's toolkit turn gets a breakpoint of its own, the query after it."""
+
+    @pytest.fixture(autouse=True)
+    def _tail(self, monkeypatch):
+        monkeypatch.setattr(ClaudeLLM, "TEST_SUITE_CACHED_TAIL", TOOLKIT_TAIL)
+
+    def test_toolkit_turn_split_with_the_query_after_its_breakpoint(self):
+        params = ClaudeLLM("claude-opus-5-5")._build_api_params(_test_suite_messages(SYSTEM_TWO_BLOCKS),
+                                                                thinking=True, stream=True)
+        blocks = params["messages"][-1]["content"]
+        assert [b["text"] for b in blocks] == [TOOLKIT_TAIL, "\n\nMarcus (Console): lights on"]
+        assert "cache_control" in blocks[0] and "cache_control" in blocks[1]
+        assert _breakpoints(params) == 4
+
+    def test_follow_up_round_keeps_the_toolkit_breakpoint_and_four_in_all(self):
+        messages = _test_suite_messages(SYSTEM_TWO_BLOCKS) + [
+            {"role": "assistant", "content": "home_status()"},
+            {"role": "user", "content": "result: all off"},
+        ]
+        params = ClaudeLLM("claude-opus-5-5")._build_api_params(messages, thinking=True, stream=True,
+                                                                follow_up=True)
+        toolkit_turn = params["messages"][-3]["content"]
+        assert toolkit_turn[0]["text"] == TOOLKIT_TAIL and "cache_control" in toolkit_turn[0]
+        assert "cache_control" in params["messages"][-1]["content"][-1]
+        assert _breakpoints(params) == 4
+
+    def test_not_split_when_three_system_blocks_take_the_breakpoints(self):
+        system = SYSTEM_TWO_BLOCKS.replace("[THINKING]", f"more{ClaudeLLM.CACHE_BREAKPOINT_MARKER}[THINKING]")
+        params = ClaudeLLM("claude-opus-5-5")._build_api_params(_test_suite_messages(system),
+                                                                thinking=True, stream=True)
+        blocks = params["messages"][-1]["content"]
+        assert len(blocks) == 1 and blocks[0]["text"].startswith(TOOLKIT_TAIL)
+        assert _breakpoints(params) == 4
+
+    def test_production_request_untouched_without_a_tail(self, monkeypatch):
+        monkeypatch.setattr(ClaudeLLM, "TEST_SUITE_CACHED_TAIL", None)
+        params = ClaudeLLM("claude-opus-5-5")._build_api_params(_test_suite_messages(SYSTEM_TWO_BLOCKS),
+                                                                thinking=True, stream=True)
+        assert len(params["messages"][-1]["content"]) == 1
+        assert _breakpoints(params) == 3
