@@ -701,12 +701,22 @@ class ClaudeLLM(AbstractLLM):
             'messages': anthropic_messages,
             'max_tokens': 4096,
         }
-        if system_message:
-            # This path skips _build_cached_system (no caching for one-shot image
-            # calls), so the breakpoint markers must be stripped explicitly.
+        if system_message and self.prompt_cache:
+            # The system prompt is cached like a chat request's: with breakpoint markers
+            # (a camera question from the chat) block by block, without them (the photo
+            # indexer's, identical from photo to photo — the memory bank and the
+            # instructions, several thousand tokens against one image) as one 5-minute
+            # block, kept warm by the backfill's back-to-back requests. The image and the
+            # per-photo lines stay in the user turn, after the cached prefix.
+            api_params['system'] = self._build_cached_system(system_message)
+        elif system_message:
             api_params['system'] = self.strip_cache_markers(system_message)
 
         response = self.client.messages.create(**api_params)
+        usage = getattr(response, 'usage', None)
+        if usage is not None:
+            self._log_cache_usage(usage)
+            self._log_output_tokens(usage)
         text = ''.join(block.text for block in response.content if block.type == 'text')
         if not text.strip():
             block_types = [getattr(block, 'type', '?') for block in response.content]

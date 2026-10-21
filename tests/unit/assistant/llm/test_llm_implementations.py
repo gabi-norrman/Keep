@@ -968,18 +968,24 @@ class TestClaudeLLM:
         assert 'cache_control' in system[0]
         assert 'cache_control' not in system[1]
 
-    @patch('assistant.llm.ClaudeLLM.config')
-    def test_image_completion_strips_cache_markers_from_system(self, mock_config):
-        """The one-shot image path skips _build_cached_system entirely, so it must
-        strip the breakpoint markers itself — otherwise they reach the model as
-        literal prompt text (the pre-existing leak fixed alongside multi-breakpoint)."""
+    @staticmethod
+    def _image_llm(mock_config, **kwargs):
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
-        llm = ClaudeLLM()
+        llm = ClaudeLLM(**kwargs)
         llm.client = Mock()
         response = Mock()
         response.content = [Mock(type='text', text='ok')]
+        response.usage = Mock(input_tokens=1200, cache_creation_input_tokens=0, cache_read_input_tokens=5000,
+                              output_tokens=500)
         llm.client.messages.create.return_value = response
+        return llm
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_image_completion_caches_system_by_breakpoint(self, mock_config):
+        """A chat prompt sent with an image (a camera question) is cached block by block
+        like any chat request: the markers become breakpoints and never reach the model."""
+        llm = self._image_llm(mock_config)
 
         llm.create_completion_with_images(
             [{"role": "system", "content": "rules\n<<<CACHE_BREAKPOINT>>>\nlive data"},
@@ -988,6 +994,43 @@ class TestClaudeLLM:
         )
 
         system = llm.client.messages.create.call_args.kwargs['system']
+        texts = [b['text'] for b in system]
+        assert not any("<<<CACHE_BREAKPOINT>>>" in t for t in texts)
+        assert texts == ["rules", "live data"]
+        assert 'cache_control' in system[0] and 'cache_control' not in system[1]
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_image_completion_caches_a_markerless_system_whole(self, mock_config):
+        """The photo indexer's prompt has no markers: the whole of it (instructions and memory
+        bank, the same bytes for every photo of a backfill) goes out as one cached block, and
+        the image stays in the user turn behind it."""
+        llm = self._image_llm(mock_config)
+
+        llm.create_completion_with_images(
+            [{"role": "system", "content": "You are a photo analyst.\n# memory\n..."},
+             {"role": "user", "content": "- Date taken: 2026-10-01\nAnalyze this photo."}],
+            [b'\xff\xd8jpeg'],
+        )
+
+        params = llm.client.messages.create.call_args.kwargs
+        assert params['system'] == [{"type": "text", "text": "You are a photo analyst.\n# memory\n...",
+                                     "cache_control": {"type": "ephemeral"}}]
+        assert [b['type'] for b in params['messages'][-1]['content']] == ['image', 'text']
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_image_completion_without_prompt_cache_strips_markers(self, mock_config):
+        """With caching off the markers are still stripped — they must never reach the model
+        as literal prompt text."""
+        llm = self._image_llm(mock_config, prompt_cache=False)
+
+        llm.create_completion_with_images(
+            [{"role": "system", "content": "rules\n<<<CACHE_BREAKPOINT>>>\nlive data"},
+             {"role": "user", "content": "what's on the camera?"}],
+            [b'\x89PNG1234'],
+        )
+
+        system = llm.client.messages.create.call_args.kwargs['system']
+        assert isinstance(system, str)
         assert "<<<CACHE_BREAKPOINT>>>" not in system
         assert "rules" in system and "live data" in system
 
@@ -1004,6 +1047,8 @@ class TestClaudeLLM:
         response = Mock()
         response.content = [Mock(type='thinking')]
         response.stop_reason = 'end_turn'
+        response.usage = Mock(input_tokens=1200, cache_creation_input_tokens=0, cache_read_input_tokens=0,
+                              output_tokens=4)
         llm.client.messages.create.return_value = response
 
         with patch('assistant.llm.ClaudeLLM.info') as mock_info:
