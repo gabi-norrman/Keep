@@ -31,7 +31,8 @@ after every reply. A follow-up turn then prefills only its own tail instead of t
 
 The replay covers one miss only: the next turn of the same dialog. Any other prompt in between
 (another tier, the autonomous check, a second dialog) or a server restart evicts the live
-context, and that is the server's own fix — start it with a disk KV cache:
+context, and that is the server's own fix — start it with a disk KV cache (`local_ds4_start.sh`
+in the repository root does):
 
     ./ds4-server --kv-disk-dir ~/.ds4/server-kv --kv-disk-space-mb 16384
 

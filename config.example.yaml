@@ -327,8 +327,9 @@ wake_word_near_misses: [mission, missions, we shall]
 
 # ds4-server (antirez's DwarfStar engine, github.com/antirez/ds4) used by every Ds4LLM tier: one
 # large open-weight model (DeepSeek V4.1 Flash by default; GLM 5.3 and Qwen3.8 Flash Next also run)
-# resident on this machine's GPU, served OpenAI-style on localhost — start it in the ds4 folder with
-# `./ds4-server --ctx 32768 --kv-disk-dir ~/.ds4/server-kv --kv-disk-space-mb 16384`. The disk KV
+# resident on this machine's GPU, served OpenAI-style on localhost — start it with `./local_ds4_start.sh`
+# (the ds4 checkout beside this repository; it runs `./ds4-server --ctx 32768 --kv-disk-dir
+# ~/.ds4/server-kv --kv-disk-space-mb 16384` and waits until the API answers). The disk KV
 # cache keeps the prompt prefixes across tiers, the autonomous check and restarts: without it every
 # switch between two prompts prefills the whole prompt again, ~12 s for 16k tokens instead of 0.2 s
 # (the Ds4LLM docstring has the measurements). The assistant then writes its commands in DeepSeek's DSML call syntax
