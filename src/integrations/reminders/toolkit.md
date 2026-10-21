@@ -7,8 +7,8 @@ commands: [list_reminders, add_reminder, complete_reminder, add_shopping_list_it
 The family keeps its to-dos in Apple Reminders: several lists, among them a shared shopping list. You can read every
 list, add to any of them and tick an item off.
 
-`list_reminders()` — every open item of every list, one heading per list with its open count (and "shared" when the
-family shares it), one line per item with its due date when it has one. `list_reminders(list: str)` reads one list.
+`list_reminders(list: str = "")` — every open item of every list, one heading per list with its open count (and "shared" when the
+family shares it), one line per item with its due date when it has one. With `list` it reads that list alone.
 
 `add_reminder(list: str, item: str)` — adds `item` to the list called `list`. One item per call: to add several things,
 call the command several times in the same response.

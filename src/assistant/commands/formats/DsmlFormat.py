@@ -140,19 +140,7 @@ class DsmlFormat(NamedParameterFormat):
     def render_tool_call(cls, name: str, arguments) -> str:
         return render_tool_call(name, arguments)
 
-    def render_example(self, name: str, values: Sequence[Value], declaration: Declaration | None) -> str:
-        names = declaration.names if declaration else []
-        arguments = []
-        for i, value in enumerate(values):
-            if declaration and declaration.variadic and i >= len(names) - 1:
-                rest = [v.value for v in values[i:]]
-                arguments.append((names[-1], json.dumps(rest, ensure_ascii=False), False))
-                break
-            key = names[i] if i < len(names) else f"arg{i + 1}"
-            if value.kind == "bare":
-                arguments.append((key, value.text, False))
-            else:
-                arguments.append((key, value.value, True))
+    def _render_block(self, name: str, arguments: Sequence[tuple[str, str, bool]]) -> str:
         return render_call(name, arguments)
 
     # --- parsing ---------------------------------------------------------------------------

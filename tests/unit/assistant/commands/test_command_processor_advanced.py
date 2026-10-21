@@ -1,3 +1,4 @@
+import re
 import os
 import shutil
 import threading
@@ -2068,7 +2069,16 @@ class TestUnterminatedCommandAtStreamEnd:
         report = processor.take_unterminated_command_report()
         assert report.startswith("browse_eval was not run")
         assert "querySelectorAll" in report
+        explanation = report.split("Received:")[0]
+        assert "parenthes" not in explanation and "browse_eval(" not in explanation, \
+            "the report describes no syntax: the model's may be any of the command formats"
         assert processor.take_unterminated_command_report() is None
+
+    def test_the_label_of_a_command_in_a_message_to_the_model_is_no_call(self):
+        from assistant.commands.CommandProcessor import CommandProcessor
+        label = CommandProcessor._label("dim", "Kitchen lamp, 40")
+        assert label.startswith("dim ") and "Kitchen lamp, 40" in label and not re.match(r"\w+\(", label)
+        assert CommandProcessor._label("restart_server", "") == "restart_server"
 
     def test_a_long_leftover_is_cut_in_the_report(self, processor, dm):
         self._reply(processor, dm, "browse_eval(f(" + "x" * 2000)

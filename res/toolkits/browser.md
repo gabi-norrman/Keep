@@ -1,4 +1,4 @@
-If `open_url()` returns a page missing the info you need because the site wants interaction first (picking a date,
+If `open_url` returns a page missing the info you need because the site wants interaction first (picking a date,
 choosing guests, clicking "search" / "check availability"), use the interactive browse commands. They drive a real
 browser session across multiple turns. The user cannot see this browser; it is for you only.
 
@@ -20,11 +20,11 @@ hints carry the choice and its state (`day av` vs `day closed`, `time waitlist`)
 WARNING line — trust the snapshot, not the URL you asked for.
 
 `browse_act(spec: str)` — perform one or more actions on snapshot elements. `spec` is either:
-    - `"3"` — click element 3
-    - `"3=2026-05-04"` — fill or select element 3 (text, date/time inputs, selects, checkboxes)
-    - `"3=STMNT shampoo\n"` — fill element 3, then press a REAL Enter (search boxes and single-page apps react as
+    - `3` — click element 3
+    - `3=2026-05-04` — fill or select element 3 (text, date/time inputs, selects, checkboxes)
+    - `3=STMNT shampoo\n` — fill element 3, then press a REAL Enter (search boxes and single-page apps react as
       if you typed it). Use this whenever a text input has no visible submit button.
-    - `"4=2026-05-02; 5=4; 6=19:00; 7"` — BATCH: several actions separated by `;`, run in order, all indices
+    - `4=2026-05-02; 5=4; 6=19:00; 7` — BATCH: several actions separated by `;`, run in order, all indices
       resolved against the CURRENT snapshot, ONE fresh snapshot at the end. Always batch when filling several
       fields of one form — much faster than one call per field. Put at most ONE navigating/submitting click at
       the END of the batch.
@@ -32,7 +32,7 @@ WARNING line — trust the snapshot, not the URL you asked for.
 Every action returns a fresh snapshot, taken once the page has reacted. INDICES RESET each snapshot — always use
 indices from the most recent one, never an old one. If the page looks exactly as before the action, the snapshot
 starts with a NOTE saying so: the action had no visible effect or the page is still working on it (a slow login
-step) — `browse_snapshot()` re-reads it.
+step) — `browse_snapshot` re-reads it.
 
 If a click opens a popup or new window (bank payments, BankID, OAuth logins), the session follows it: the popup
 becomes the active page for all browse commands and the snapshot says so in a NOTE. When it closes you are switched
@@ -80,37 +80,39 @@ field's offset inside it, scroll it into view first if needed. Returns what was 
 `browse_extract()` — the full readable text of the current page. Call it once you are on the page that holds the
 answer.
 
-`browse_eval(js: str)` — run JavaScript in the browse session and get the result back as JSON. The argument is forwarded
-VERBATIM — do NOT wrap it in quotes, brackets or backticks. The body may be a single expression or a block (use
-`return …` in a block). Strings stay strings; objects/arrays come back as JSON. Output is truncated past ~8000
-chars. Use it when neither the snapshot nor `browse_inspect` exposes what you need: values built dynamically in JS
-click handlers, URLs assigned to `window.location` only at click time, computed state the DOM doesn't store. Avoid
-a stray `)` inside string literals — the command parser closes on the first balanced `)`; use
+`browse_eval(js: str)` — run JavaScript in the browse session and get the result back as JSON. `js` is the source as
+written, nothing around it. The body may be a single expression or a block (use `return …` in a block). Strings stay
+strings; objects/arrays come back as JSON. Output is truncated past ~8000 chars. Use it when neither the snapshot
+nor `browse_inspect` exposes what you need: values built dynamically in JS click handlers, URLs assigned to
+`window.location` only at click time, computed state the DOM doesn't store.
+<!-- keep -->
+Avoid a stray `)` inside string literals — the command parser closes on the first balanced `)`; use
 `String.fromCharCode(41)` if you need one.
+<!-- /keep -->
 
 `browse_screenshot()` — capture a full-page PNG of the current browse session and save it under `log/screenshots/`.
 Returns the saved path AND the image itself, so you can inspect the page visually (layout, charts, images, anything
 text extraction loses). Requires an active browse session.
 
-`send_screenshot(caption: str)` — deliver the most recent `browse_screenshot()` to the user over Telegram with an
-optional caption. Only available when the user is on Telegram (not voice). Call `browse_screenshot()` first so
+`send_screenshot(caption: str)` — deliver the most recent `browse_screenshot` to the user over Telegram with an
+optional caption. Only available when the user is on Telegram (not voice). Call `browse_screenshot` first so
 there is something to send. Use it when the user asks to "see" or "be sent" something visual.
 
 `browse_close()` — shut down the browser and discard the session. Always call this when done. If browse commands
-persistently fail, `browse_close()` then `browse_open` starts over with a fresh browser.
+persistently fail, `browse_close` then `browse_open` starts over with a fresh browser.
 
 Worked example. User asks "is there a table for 4 at Gurras saturday at 7pm?":
 You: `browse_open("https://www.bokabord.se/restaurang/gurras")`
 [snapshot shows date input at [4], guests select at [5], time input at [6], search button at [7]]
 You: `browse_act("4=2026-05-02; 5=4; 6=19:00; 7")`
 [one batch: date, guests and time filled, then the search button clicked — fresh snapshot shows time slot buttons]
-You: `browse_extract()`
+You: `browse_extract`
 [full page text with available times]
-You: `browse_close()`
+You: `browse_close`
 Then answer the user.
 
 When a site took several attempts to get through, save or update a procedure with the steps that worked, so the
 next visit does not have to rediscover them.
 
 ### Stop-and-wait
-`browse_open()`, `browse_act()`, `browse_key()`, `browse_inspect()`, `browse_snapshot()`, `browse_wait()`, `browse_network()`, `browse_click_at()`, `browse_eval()`, `browse_extract()`, `browse_screenshot()`, `send_screenshot()` return data: emit them and stop generating; the result arrives in the next round.
+`browse_open`, `browse_act`, `browse_key`, `browse_inspect`, `browse_snapshot`, `browse_wait`, `browse_network`, `browse_click_at`, `browse_eval`, `browse_extract`, `browse_screenshot`, `send_screenshot` return data: emit them and stop generating; the result arrives in the next round.

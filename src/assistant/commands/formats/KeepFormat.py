@@ -101,9 +101,6 @@ class KeepFormat(CommandFormat):
     def render_declaration(self, declaration: Declaration) -> str:
         return render_declaration(declaration)
 
-    def render_mention(self, name: str) -> str:
-        return f"`{name}()`"
-
     def render_example(self, name: str, values: Sequence[Value], declaration: Declaration | None) -> str:
         return f"`{name}({', '.join(self._render_value(v) for v in values)})`"
 

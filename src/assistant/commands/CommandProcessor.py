@@ -115,14 +115,14 @@ class CommandProcessor:
 
                 params_display = ", ".join(params) if isinstance(params, list) else str(params)
                 self.debug(f"Cleaned parameters: {params_display}")
-                self.last_dispatched_display = f"{command_name}({params_display})"
+                self.last_dispatched_display = self._label(command_name, params_display)
 
                 blocked = False
                 if getattr(self._context_for(dialog_manager), 'guest', False) is True:
                     info(f"Command {command_name} refused: the request is from a guest, every command is "
                          f"disabled for the turn")
                     self.append_command_reply(
-                        f"Command '{command_name}({params_display})' refused: the request is not from one of "
+                        f"Command {self._label(command_name, params_display)} refused: the request is not from one of "
                         f"the household's owners, so every command is disabled for this turn.")
                     blocked = True
                 elif (not self.test_mode_dont_actually_execute_commands
@@ -136,13 +136,13 @@ class CommandProcessor:
                     self._echo_command(command_name, params, params_display, dialog_manager)
                     self.commands.run(command_name, params)
                 elif self.test_mode_dont_actually_execute_commands and not self.commands.is_pure(command_name):
-                    note(f"Command {command_name}({params_display}) (test mode, won't execute any commands)")
+                    note(f"Command {self._label(command_name, params_display)} (test mode, won't execute any commands)")
                 else:
                     self.commands._current_profile = self._profile_for(dialog_manager)
                     self.commands._current_context = self._context_for(dialog_manager)
                     result = self._run_echoed(command_name, params, params_display, dialog_manager)
                     if result:
-                        error_msg = f"Command '{command_name}({params_display})' returned an error: \"{result}\"."
+                        error_msg = f"Command {self._label(command_name, params_display)} returned an error: \"{result}\"."
                         note(error_msg)
                         self.append_command_reply(error_msg)
                     else:
@@ -220,7 +220,7 @@ class CommandProcessor:
         # apply (cmd_send_imessage / cmd_send_email), so the approval dialog shows
         # real line breaks rather than literal "\n" — preview must match delivery.
         params_display = normalize_llm_escapes(params_display)
-        title = self.commands.describe(command_name, params) or f"{command_name}({params_display})"
+        title = self.commands.describe(command_name, params) or self._label(command_name, params_display)
         details = params_display or self.commands.approval_note(command_name)
         info(f"Sensitive command '{command_name}' awaiting user approval: {title}")
         ctx = self._context_for(dialog_manager)
@@ -240,13 +240,11 @@ class CommandProcessor:
             info(f"Sensitive command '{command_name}' not run: the request was killed while its approval was pending.")
             return True
 
+        label = self._label(command_name, params_display)
         msg_by_decision = {
-            "deny": f"Command '{command_name}({params_display})' was denied by user.",
-            "timeout": f"Command '{command_name}({params_display})' approval timed out — not executed.",
-            "unavailable": (
-                f"Command '{command_name}({params_display})' blocked: "
-                "approval channel (notifier) is unavailable."
-            ),
+            "deny": f"Command {label} was denied by user.",
+            "timeout": f"Command {label} approval timed out — not executed.",
+            "unavailable": f"Command {label} blocked: approval channel (notifier) is unavailable.",
         }
         error_msg = msg_by_decision.get(decision, f"Command '{command_name}' approval returned: {decision}")
         note(error_msg)
@@ -580,6 +578,13 @@ class CommandProcessor:
                 flushed = leftover
         return flushed
 
+    @staticmethod
+    def _label(command_name: str, params_display: str) -> str:
+        """How a command is named in the texts that go back to the model and the approval
+        card: `name (params)` — no call syntax, since the model's own may be any of the
+        command formats."""
+        return f"{command_name} ({params_display})" if params_display else command_name
+
     def _report_unterminated_command(self, command_name: str, leftover: str, dialog_manager):
         error(f"Stream ended inside an unterminated {command_name}( call — not run: {leftover!r}")
         if dialog_manager is None:
@@ -592,9 +597,9 @@ class CommandProcessor:
         if len(shown) > self.UNTERMINATED_COMMAND_SHOWN_CHARS:
             shown = shown[:self.UNTERMINATED_COMMAND_SHOWN_CHARS] + "…"
         self.unterminated_command_report = (
-            f"{command_name} was not run: the reply ended before the parenthesis opened by "
-            f"{command_name}( was closed, so the call could not be parsed. Nothing after that "
-            f"point in the reply reached the user either. Received: {shown}")
+            f"{command_name} was not run: the reply ended inside the call before it was closed, so "
+            f"the call could not be read. Nothing after that point in the reply reached the user "
+            f"either. Received: {shown}")
 
     def _killed(self, dialog_manager) -> bool:
         return self.is_killed or (dialog_manager is not None and dialog_manager.is_killed)

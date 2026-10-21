@@ -75,17 +75,53 @@ class TestRewriter:
         assert "<call dim light_name=string:Kitchen, left dim_percentage=bare:1>" in out, "a comma in a value stays in it"
         assert "<call load_toolkit name=string:email name=string:web>" in out, "the variadic name takes the rest"
         assert "<call latest_email folder=string:@SaneLater unread_only=bare:true>" in out
-        assert "<call restart_server >" in out, "`name()` of a parameterless command is a call"
+        assert "<decl restart_server()>" in out, "`name()` of a parameterless command is its declaration, never a call block"
         assert "<call save_watch name=string:sofa note=block:two\nlines>" in out
 
     def test_an_opaque_payload_is_one_raw_value(self, out):
         assert "<call browse_eval js=raw:document.querySelector('a, b').href>" in out
 
     def test_mentions_non_commands_and_unreadable_calls_stay_as_written(self, out):
-        assert "Mention `turn_on` or `turn_on` without calling" in out, \
-            "`name()` of a command with parameters is a mention: the bare name in every format but Keep's"
+        assert "Mention `turn_on` or `turn_on()` without calling" in out, \
+            "`name()` of a command with parameters is neither a declaration nor an example: left as written"
         assert "A `word(x)` is not a command." in out
         assert "Not canonical: `turn_on(Kitchen lamp)`." in out
+
+    def test_a_default_valued_argument_is_handed_over_for_the_format_to_judge(self):
+        out = Rewriter.rewrite('`save_watch("sofa", "note", "")`', VisibleFormat(NAMES), TABLE)
+        assert out == "<call save_watch name=string:sofa note=string:note due=string:>", \
+            "the rewriter pairs every value; leaving a default out is the named formats' choice"
+
+
+GATED = """\
+Before.
+<!-- keep -->
+Only Keep's parser reads `)` as the end: `restart_server()`.
+<!-- /keep -->
+After.
+"""
+
+
+@pytest.mark.unit
+class TestKeepOnlyPassages:
+
+    def test_the_keep_format_keeps_the_passage_without_its_markers(self):
+        out = Rewriter.rewrite(GATED, KeepFormat(NAMES), TABLE)
+        assert out == "Before.\nOnly Keep's parser reads `)` as the end: `restart_server()`.\nAfter.\n"
+
+    def test_every_other_format_drops_the_passage_whole(self):
+        out = Rewriter.rewrite(GATED, VisibleFormat(NAMES), TABLE)
+        assert out == "Before.\nAfter.\n"
+        assert "restart_server" not in out, "a call inside the passage goes with it, not rendered"
+
+    def test_an_unpaired_marker_is_left_as_written(self):
+        text = "Before.\n<!-- keep -->\nNo closer. `restart_server()`\n"
+        assert Rewriter.rewrite(text, VisibleFormat(NAMES), TABLE) == "Before.\n<!-- keep -->\nNo closer. <decl restart_server()>\n"
+        assert Rewriter.rewrite(text, KeepFormat(NAMES), TABLE) == text
+
+    def test_a_marker_inside_a_line_is_no_marker(self):
+        text = "Inline <!-- keep --> here <!-- /keep --> stays.\n"
+        assert Rewriter.rewrite(text, VisibleFormat(NAMES), TABLE) == text
 
     def test_a_command_the_table_does_not_know_is_left_alone(self):
         assert Rewriter.rewrite("`dim(\"x\", 1)` and `turn_on(\"y\")`", VisibleFormat(NAMES),
@@ -160,7 +196,8 @@ class TestIdentityOverTheRealTexts:
     def test_template_and_every_toolkit_render_identically(self, label):
         text = Signatures.texts()[label]
         fmt = KeepFormat(Commands.command_names())
-        assert Rewriter.rewrite(text, fmt, Signatures.declarations()) == text
+        expected = text.replace(Rewriter.KEEP_ONLY_OPEN + "\n", "").replace(Rewriter.KEEP_ONLY_CLOSE + "\n", "")
+        assert Rewriter.rewrite(text, fmt, Signatures.declarations()) == expected, "identical but for the Keep-only markers"
 
     def test_the_template_carries_the_command_system_placeholder(self):
         prompt = Signatures.texts()["res/prompt.md"]

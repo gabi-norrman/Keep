@@ -19,4 +19,4 @@ hits), use:
 Returns all messages chronologically within the given time window (up to 200 entries).
 
 ### Stop-and-wait
-`search_history()`, `show_history()` return data: emit them and stop generating; the result arrives in the next round.
+`search_history`, `show_history` return data: emit them and stop generating; the result arrives in the next round.

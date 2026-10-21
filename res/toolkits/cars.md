@@ -1,6 +1,6 @@
 ### The cars
 The CURRENT CAR INFO section of your prompt lists the family's cars of every brand with their `vehicle_id`, where
-they are and whether they are driving. These commands take that id (use this syntax exactly); an empty id means the
+they are and whether they are driving. These commands take that id; an empty id means the
 default car:
 
 `car_max_defrost(vehicle_id: str)`

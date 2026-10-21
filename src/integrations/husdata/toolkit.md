@@ -5,7 +5,7 @@ commands: [heat_pump_readings, set_room_target, set_hot_water]
 ---
 The heat pump is read through its Husdata gateway. The HEAT PUMP section of your prompt is a summary — outdoor,
 indoor and hot water temperatures to the degree, whether the compressor and the additional heat run, the alarm.
-The full picture is a command, and two of its settings can be changed (use this syntax exactly):
+The full picture is a command, and two of its settings can be changed:
 
 `heat_pump_readings()` — every register the pump reports, unrounded: the radiator, heat carrier and brine
 circuits, hot gas and suction gas, the pumps and the switch valve, compressor speed, degree minutes, hours run

@@ -8,11 +8,11 @@ is shown.
 accounts have a calendar by that name.
 
 ### Calendar event creation
-To create a new calendar event, use this command (use this syntax exactly):
+To create a new calendar event:
 
 `create_event(title: str, date: YYYY-MM-DD, start_time: HH:MM, end_time: HH:MM, calendar: str = "")`
 
-Without the fifth argument the event goes to the default calendar. Name a calendar when the user means another one
+Without `calendar` the event goes to the default calendar. Name a calendar when the user means another one
 (`"Kids"`), as `Account/Calendar` (`"Work/Calendar"`) when two accounts have a calendar by that name; the calendars
 and their accounts are the header lines of the CALENDAR EVENTS COMING WEEK section.
 
@@ -33,5 +33,5 @@ A recurring event (one of a weekly series, say) cannot be moved or deleted on an
 yet; the command says so. Both commands answer with what they did, so the result arrives in the next round.
 
 ### Stop-and-wait
-`load_calendar()`, `move_event()` and `delete_event()` return data: emit it and stop generating; the result arrives
+`load_calendar`, `move_event` and `delete_event` return data: emit it and stop generating; the result arrives
 in the next round.

@@ -3,20 +3,30 @@
 The texts (`res/prompt.md`, the toolkits) are written in Keep's syntax; `rewrite` finds every
 backticked `name(...)` whose name is in the signature table and replaces it with the format's
 rendering — `render_declaration` for a declaration, `render_example` for an example, whose
-values are paired with the declared names in order. A name without parentheses is a mention and
-stays; `name()` of a command the table gives parameters is a mention too (the toolkits mention
-commands that way) and is rendered by `render_mention` — the bare name in every syntax but
-Keep's, whose instructions say a name without parentheses never runs; a `word(x)` that is no
-command and a call the canon cannot read are left as written rather than guessed at. For the
-Keep format the rewrite is the identity.
+values are paired with the declared names in order. The texts follow one convention
+(docs/plans/FORMAT_NEUTRAL_TEXTS_PLAN.md): a mention is the bare name, which stays as written;
+`name()` is the declaration of a parameterless command and renders as one, never as a call
+block. `name()` of a command that has parameters, a `word(x)` that is no command and a call the
+canon cannot read are left as written rather than guessed at (a unit test forbids the first in
+the texts). A passage between `<!-- keep -->` and `<!-- /keep -->` lines is prose only Keep's
+syntax needs: the Keep format keeps the passage and drops the markers, every other format drops
+the passage. For the Keep format the call rewrite is the identity.
 """
+import re
+
 from .CommandFormat import CommandFormat
 from .Signatures import Declaration, calls, read_declaration, read_values
 from common.logging import trace
 
+KEEP_ONLY_OPEN = "<!-- keep -->"
+KEEP_ONLY_CLOSE = "<!-- /keep -->"
+_KEEP_ONLY_RE = re.compile(rf"^{re.escape(KEEP_ONLY_OPEN)}\n(.*?)^{re.escape(KEEP_ONLY_CLOSE)}\n?", re.S | re.M)
+
 
 def rewrite(text: str, fmt: CommandFormat, table: dict[str, Declaration]) -> str:
-    """`text` with every declaration and example of a command in `table` rendered by `fmt`."""
+    """`text` with its Keep-only passages kept or dropped for `fmt` and every declaration and
+    example of a command in `table` rendered by it."""
+    text = _gate(text, fmt)
     pieces, at = [], 0
     rendered, left = 0, []
     for call in calls(text):
@@ -26,16 +36,12 @@ def rewrite(text: str, fmt: CommandFormat, table: dict[str, Declaration]) -> str
         own = read_declaration(call)
         if own is not None:
             replacement = fmt.render_declaration(own)
+        elif not call.inner and not declaration.params:
+            replacement = fmt.render_declaration(declaration)
+        elif not call.inner:
+            left.append(f"{call.name}() — a mention must be the bare name")
+            continue
         else:
-            if not call.inner and declaration.params:
-                replacement = fmt.render_mention(call.name)
-                if replacement == text[call.start:call.end]:
-                    continue
-                pieces.append(text[at:call.start])
-                pieces.append(replacement)
-                at = call.end
-                rendered += 1
-                continue
             values = read_values(call)
             if values is None or (len(values) > len(declaration.params) and not declaration.variadic):
                 left.append(call.name)
@@ -52,3 +58,16 @@ def rewrite(text: str, fmt: CommandFormat, table: dict[str, Declaration]) -> str
         return text
     pieces.append(text[at:])
     return "".join(pieces)
+
+
+def _gate(text: str, fmt: CommandFormat) -> str:
+    """The `<!-- keep -->` passages of `text` resolved for `fmt`. A marker without its pair is
+    left as written: the text is not guessed at."""
+    if KEEP_ONLY_OPEN not in text and KEEP_ONLY_CLOSE not in text:
+        return text
+    keep = fmt.name == "keep"
+    gated, blocks = _KEEP_ONLY_RE.subn(lambda m: m.group(1) if keep else "", text)
+    stray = gated.count(KEEP_ONLY_OPEN) + gated.count(KEEP_ONLY_CLOSE)
+    trace(f"Command rewriter ({fmt.name}): {blocks} Keep-only passage(s) {'kept' if keep else 'dropped'}"
+          + (f", {stray} unpaired marker(s) left as written" if stray else ""))
+    return gated
