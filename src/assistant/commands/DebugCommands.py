@@ -25,6 +25,7 @@ A command returns a human-readable string that is relayed back as the reply.
 """
 
 import os
+import re
 import shutil
 import signal
 import sqlite3
@@ -419,7 +420,7 @@ class DebugCommands:
     # --- //testcase -----------------------------------------------------------------------
 
     def cmd_TESTCASE(self, args: str) -> str:
-        """//testcase [comment]: mail the last prompt sent to the LLM (log/current_prompt.md), the reply it got and your comment to the household's address, as a test case to collect."""
+        """//testcase [comment]: mail the last prompt sent to the LLM (log/current_prompt.md), the reply it got and your comment to the household's address, as a test case to collect. The attachment is named after the comment (a-z and 0-9, dashes between) and the time the prompt was sent."""
         import html
         from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
         prompt_path = Path(CURRENT_PROMPT_FILE)
@@ -439,7 +440,7 @@ class DebugCommands:
         else:
             body.append("<p><i>No assistant reply in the history.</i></p>")
         subject = f"Keep test case: {comment}" if comment else f"Keep test case {sent_at:%Y-%m-%d %H:%M}"
-        attachment_name = f"prompt-{sent_at:%Y%m%d-%H%M%S}.md"
+        attachment_name = f"{self._attachment_slug(comment) or 'prompt'}-{sent_at:%Y%m%d-%H%M%S}.md"
 
         try:
             address = CodeQualityMaintainer._send_email(subject, "\n".join(body), [(attachment_name, prompt)])
@@ -452,6 +453,12 @@ class DebugCommands:
              + (f" with the comment '{comment}'" if comment else ""))
         return f"Test case mailed to {address}: the prompt of {sent_at:%H:%M:%S} ({len(prompt):,} characters)" \
             + (f", comment: {comment}" if comment else ", no comment")
+
+    @staticmethod
+    def _attachment_slug(comment: str, limit: int = 60) -> str:
+        """The comment as a file name stem: lowercased, every run of other characters than a-z and 0-9 one dash, cut to `limit` characters; empty when nothing is left."""
+        slug = re.sub(r"[^a-z0-9]+", "-", comment.lower()).strip("-")
+        return slug[:limit].rstrip("-")
 
     def _last_assistant_reply(self) -> str | None:
         """The newest assistant row of the dialog history, None without a history or a reply."""

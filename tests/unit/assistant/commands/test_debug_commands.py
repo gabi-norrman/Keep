@@ -3,7 +3,7 @@ import sqlite3
 import threading
 import time
 import zipfile
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -975,16 +975,37 @@ def test_testcase_mails_the_prompt_with_the_comment_and_the_last_reply(testcase_
     assert "the ai should not have said my car is at home" in sent["body"]
     assert "Your car is at home." in sent["body"]
     [(name, text)] = sent["attachments"]
-    assert name.endswith(".md")
+    sent_at = datetime.fromtimestamp(testcase_prompt.stat().st_mtime)
+    assert name == f"the-ai-should-not-have-said-my-car-is-at-home-{sent_at:%Y%m%d-%H%M%S}.md"
     assert text == testcase_prompt.read_text()
     assert "m@mlab.test" in reply
+
+
+def test_testcase_attachment_name_keeps_only_letters_and_digits_of_the_comment(testcase_prompt, monkeypatch):
+    sent = _mailer(monkeypatch)
+    DebugCommands().handle("//testcase  Bilen: står hemma?! (Nr 2) ")
+
+    [(name, _)] = sent["attachments"]
+    stem = name.rsplit("-", 2)[0]
+    assert stem == "bilen-st-r-hemma-nr-2"
+
+
+def test_testcase_attachment_name_is_cut_for_a_long_comment(testcase_prompt, monkeypatch):
+    sent = _mailer(monkeypatch)
+    DebugCommands().handle("//testcase " + "word " * 40)
+
+    [(name, _)] = sent["attachments"]
+    stem = name.rsplit("-", 2)[0]
+    assert len(stem) <= 60 and not stem.endswith("-") and stem.startswith("word-word")
 
 
 def test_testcase_without_a_comment_or_history_still_mails_the_prompt(testcase_prompt, monkeypatch):
     sent = _mailer(monkeypatch)
     reply = DebugCommands().handle("//TESTCASE")
 
-    assert sent["attachments"][0][1] == testcase_prompt.read_text()
+    [(name, text)] = sent["attachments"]
+    assert name.startswith("prompt-") and name.endswith(".md")
+    assert text == testcase_prompt.read_text()
     assert "no comment" in reply
     assert "No assistant reply" in sent["body"]
 
