@@ -1,4 +1,4 @@
-"""The calendar section: the coming week of every calendar account, refreshed every 15 minutes,
+"""The calendar section: the coming week of every calendar account, refreshed every 5 minutes,
 standing under its own heading in the prompt's data block and running only while a calendar
 source is on."""
 from unittest.mock import Mock, patch

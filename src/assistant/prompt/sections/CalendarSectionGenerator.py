@@ -1,4 +1,4 @@
-"""Refreshes the coming-week calendar section from every calendar account every 15 minutes;
+"""Refreshes the coming-week calendar section from every calendar account every 5 minutes;
 runs only while a calendar source integration is on (PromptManager starts it when the
 IntegrationMonitor has one), so it never shows "not configured" for an install without one."""
 from assistant.integration.calendar.CalendarAccess import CalendarAccess
@@ -16,7 +16,7 @@ class CalendarSectionGenerator(PromptSectionGenerator):
              "one list; an event names its calendar in brackets when more than one is shown. The `calendar` toolkit "
              "fetches a calendar that is not shown, and creates, moves or deletes an event.")
 
-    UPDATE_INTERVAL = 15 * 60
+    UPDATE_INTERVAL = 5 * 60
 
     def __init__(self, prompt_manager):
         super().__init__(prompt_manager, "CalendarData")
