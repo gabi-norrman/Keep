@@ -1,5 +1,5 @@
 You can configure your own integrations. Their settings live in the server's config.yaml, which you never see; you see
-which settings exist and whether each is set. Every integration is off until enabled; `list_integrations()` shows which.
+which settings exist and whether each is set. Every integration is off until enabled; `list_integrations` shows which.
 
 `list_integrations()` — every integration with its state (ok, warning, error, not configured, needs 2FA), which of its
 settings are set, and whether it can be restarted from here.
@@ -12,7 +12,7 @@ The user types the value there, it is written to config.yaml, and you get "saved
 One key per turn, and stop after emitting it.
 
 `config_set(key: str, value: str)` — writes a value you already know: a name or a flag the user said in the chat, an
-iCloud device id from `icloud_devices()`. Credentials (an API key, a password, a token) go through `config_request`
+iCloud device id from `icloud_devices`. Credentials (an API key, a password, a token) go through `config_request`
 when possible — don't ask the user to paste secrets into the chat. A list item is addressed by index — a field of a
 list of sections, `icloud.devices[0].display_name`, or one value of a list of plain values,
 `local_outposts.exclude_mics[0]`; the index equal to the list's length adds an item, and a refusal names the index to use.
@@ -23,7 +23,7 @@ with the "[Sent with the help of AI 🤖]" footer; `config_set("ai_message_foote
 The interfaces the server starts — `interfaces.voice.enabled`, `interfaces.telegram.enabled`,
 `interfaces.console.enabled` (`config_help("interfaces")`) — are set the same way, e.g.
 `config_set("interfaces.voice.enabled", "true")`. Telegram and the console are on by default, voice off. They are read
-at startup only: after flipping one offer `restart_server()` (developer toolkit; the user approves it in the chat).
+at startup only: after flipping one offer `restart_server` (developer toolkit; the user approves it in the chat).
 The server's microphones are on with it (`local_outposts.enabled`; a phone-only install
 sets it false); `local_outposts.location` names their room, the destination the speakers answer to in `post_message`
 (read at voice start; set it and restart). The voice speaks through the
@@ -46,7 +46,7 @@ there on your own. When the user presses Start in the bot their chat id reaches 
 screen (the user must be at it), and reports whether the grant is in force for the running server. macOS
 keeps the Messages database behind this grant and gives it to Terminal, the app the server is launched through. The
 user turns Terminal on there; macOS then offers to quit Terminal — they should accept (the terminal and console
-close; the server and Telegram keep running). The grant reaches a new process only, so `restart_server()`
+close; the server and Telegram keep running). The grant reaches a new process only, so `restart_server`
 (developer toolkit) comes next, from Telegram.
 
 `enable_integration(name: str)` / `disable_integration(name: str)` — switches an integration on or off by the name
@@ -73,7 +73,7 @@ system note says when the account is signed in (or that the code expired — run
 `google_login(account: str)` — signs a Google account (an entry of `google.accounts`, by its name) in, e.g.
 `google_login("Personal")`, from any chat. It comes back with a link: the user opens it in any browser, signs in,
 and lands on a http://localhost:18722/... page that does not load — expected. They copy that page's whole address
-from the address bar into the chat; then run `google_login_code(pasted: str)` with it, quoted, e.g.
+from the address bar into the chat; then run `google_login_code(pasted: str)` with it, e.g.
 `google_login_code("http://localhost:18722/?state=...&code=...")` — the whole address, a bare code is refused. The
 link lives about ten minutes; an expired or reused code comes back as text — run google_login again. Needs
 `google.oauth.client_id` and `client_secret` set and the integration enabled.
@@ -84,7 +84,7 @@ run `icloud_login_code("123456")`. Never restart iCloud while a code is pending.
 
 `volvo_login()` — signs the household's Volvo ID in for the Volvo integration (one account, no argument), from any
 chat, like google_login: a link, a http://localhost:18723/... page that does not load, its whole address pasted back
-with `volvo_login_code(pasted: str)`, quoted. A sign-in unused for a week lapses — run it again. Needs
+with `volvo_login_code(pasted: str)`. A sign-in unused for a week lapses — run it again. Needs
 `volvo.vcc_api_key`, `volvo.oauth.client_id`, `client_secret` and `volvo.vehicles` set and the integration enabled.
 The link survives a `restart_integration("Volvo")`; only a changed `client_id` needs a new one.
 
@@ -92,13 +92,13 @@ The link survives a `restart_integration("Volvo")`; only a changed `client_id` n
 the newest 10 playlists of the user's library are listed in MUSIC with "S-" ids for play_music (Spotify-made playlists
 such as Discover Weekly are hidden from apps; a Sonos favorite reaches those). Like google_login: a link, a
 http://127.0.0.1:8888/callback?... page that does not load, its whole address pasted back with
-`spotify_login_code(pasted: str)`, quoted; a bare, expired or reused code comes back as text, run spotify_login again.
+`spotify_login_code(pasted: str)`; a bare, expired or reused code comes back as text, run spotify_login again.
 The token survives restarts; sign in again only when the consent was revoked (a system note says so once, the "S-" ids
 disappear). Needs `api_keys.spotify.client_id` and `client_secret` set (`config_help("api_keys")`: the app on
 developer.spotify.com must have http://127.0.0.1:8888/callback as redirect URI) and the integration enabled.
 
 `hue_pair(bridge: str = "")` — pairs Keep with the Philips Hue bridge, from any chat. The bridge hands out its key only
-just after its round link button was pressed: ask the user to press it, then run `hue_pair()` within 30 seconds. It
+just after its round link button was pressed: ask the user to press it, then run `hue_pair` within 30 seconds. It
 finds the bridge on the local network (or takes its address, `hue_pair("192.168.1.10")`), writes `hue.bridge` and
 `hue.app_key` and restarts the integration — nothing to type. Needs the integration enabled; when the button was not
 pressed it says so, run it again after the press.
@@ -110,4 +110,4 @@ with — if it failed, say why and offer to re-enter the value. Never ask for a 
 guess a key that config_help does not list.
 
 ### Stop-and-wait
-`list_integrations()`, `config_help()`, `config_request()`, `config_set()`, `restart_integration()`, `enable_integration()`, `disable_integration()`, `show_full_disk_access_setting()`, `telegram_login()`, `microsoft_login()`, `google_login()`, `google_login_code()`, `icloud_login_code()`, `volvo_login()`, `volvo_login_code()`, `spotify_login()`, `spotify_login_code()` return data: emit them and stop generating; the result arrives in the next round.
+`list_integrations()`, `config_help`, `config_request`, `config_set`, `restart_integration`, `enable_integration`, `disable_integration`, `show_full_disk_access_setting`, `telegram_login`, `microsoft_login`, `google_login`, `google_login_code`, `icloud_login_code`, `volvo_login`, `volvo_login_code`, `spotify_login`, `spotify_login_code` return data: emit them and stop generating; the result arrives in the next round.

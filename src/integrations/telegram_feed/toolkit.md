@@ -10,8 +10,8 @@ as a message to the user, not to you.
 `send_telegram(recipient: str, message: str)`
 
 The recipient is a chat's or contact's name (first name, or `First Last` when ambiguous — the error lists the
-options), a group's title, a `@username`, or a phone number with country code (contacts only). Wrap each argument in
-quotes so commas in the message stay part of it, e.g. `send_telegram("Alex", "Running 10 min late, see you soon")`.
+options), a group's title, a `@username`, or a phone number with country code (contacts only), e.g.
+`send_telegram("Alex", "Running 10 min late, see you soon")`.
 The approval card shows the chat it resolved to.
 
 The message ends with a "[Sent with the help of AI 🤖]" footer unless the setting `ai_message_footer` is false;

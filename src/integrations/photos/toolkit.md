@@ -22,7 +22,7 @@ photo ID from search results:
 
 `show_photo(photo_id: int, ...)`
 
-You can show multiple photos at once: `show_photo("42", "57", "103")`. Up to 4 photos at a time looks best.
+You can show multiple photos at once: `show_photo(42, 57, 103)`. Up to 4 photos at a time looks best.
 
 ### Stop-and-wait
-`search_photos()` returns data: emit it and stop generating; the result arrives in the next round.
+`search_photos` returns data: emit it and stop generating; the result arrives in the next round.

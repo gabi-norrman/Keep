@@ -6,8 +6,8 @@ name. `note` is its current state with every detail you will need; it REPLACES t
 not only what is new. `due` is the date it is due or expected, as YYYY-MM-DD, or the moment to act at as YYYY-MM-DD
 HH:MM: a check wakes you at that minute with the item, and the item stays among the due items of every check until
 you look at it — `checked_watch`, a `save_watch` with a new due or `delete_watch`; optional. `every` is how often the
-item must be checked ("1d", "6h", "20m"); optional — leave it out for an item that only waits for its due date. Give
-the note as a triple-quoted block: `save_watch("sofa-delivery", """...""", "2026-11-08")`,
+item must be checked ("1d", "6h", "20m"); optional — leave it out for an item that only waits for its due date. The
+note runs to as many lines as it needs: `save_watch("sofa-delivery", """...""", "2026-11-08")`,
 `save_watch("water-meter", """...""", "2026-10-17 17:00")`, `save_watch("festival-tickets", """...""", "", "1d")`.
 
 `checked_watch(name: str)` — you checked the item and nothing changed. It only records the time of the check; the

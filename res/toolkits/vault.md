@@ -3,7 +3,7 @@ You can add new values to the vault:
 
 `kind` is one of `phone`, `card`, `personal_id`, `plate`, `account`, `email`, `password`, `api_key` or `text` (`text`
 for anything else the user wants hidden). `description` is a short label such as "Anna's mobile" — it becomes the
-placeholder's name. Wrap each argument in quotes. 
+placeholder's name.
 
 When the user gives you a value of one of the kinds above, ask whether to vault it, then do so if they agree. From
 then on the value is replaced by its placeholder everywhere, including in the earlier messages where it was said.
@@ -20,4 +20,4 @@ you. `kind` and `description`
 are the same as for vault_add. In short: already said → vault_add; not said yet → vault_request.
 
 ### Stop-and-wait
-`vault_request()` returns data: emit it and stop generating; the result arrives in the next round.
+`vault_request` returns data: emit it and stop generating; the result arrives in the next round.

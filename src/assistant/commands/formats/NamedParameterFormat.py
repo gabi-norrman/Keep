@@ -9,12 +9,13 @@ a variadic declaration (`load_toolkit(name: str, ...)`) is one array-typed param
 value — a JSON list, or names separated by commas — is split back into the positional values.
 """
 import json
+from typing import Sequence
 
 from assistant.commands.CommandParser import CommandParser
 from common.logging import trace
 
 from .CommandFormat import CommandFormat
-from .Signatures import Declaration
+from .Signatures import Declaration, Parameter, Value
 
 # The commands whose handler takes the whole payload as one string and splits it itself
 # (`improve_integration(name, request)`): several named values join into that one payload.
@@ -100,6 +101,42 @@ class NamedParameterFormat(CommandFormat):
             return json.loads(text)
         except ValueError:
             return text
+
+    # --- an example --------------------------------------------------------------------------
+
+    def render_example(self, name: str, values: Sequence[Value], declaration: Declaration | None) -> str:
+        """The block calling `name` with `values` paired to the declared names in order: a
+        variadic tail folded into one JSON list under the last name, a value equal to its
+        parameter's default left out (the texts write `""` to skip an optional parameter —
+        Keep's positional way; here the parameter is simply not named), a value past the
+        declared names as `argN`. The subclass spells the block (`_render_block`)."""
+        names = declaration.names if declaration else []
+        arguments: list[tuple[str, str, bool]] = []
+        for i, value in enumerate(values):
+            if declaration and declaration.variadic and i >= len(names) - 1:
+                rest = [v.value for v in values[i:]]
+                arguments.append((names[-1], json.dumps(rest, ensure_ascii=False), False))
+                break
+            if i < len(names) and self._is_default(value, declaration.params[i]):
+                continue
+            key = names[i] if i < len(names) else f"arg{i + 1}"
+            if value.kind == "bare":
+                arguments.append((key, value.text, False))
+            else:
+                arguments.append((key, value.value, True))
+        return self._render_block(name, arguments)
+
+    def _render_block(self, name: str, arguments: Sequence[tuple[str, str, bool]]) -> str:
+        """One call block of this syntax: `arguments` are `(parameter, value text, is string)`
+        triples — the flag matters to DSML alone."""
+        raise NotImplementedError
+
+    @classmethod
+    def _is_default(cls, value: Value, parameter: Parameter) -> bool:
+        if parameter.default is None:
+            return False
+        given = cls._default(value.text) if value.kind == "bare" else value.value
+        return given == cls._default(parameter.default)
 
     # --- the stream: a block between the sentinels ------------------------------------------
 

@@ -6,7 +6,7 @@ commands: [homekit_cover, homekit_garage, homekit_valve, homekit_thermostat, hom
 The HOMEKIT (HOMECLAW) section of your prompt lists, room by room, the HomeKit accessories Keep's Hue and Plejd
 integrations do not already bring, each line ending with its ref in brackets, e.g. `[A1B2C3D4]`. Several accessories
 share a name, so pass the ref; a name works only when it is unique ("Name [Room]" narrows it to a room). A name that
-fits several is refused with the candidates and their refs — pick one, never guess. Use this syntax exactly:
+fits several is refused with the candidates and their refs — pick one, never guess.
 
 `homekit_cover(ref: str, position: open|close|0-100, dry_run: str = "")` — a cover (awning, zip screen, blind): `open`, `close` or a position 0–100 (% open)
 `homekit_garage(ref: str, action: open|close, dry_run: str = "")` — the garage door; the ref may be left out when there is only one: `homekit_garage("open")`
@@ -23,7 +23,7 @@ it also spells out the named scenes they run. The section's "Automations" lists 
 an automation actually does. Reading only — Keep cannot create, change, enable or disable automations.
 
 Every command but the scene sends the change and waits for the accessory to confirm it; the reply says when the
-accessory reports something else. Add `"dry_run"` as the last argument — `homekit_cover("A1B2C3D4", 40, "dry_run")` — to
+accessory reports something else. Pass `dry_run` as `dry_run` — `homekit_cover("A1B2C3D4", 40, "dry_run")` — to
 have HomeClaw check the request without acting; do that when unsure whether a value is accepted. Opening the garage
 door and thermostat commands ask the user for approval first. A thermostat target outside the configured range is
 refused and the reply names the range. When a command answers that HomeClaw is not running, tell the user the

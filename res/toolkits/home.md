@@ -7,7 +7,7 @@ When the house runs on several home automation systems, a name that exists in mo
 as a last bracket, for example `Lamp [Kök] [Home Assistant]` — keep it, it says which system to send the command to.
 
 ### Light control commands
-To manipulate lights use the following commands (use this syntax exactly): 
+To manipulate lights:
 
 `turn_on(light_name: str)`
 `turn_off(light_name: str)`
@@ -31,7 +31,7 @@ matching action, apply the command to every light tagged with that room (each li
 e.g. `[Kök]`), not just a subset of them.
 
 ### Action execution command
-To execute an action use the following syntax (use this syntax exactly):
+To execute an action:
 
 `execute(action_name: str)`
 

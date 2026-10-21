@@ -63,10 +63,22 @@ class TestRendering:
     def test_no_keep_shaped_call_survives_in_a_rendered_text(self, fmt):
         """The leak the schema line closes: a `name(param: type)` declaration is a fillable call shape."""
         from assistant.commands.formats import Rewriter
-        text = "`dim(light_name: str, dim_percentage: int)` dims. Mention `dim()` or `dim`. Try `dim(\"Lamp\", 40)`."
-        rendered = Rewriter.rewrite(text, fmt, {"dim": declaration("`dim(light_name: str, dim_percentage: int)`")})
-        assert "dim(" not in rendered
-        assert "Mention `dim` or `dim`." in rendered
+        text = "`dim(light_name: str, dim_percentage: int)` dims. Mention `dim`. Try `dim(\"Lamp\", 40)`. `stop()` stops."
+        table = {"dim": declaration("`dim(light_name: str, dim_percentage: int)`"), "stop": Declaration("stop", ())}
+        rendered = Rewriter.rewrite(text, fmt, table)
+        assert "dim(" not in rendered and "stop(" not in rendered
+        assert "Mention `dim`." in rendered
+        assert rendered.count("<function>{") == 2 and rendered.count(OPEN) == 1, \
+            "`stop()` is the declaration of a parameterless command, not a call block"
+
+    def test_a_value_equal_to_the_declared_default_is_left_out(self, fmt):
+        decl = declaration("`save_watch(name: str, note: str, due: str = \"\", every: str = \"\")`")
+        rendered = fmt.render_example("save_watch", read_values(calls('`save_watch("x", "n", "", "1d")`')[0]), decl)
+        assert rendered == block("save_watch", ("name", "x"), ("note", "n"), ("every", "1d")), \
+            "the texts write \"\" to skip an optional parameter the Keep way; a named format leaves it out"
+        decl = declaration("`latest_email(folder: str = \"\", unread_only: bool = false)`")
+        rendered = fmt.render_example("latest_email", read_values(calls('`latest_email("", true)`')[0]), decl)
+        assert rendered == block("latest_email", ("unread_only", "true"))
 
     def test_example_pairs_values_with_the_declared_names_without_quotes(self, fmt):
         call = calls('`dim("Kitchen lamp", 40)`')[0]
@@ -107,8 +119,9 @@ class TestRendering:
                         and (c.inner or not table[c.name].params)]
             assert not examples, f"{label}: {[c.name for c in examples]}"
             declared = {c.name for c in calls(text) if read_declaration(c) is not None and c.name in table}
-            assert rendered.count("<function>{") == len([c for c in calls(text) if read_declaration(c) is not None
-                                                          and c.name in table]), label
+            declarations = [c for c in calls(text) if c.name in table
+                            and (read_declaration(c) is not None or (not c.inner and not table[c.name].params))]
+            assert rendered.count("<function>{") == len(declarations), label
             assert not [c for c in calls(rendered) if c.name in table and read_declaration(c) is not None], label
             for name in declared:
                 assert f'"name": "{name}"' in rendered, (label, name)

@@ -87,7 +87,7 @@ it:
 
 `save_procedure(name: str, when: str, text: str)` — save a new procedure, or replace one entirely. `when` is one line
 saying when to load it. Write `text` so that you could follow it cold: every step in order, exact URLs, selectors,
-endpoints and code verbatim, what must NOT be done, how to tell that it worked. Give it as a triple-quoted block:
+endpoints and code verbatim, what must NOT be done, how to tell that it worked; it runs to as many lines as it needs:
 `save_procedure("shop-checkout", "paying at shop.example", """...""")`.
 `delete_procedure(name: str)` — only when the user says so or the thing it describes no longer exists.
 
@@ -104,7 +104,7 @@ The destinations: {DESTINATIONS}
 
 `owner` is the owner's chat(s), the route your pushes take. A group or a room is read by whoever is there: be mindful of privacy.
 A room is listed while the voice interface runs with `local_outposts.location` set — no room in the list is a setting, not a fault.
-A post is one-way — it is not a turn and nobody answers it. Give `text` as a triple-quoted block when it has commas or several lines:
+A post is one-way — it is not a turn and nobody answers it. `text` may run to several lines:
 `post_message("owner", """The pasta is done.""")`.
 
 ## Run commands liberally — they're fast and cheap
@@ -133,7 +133,7 @@ The vault keeps specific secrets out of the AI; it is not an anonymization tool.
 ## Function Calling Rules
 
 ### Stop-and-wait commands
-Commands that fetch data — `load_toolkit()`, `load_procedure()`, `load_watch()`, and the ones each toolkit lists under "Stop-and-wait" —
+Commands that fetch data — `load_toolkit`, `load_procedure`, `load_watch`, and the ones each toolkit lists under "Stop-and-wait" —
 return their result in a follow-up round.
 
 After emitting any of these commands, you MUST STOP generating immediately. DO NOT make up results or use training
@@ -161,11 +161,11 @@ that bank and count exactly as much — they are newer, and win where they contr
 </memory_recent>
 
 # PROCEDURES
-The procedures you have saved (`load_procedure(name: str, ...)` loads one):
+The procedures you have saved (`load_procedure` loads one):
 {PROCEDURES}
 
 # WATCH LIST
-What you are keeping an eye on (`load_watch(name: str, ...)` loads an item in full):
+What you are keeping an eye on (`load_watch` loads an item in full):
 {WATCHLIST}
 
 {INTEGRATIONS}

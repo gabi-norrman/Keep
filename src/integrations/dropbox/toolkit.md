@@ -26,7 +26,7 @@ When you answer from a document, say which document and, for a PDF, which of its
 `dropbox_login()` — signs the household's Dropbox in (one account, no argument), from any chat: it comes back with a
 link; the user opens it in any browser, signs in, and lands on a http://localhost:18724/... page that does not load —
 that is expected — and copies that page's whole address from the address bar into the chat; then run
-`dropbox_login_code(pasted: str)` with it, quoted. A bare, expired or reused code comes back as text: run
+`dropbox_login_code(pasted: str)` with it. A bare, expired or reused code comes back as text: run
 dropbox_login again. Before the sign-in the app's Permissions tab must have account_info.read, files.metadata.read
 and files.content.read ticked AND submitted (the Submit button at the bottom of the tab): a sign-in keeps the
 permissions the app had at that moment, so dropbox_login_code refuses one short of a permission, naming it — the user
@@ -34,5 +34,5 @@ ticks it, presses Submit and signs in again. The sign-in lasts until the user re
 survives a `restart_integration("Dropbox")`, only a changed `dropbox.app_key` needs a new one.
 
 ### Stop-and-wait
-`search_dropbox()`, `list_dropbox_folder()`, `read_dropbox_file()`, `find_in_dropbox_file()`, `dropbox_login()`,
-`dropbox_login_code()` return data: emit them and stop generating; the result arrives in the next round.
+`search_dropbox`, `list_dropbox_folder`, `read_dropbox_file`, `find_in_dropbox_file`, `dropbox_login`,
+`dropbox_login_code` return data: emit them and stop generating; the result arrives in the next round.

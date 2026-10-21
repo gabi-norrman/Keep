@@ -735,6 +735,10 @@ prompt-suite run with `ai.smart.command_format: invoke` against the `keep` basel
 
 ## Open points
 
+- CLOSED 2026-10-21: the prose of the texts assumed Keep's syntax ("triple-quoted block", "wrap in quotes",
+  "fifth argument"), `name()` of a parameterless command rendered as a call block mid-sentence, and the
+  autonomous instruction and the processor's messages bypassed the rewriter — see
+  `FORMAT_NEUTRAL_TEXTS_PLAN.md`.
 - One format per process (chat tier decides) is the assumption; a vision tier on another family
   would read calls in the chat tier's syntax.
 - `DsmlFormat` could also feed DeepSeek through Ollama's `deepseek3` parser; not planned.

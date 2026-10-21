@@ -36,12 +36,6 @@ class CommandFormat(ABC):
         default) and the variadic flag — as the texts show it in this syntax, delimiters
         included: it replaces the whole backticked `` `name(param: type, ...)` `` of the source."""
 
-    def render_mention(self, name: str) -> str:
-        """A command named without being called — the texts write `` `name()` `` for a command
-        with parameters — as this syntax mentions one: the bare name, which the instructions
-        of every format but Keep's say never runs. Keep keeps the parentheses."""
-        return f"`{name}`"
-
     @abstractmethod
     def render_example(self, name: str, values: Sequence[Value], declaration: Declaration | None) -> str:
         """An example call of `name` with `values` in order, as the texts show it in this

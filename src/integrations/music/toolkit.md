@@ -10,19 +10,19 @@ SONOS ZONES under it the zones music can play in with what each plays now. A req
 the room it came from (the location in its header), unless previous context suggests otherwise. Load this toolkit
 again when you need the current state.
 
-Here are the commands you can use (use this syntax exactly):
+The commands:
 `play(zone_name: str)`
 `pause(zone_name: str)`
 `next(zone_name: str)`
 `volume_up(zone_name: str)`
 `volume_down(zone_name: str)`
 
-You can search for music on Spotify using (use this syntax exactly):
+You can search for music on Spotify:
 `search_music(search_query: str)`
 
 This command searches songs, artists and public playlists simultaneously and returns the best results of each type.
 
-Then you can start playing one of the search hits using (use this syntax exactly):
+Then you can start playing one of the search hits:
 `play_music(zone_name: str, id: str)`
 
 The `id` parameter format:
@@ -40,8 +40,8 @@ Spotify-made playlists (Discover Weekly, Release Radar, Daily Mix) are not in th
 apps like this one — so look for them among the Sonos favorites ("F-") and, when they are not there, tell the user to
 add the playlist as a Sonos favorite in the Sonos app. When the user asks for one of their
 own Spotify playlists by name and no "S-" ids are listed, the Spotify account is not signed in yet: offer to sign it in
-with `spotify_login()` from the `setup` toolkit (a link to open, the landing address pasted back) — the playlists
+with `spotify_login` from the `setup` toolkit (a link to open, the landing address pasted back) — the playlists
 appear in the section within a minute of the sign-in.
 
 ### Stop-and-wait
-`search_music()` returns data: emit it and stop generating; the result arrives in the next round.
+`search_music` returns data: emit it and stop generating; the result arrives in the next round.

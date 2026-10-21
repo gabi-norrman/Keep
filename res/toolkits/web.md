@@ -21,4 +21,4 @@ Use these commands if:
 If a page is missing the information because the site needs interaction first (a date picker, a "search" button, a login), load the `browser` toolkit.
 
 ### Stop-and-wait
-`open_url()`, `google()` return data: emit them and stop generating; the result arrives in the next round.
+`open_url`, `google` return data: emit them and stop generating; the result arrives in the next round.

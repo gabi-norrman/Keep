@@ -9,7 +9,7 @@ You can send a WhatsApp message from the user's own account:
 
 The recipient is a contact's name as the phone's address book has it (first name, or `First Last` when the first
 name alone is ambiguous — the error lists the full names), a group's name, or a phone number with its country code
-(`+46701234567`). Wrap each argument in quotes so commas in the message stay part of it, e.g.
+(`+46701234567`), e.g.
 `send_whatsapp("Alex", "Running 10 min late, see you soon")`. The approval card shows the number it resolved to and
 says when the user has never written with that number; WhatsApp restricts accounts that message strangers first, so
 only send to an unknown number when the user clearly asked for it.

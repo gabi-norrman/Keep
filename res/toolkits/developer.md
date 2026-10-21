@@ -30,8 +30,8 @@ To have one integration fixed or improved, or a new one built, delivered as a pu
 
 `improve_integration(integration: str, request: str)`
 
-The first argument is the integration's name as `list_integrations` shows it ("Tesla", "Hue", "Weather"); a name
-no integration has means a new one is to be built, so name a new one after its service. The rest is the request:
+`integration` is the integration's name as `list_integrations` shows it ("Tesla", "Hue", "Weather"); a name
+no integration has means a new one is to be built, so name a new one after its service. `request` is the request:
 be specific about what should change and why; if a self-analysis ran first, feed its report into the request.
 The PR may touch only that integration's own folder and tests (a new one also adds its registry lines). When the
 change needs more than that, Claude Code makes no change and says what is needed — then offer `report_issue`.
@@ -61,7 +61,7 @@ open PR from this repository by one of the install's own authors is taken; a ref
 result. If the server does not come up on the PR, it goes back to the normal code by itself and you are told after
 the restart. While a trial runs the prompt carries a line saying which PR is running; a job (`improve_integration`,
 `self_improvement`) then pushes its change to that PR instead of opening a new one, and `try_pull_request` with the
-same number picks the new commits up. The trial ends with `restart_server()`, or by itself at the nightly update
+same number picks the new commits up. The trial ends with `restart_server`, or by itself at the nightly update
 (03:00), which pulls the normal branch again — tell the user that when they start one.
 
 `pr_feedback(number: int, text: str)`
@@ -91,4 +91,4 @@ The lines are the info, note and error levels; the trace detail under them is le
 The log keeps weeks of history, so step through an older incident by calling again from where the last window ended.
 
 ### Stop-and-wait
-`server_logs()` returns data: emit it and stop generating; the result arrives in the next round.
+`server_logs` returns data: emit it and stop generating; the result arrives in the next round.

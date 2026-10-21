@@ -3,7 +3,7 @@ specific time. For example to turn off the TV in 15 minutes or set a timer for 1
 
 In these cases it's important you SCHEDULE a wake-up at the correct time.
 
-Use this command to schedule wake up (use this syntax exactly):
+Use this command to schedule a wake up:
 `schedule_wakeup(in_minutes: float)`
 
 It is for the short and the immediate — "TV off in 20 minutes", "remind me about the pasta in 11 minutes". A reminder or a task with a moment of its own

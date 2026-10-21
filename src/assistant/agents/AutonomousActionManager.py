@@ -139,7 +139,7 @@ No need to inform the user about Telegram or iMessage messages s/he has received
 - **Verify conditions carefully**: Use actual system data (weather forecasts, vehicle status, sensor readings) to evaluate conditions.
 - **OK to run commands quietly in the background**: If you need to run a command to check something for the user in the background, feel free to do that but don't interrupt the user by speaking each time.
 - **Continue monitoring tasks**: If the conversation history shows the user asked you to monitor something (e.g. watch for emails, track a delivery, check a condition), you MUST continue checking on every autonomous action call until the user explicitly tells you to stop or the condition is met. Do not stop checking just because time has passed or previous checks returned no results. The caffeinate timer ending does NOT mean you should stop monitoring.
-- **Watch list polls**: The items under "Watch list polls due" below are the ones whose check cadence has elapsed since they were last checked. Poll each of them now, then stamp it: `checked_watch(name)` when nothing changed, `save_watch(...)` with the new state when something did. Skip the stamp and the poll is lost — nothing else records that you looked. Any other item in the WATCH LIST above can be read in full with `load_watch(name)` when you need it.
+- **Watch list polls**: The items under "Watch list polls due" below are the ones whose check cadence has elapsed since they were last checked. Poll each of them now, then stamp it: `checked_watch` when nothing changed, `save_watch` with the new state when something did. Skip the stamp and the poll is lost — nothing else records that you looked. Any other item in the WATCH LIST above can be read in full with `load_watch` when you need it.
 
 ## Watch list polls due
 
@@ -149,9 +149,9 @@ The WATCH LIST above is only an index. These are the items whose poll is due, wi
 
 ## Response Format
 
-{thinking_tag_instruction}Output only commands (using proper command syntax). Feel free to do chains of commands (send one or several commands, get reply back then send another batch of commands and so on) — just running commands does not create noise for the user.
+{thinking_tag_instruction}Output only commands. Feel free to do chains of commands (send one or several commands, get reply back then send another batch of commands and so on) — just running commands does not create noise for the user.
 
-Anything you want said goes through `post_message(destination, text)`: to `owner` for the user's chat(s) (formatted by the rules of the 
+Anything you want said goes through `post_message`: to `owner` for the user's chat(s) (formatted by the rules of the 
 "Text Chat" section), or to a group by its name, or to a room by its name when someone is there and the matter is worth a spoken line (a request 
 made by voice, about something in the room, etc). The destinations now: {destinations}. No other text outside commands.
 
@@ -230,19 +230,24 @@ class AutonomousActionManager:
         return self.llm_vision
 
     @staticmethod
-    def _action_prompt(llm) -> str:
+    def _action_prompt(llm, prompt_manager: PromptManager | None = None) -> str:
         """The autonomous instruction for *llm*: with the <thinking>-tag paragraph unless the
-        model thinks on its own, in which case asking would get the check refused."""
+        model thinks on its own, in which case asking would get the check refused. With a
+        *prompt_manager* the instruction is rendered like a toolkit reference, so the watch
+        toolkit it carries and any command in it speak the active command format."""
         internal = llm.handles_thinking_internally() is True
         if internal:
             trace(f"Autonomous prompt without the <thinking> tag paragraph: {llm.name()} thinks on its own")
         due = WatchList.render_due(tolerance=WATCH_POLL_TOLERANCE)
-        return AUTONOMOUS_ACTION_PROMPT.format(
+        prompt = AUTONOMOUS_ACTION_PROMPT.format(
             interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES,
             watch_list=due,
             watch_toolkit=AutonomousActionManager._watch_toolkit(due),
             destinations=Destinations.describe(),
             thinking_tag_instruction="" if internal else THINKING_TAG_INSTRUCTION)
+        if prompt_manager is None:
+            return prompt
+        return prompt_manager.render_template(prompt)
 
     @staticmethod
     def _watch_toolkit(due: str) -> str:
@@ -254,7 +259,7 @@ class AutonomousActionManager:
             return ""
         from assistant.commands import Toolkits
         toolkit = Toolkits.by_name(Toolkits.WATCH_TOOLKIT)
-        trace(f"Autonomous prompt carries the {toolkit.name} toolkit: items are due")
+        trace(f"Autonomous prompt carries the {toolkit.name} toolkit: items are due (rendered with the instruction)")
         return "\n\nThe commands to stamp or rewrite them:\n\n" + Toolkits.render(toolkit)
 
     def _llm_for(self, messages):
@@ -470,7 +475,7 @@ class AutonomousActionManager:
             # test runs must stay free of wall-clock state.
             if is_real_run:
                 MessageHistory.append_user_turn(messages, self.prompt_manager.current_time_note())
-            MessageHistory.append_user_turn(messages, self._action_prompt(self._llm_for(messages)))
+            MessageHistory.append_user_turn(messages, self._action_prompt(self._llm_for(messages), self.prompt_manager))
             if wakeup:
                 MessageHistory.append_user_turn(messages, self._wakeup_note(wakeup))
             if due:

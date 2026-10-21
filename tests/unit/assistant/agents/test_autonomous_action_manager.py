@@ -71,6 +71,9 @@ def make_mock_prompt_manager(prompt="test prompt", night=False):
     # Real (prompt=None) runs inject the clock the same way get_messages() does.
     # Return a fixed string so append_user_turn's concatenation works under Mock.
     pm.current_time_note.return_value = "(Current time: 12:00, Monday, 2026-05-25)"
+    # The instruction is rendered through the manager like a toolkit reference; the Keep
+    # format's rendering is the identity, which is what this stands in for.
+    pm.render_template.side_effect = lambda text: text
     return pm
 
 
@@ -1770,6 +1773,26 @@ class TestWatchListInTheInstruction:
         WatchList.save("Dentist for Charlotte", "12:30, bring the referral", "2026-03-12")
         prompt = AutonomousActionManager._action_prompt(Mock())
         assert "bring the referral" not in prompt and WatchList.NOTHING_DUE in prompt
+
+    def test_the_instruction_and_its_watch_toolkit_speak_the_active_command_format(self):
+        """The instruction is rendered like a toolkit reference when a prompt manager is given:
+        under a block format the watch toolkit's declarations are schema lines, no Keep call
+        shape is left, and the prose names commands without a syntax of its own."""
+        from assistant.commands.Commands import Commands
+        from assistant.commands.formats import Rewriter, Signatures
+        from assistant.commands.formats.InvokeFormat import InvokeFormat
+        WatchList.save("Parcel from shop.example", "with the courier", "2026-03-12", every="6h")
+        path = WatchList.WATCHLIST_DIR / "parcel-from-shop-example.md"
+        path.write_text(path.read_text().replace(
+            f"Checked: {WatchList.get('parcel-from-shop-example').checked}", "Checked: 2026-03-10 08:00"))
+        fmt = InvokeFormat(Commands.command_names())
+        pm = Mock()
+        pm.render_template.side_effect = lambda text: Rewriter.rewrite(text, fmt, Signatures.declarations())
+        prompt = AutonomousActionManager._action_prompt(Mock(), pm)
+        assert '"name": "save_watch"' in prompt and '"name": "checked_watch"' in prompt, "the watch toolkit rides along, rendered"
+        assert not re.search(r"\b(save_watch|checked_watch|load_watch|post_message)\(", prompt), "no Keep call shape"
+        assert "proper command syntax" not in prompt
+        assert AutonomousActionManager._action_prompt(Mock()) != prompt, "without a manager the instruction is as written"
 
 @pytest.mark.unit
 class TestCurationSlotAcrossTheHour:

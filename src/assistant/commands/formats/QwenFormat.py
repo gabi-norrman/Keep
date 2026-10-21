@@ -19,7 +19,7 @@ from typing import Sequence
 from common.logging import trace
 
 from .NamedParameterFormat import NamedParameterFormat, argument_text  # noqa: F401  (argument_text: OllamaLLM's spelling of a value)
-from .Signatures import Declaration, Value
+from .Signatures import Declaration
 
 OPEN = "<tool_call>"
 CLOSE = "</tool_call>"
@@ -97,16 +97,8 @@ class QwenFormat(NamedParameterFormat):
         `argument_text` (a string as is, a number bare, a list as JSON)."""
         return render_call(name, [(key, argument_text(value)) for key, value in cls.arguments_dict(arguments).items()])
 
-    def render_example(self, name: str, values: Sequence[Value], declaration: Declaration | None) -> str:
-        names = declaration.names if declaration else []
-        arguments = []
-        for i, value in enumerate(values):
-            if declaration and declaration.variadic and i >= len(names) - 1:
-                rest = [v.value for v in values[i:]]
-                arguments.append((names[-1], json.dumps(rest, ensure_ascii=False)))
-                break
-            arguments.append((names[i] if i < len(names) else f"arg{i + 1}", value.value))
-        return render_call(name, arguments)
+    def _render_block(self, name: str, arguments: Sequence[tuple[str, str, bool]]) -> str:
+        return render_call(name, [(key, text) for key, text, _ in arguments])
 
     # --- parsing ---------------------------------------------------------------------------
 
