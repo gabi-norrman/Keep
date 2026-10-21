@@ -173,6 +173,40 @@ class TestParsing:
         assert fmt.unterminated("just text") is None
 
 
+class TestBareInvoke:
+    """Opus 5.5 leaves the <function_calls> wrapper out about one reply in three on the full
+    prompt: the bare invoke is read as a block of one, exactly as the wrapped one is."""
+
+    BARE = f'{INVOKE_OPEN} name="turn_on">\n{parameter("light_name", "Lamp")}\n{INVOKE_CLOSE}'
+
+    def test_a_bare_invoke_is_read_like_a_wrapped_one(self, fmt):
+        assert fmt.extract(self.BARE + " Done.") == (("turn_on", ["Lamp"], "Lamp"), " Done.")
+        assert fmt.extract(block("turn_on", ("light_name", "Lamp")) + " Done.")[0] == ("turn_on", ["Lamp"], "Lamp")
+        assert fmt.call_end(self.BARE + " Done.") == len(self.BARE)
+        assert fmt.extract_all("Sure. " + self.BARE + "\n" + block("dim", ("light_name", "Lamp"), ("dim_percentage", "40"))) \
+            == [("turn_on", ["Lamp"]), ("dim", ["Lamp", "40"])]
+
+    def test_located_held_back_and_completed_like_a_wrapped_one(self, fmt):
+        assert fmt.find_start("Sure. " + self.BARE) == len("Sure. ")
+        assert fmt.partial_tail("Turning it on <inv") == len("Turning it on ")
+        assert fmt.is_possibly_command("<inv") and fmt.is_possibly_command(self.BARE[:30])
+        assert not fmt.complete(self.BARE[:-3], streaming=True) and fmt.complete(self.BARE)
+        assert fmt.unterminated(self.BARE[:-3]) == "turn_on"
+
+    def test_a_wrapped_block_is_still_read_whole_when_its_invoke_follows_the_opener(self, fmt):
+        # Inside the wrapper the invoke must not be taken for a bare one: the block's rest is after </function_calls>.
+        two = block("turn_on", ("light_name", "Lamp")) + "\nDone."
+        assert fmt.extract(two) == (("turn_on", ["Lamp"], "Lamp"), "\nDone.")
+
+    def test_an_invoke_like_word_that_never_closes_is_released_as_text(self, fmt):
+        assert fmt.is_possibly_command("<invoked>")
+        assert not fmt.complete("<invoked> by the alarm, the lights came on.")
+        assert fmt.unterminated("<invoked> by the alarm") is None
+
+    def test_a_bare_element_without_a_name_is_dropped_like_an_empty_block(self, fmt):
+        assert fmt.extract(f"{INVOKE_OPEN}>\n{INVOKE_CLOSE}\nDone.") == (None, "\nDone.")
+
+
 class TestRenderToolCall:
     def test_a_parsed_tool_call_is_written_back_as_the_block_and_read_again(self, fmt):
         text = InvokeFormat.render_tool_call("dim", '{"light_name": "Kitchen lamp", "dim_percentage": 40}')
@@ -230,6 +264,20 @@ class TestStreaming:
         out = self._stream(processor, [reply[:17], reply[17:40], reply[40:]])
         assert processor.calls == [("dim", ["kitchen lamp", "40"])]
         assert out.strip() == "Dimming the kitchen lamp to 40 percent."
+
+    def test_the_measured_bare_reply_streams_to_the_call_and_no_text(self, processor):
+        # What Opus 5.5 streamed on 2026-10-21 for "What's in the server logs?": the invoke alone, no wrapper.
+        reply = f'{INVOKE_OPEN} name="restart_server">\n{INVOKE_CLOSE}'
+        out = self._stream(processor, list(reply))
+        assert processor.calls == [("restart_server", [])]
+        assert out.strip() == ""
+
+    def test_a_bare_invoke_and_a_wrapped_block_in_one_reply_both_run(self, processor):
+        reply = ("On it. " + f'{INVOKE_OPEN} name="turn_on">\n{parameter("light_name", "Lamp")}\n{INVOKE_CLOSE}'
+                 + "\n" + block("dim", ("light_name", "Lamp"), ("dim_percentage", "40")) + "\nDone.")
+        out = self._stream(processor, [reply[:9], reply[9:50], reply[50:]])
+        assert processor.calls == [("turn_on", ["Lamp"]), ("dim", ["Lamp", "40"])]
+        assert out.strip().startswith("On it.") and out.strip().endswith("Done.") and INVOKE_OPEN not in out
 
     def test_a_stream_cut_inside_a_block_reports_the_unterminated_command(self, processor):
         from unittest.mock import Mock
