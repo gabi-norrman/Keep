@@ -12,11 +12,12 @@
 # the longest one that fits a request. One saved entry is ~111 MiB on Flash, so 16 GB holds
 # about 140 of them. (Keep's src/assistant/llm/Ds4LLM.py docstring has the measurements.)
 #
-# The server runs detached and writes ds4-server.log in the ds4 folder (Keep's prompt tests read
-# it for the real prompt and the cache decisions). The script waits until the API answers,
+# The server runs detached and appends to ds4-server.log in the ds4 folder (Keep's prompt tests
+# read it for the real prompt and the cache decisions; a restart keeps the earlier runs' lines,
+# so a problem seen before the restart can still be read). The script waits until the API answers,
 # which takes a minute or two while the model is mapped. Stop it with `pkill ds4-server`.
 #
-# Overrides: DS4_DIR, MODEL (GGUF path), CTX (context tokens), KV_DIR, KV_MB, HOST, PORT.
+# Overrides: DS4_DIR, MODEL (GGUF path), CTX (context tokens), KV_DIR, KV_MB, COLD_MAX, HOST, PORT.
 set -euo pipefail
 DS4_DIR="${DS4_DIR:-$(cd "$(dirname "$0")/.." && pwd)/ds4}"
 cd "$DS4_DIR" 2>/dev/null || { echo "no ds4 checkout at $DS4_DIR — clone github.com/antirez/ds4 beside this repository or set DS4_DIR"; exit 1; }
@@ -28,6 +29,12 @@ MODEL="${MODEL:-gguf/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf}"
 CTX="${CTX:-65536}"
 KV_DIR="${KV_DIR:-$HOME/.ds4/server-kv}"
 KV_MB="${KV_MB:-16384}"
+# The disk cache's "cold" checkpoint (the prompt cut at its first user turn, what a sibling
+# request loads) is only written for a prompt up to this many tokens; the server's default
+# of 30000 left the 40k prompt-test prompt with no reusable entry at all — every test
+# prefilled from zero (32 s). With the ceiling at the context size a test loads the system
+# prompt (11k) and prefills the rest (19 s). Measured 2026-10-21.
+COLD_MAX="${COLD_MAX:-$CTX}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 LOG=ds4-server.log
@@ -42,8 +49,6 @@ if [ -n "$busy" ]; then
 fi
 
 mkdir -p "$KV_DIR"
-# Keep the previous run's log for one more run; the server overwrites the live one.
-[ -f "$LOG" ] && mv -f "$LOG" "$LOG.1"
 
 echo "starting ds4-server: $MODEL, ctx $CTX, disk KV cache $KV_DIR ($KV_MB MB), $HOST:$PORT"
 nohup ./ds4-server \
@@ -53,7 +58,8 @@ nohup ./ds4-server \
     --port "$PORT" \
     --kv-disk-dir "$KV_DIR" \
     --kv-disk-space-mb "$KV_MB" \
-    > "$LOG" 2>&1 < /dev/null &
+    --kv-cache-cold-max-tokens "$COLD_MAX" \
+    >> "$LOG" 2>&1 < /dev/null &
 pid=$!
 echo "pid $pid, log $PWD/$LOG"
 
