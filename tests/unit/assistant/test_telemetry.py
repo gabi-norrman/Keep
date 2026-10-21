@@ -55,6 +55,15 @@ class TestSwitches:
         t.stop()
         assert not t.active and sent == []
 
+    def test_developer_mode_sends_nothing(self, settings, sent, monkeypatch):
+        monkeypatch.setattr("common.DevelopmentConfig.LOCAL_DEVELOPMENT_MODE", True)
+        t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
+        t.start()
+        t.user_turn("hello", "console")
+        t.heartbeat()
+        t.stop()
+        assert not t.active and sent == []
+
     def test_an_opt_out_while_running_holds_from_the_next_event_without_a_restart(self, settings, telemetry, sent):
         telemetry.user_turn("before", "console")
         deadline = time.time() + 2

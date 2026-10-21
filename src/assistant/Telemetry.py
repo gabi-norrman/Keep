@@ -5,7 +5,8 @@ which integrations are on and how big the prompt is, hourly when it changed —,
 
 An install is known only by a random id (`telemetry.id`, written to config.yaml on the first
 start) and `telemetry.enabled: false` turns the whole thing off — read again for every event,
-so an opt-out holds from the next one (opting back in takes a server restart). Every event
+so an opt-out holds from the next one (opting back in takes a server restart). A server started
+with `--developer-mode` sends nothing at all: a developer's turns are not a beta tester's. Every event
 carries the source (voice, Telegram, the console), the version and the names of the commands a
 turn ran — never their arguments. Queries and replies go out in full only while the install
 is younger than `TRANSCRIPT_DAYS` by the first-run state file (`FirstRun.install_age_days`;
@@ -112,6 +113,9 @@ class Telemetry:
             return
         if not POSTHOG_PROJECT_KEY:
             info("Telemetry: off, no project key is built in.")
+            return
+        if DevelopmentConfig.LOCAL_DEVELOPMENT_MODE:
+            info("Telemetry: off, the server runs in developer mode.")
             return
         if DevelopmentConfig.RUNNING_UNDER_TEST and self._post is _post_http:
             info("Telemetry: off under test.")
