@@ -17,7 +17,7 @@
 # so a problem seen before the restart can still be read). The script waits until the API answers,
 # which takes a minute or two while the model is mapped. Stop it with `pkill ds4-server`.
 #
-# Overrides: DS4_DIR, MODEL (GGUF path), CTX (context tokens), KV_DIR, KV_MB, COLD_MAX, HOST, PORT.
+# Overrides: DS4_DIR, MODEL (GGUF path), CTX (context tokens), KV_DIR, KV_MB, COLD_MAX, COLD_ANCHOR, HOST, PORT.
 set -euo pipefail
 DS4_DIR="${DS4_DIR:-$(cd "$(dirname "$0")/.." && pwd)/ds4}"
 cd "$DS4_DIR" 2>/dev/null || { echo "no ds4 checkout at $DS4_DIR — clone github.com/antirez/ds4 beside this repository or set DS4_DIR"; exit 1; }
@@ -35,6 +35,13 @@ KV_MB="${KV_MB:-16384}"
 # prefilled from zero (32 s). With the ceiling at the context size a test loads the system
 # prompt (11k) and prefills the rest (19 s). Measured 2026-10-21.
 COLD_MAX="${COLD_MAX:-$CTX}"
+# Where that checkpoint is cut: ds4's default is before the first task (the last user turn
+# before the first assistant turn), which for Keep's prompt tests is the system prompt alone
+# (11k of 40k). `last-user` cuts before the prompt's last user turn — the test's query, which
+# the test server sends as a turn of its own on ds4 (Ds4LLM.prefers_query_as_own_turn) — so a
+# test loads everything but its query from disk. Our ds4 branch kv-cold-anchor-last-user;
+# an upstream ds4 without the flag refuses to start with it, so set COLD_ANCHOR= to drop it.
+COLD_ANCHOR="${COLD_ANCHOR-last-user}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 LOG=ds4-server.log
@@ -59,6 +66,7 @@ nohup ./ds4-server \
     --kv-disk-dir "$KV_DIR" \
     --kv-disk-space-mb "$KV_MB" \
     --kv-cache-cold-max-tokens "$COLD_MAX" \
+    ${COLD_ANCHOR:+--kv-cache-cold-anchor "$COLD_ANCHOR"} \
     >> "$LOG" 2>&1 < /dev/null &
 pid=$!
 echo "pid $pid, log $PWD/$LOG"

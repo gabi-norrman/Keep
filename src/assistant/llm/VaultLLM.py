@@ -139,6 +139,9 @@ class VaultLLM(AbstractLLM):
         # __getattr__, and create_llm wraps every backend in a VaultLLM.
         return self.llm.prefers_byte_prefix_tail()
 
+    def prefers_query_as_own_turn(self) -> bool:
+        return self.llm.prefers_query_as_own_turn()
+
     def set_prompt_cache(self, enabled: bool):
         self.llm.set_prompt_cache(enabled)
 

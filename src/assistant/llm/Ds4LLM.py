@@ -152,6 +152,15 @@ class Ds4LLM(ChatGPTLLM):
         """DeepSeek's DSML syntax: what the model family ds4 serves here was trained on."""
         return dsml.DsmlFormat
 
+    def prefers_query_as_own_turn(self) -> bool:
+        """The test suite's query as its own user turn: ds4-server's cold checkpoint (with
+        `--kv-cache-cold-anchor last-user`, `local_ds4_start.sh`) is cut right before the last
+        user turn, so a test loads the system prompt, the history fixture and the toolkits from
+        disk and prefills only its query (measured 2026-10-21, see DialogManager). The V4.1
+        renderer joins consecutive user-like messages — a user turn, a tool result — into one
+        `<｜User｜>` block, which is why the query needs an assistant turn in front of it."""
+        return True
+
     def prefers_prepended_user_query(self) -> bool:
         """ds4-server keeps one live KV context and reuses it only for a prompt that extends the
         previous one; a query prepended to the system prompt changes byte 0 every turn, so every
