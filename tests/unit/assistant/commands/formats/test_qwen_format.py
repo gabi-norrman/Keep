@@ -6,9 +6,11 @@ from assistant.commands.formats import Signatures
 from assistant.commands.formats.QwenFormat import QwenFormat, OPEN, CLOSE, render_call, argument_text
 from assistant.commands.formats.Signatures import Declaration, Parameter, Value, calls, read_declaration, read_values
 
-NAMES = ["turn_on", "dim", "load_toolkit", "homekit_cover", "restart_server", "browse_eval"]
+NAMES = ["turn_on", "dim", "load_toolkit", "homekit_cover", "restart_server", "browse_eval", "improve_integration",
+         "report_issue"]
 TABLE = {"turn_on": ["light_name"], "dim": ["light_name", "dim_percentage"], "load_toolkit": ["name"],
-         "homekit_cover": ["ref", "position", "dry_run"], "restart_server": [], "browse_eval": ["js"]}
+         "homekit_cover": ["ref", "position", "dry_run"], "restart_server": [], "browse_eval": ["js"],
+         "improve_integration": ["integration", "request"], "report_issue": ["report"]}
 VARIADIC = {"load_toolkit"}
 
 
@@ -117,6 +119,15 @@ class TestParsing:
     @pytest.mark.parametrize("value", ['["email", "web"]', "email, web", "email,web"])
     def test_a_variadic_parameter_is_split_into_positional_values(self, fmt, value):
         assert fmt.extract(block("load_toolkit", ("name", value)))[0][1] == ["email", "web"]
+
+    def test_a_free_text_commands_values_join_into_the_one_payload_its_handler_splits(self, fmt):
+        # cmd_improve_integration takes "name, request" as one string (the Keep parser hands a
+        # free-text command's payload over verbatim) and Commands.run passes a single-parameter
+        # command params[0] alone: two values would lose the request.
+        text = block("improve_integration", ("request", "add a charging schedule"), ("integration", "tesla"))
+        assert fmt.extract(text)[0][1] == ["tesla, add a charging schedule"]
+        assert fmt.extract_all(text) == [("improve_integration", ["tesla, add a charging schedule"])]
+        assert fmt.extract(block("report_issue", ("report", "the porch, lit at noon")))[0][1] == ["the porch, lit at noon"]
 
     def test_one_leading_and_one_trailing_newline_are_stripped_and_inner_newlines_kept(self, fmt):
         text = f"{OPEN}\n<function=browse_eval>\n<parameter=js>\n\nreturn 1;\n\n</parameter>\n</function>\n{CLOSE}"

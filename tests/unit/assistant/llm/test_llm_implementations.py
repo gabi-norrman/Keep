@@ -2054,10 +2054,10 @@ class TestOllamaLLM:
         from assistant.llm.OllamaLLM import OllamaLLM
         from assistant.commands.formats.CommandFormats import CommandFormats
         from assistant.commands.formats.QwenFormat import QwenFormat
-        OllamaLLM._thinking_capable.clear()
+        OllamaLLM._capabilities.clear()
         CommandFormats.set_active(QwenFormat)  # an Ollama smart tier: the parsed calls go back as Qwen text
         yield
-        OllamaLLM._thinking_capable.clear()
+        OllamaLLM._capabilities.clear()
         CommandFormats.reset()
 
     def test_under_another_smart_tier_a_parsed_call_is_written_back_in_that_tiers_format(self):
@@ -2284,6 +2284,24 @@ class TestOllamaLLM:
     def test_an_unreachable_host_is_assumed_to_think(self, mock_post):
         assert self._make_llm().thinks() is True
 
+    @patch('assistant.llm.OllamaLLM.requests.post')
+    def test_a_model_without_the_tools_capability_gets_no_tool_declared(self, mock_post):
+        # Ollama answers a request declaring a tool with a 400 ("does not support tools") for
+        # a gemma3- or llava-class model, so such a model could not answer at all.
+        mock_post.return_value.json.return_value = {"capabilities": ["completion", "thinking"]}
+        llm = self._make_llm()
+        real = llm._build_request([{"role": "user", "content": "hi"}], stream=True)
+        pre_heat = llm._build_request([{"role": "user", "content": "hi"}], stream=True, num_predict=1)
+        assert "tools" not in real and "tools" not in pre_heat
+        assert real["think"] is True
+        assert mock_post.call_count == 1, "one probe of /api/show answers both capabilities"
+
+    @patch('assistant.llm.OllamaLLM.requests.post')
+    def test_a_model_with_the_tools_capability_gets_the_static_tool(self, mock_post):
+        mock_post.return_value.json.return_value = {"capabilities": ["completion", "tools"]}
+        req = self._make_llm()._build_request([{"role": "user", "content": "hi"}], stream=True)
+        assert req["tools"][0]["function"]["name"] == "load_toolkit" and req["think"] is False
+
     @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
     @patch('assistant.llm.OllamaLLM.OllamaLLM._rendered_prompt', return_value=None)
     @patch('assistant.llm.OllamaLLM.requests.post')
@@ -2340,10 +2358,10 @@ class TestOllamaLLM:
         list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
         assert mock_post.call_args.kwargs["timeout"] is None
 
-    @patch('assistant.llm.OllamaLLM.OllamaLLM.thinks', return_value=True)
+    @patch('assistant.llm.OllamaLLM.OllamaLLM.capabilities', return_value={"thinking", "tools"})
     @patch('assistant.llm.OllamaLLM.OllamaLLM._rendered_prompt', return_value=None)
     @patch('assistant.llm.OllamaLLM.requests.post')
-    def test_create_completion(self, mock_post, mock_rendered, mock_thinks):
+    def test_create_completion(self, mock_post, mock_rendered, mock_capabilities):
         llm = self._make_llm()
         mock_resp = Mock()
         mock_resp.json.return_value = {

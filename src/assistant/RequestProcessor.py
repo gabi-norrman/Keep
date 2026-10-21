@@ -171,6 +171,7 @@ class RequestProcessor:
         self.first_sound_chunk = True
         self.is_killed = False
         self.kill_reason = ""  # why kill() fired, so the turn gate can log a truthful abort
+        self.per_request_prefix = False  # the prepend verdict of the request, for every round's LLM
         self.is_performing_request = False
         self.my_thread_name = "?"
         self.request_data = RequestData(None, None, None, None)
@@ -187,6 +188,15 @@ class RequestProcessor:
 
     def _new_dialog_manager(self, test_suite_mode: bool = False) -> DialogManager:
         return DialogManager(self, test_suite_mode, voice_factory=self.voice_factory)
+
+    def _carry_per_request_prefix(self):
+        """The prepend verdict onto every tier of the current dialog manager — a follow-up
+        round may switch to the vision tier (use_vision_for_image_reply) after select_ai."""
+        if not self.per_request_prefix:
+            return
+        trace("Carrying the per-request prefix verdict into the follow-up round's LLMs")
+        for ai in (self.dialog_manager.ai_fast, self.dialog_manager.ai_smart, self.dialog_manager.ai_vision):
+            ai.set_per_request_prefix(True)
 
     @property
     def ctx(self) -> RequestContext:
@@ -563,6 +573,7 @@ class RequestProcessor:
         # Prepending puts per-request content at byte 0, so no later request reads what this
         # one caches — only its own command follow-up rounds do. The LLM picks its cache tier
         # by that (ClaudeLLM: 5m on every block instead of 1h; a no-op for the others).
+        self.per_request_prefix = should_prepend
         self.dialog_manager.ai.set_per_request_prefix(should_prepend)
         if should_prepend:
             trace("Prepending user query - the prompt prefix is this request's own")
@@ -760,6 +771,9 @@ class RequestProcessor:
             self._rounds.append(self.dialog_manager)
             self.dialog_manager.select_ai(self.ctx)
             self.dialog_manager.select_voice(self.ctx)
+            # A fresh dialog manager is fresh LLM instances: without the request's prefix
+            # verdict the round would write its blocks at the long tier no later request reads.
+            self._carry_per_request_prefix()
             self.dialog_manager.messages = old_dialog_manager.messages
             self.dialog_manager.reply_from_role = "user"
             # The follow-up round is the same byte-prefix request: folding directives onto the

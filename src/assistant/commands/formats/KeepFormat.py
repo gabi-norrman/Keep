@@ -13,6 +13,8 @@ from . import Signatures
 from .CommandFormat import CommandFormat
 from .Signatures import Declaration, Parameter, Value, VARIADIC
 
+CODE_TAGS = ("<code>", "</code>")
+
 # The format-specific part of the prompt's COMMAND SYSTEM section (res/prompt.md's
 # {COMMAND_SYSTEM}): how a call is written in this syntax. The examples are in the canonical
 # form, so the rewriter's rendering of this text is the identity.
@@ -52,12 +54,16 @@ def render_tool_call(name: str, arguments: dict) -> str:
     after in the order given, a variadic last parameter's list spread into values), a string
     quoted with `"` and `\\` escaped — one holding a newline as a triple-quoted block —, any
     other value bare as JSON. An opaque command (`browse_eval`, the free-text commands) takes
-    its one value verbatim."""
-    if name in CommandParser.RAW_PARAM_COMMANDS | CommandParser.FREE_TEXT_COMMANDS:
-        payload = next(iter(arguments.values()), "")
-        return f"{name}({payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)})"
+    its values verbatim, joined as its handler splits them."""
     declaration = Signatures.declarations().get(name)
     names = declaration.names if declaration else []
+    if name in CommandParser.RAW_PARAM_COMMANDS | CommandParser.FREE_TEXT_COMMANDS:
+        # The handler splits the payload itself (improve_integration: "name, request"), so
+        # every value goes in, in the declared order, as the model would have written it.
+        ordered = [arguments[key] for key in names if key in arguments]
+        ordered += [value for key, value in arguments.items() if key not in names]
+        payload = ", ".join(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False) for v in ordered)
+        return f"{name}({payload})"
     present = [i for i, key in enumerate(names) if key in arguments]
     values = [arguments.get(key, "") for key in names[:present[-1] + 1]] if present else []
     if declaration and declaration.variadic and present and present[-1] == len(names) - 1 and isinstance(values[-1], list):
@@ -125,6 +131,24 @@ class KeepFormat(CommandFormat):
             return None, None
         name, params = call
         return (name, params, ", ".join(params)), rest
+
+    def call_end(self, buffer: str) -> int:
+        """The parser drops every code tag before it looks, so its rest has lost the ones the
+        prose after the call may carry: only its length is used, counting past the tags of the
+        text as written to find where the call ends."""
+        call, rest = self.parser.extract_command_and_params(buffer)
+        if call is None:
+            return -1
+        call_chars = len(CommandParser._strip_code_tags(buffer)) - len(rest)
+        position = 0
+        while call_chars > 0 and position < len(buffer):
+            tag = next((t for t in CODE_TAGS if buffer.startswith(t, position)), None)
+            if tag:
+                position += len(tag)
+            else:
+                position += 1
+                call_chars -= 1
+        return position
 
     def unterminated(self, buffer: str) -> str | None:
         return self.parser.unterminated_command(buffer)
