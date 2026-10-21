@@ -14,7 +14,7 @@ from assistant.commands.CommandProcessor import CommandProcessor
 from assistant.commands.formats.CommandFormats import CommandFormats
 from assistant.AssistantEvents import AssistantEvent, observers
 from assistant.ChannelProfile import profile_for
-from assistant.llm import create_llm, parse_llm_config, command_format_override, content_blocks_contain_images
+from assistant.llm import create_llm, parse_llm_config, command_format_override, command_format_chooser, content_blocks_contain_images
 from assistant.llm.AbstractLLM import LLMRefusalError
 from assistant.llm.CachedLLM import CachedLLM
 from assistant.prompt.MessageHistory import MessageHistory
@@ -57,9 +57,8 @@ class DialogManager:
         self.ai_smart = create_llm(smart_llm_name, smart_model, prompt_cache=True, command_format=smart_format)
         # The chat tier's model decides the syntax every reply is parsed in — before the cached
         # wrappers and the command processor below build their parsers from it. A `command_format:`
-        # key in the tier's `ai.smart` block overrides the class's choice.
-        self._command_format_source = (f"the ai.smart command_format override" if smart_format
-                                       else f"the smart tier's {smart_llm_name} class")
+        # key in the tier's `ai.smart` block, or FLOXY_COMMAND_FORMAT, overrides the class's choice.
+        self._command_format_source = command_format_chooser('smart') or f"the smart tier's {smart_llm_name} class"
         CommandFormats.set_active(self.ai_smart.command_format(), self._command_format_source)
         # Used whenever a request carries images — Opus 4.8 is much stronger at vision
         # than the 4.6 we run as smart. See select_ai (images always win).

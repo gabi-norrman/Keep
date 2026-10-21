@@ -65,6 +65,18 @@ def prepend_user_query_override():
         trace(f"{PREPEND_USER_QUERY_KEY}: {value!r} is not auto/true/false — each LLM's own default applies")
     return None
 
+
+# FLOXY_COMMAND_FORMAT=qwen makes every tier run with that command format, over the tiers'
+# `command_format:` keys and the LLM classes' own choice — the prompt test runner's --format
+# knob, so a suite run can try the prompt in another syntax without editing config.yaml.
+COMMAND_FORMAT_ENV = "FLOXY_COMMAND_FORMAT"
+
+
+def command_format_env() -> str | None:
+    """The format name FLOXY_COMMAND_FORMAT holds, None when it is unset or blank. Read at
+    each call, so a test can set it."""
+    return os.environ.get(COMMAND_FORMAT_ENV, "").strip() or None
+
 # Ollama's MLX runner restores its KV cache only at the restore point taken just before the
 # previous reply (and at 8k-token multiples), so a request only hits when the previous one is
 # a byte prefix of it. An LLM that says so (AbstractLLM.prefers_byte_prefix_tail) gets its

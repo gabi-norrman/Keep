@@ -7,6 +7,7 @@ import gc
 import signal
 import threading
 
+from assistant.commands.formats.CommandFormats import CommandFormats
 from common import Version
 from common.logging import info, note, trace
 from interfaces.http.routes import HttpDeps, register as register_stream_route
@@ -54,7 +55,9 @@ class HttpInterface(Interface):
 
         @self.app.route('/health')
         async def health():
-            return {"status": "ok", "version": Version.detail()}, 200
+            # command_format: the syntax this server reads replies in — the prompt test suite
+            # judges a reply's calls by it.
+            return {"status": "ok", "version": Version.detail(), "command_format": CommandFormats.active().name}, 200
 
         info(f"HTTP interface created on port {self.port} (/stream, /health).")
 

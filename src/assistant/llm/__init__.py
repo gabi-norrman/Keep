@@ -3,6 +3,7 @@ import inspect
 
 from assistant.commands.formats.CommandFormats import CommandFormats
 from common.ConfigManager import config
+from common.DevelopmentConfig import COMMAND_FORMAT_ENV, command_format_env
 from common.logging import error, info
 
 
@@ -118,18 +119,40 @@ def parse_llm_config(tier: str) -> tuple[str, str | None]:
 def command_format_override(tier: str) -> str | None:
     """The command format the `ai.<tier>` block names with `command_format:` — `keep`, `qwen`,
     `dsml` or `invoke`, for an Ollama model that is not a Qwen or to try a syntax —, None when the block
-    leaves it to the LLM class. A name no format has is logged and ignored, so a typo costs the
-    override, not the start."""
+    leaves it to the LLM class. The FLOXY_COMMAND_FORMAT environment variable names one for every
+    tier over the blocks (the prompt test runner's --format). A name no format has is logged and
+    ignored, so a typo costs the override, not the start."""
+    return _command_format_choice(tier)[0]
+
+
+def command_format_chooser(tier: str) -> str | None:
+    """Who named the format `command_format_override(tier)` returns, for the log — the environment
+    variable or the tier's config block —, None when neither did."""
+    return _command_format_choice(tier)[1]
+
+
+_env_formats_refused: set[str] = set()   # the bad FLOXY_COMMAND_FORMAT names logged, once each, not once per tier
+
+
+def _command_format_choice(tier: str) -> tuple[str | None, str | None]:
+    if name := command_format_env():
+        fmt = CommandFormats.by_name(name)
+        if fmt is not None:
+            return fmt.name, f"the {COMMAND_FORMAT_ENV} environment variable"
+        if name not in _env_formats_refused:
+            _env_formats_refused.add(name)
+            error(f"{COMMAND_FORMAT_ENV}: no format called '{name}' (one of {', '.join(CommandFormats.BY_NAME)}); "
+                  f"the config and the LLM classes decide")
     cfg = _tier_block(tier)
     name = cfg.get('command_format') if isinstance(cfg, dict) else None
     if name is None:
-        return None
+        return None, None
     fmt = CommandFormats.by_name(name)
     if fmt is None:
         error(f"ai.{tier}.command_format: no format called '{name}' (one of "
               f"{', '.join(CommandFormats.BY_NAME)}); the LLM class's own format stands")
-        return None
-    return fmt.name
+        return None, None
+    return fmt.name, f"the ai.{tier} command_format override"
 
 
 def _tier_block(tier: str):

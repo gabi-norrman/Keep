@@ -120,8 +120,10 @@ class TestTelegramOnlyBoot:
             async def probe():
                 r = await server.http.app.test_client().get("/health")
                 return r.status_code, await r.get_json()
+            from assistant.commands.formats.CommandFormats import CommandFormats
             from common import Version
-            assert asyncio.run(probe()) == (200, {"status": "ok", "version": Version.detail()})
+            assert asyncio.run(probe()) == (200, {"status": "ok", "version": Version.detail(),
+                                                  "command_format": CommandFormats.active().name})
         finally:
             server.stop()
 

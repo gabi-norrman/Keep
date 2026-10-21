@@ -4,7 +4,7 @@ import types
 import pytest
 from unittest.mock import patch
 
-from assistant.llm import create_llm, parse_llm_config, command_format_override
+from assistant.llm import create_llm, parse_llm_config, command_format_override, command_format_chooser
 from assistant.llm.VaultLLM import VaultLLM
 from common.vault.Vault import Vault
 
@@ -222,6 +222,28 @@ class TestCommandFormatOverride:
             assert command_format_override('smart') is None
         with self._patch_config(None):
             assert command_format_override('smart') is None
+
+    def test_the_environment_variable_names_the_format_for_every_tier_over_the_config(self, monkeypatch):
+        monkeypatch.setenv("FLOXY_COMMAND_FORMAT", " DSML ")
+        with self._patch_config({'llm': 'OllamaLLM', 'command_format': 'keep'}):
+            assert command_format_override('smart') == 'dsml'
+            assert 'FLOXY_COMMAND_FORMAT' in command_format_chooser('smart')
+        with self._patch_config('ClaudeLLM'):
+            assert command_format_override('fast') == 'dsml'
+
+    def test_an_unknown_environment_name_is_logged_and_the_config_key_stands(self, monkeypatch):
+        monkeypatch.setenv("FLOXY_COMMAND_FORMAT", "xml")
+        with self._patch_config({'llm': 'OllamaLLM', 'command_format': 'keep'}), \
+                patch('assistant.llm.error') as logged:
+            assert command_format_override('smart') == 'keep'
+            assert 'ai.smart' in command_format_chooser('smart')
+            assert logged.call_count == 1 and 'FLOXY_COMMAND_FORMAT' in logged.call_args[0][0]
+
+    def test_a_blank_environment_variable_counts_as_unset(self, monkeypatch):
+        monkeypatch.setenv("FLOXY_COMMAND_FORMAT", "  ")
+        with self._patch_config({'llm': 'OllamaLLM'}):
+            assert command_format_override('smart') is None
+            assert command_format_chooser('smart') is None
 
     def test_an_unknown_name_is_logged_and_ignored_by_the_reader_but_refused_by_the_factory(self):
         with self._patch_config({'llm': 'OllamaLLM', 'command_format': 'xml'}), \
