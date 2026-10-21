@@ -79,12 +79,7 @@ class TestEveryFormatRendersAParsedCallItReads:
         text = cls.render_tool_call("dim", '{"light_name": "Reading lamp", "dim_percentage": 1}')
         assert parser.extract_all(text) == [("dim", ["Reading lamp", "1"])]
 
-    @pytest.mark.parametrize("cls", [
-        pytest.param(KeepFormat, marks=pytest.mark.xfail(
-            strict=True, reason="KeepFormat.render_tool_call spreads a variadic value only when it is a list: a "
-                                "server's string value ('email, web', or the JSON text of a list) renders as one "
-                                "argument, so load_toolkit answers that no such toolkit exists")),
-        QwenFormat, DsmlFormat])
+    @pytest.mark.parametrize("cls", [KeepFormat, QwenFormat, DsmlFormat])
     @pytest.mark.parametrize("value", ["email, web", '["email", "web"]'])
     def test_a_variadic_parameter_given_as_text_is_split_into_its_values(self, cls, value):
         # A DSML `string="true"` parameter, or a server that did not decode the list, hands the

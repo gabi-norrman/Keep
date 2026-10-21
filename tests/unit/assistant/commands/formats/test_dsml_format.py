@@ -186,7 +186,7 @@ class TestParsing:
         assert fmt.partial_tail("Turning it on") == -1
 
     def test_a_block_without_an_invoke_is_no_call(self, fmt):
-        assert fmt.extract(f"{OPEN}\nnothing\n{CLOSE}") == (None, None)
+        assert fmt.extract(f"{OPEN}\nnothing\n{CLOSE}\nDone.") == (None, "\nDone.")
         assert fmt.unterminated(f"{OPEN}\nnoth") is None
 
     def test_a_bare_name_or_plain_text_is_never_unterminated(self, fmt):

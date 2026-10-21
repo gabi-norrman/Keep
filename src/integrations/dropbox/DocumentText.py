@@ -9,6 +9,7 @@ TextEdit file's ö, ä and å come out as letters) — and raises `Unreadable` f
 at most PAGE_CHARS at paragraph boundaries, so a page and its header stay under the size the
 history stores a command result at. `find` is the content search that works on any plan:
 the lines of the text that carry every given word, each with its page and its PDF page."""
+import codecs
 import io
 import re
 import zipfile
@@ -75,11 +76,13 @@ def extract(name: str, data: bytes) -> str:
 
 
 def looks_like_text(data: bytes) -> bool:
+    """Judged on the first 8 KB: no NUL byte, and UTF-8 throughout — a multi-byte character
+    the head cuts through counts as text when the file goes on past the head."""
     head = data[:8192]
     if b"\x00" in head:
         return False
     try:
-        head.decode("utf-8")
+        codecs.getincrementaldecoder("utf-8")().decode(head, final=len(data) <= len(head))
         return True
     except UnicodeDecodeError:
         return False
@@ -163,7 +166,7 @@ def rtf_text(data: bytes) -> str:
     encoding = "cp1252"
     out: list[str] = []
     raw = bytearray()               # bytes waiting for a decode in the code page
-    stack: list[tuple[bool, int]] = []
+    stack: list[tuple[bool, int, int]] = []
     skipping, uc, skip = False, 1, 0   # the group's state: skipped?, \uc, fallback chars still to skip
 
     def flush():
@@ -174,11 +177,14 @@ def rtf_text(data: bytes) -> str:
 
     for word, number, hexbyte, symbol, brace, text in RTF_TOKEN_RE.findall(data):
         if brace == b"{":
-            stack.append((skipping, uc))
+            stack.append((skipping, uc, skip))
             continue
         if brace == b"}":
             if stack:
-                skipping, uc = stack.pop()
+                # A \u's fallback ends with its group ({\u246}\'f6 keeps the \'f6), and one the
+                # group consumed is not owed again after it (\u246{\'f6}): the lower count holds.
+                skipping, uc, saved_skip = stack.pop()
+                skip = min(saved_skip, skip)
             continue
         if skipping:
             continue

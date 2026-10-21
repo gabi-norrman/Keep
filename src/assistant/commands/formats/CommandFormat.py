@@ -88,8 +88,9 @@ class CommandFormat(ABC):
     def extract(self, buffer: str) -> tuple[tuple[str, list[str], str] | None, str | None]:
         """The first call in the buffer read out: `((name, params, display), rest)` — the
         command name lowercased, its parameters as positional strings, the display text of
-        those parameters for logs and echoes, and the text after the call — or `(None, None)`
-        when the buffer holds no complete call."""
+        those parameters for logs and echoes, and the text after the call — or `(None, rest)`
+        for a complete call block holding no call (the text after the block, for the processor
+        to go on with), or `(None, None)` when the buffer holds no complete call."""
 
     @abstractmethod
     def call_end(self, buffer: str) -> int:

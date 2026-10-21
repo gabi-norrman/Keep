@@ -11,6 +11,7 @@ from common.logging import trace
 
 from . import Signatures
 from .CommandFormat import CommandFormat
+from .NamedParameterFormat import split_variadic
 from .Signatures import Declaration, Parameter, Value, VARIADIC
 
 CODE_TAGS = ("<code>", "</code>")
@@ -51,7 +52,8 @@ def render_tool_call(name: str, arguments: dict) -> str:
     """A call parsed by a server — `name` with its named `arguments` — as Keep's positional
     call text, `name("value", 1)`: the values in the order the signature table declares the
     parameters (a declared one left out before a given one passed as `""`, undeclared ones
-    after in the order given, a variadic last parameter's list spread into values), a string
+    after in the order given, a variadic last parameter spread into values — a list as it is,
+    a string split at its commas or read as the JSON list it spells), a string
     quoted with `"` and `\\` escaped — one holding a newline as a triple-quoted block —, any
     other value bare as JSON. An opaque command (`browse_eval`, the free-text commands) takes
     its values verbatim, joined as its handler splits them."""
@@ -66,8 +68,9 @@ def render_tool_call(name: str, arguments: dict) -> str:
         return f"{name}({payload})"
     present = [i for i, key in enumerate(names) if key in arguments]
     values = [arguments.get(key, "") for key in names[:present[-1] + 1]] if present else []
-    if declaration and declaration.variadic and present and present[-1] == len(names) - 1 and isinstance(values[-1], list):
-        values = values[:-1] + values[-1]
+    if declaration and declaration.variadic and present and present[-1] == len(names) - 1:
+        last = values[-1]
+        values = values[:-1] + (last if isinstance(last, list) else split_variadic(str(last)))
     extra = [value for key, value in arguments.items() if key not in names]
     if extra:
         trace(f"keep format: {name} has {len(extra)} argument(s) outside its declaration, passed after the declared ones")

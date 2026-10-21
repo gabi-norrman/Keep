@@ -117,8 +117,8 @@ class QwenFormat(NamedParameterFormat):
             return None, None
         invokes = self._invokes(buffer[start + len(OPEN):end])
         if not invokes:
-            trace(f"Qwen format: a <tool_call> block without a <function=…> invoke: {buffer[start:end]!r}")
-            return None, None
+            trace(f"Qwen format: a <tool_call> block without a <function=…> invoke, dropped: {buffer[start:end]!r}")
+            return None, buffer[end + len(CLOSE):]
         name, arguments = invokes[0]
         params = self._positional(name, arguments)
         # The further invokes of the block go back as blocks of their own, so the processor

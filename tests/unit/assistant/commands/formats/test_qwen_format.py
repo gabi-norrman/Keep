@@ -165,8 +165,9 @@ class TestParsing:
         assert fmt.partial_tail("Turning it on <b") == -1
         assert fmt.partial_tail("Turning it on") == -1
 
-    def test_a_block_without_an_invoke_is_no_call(self, fmt):
-        assert fmt.extract(f"{OPEN}\nnothing\n{CLOSE}") == (None, None)
+    def test_a_block_without_an_invoke_is_no_call_and_hands_back_what_follows_it(self, fmt):
+        assert fmt.extract(f"{OPEN}\nnothing\n{CLOSE}\nDone.") == (None, "\nDone.")
+        assert fmt.call_end(f"{OPEN}\nnothing\n{CLOSE}\nDone.") == len(f"{OPEN}\nnothing\n{CLOSE}")
         assert fmt.unterminated(f"{OPEN}\nnoth") is None
 
     def test_a_bare_name_or_plain_text_is_never_unterminated(self, fmt):
@@ -215,9 +216,6 @@ class TestStreaming:
         assert processor.calls == [("dim", ["Kitchen lamp", "40"]), ("load_toolkit", ["email", "web"])]
         assert OPEN not in out and "Done." in out
 
-    @pytest.mark.xfail(strict=True, reason="a complete <tool_call> block without a <function=…> extracts to no "
-                                           "call, and process_one_command then truncates the reply: the prose and "
-                                           "the calls after the empty block are lost")
     def test_an_empty_block_is_dropped_but_what_follows_it_is_kept(self, processor):
         reply = (f"{OPEN}\n{CLOSE}\nSure, done.\n"
                  + block("turn_on", ("light_name", "Kitchen lamp")) + "\nAnd that.")

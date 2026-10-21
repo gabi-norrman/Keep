@@ -354,14 +354,16 @@ class CommandProcessor:
         self.command_running_in_background = False
 
     def process_one_command(self, content: str, dialog_manager) -> str:
-        result = self.format.extract(content)
-        if result[0] is not None:
-            (command_name, params, _display), remainder = result
+        call, remainder = self.format.extract(content)
+        if call is not None:
+            command_name, params, _display = call
             self.invoke_command(command_name, params, dialog_manager)
             return remainder
-        else:
-            error("Could not find command, will truncate response.")
-            return ""
+        if remainder is not None:
+            info(f"A complete call block without a call in it — dropped, the reply goes on after it: {content[:80]!r}")
+            return remainder
+        error("Could not find command, will truncate response.")
+        return ""
 
     def _is_partial_tag_match(self, content: str, tag: str) -> int:
         """

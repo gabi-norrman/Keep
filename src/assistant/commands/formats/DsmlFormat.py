@@ -148,8 +148,8 @@ class DsmlFormat(NamedParameterFormat):
             return None, None
         invokes = self._invokes(buffer[start + len(OPEN):end])
         if not invokes:
-            trace(f"dsml format: a calls block without an invoke: {buffer[start:end]!r}")
-            return None, None
+            trace(f"dsml format: a calls block without an invoke, dropped: {buffer[start:end]!r}")
+            return None, buffer[end + len(CLOSE):]
         name, arguments = invokes[0]
         params = self._positional(name, self._values(name, arguments))
         # The further invokes of the block go back as blocks of their own, so the processor

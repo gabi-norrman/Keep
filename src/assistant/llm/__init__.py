@@ -77,12 +77,16 @@ _local_only_logged: set[str] = set()
 def local_only_class() -> str | None:
     """The backend `ollama.local_only` routes every tier to: 'OllamaLLM' for `true`, the class
     named when the key holds a class name (`Ds4LLM` for a local ds4-server), None when the switch
-    is off."""
+    is off. `config_set` stores the typed text, so "true" and "false" mean the bools."""
     value = config.get('ollama.local_only', False)
+    if isinstance(value, str):
+        value = value.strip()
+        if value.lower() in ('true', 'false'):
+            value = value.lower() == 'true'
     if value is True:
         return 'OllamaLLM'
-    if isinstance(value, str) and value.strip():
-        return value.strip()
+    if isinstance(value, str) and value:
+        return value
     return None
 
 

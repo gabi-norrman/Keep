@@ -72,8 +72,6 @@ class TestExtract:
                 b"\\uc2 \\u229??ngest {\\b fet} \\'e4r\\par}")
         assert rtf_text(data) == "Pris\t€10\nx.example\nångest fet är"
 
-    @pytest.mark.xfail(strict=True, reason="looks_like_text decodes the first 8192 bytes alone, so a multi-byte "
-                                           "character cut at the edge makes a UTF-8 text file 'binary'")
     def test_a_long_utf8_text_with_an_unknown_extension_is_still_text(self):
         # Swedish prose over 8 KB: the 8192-byte head ends inside an "å" for every odd offset.
         text = "a" + "å" * 5000
@@ -85,8 +83,6 @@ class TestExtract:
         assert rtf_text(b"{\\rtf1\\ansi\\uc2 \\u8364\\'80\\'ac10}") == "€10"
         assert rtf_text(b"{\\rtf1\\ansi \\u-3913?}") == chr(65536 - 3913)
 
-    @pytest.mark.xfail(strict=True, reason="the \\u fallback count is not restored at the group's end, so a "
-                                           "\\'xx right after a {\\uN} group is swallowed as the fallback")
     def test_the_unicode_fallback_count_ends_with_its_group(self):
         assert rtf_text(b"{\\rtf1\\ansi {\\u246}\\'f6x}") == "ööx"
 

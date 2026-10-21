@@ -19,7 +19,8 @@ block arrives as content deltas and then one `tool_calls` delta carries the whol
 content is withheld from the first DSML sentinel on, and the merged `tool_calls` are written
 back as call text in the active command format and yielded, so the processor sees the call
 the model wrote in one piece (the server repairs a truncated block before it hands it over);
-withheld text with no `tool_calls` behind it is released as written for Keep's own parser.
+withheld text with no rendered call behind it (no `tool_calls`, or a delta without a function
+name) is released as written for Keep's own parser.
 
 The live KV cache (step 5b of docs/plans/COMMAND_FORMATS_PLAN.md): every request declares one
 static tool, so ds4 renders the history in its tool shape and the reasoning of every assistant
@@ -27,6 +28,23 @@ turn is replayed in it; on the way out `Ds4Replay` rebuilds Keep's text rows int
 each past call as the `tool_calls` entry with the id ds4 assigned (ds4 then puts the sampled
 tokens back itself), its result as a `role: tool` message — from a side store this class fills
 after every reply. A follow-up turn then prefills only its own tail instead of the whole prompt.
+
+The replay covers one miss only: the next turn of the same dialog. Any other prompt in between
+(another tier, the autonomous check, a second dialog) or a server restart evicts the live
+context, and that is the server's own fix — start it with a disk KV cache:
+
+    ./ds4-server --kv-disk-dir ~/.ds4/server-kv --kv-disk-space-mb 16384
+
+The server then saves whole prefixes (the first prompt cut back to its last user turn, every
+10k aligned tokens of a long prefill, the live state whenever another prompt evicts it, and at
+shutdown), and a request loads the longest saved prefix of its prompt and prefills the rest.
+Measured on the test host, 2026-10-20, a 16.5k-token prompt: the switch between two prompts
+12.3 s → 0.2 s on V4.1 Flash, 31 s → 0.17 s on GLM 5.2. One saved entry is ~111 MiB on Flash and
+~517 MiB on GLM at that length, so 16 GB holds about 140 or 30 of them; the default budget is
+4 GB. The two fixes are complementary, not alternatives: without the replay a turn after a
+command diverges at the past call, no saved prefix ends there, and the whole history tail
+(15–35 KB, roughly 4k–9k tokens, a few seconds) is prefilled again every turn — the disk cache
+only brings the fallback down from the whole prompt to that tail.
 """
 import json
 import time
@@ -188,16 +206,17 @@ class Ds4LLM(ChatGPTLLM):
         return (text, "") if at < 0 else (text[:at], text[at:])
 
     @staticmethod
-    def _release_withheld(withheld: str, calls: list) -> str:
-        """What becomes of the content withheld from the DSML sentinel on once the reply is
-        complete: nothing when the server parsed it into tool calls, the text as written when
-        it did not — Keep's own parser then reads what it can."""
+    def _release_withheld(withheld: str) -> str:
+        """The content withheld from the DSML sentinel on, once the reply is complete and no
+        parsed call was rendered in its place: the text as written — Keep's own parser then
+        reads what it can. The caller passes it only in that case: a `tool_calls` delta
+        without a function name renders to nothing, and the text it stood for must not be
+        lost with it."""
         if not withheld:
             return ""
-        if calls:
-            return ""
-        note(f"ds4 left DSML text in the content without tool_calls behind it — the model wrote a block "
-             f"the server did not take; the command parser reads it as written ({withheld.count(dsml.OPEN)} opener(s))")
+        note(f"ds4 left DSML text in the content without a rendered tool call behind it — the model wrote a "
+             f"block the server did not take, or handed back a call without a name; the command parser reads "
+             f"it as written ({withheld.count(dsml.OPEN)} opener(s))")
         return withheld
 
     def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
@@ -253,7 +272,7 @@ class Ds4LLM(ChatGPTLLM):
         if withheld:
             trace(f"ds4 withheld {len(withheld)} chars of DSML text from the reply ({len(calls)} tool call(s) parsed)")
         rendered = self._rendered_calls([calls[i] for i in sorted(calls)])
-        tail = self._tail(rendered) or self._release_withheld(withheld, list(calls))
+        tail = self._tail(rendered) or self._release_withheld(withheld)
         if tail:
             if reply and not reply.endswith("\n"):
                 tail = "\n" + tail
@@ -285,7 +304,7 @@ class Ds4LLM(ChatGPTLLM):
         calls = getattr(message, 'tool_calls', None) or []
         content, withheld = self._split_at_sentinel(message.content or "")
         rendered = self._rendered_calls(calls)
-        tail = self._tail(rendered) or self._release_withheld(withheld, calls)
+        tail = self._tail(rendered) or self._release_withheld(withheld)
         if tail and content and not content.endswith("\n"):
             tail = "\n" + tail
         self._remember(content + tail, reasoning, content, rendered)

@@ -123,8 +123,9 @@ class NamedParameterFormat(CommandFormat):
 
     def call_end(self, buffer: str) -> int:
         """The whole block, invokes and all: `extract` re-renders the further invokes into its
-        rest, so the rest's length says nothing about where the block ends as written."""
-        if self.extract(buffer)[0] is None:
+        rest, so the rest's length says nothing about where the block ends as written. A block
+        without an invoke is a span too — read out to no call, so a reader drops it."""
+        if self.extract(buffer)[1] is None:
             return -1
         return buffer.find(self.CLOSE, buffer.find(self.OPEN)) + len(self.CLOSE)
 
