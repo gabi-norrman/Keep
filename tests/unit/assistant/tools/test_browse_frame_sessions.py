@@ -24,13 +24,22 @@ class FakeTarget:
 
 
 class FakeBrowser:
-    def __init__(self, targets, update_error=None):
+    """`live` is what Target.getTargets answers: by default every target of the registry,
+    so a test that does not care sees no filtering; a list narrows it, an exception fails it."""
+    def __init__(self, targets, update_error=None, live=None):
         self.targets = targets
         self._update_error = update_error
+        self._live = live
+        self.connection = SimpleNamespace(send=self._send)
 
     async def update_targets(self):
         if self._update_error:
             raise self._update_error
+
+    async def _send(self, _cdp_call):
+        if isinstance(self._live, Exception):
+            raise self._live
+        return self._live if self._live is not None else [t.target for t in self.targets if t.target]
 
 
 def make_wa(browser=None, frame_sessions=None):
@@ -185,6 +194,24 @@ class TestListFrameTargets:
     def test_update_targets_failure_returns_empty(self):
         wa = make_wa(browser=FakeBrowser([], update_error=RuntimeError('closed')))
         assert run(wa._async_list_frame_targets()) == []
+
+    def test_closed_target_nodriver_still_lists_is_skipped_and_its_session_dropped(self):
+        # nodriver's registry never drops a closed target: a tracking pixel's frame
+        # from an earlier page would be attached to, and timed out on, at every
+        # snapshot of the session. Chrome's own list is authoritative.
+        pixel = FakeTarget('pixel', url='https://pixel.example/tr?id=1')
+        card = FakeTarget('card', url='https://js.stripe.com/v3/elements-inner-card.html')
+        wa = make_wa(browser=FakeBrowser([pixel, card], live=[card.target]),
+                     frame_sessions={'pixel': 's1', 'card': 's2'})
+        result = run(wa._async_list_frame_targets())
+        assert [ti.target_id for ti in result] == ['card']
+        assert wa._browse_frame_sessions == {'card': 's2'}
+
+    def test_get_targets_failure_keeps_nodriver_list(self):
+        targets = [FakeTarget('a', url='https://pay.klarna.com/frame'),
+                   FakeTarget('b', url='https://js.stripe.com/v3/elements-inner-card.html')]
+        wa = make_wa(browser=FakeBrowser(targets, live=RuntimeError('transport gone')))
+        assert [ti.target_id for ti in run(wa._async_list_frame_targets())] == ['a', 'b']
 
 
 @pytest.mark.unit
@@ -607,13 +634,45 @@ class TestBrowseClickAt:
                 patch.object(WebAccess, '_async_wait_for_page_ready', new=AsyncMock()), \
                 patch.object(WebAccess, '_async_take_snapshot', new=AsyncMock(return_value='SNAP')):
             result = run(wa._async_browse_click_at('412.5, 583'))
-        assert result == ('Clicked at (412.5, 583) — hit '
-                          '<iframe src=https://js.stripe.com/v3/elements-inner-card-1.html>.\n\nSNAP')
+        assert result.startswith('Clicked at (412.5, 583) — hit '
+                                 '<iframe src=https://js.stripe.com/v3/elements-inner-card-1.html>.\n\n')
+        assert result.endswith('\n\nSNAP')
         sent = [c.args[0] for c in wa._tab.send.await_args_list]
         assert len(sent) == 3
         # each nodriver cdp call is a generator whose first yield is the wire message
         types = [next(g)['params']['type'] for g in sent]
         assert types == ['mouseMoved', 'mousePressed', 'mouseReleased']
+
+    def _click(self, wa, hit, mark):
+        with patch.object(WebAccess, '_async_browse_ready_midsession', new=AsyncMock(return_value=None)), \
+                patch.object(WebAccess, '_evaluate', new=AsyncMock(return_value=hit)), \
+                patch.object(WebAccess, '_async_action_mark', new=mark), \
+                patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()), \
+                patch.object(WebAccess, '_async_snapshot_after_action',
+                             new=AsyncMock(return_value='SNAP')) as after:
+            result = run(wa._async_browse_click_at('412, 583'))
+        return result, after
+
+    def test_click_into_iframe_skips_the_unchanged_verdict_and_says_so(self):
+        # The main document's text signature cannot see what happened inside the
+        # frame, so "the page looks exactly as before" would be noise — but a 3-D
+        # Secure submit in a frame does drive the parent, so the page still gets its
+        # time to react: the mark is taken, only the verdict is off.
+        mark = AsyncMock(return_value={'sig': 'x'})
+        result, after = self._click(self._wa(), 'iframe src=https://static-assets-pay.shop.example/v5', mark)
+        mark.assert_awaited_once()
+        assert after.await_args.args[0] == {'sig': 'x'}
+        assert after.await_args.kwargs['verdict'] is False
+        assert 'NOTE: the click landed inside an iframe' in result
+        assert result.endswith('SNAP')
+
+    def test_click_on_the_page_itself_keeps_the_change_detection(self):
+        mark = AsyncMock(return_value={'sig': 'x'})
+        result, after = self._click(self._wa(), 'button "Betala"', mark)
+        mark.assert_awaited_once()
+        assert after.await_args.args[0] == {'sig': 'x'}
+        assert after.await_args.kwargs['verdict'] is True
+        assert 'inside an iframe' not in result
 
 
 @pytest.mark.unit

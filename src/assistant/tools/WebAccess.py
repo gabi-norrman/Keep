@@ -2,6 +2,7 @@ import asyncio
 import atexit
 import base64
 import concurrent.futures
+import io
 import json
 import os
 import platform
@@ -799,10 +800,18 @@ class WebAccess(Integration):
         # the Sec-Ch-Ua headers itself and popups inherit the UA. No --disable-gpu
         # either: SwiftShader as the WebGL renderer is another headless tell.
         ua = await asyncio.to_thread(self._launch_user_agent, chrome_path)
+        # StrictOriginIsolation: Chrome's default site isolation splits frames by
+        # site (scheme + registrable domain), so a cross-origin iframe on a sub-domain
+        # of the page's own site (Tesla's static-assets-pay.tesla.com inside
+        # shop.tesla.com, app.bokabord.se inside www.bokabord.se) stays in the page's
+        # renderer: no CDP target, and contentDocument is blocked — the snapshot can
+        # read it from neither side. Isolating by origin makes every cross-origin
+        # frame an out-of-process one, which the snapshot already collects from.
         browser_args = [
             f'--user-agent={ua}',
             '--window-size=1920,1080',
             '--disable-dev-shm-usage',
+            '--enable-features=StrictOriginIsolation',
         ]
 
         self._kill_orphan_chrome_using_profile()
@@ -2186,6 +2195,19 @@ class WebAccess(Integration):
         await self._cdp_wait_for(
             self._tab.send(cdp.input_.dispatch_key_event(**up_kwargs)), self._EVAL_TIMEOUT)
 
+    async def _async_live_target_ids(self) -> Optional[set]:
+        """The ids of the targets Chrome still has (Target.getTargets), or None when the call
+        fails. nodriver drops a target only when Chrome announces its destruction, and an
+        iframe target's can go unannounced, so without this a tracking pixel's frame from an
+        earlier page is attached to, and timed out on, at every snapshot of the session."""
+        try:
+            infos = await self._cdp_wait_for(
+                self._browser.connection.send(cdp.target.get_targets()), self._EVAL_TIMEOUT)
+        except Exception as e:
+            trace(f"frame targets: Target.getTargets failed — keeping nodriver's list: {e}")
+            return None
+        return {str(ti.target_id) for ti in infos or []}
+
     async def _async_list_frame_targets(self) -> list:
         """Return TargetInfo for each out-of-process iframe target worth snapshotting."""
         if self._browser is None:
@@ -2195,6 +2217,8 @@ class WebAccess(Integration):
         except Exception as e:
             trace(f"update_targets failed: {e}")
             return []
+        live = await self._async_live_target_ids()
+        closed = 0
         # An iframe target whose URL is the page itself is the previous page's
         # frame lingering after browse_open() navigated top-level to that same URL
         # (the "open the iframe directly" pattern): its session is dead and every
@@ -2205,6 +2229,9 @@ class WebAccess(Integration):
         for t in self._browser.targets:
             ti = getattr(t, 'target', None)
             if ti is None or ti.type_ != 'iframe':
+                continue
+            if live is not None and str(ti.target_id) not in live:
+                closed += 1
                 continue
             url = ti.url or ''
             if not url or url == 'about:blank':
@@ -2220,6 +2247,8 @@ class WebAccess(Integration):
                 continue
             frames.append(ti)
         self._blank_frame_target_ids = frozenset(blank_ids)
+        if closed:
+            trace(f"frame targets: skipped {closed} closed iframe target(s) nodriver still lists")
         if blank_ids:
             trace(f"frame targets: {len(blank_ids)} iframe target(s) without a URL yet")
         # Prune sessions for targets that no longer exist (frame navigated away/removed)
@@ -3395,7 +3424,7 @@ class WebAccess(Integration):
     let all = collect(document, window, sourceLabel || '');
 
     // Walk same-origin iframes; record cross-origin iframe srcs separately so the
-    // caller can surface them (the LLM can then browse_open() the iframe URL directly).
+    // caller can surface them (the snapshot lists the ones it cannot read).
     const skipIframePatterns = ['maps.google.com', 'google.com/maps', 'cookiebot.com'];
     const crossOriginFrames = [];
     const hiddenFrames = [];
@@ -3745,7 +3774,10 @@ class WebAccess(Integration):
             body += (
                 f"\n\n{SnapshotFormat.IFRAMES_NOTE} (their contents are NOT in the "
                 "snapshot above — if the frame was just inserted, browse_snapshot() re-reads the page "
-                "once it has loaded; otherwise call browse_open() on the iframe URL directly):\n"
+                "once it has loaded. A payment, checkout or sign-in frame belongs to this page's "
+                "session, so never open its URL top-level: browse_screenshot() shows it and "
+                "browse_click_at() reaches into it. Only a content frame, an embedded article or map, "
+                "can be read with browse_open() on its URL):\n"
                 + frame_lines
             )
         return header + body
@@ -4375,13 +4407,15 @@ class WebAccess(Integration):
             sig = probe['sig']
             await asyncio.sleep(self._SETTLE_POLL)
 
-    async def _async_snapshot_after_action(self, mark: Optional[dict], what: str) -> str:
+    async def _async_snapshot_after_action(self, mark: Optional[dict], what: str,
+                                           verdict: bool = True) -> str:
         """The common tail of browse_act / browse_key / browse_click_at: let the page react
         to the action, wait for it to settle, snapshot. With a mark (the action could change
         the page: a click, Enter, a key) a page whose text signature still equals the one
         before the action gets one more wait and a re-read, and stays flagged as unchanged
         if it still is — the LLM must not act on a page that only looks like the one it
-        already saw."""
+        already saw. `verdict` False keeps the waits but skips that re-read and flag, for an
+        action whose effect the signature cannot see (a click inside an iframe)."""
         probe = None
         if mark is not None:
             _, probe = await self._async_wait_for_page_change(mark)
@@ -4393,7 +4427,7 @@ class WebAccess(Integration):
                 await self._async_wait_for_settle(self._tab, probe['sig'] if probe else None)
         snapshot = await self._async_take_snapshot()
         before = mark.get('sig') if mark else None
-        if before is None or self._tab is None:
+        if before is None or self._tab is None or not verdict:
             return snapshot
         probe = await self._async_page_probe(self._tab)
         if probe is None or probe['sig'] != before:
@@ -4735,16 +4769,27 @@ class WebAccess(Integration):
                     "(browse_eval: el.scrollIntoView()) and re-read its getBoundingClientRect().")
 
         info(f"browse_click_at: ({x:g}, {y:g}) on {hit}")
+        # Inside an iframe the main document's text signature cannot see what the
+        # click did, so the unchanged-page verdict would be noise: the page still gets
+        # its time to react (a 3-D Secure submit drives the parent), the verdict is
+        # skipped and the reply says why.
+        in_frame = hit.startswith('iframe')
         mark = await self._async_action_mark()
         try:
             await self._async_dispatch_click_at(x, y)
         except Exception as e:
             return f"ERROR: click at ({x:g}, {y:g}) failed: {self._describe_error(e)}"
 
-        snapshot = await self._async_snapshot_after_action(mark, f"the click at ({x:g}, {y:g})")
+        snapshot = await self._async_snapshot_after_action(mark, f"the click at ({x:g}, {y:g})",
+                                                           verdict=not in_frame)
+        frame_note = ''
+        if in_frame:
+            frame_note = ("NOTE: the click landed inside an iframe, and what the frame did is not "
+                          "visible in this snapshot of the page around it — browse_screenshot() shows "
+                          "it; browse_snapshot() lists the frame's fields when it can be read.\n\n")
         return (self._take_dialog_notes()
                 + f"Clicked at ({x:g}, {y:g}) — hit <{hit}>.\n\n"
-                + snapshot)
+                + frame_note + snapshot)
 
     # The point a real mouse click on the element lands on: the centre of its box when
     # that lies in the viewport and nothing else is drawn over it (a cookie veil, a modal),
@@ -5110,6 +5155,7 @@ class WebAccess(Integration):
             return f"ERROR: screenshot capture failed: {self._describe_error(e)}"
 
         png_bytes = base64.b64decode(b64)
+        geometry = await self._async_page_geometry()
 
         out_dir = self._screenshot_dir()
         os.makedirs(out_dir, exist_ok=True)
@@ -5134,9 +5180,58 @@ class WebAccess(Integration):
         info(f"browse_screenshot: sending {len(llm_bytes)} bytes ({media_type}) to LLM")
 
         return [
-            {"type": "text", "text": f"Saved screenshot of {url} to {path} ({size_kb} KB)."},
+            {"type": "text", "text": f"Saved screenshot of {url} to {path} ({size_kb} KB)."
+                                     + self._screenshot_scale_note(png_bytes, llm_bytes, geometry)},
             {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": llm_b64}},
         ]
+
+    async def _async_page_geometry(self) -> Optional[dict]:
+        """The viewport, scroll position and device pixel ratio, for saying what a screenshot shows."""
+        try:
+            geometry = await self._evaluate(
+                self._tab,
+                "({vw: window.innerWidth, vh: window.innerHeight, dpr: window.devicePixelRatio, "
+                "sx: Math.round(window.scrollX), sy: Math.round(window.scrollY)})")
+        except Exception as e:
+            trace(f"browse_screenshot: page geometry lookup failed: {self._describe_error(e)}")
+            return None
+        return geometry if isinstance(geometry, dict) else None
+
+    @staticmethod
+    def _image_size(data: bytes) -> Optional[tuple]:
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(data)) as img:
+                return img.size
+        except Exception:
+            return None
+
+    @classmethod
+    def _screenshot_scale_note(cls, png_bytes: bytes, image_bytes: bytes, geometry: Optional[dict]) -> str:
+        """What the model needs to click where it sees something: the image is the whole page
+        downscaled, so one image pixel is some CSS pixels, and browse_click_at wants viewport
+        coordinates, which start at the scroll position. The page's CSS size is the capture's
+        pixel size over the device pixel ratio — what was captured, whatever the document
+        measures after the capture — and each axis gets its own factor, since the downscale
+        rounds the two dimensions separately. Empty when a size is unknown: a missing note
+        costs a mis-click, a wrong one costs several."""
+        png = cls._image_size(png_bytes)
+        size = cls._image_size(image_bytes)
+        dpr = (geometry or {}).get('dpr') or 0
+        if not png or not size or dpr <= 0:
+            return ''
+        pw, ph = round(png[0] / dpr), round(png[1] / dpr)
+        w, h = size
+        fx, fy = pw / w, ph / h
+        factors = (f"multiply image coordinates by {fx:.2f}" if f"{fx:.2f}" == f"{fy:.2f}"
+                   else f"multiply image x by {fx:.2f} and image y by {fy:.2f}")
+        info(f"browse_screenshot: image {w}x{h} px for a {pw}x{ph} CSS px page — "
+             f"{fx:.2f} x {fy:.2f} CSS px per image px")
+        return (f" The image is {w}x{h} px and shows the whole page, {pw}x{ph} CSS px: {factors} "
+                f"to get CSS pixels. browse_click_at takes viewport coordinates (viewport "
+                f"{geometry.get('vw')}x{geometry.get('vh')}, scrolled to ({geometry.get('sx')}, "
+                f"{geometry.get('sy')})): subtract the scroll offset, and scroll a point outside the "
+                "viewport into view first.")
 
     def browse_screenshot(self, _params=None):
         """Capture a full-page PNG of the current browse session, save it under log/screenshots/, and return the

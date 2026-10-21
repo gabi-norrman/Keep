@@ -57,7 +57,9 @@ payment step whose card fields are missing, a `Cross-origin iframes on this page
 loading (Stripe card fields, hCaptcha), or after a `browse_eval` that changed the page. Payment-provider fields
 inside cross-origin iframes ARE listed and fillable — they carry an `[in js.stripe.com/v3/…]` suffix — so
 re-snapshot rather than concluding they are unreachable. Page JavaScript (`browse_eval` reading `contentDocument`)
-can never see inside a cross-origin iframe; the snapshot can.
+can never see inside a cross-origin iframe; the snapshot can. A frame that stays in the note after a re-snapshot
+is one the browser cannot read: never open a payment or sign-in frame's URL top-level (that loses the page's
+session) — take a `browse_screenshot` and work in it with `browse_click_at`.
 
 `browse_wait(pattern: str, seconds: int = 30)` — wait for a handoff (BankID, OAuth login, 3-D Secure) to finish: polls the page's
 URL, title and visible text once a second, following popups that open or close, until the case-insensitive regex
@@ -74,8 +76,10 @@ screenshot cannot.
 
 `browse_click_at(x: int, y: int)` — last resort: one REAL mouse click at viewport coordinates (CSS pixels, as
 `getBoundingClientRect()` reports) for something no snapshot lists. Get the iframe's rect with `browse_eval`, add the
-field's offset inside it, scroll it into view first if needed. Returns what was hit plus a fresh snapshot. Prefer
-`browse_act` on a snapshot index whenever one exists.
+field's offset inside it, scroll it into view first if needed. Coordinates read off a screenshot are image pixels,
+not CSS pixels: the screenshot reply states the image size, the page size and the factor to multiply by, and the
+scroll offset to subtract. Returns what was hit plus a fresh snapshot. Prefer `browse_act` on a snapshot index
+whenever one exists.
 
 `browse_extract()` — the full readable text of the current page. Call it once you are on the page that holds the
 answer.

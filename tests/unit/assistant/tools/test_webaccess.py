@@ -1427,6 +1427,58 @@ class TestBrowseScreenshot:
         assert cached_bytes == png
         assert cached_path == str(files[0])
 
+    def _screenshot_text(self, tmp_path, png, geometry):
+        wa = self._bare_webaccess()
+        wa._tab = Mock()
+        wa._tab.target = Mock(url="https://example.com/foo")
+        wa._tab.send = AsyncMock(return_value=base64.b64encode(png).decode('ascii'))
+        wa._browse_session_url = "https://example.com/foo"
+        with patch.object(WebAccess, '_screenshot_dir', staticmethod(lambda: str(tmp_path))), \
+                patch.object(WebAccess, '_evaluate', new=AsyncMock(return_value=geometry)):
+            return asyncio.run(wa._async_browse_screenshot())[0]["text"]
+
+    @staticmethod
+    def _png(w, h):
+        from PIL import Image
+        from io import BytesIO
+        buf = BytesIO()
+        Image.new("RGB", (w, h), color=(120, 200, 80)).save(buf, format="PNG")
+        return buf.getvalue()
+
+    def test_reply_states_the_image_to_css_pixel_factor_and_scroll_offset(self, tmp_path):
+        # The model reads coordinates off the image, which is the whole page downscaled
+        # to 1024 px: a 2048x1536 capture on a 2x display is a 1024x768 CSS px page and
+        # a 1024x768 image, one CSS px per image px; the viewport coordinates
+        # browse_click_at wants start at the scroll position.
+        geometry = {'vw': 1024, 'vh': 600, 'dpr': 2, 'sx': 0, 'sy': 300}
+        text = self._screenshot_text(tmp_path, self._png(2048, 1536), geometry)
+        assert "1024x768 px" in text
+        assert "1024x768 CSS px" in text
+        assert "multiply image coordinates by 1.00" in text
+        assert "(0, 300)" in text
+
+    def test_tall_page_gets_a_factor_per_axis(self, tmp_path):
+        # The downscale rounds each dimension down separately: a 1920x30000 page becomes
+        # a 65x1024 image, 29.54 CSS px per image px across but 29.30 down — one factor
+        # would put a click near the bottom some 240 CSS px off.
+        geometry = {'vw': 1920, 'vh': 1080, 'dpr': 1, 'sx': 0, 'sy': 0}
+        text = self._screenshot_text(tmp_path, self._png(1920, 30000), geometry)
+        assert "65x1024 px" in text
+        assert "multiply image x by 29.54 and image y by 29.30" in text
+
+    def test_reply_has_no_factor_when_the_page_size_is_unknown(self, tmp_path):
+        png = self._real_png_bytes()
+        wa = self._bare_webaccess()
+        wa._tab = Mock()
+        wa._tab.target = Mock(url="https://example.com/foo")
+        wa._tab.send = AsyncMock(return_value=base64.b64encode(png).decode('ascii'))
+        wa._browse_session_url = "https://example.com/foo"
+        with patch.object(WebAccess, '_screenshot_dir', staticmethod(lambda: str(tmp_path))), \
+                patch.object(WebAccess, '_evaluate', new=AsyncMock(side_effect=RuntimeError('gone'))):
+            text = asyncio.run(wa._async_browse_screenshot())[0]["text"]
+        assert "multiply" not in text
+        assert text.startswith("Saved screenshot of https://example.com/foo to ")
+
     def test_browse_close_clears_cached_screenshot(self):
         wa = self._bare_webaccess()
         wa._last_screenshot_bytes = b"some_png"

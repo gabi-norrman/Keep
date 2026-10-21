@@ -677,6 +677,10 @@ class TestInitializeDriverContract:
         args = start_mock.await_args.kwargs['browser_args']
         assert '--user-agent=Mozilla/5.0 test Chrome/154.0.0.0' in args
         assert '--disable-gpu' not in args
+        # Contract with Chrome: this feature flag is what makes a same-site cross-origin
+        # iframe (a payment frame on the shop's own sub-domain) an out-of-process target
+        # the snapshot can collect from.
+        assert '--enable-features=StrictOriginIsolation' in args
         assert not any('setUserAgentOverride' in str(c) or 'setExtraHTTPHeaders' in str(c)
                        for c in base_tab.send.await_args_list)
         # _mark_browser_up ran: mid-session restart detection needs the bump,

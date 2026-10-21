@@ -202,6 +202,21 @@ class TestSnapshotAfterAction:
         assert result.endswith("\n\nS2")
         assert 'browse_snapshot()' in result
 
+    def test_verdict_off_keeps_the_waits_but_never_retries_or_flags(self):
+        # A click inside an iframe: the parent may still react (a 3-D Secure submit),
+        # so the change wait and the settle run — but an unchanged signature proves
+        # nothing about the frame, so no second read and no "looks exactly as before".
+        wa = make_wa()
+        mark = {'sig': 'OLD'}
+        snapshots = ['S1', 'S2']
+        p = tail_patches(snapshots, ['OLD', 'OLD'])
+        with p[0] as change, p[1], p[2], p[3] as settle, p[4], p[5]:
+            result = run(wa._async_snapshot_after_action(mark, "the click at (1, 2)", verdict=False))
+        assert result == 'S1'
+        change.assert_awaited_once_with(mark)
+        settle.assert_awaited_once()
+        assert snapshots == ['S2'], "the page was read a second time"
+
     def test_no_mark_means_no_change_wait_no_settle_no_retry(self):
         wa = make_wa()
         p = tail_patches(['S1'], ['OLD'])
