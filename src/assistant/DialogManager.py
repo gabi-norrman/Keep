@@ -314,8 +314,25 @@ class DialogManager:
         DialogManager (and thus llm_response_raw) is built for each one."""
         return len(self.llm_response_raw) // self.CHARS_PER_TOKEN_ESTIMATE
 
+    # The assistant turn that closes the test suite's toolkit result when the query is sent as
+    # a turn of its own (_query_as_own_turn): a fixture like the toolkit turn before it.
+    TEST_SUITE_TOOLKITS_ACK = "Toolkits loaded."
+
+    def _query_as_own_turn(self) -> bool:
+        """In the test suite, on a backend that asks for it (AbstractLLM.prefers_query_as_own_turn),
+        the query follows the toolkit turn as a user turn of its own — behind a short assistant
+        turn, since a user turn right after a tool result is rendered into the same block."""
+        ai = getattr(self, "ai", None)
+        return bool(self.test_suite_mode and ai is not None and ai.prefers_query_as_own_turn())
+
     def stream_llm_response(self) -> Generator[str, None, None]:
         if (self.messages and self.messages[-1]["role"] == self.reply_from_role
+                and isinstance(self.reply_to_llm, str) and isinstance(self.messages[-1]["content"], str)
+                and self._query_as_own_turn()):
+            trace("Test suite: the query is sent as its own user turn after the toolkit result")
+            self.messages.append({"role": "assistant", "content": self.TEST_SUITE_TOOLKITS_ACK})
+            self.messages.append({"role": self.reply_from_role, "content": self.reply_to_llm})
+        elif (self.messages and self.messages[-1]["role"] == self.reply_from_role
                 and isinstance(self.reply_to_llm, str) and isinstance(self.messages[-1]["content"], str)):
             # Replace, never mutate: the list is a shallow copy, so the trailing dict may be
             # shared with another holder (the test-suite fixtures in PromptManager) and an

@@ -161,6 +161,15 @@ class AbstractLLM(ABC):
         DevelopmentConfig.BYTE_PREFIX_TAIL). Override in subclasses."""
         return False
 
+    def prefers_query_as_own_turn(self) -> bool:
+        """True when the test suite's query should be its own user turn, behind a short assistant
+        turn that closes the toolkit result, instead of being merged into that result: ds4-server
+        cuts its reusable disk checkpoint right before a prompt's last user turn
+        (`--kv-cache-cold-anchor last-user`), so with the query apart every test loads the whole
+        fixed prefix and prefills the query alone. Production requests are not affected — the
+        merge stays, Claude and Gemini reject same-role adjacency. Override in subclasses."""
+        return False
+
     def pre_heat_cache(self, messages: list[dict]):
         """Pre-heat the LLM's cache with the given messages. Default: no-op.
         Override in subclasses that benefit from cache warming (e.g., local LLMs)."""

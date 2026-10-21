@@ -150,6 +150,9 @@ class CachedLLM(AbstractLLM):
     def prefers_byte_prefix_tail(self) -> bool:
         return self.llm.prefers_byte_prefix_tail()
 
+    def prefers_query_as_own_turn(self) -> bool:
+        return self.llm.prefers_query_as_own_turn()
+
     def pre_heat_cache(self, messages: list[dict]):
         self.llm.pre_heat_cache(messages)
 
