@@ -493,6 +493,8 @@ class TestInboundText:
         source, text = note.call_args[0]
         assert source == "telegram" and "99" in text and "Bob" in text
         assert "not on" in text and 'allowed_chat_ids[1]' in text
+        # The row is written for the assistant; pushed to the owners' Telegram it reads as an alarm.
+        assert note.call_args.kwargs.get("push") is False
         notifier.return_value.open_conversation.assert_not_called()
 
     @pytest.mark.asyncio

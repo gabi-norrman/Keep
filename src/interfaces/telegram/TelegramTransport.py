@@ -32,7 +32,7 @@ from common import ConfigStore
 from common.ConfigManager import config
 from common.Mp4Metadata import mp4_display_size, mp4_duration_seconds, mp4_is_rotated
 from common.VideoRotation import bake_rotation
-from common.logging import error, fine, info, trace
+from common.logging import error, fine, info, note, trace
 from interfaces.chat import FallbackNotice, RichText
 from interfaces.chat.ChatTransport import ChatTransport
 from interfaces.chat.ChatTypes import (DECISION_APPROVE, DECISION_CANCEL, DECISION_DENY, KIND_PHOTO, KIND_REACTION,
@@ -637,7 +637,9 @@ class TelegramTransport(Integration, ChatTransport):
         with the fact instead (`Notifier.open_conversation`), so the assistant lists the id and
         moves on without the user typing "done"; the row is the fallback when no chat can take
         the turn, and the whole of it once the list has an owner — the setup window stays open
-        for days, and a stranger's Start must not be a turn that hands them the household."""
+        for days, and a stranger's Start must not be a turn that hands them the household.
+        The rows are history-only: the text is written for the assistant, and a stranger's
+        Start pushed to the owners' Telegram reads as an alarm when there is nothing to do."""
         chat_id = update.effective_chat.id
         name = self._chat_name(update)
         info(f"Telegram /start from chat_id: {chat_id}" + (f" (group '{name}')" if name else ""))
@@ -649,20 +651,22 @@ class TelegramTransport(Integration, ChatTransport):
             return
         by = self._sender_name(update)
         if chat_id in self._allowed_chat_ids:
+            note(f"Telegram [{chat_id}]: Start from {by}, an owner's chat")
             system_note("telegram", f"Telegram: {by} pressed Start in a private chat with the bot (chat id {chat_id}). "
-                        "The chat is on telegram_bot.allowed_chat_ids: they are an owner.")
+                        "The chat is on telegram_bot.allowed_chat_ids: they are an owner.", push=False)
             return
+        note(f"Telegram [{chat_id}]: Start from {by}, a chat not on allowed_chat_ids")
         fact = (f"Telegram: {by} pressed Start in a private chat with the bot (chat id {chat_id}). "
                 f"The chat is not on telegram_bot.allowed_chat_ids, so the bot cannot reach them on its own; "
                 f"config_set(\"telegram_bot.allowed_chat_ids[{len(self._allowed_chat_ids)}]\", \"{chat_id}\") "
                 f"makes them an owner — the list is read live.")
         if self._allowed_chat_ids:
-            fact += " Add the id only when an owner asks for it: a Start alone proves nothing."
+            fact += " Add the id only when an owner asks for it; otherwise this can be safely ignored."
         elif FirstRun.in_ftue(verbose=False) and notifier().open_conversation(
                 fact + " Add the id, tell the user the bot is now theirs, and go on with the setup."):
             info(f"Telegram [{chat_id}]: the first Start during the setup — the assistant takes it as a turn")
             return
-        system_note("telegram", fact)
+        system_note("telegram", fact, push=False)
 
     IN_GROUP_STATUSES = ("member", "administrator", "restricted")
 
