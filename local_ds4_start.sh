@@ -22,7 +22,10 @@ DS4_DIR="${DS4_DIR:-$(cd "$(dirname "$0")/.." && pwd)/ds4}"
 cd "$DS4_DIR" 2>/dev/null || { echo "no ds4 checkout at $DS4_DIR — clone github.com/antirez/ds4 beside this repository or set DS4_DIR"; exit 1; }
 
 MODEL="${MODEL:-gguf/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf}"
-CTX="${CTX:-32768}"
+# 64k: the test-suite prompt is ~16.5k tokens and one round's command results (the server log
+# tail alone is ~8.5k) took a test past 32k. The context buffers cost ~8 GiB per 32k on the
+# M5 Ultra (the server's startup "memory:" line), so 64k is cheap next to the 152 GiB model.
+CTX="${CTX:-65536}"
 KV_DIR="${KV_DIR:-$HOME/.ds4/server-kv}"
 KV_MB="${KV_MB:-16384}"
 HOST="${HOST:-0.0.0.0}"
