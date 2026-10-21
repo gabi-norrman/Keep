@@ -17,6 +17,7 @@ _TLS_TRUST = SystemTrust.install()
 import asyncio
 import atexit
 import faulthandler
+import logging
 import os
 import time
 
@@ -369,6 +370,8 @@ def _enable_crash_traces():
 
 def _parse_args():
     sys.stderr = StderrLogger(sys.stderr)
+    # httpx logs every request URL at INFO, and the Telegram Bot API's URL carries the bot token (issue #97)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     if "--developer-mode" in sys.argv:
         sys.argv.remove("--developer-mode")
         DevelopmentConfig.LOCAL_DEVELOPMENT_MODE = True
