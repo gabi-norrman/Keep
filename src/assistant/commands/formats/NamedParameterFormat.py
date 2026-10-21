@@ -10,10 +10,15 @@ value — a JSON list, or names separated by commas — is split back into the p
 """
 import json
 
+from assistant.commands.CommandParser import CommandParser
 from common.logging import trace
 
 from .CommandFormat import CommandFormat
 from .Signatures import Declaration
+
+# The commands whose handler takes the whole payload as one string and splits it itself
+# (`improve_integration(name, request)`): several named values join into that one payload.
+_OPAQUE = CommandParser.RAW_PARAM_COMMANDS | CommandParser.FREE_TEXT_COMMANDS
 
 _JSON_TYPES = {"str": "string", "int": "integer", "float": "number", "bool": "boolean"}
 
@@ -116,6 +121,13 @@ class NamedParameterFormat(CommandFormat):
         start = buffer.find(self.OPEN)
         return start >= 0 and buffer.find(self.CLOSE, start) >= 0
 
+    def call_end(self, buffer: str) -> int:
+        """The whole block, invokes and all: `extract` re-renders the further invokes into its
+        rest, so the rest's length says nothing about where the block ends as written."""
+        if self.extract(buffer)[0] is None:
+            return -1
+        return buffer.find(self.CLOSE, buffer.find(self.OPEN)) + len(self.CLOSE)
+
     # --- the parameters ----------------------------------------------------------------------
 
     def _positional(self, name: str, arguments: list[tuple[str, str]]) -> list[str]:
@@ -128,12 +140,16 @@ class NamedParameterFormat(CommandFormat):
         if names is None or any(key not in names for key in given):
             how = "an undeclared command" if names is None else "parameter(s) outside the declaration"
             trace(f"{self.name} format: {name} parameters taken in the model's order ({how}): {list(given)}")
-            return [value for _, value in arguments]
-        present = [i for i, key in enumerate(names) if key in given]
-        params = [given.get(key, "") for key in names[:present[-1] + 1]] if present else []
-        if self._is_variadic(name) and params and len(params) == len(names):
-            params = params[:-1] + split_variadic(params[-1])
-        trace(f"{self.name} format: {name} parameters ordered by the signature table: {list(given)} → {len(params)} value(s)")
+            params = [value for _, value in arguments]
+        else:
+            present = [i for i, key in enumerate(names) if key in given]
+            params = [given.get(key, "") for key in names[:present[-1] + 1]] if present else []
+            if self._is_variadic(name) and params and len(params) == len(names):
+                params = params[:-1] + split_variadic(params[-1])
+            trace(f"{self.name} format: {name} parameters ordered by the signature table: {list(given)} → {len(params)} value(s)")
+        if name in _OPAQUE and len(params) > 1:
+            trace(f"{self.name} format: {name} is a free-text command, its {len(params)} values joined into one payload")
+            params = [", ".join(params)]
         return params
 
     def _names_of(self, name: str) -> list[str] | None:

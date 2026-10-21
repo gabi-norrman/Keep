@@ -70,8 +70,8 @@ class TestTheInvokeFormat:
 
     @staticmethod
     def guarded(reader, text, rounds=20):
-        """`read` with a bound on its rounds: the reader loops forever on some blocks (the bug
-        below), and a hung test would hold its worker. A count of the format's `find_start`
+        """`read` with a bound on its rounds: a reader that lost its place in a block once looped
+        forever, and a hung test would hold its worker. A count of the format's `find_start`
         calls, not an alarm: a signal lands wherever the loop happens to be, and
         `Commands.describe`, called every round, swallows any exception raised inside it — a
         one-shot alarm caught there left the loop running for good."""
@@ -91,19 +91,19 @@ class TestTheInvokeFormat:
         assert reply.prose == "On it.\n\nDone." and reply.before == []
         assert len(reply.after) == 1 and "Kitchen lamp" in reply.after[0]
 
-    @pytest.mark.xfail(strict=True, reason="the reader finds the end of a call by the length of the format's "
-                                           "remainder, but a block's further invokes come back re-rendered, so "
-                                           "the cut lands inside the block: raw XML in the prose, one echo short")
     def test_a_block_with_two_invokes_gives_two_echoes_and_no_xml(self, invoke_reader):
         text = f"On it.\n{self.block(('turn_on', 'Kitchen lamp'), ('turn_off', 'Hall lamp'))}\nDone."
         reply = self.guarded(invoke_reader, text)
         assert reply.prose == "On it.\n\nDone."
         assert len(reply.after) == 2 and "Kitchen lamp" in reply.after[0] and "Hall lamp" in reply.after[1]
 
-    @pytest.mark.xfail(strict=True, reason="a block whose re-rendered remainder is longer than the text makes the "
-                                           "cut negative, the remainder never shrinks and read() loops forever")
     def test_a_block_of_short_invokes_does_not_hang_the_reader(self, invoke_reader):
         text = ('<function_calls><invoke name="turn_on"></invoke><invoke name="turn_off"></invoke>'
                 '<invoke name="turn_on"></invoke></function_calls>')
         reply = self.guarded(invoke_reader, text)
         assert reply.prose == "" and len(reply.before) + len(reply.after) == 3
+
+    def test_two_blocks_around_the_prose_keep_their_sides(self, invoke_reader):
+        text = f"{self.block(('turn_on', 'Kitchen lamp'))}\nLit.\n{self.block(('turn_off', 'Hall lamp'), ('turn_off', 'Porch'))}"
+        reply = self.guarded(invoke_reader, text)
+        assert reply.prose == "Lit." and len(reply.before) == 1 and len(reply.after) == 2

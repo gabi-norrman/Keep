@@ -54,6 +54,7 @@ class VisibleFormat(CommandFormat):
     def partial_tail(self, buffer): return -1
     def complete(self, buffer, streaming=False): return False
     def extract(self, buffer): return None, None
+    def call_end(self, buffer): return -1
     def unterminated(self, buffer): return None
     def extract_all(self, text): return []
 

@@ -9,7 +9,8 @@ from assistant.commands.formats.DsmlFormat import DsmlFormat
 from assistant.commands.formats.KeepFormat import KeepFormat
 from assistant.commands.formats.QwenFormat import QwenFormat
 
-NAMES = ["dim", "turn_on", "homekit_cover", "load_toolkit", "browse_eval", "report_issue", "restart_server"]
+NAMES = ["dim", "turn_on", "homekit_cover", "load_toolkit", "browse_eval", "report_issue", "restart_server",
+         "improve_integration"]
 
 
 @pytest.fixture
@@ -55,6 +56,13 @@ class TestRenderToolCall:
         text = KeepFormat.render_tool_call("browse_eval", {"js": js})
         assert text == f"browse_eval({js})"
         assert _read(fmt, text) == [("browse_eval", [js])]
+
+    def test_a_free_text_command_with_two_arguments_keeps_both_in_its_payload(self, fmt):
+        # improve_integration(integration, request): the handler splits the payload at its
+        # first comma, so the name comes first whatever order the server's arguments came in.
+        text = KeepFormat.render_tool_call("improve_integration", {"request": "add a schedule", "integration": "tesla"})
+        assert text == "improve_integration(tesla, add a schedule)"
+        assert _read(fmt, text) == [("improve_integration", ["tesla, add a schedule"])]
 
     def test_an_undeclared_argument_follows_the_declared_ones(self, fmt):
         text = KeepFormat.render_tool_call("turn_on", {"brightness": 5, "light_name": "Lamp"})

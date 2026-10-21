@@ -92,6 +92,13 @@ class CommandFormat(ABC):
         when the buffer holds no complete call."""
 
     @abstractmethod
+    def call_end(self, buffer: str) -> int:
+        """The position in `buffer` where the text after its first call begins, in the text
+        as written — the span `extract_all` reads that call (a block's every invoke) out of —,
+        or -1 when the buffer holds no complete call. The length of `extract`'s rest is no
+        measure of it: a format may re-render or clean that rest."""
+
+    @abstractmethod
     def unterminated(self, buffer: str) -> str | None:
         """The name of the command the buffer opens but never closes, for the report that
         goes back to the LLM when its stream ended inside a call, or None when the buffer

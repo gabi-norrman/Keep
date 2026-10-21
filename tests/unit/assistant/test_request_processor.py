@@ -40,6 +40,7 @@ def handler():
     h.playback = None
     h.voice_factory = None
     h.my_thread_name = "test"
+    h.per_request_prefix = False
     h.request_context = RequestContext()
     h._rounds = []
     h.dialog_manager = Mock()
@@ -133,6 +134,7 @@ class TestHandleBackgroundCommands:
         h.audio_thread = None
         h._chunks_played = 0
         h.my_thread_name = "test"
+        h.per_request_prefix = False
         h._rounds = []
         h.request_context = RequestContext(
             user_input="hello",
@@ -219,6 +221,20 @@ class TestHandleBackgroundCommands:
             cp.command_reply_contains_error = True
         cp.take_unterminated_command_report.side_effect = take
         cp.append_command_reply.side_effect = append
+
+    def test_a_follow_up_round_tells_its_fresh_llms_the_prefix_is_this_requests_own(self, handler):
+        """A round builds a fresh DialogManager and so fresh LLM instances: without the
+        request's prepend verdict they would write their blocks at the long tier no later
+        request reads (the 1h writes the 5m-tier change removed came back on every round)."""
+        for prepend in (True, False):
+            handler.per_request_prefix = prepend
+            self._run_one_round(handler, self._make_mock_dm(command_reply="result"))
+            new_dm = handler.dialog_manager
+            for ai in (new_dm.ai_fast, new_dm.ai_smart, new_dm.ai_vision):
+                if prepend:
+                    ai.set_per_request_prefix.assert_called_once_with(True)
+                else:
+                    ai.set_per_request_prefix.assert_not_called()
 
     def test_unterminated_command_alone_circles_back_as_an_error_report(self, handler):
         """The 2026-09-17 prod shape: nothing ran, nothing replied — only the report."""

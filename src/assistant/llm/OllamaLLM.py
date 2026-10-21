@@ -158,8 +158,8 @@ class OllamaLLM(AbstractLLM):
     # user verbatim). The modelfile's samplers are the thinking-mode ones, so no override.
     # The chat template renders every history turn identically with or without thinking —
     # only the generation suffix differs — so the KV prefix is unaffected.
-    # (model, base_url) -> whether /api/show lists the "thinking" capability.
-    _thinking_capable: dict[tuple[str, str], bool] = {}
+    # (model, base_url) -> the capabilities /api/show lists; None when the probe failed.
+    _capabilities: dict[tuple[str, str], set[str] | None] = {}
 
     # (model, base_url) pairs already logged — the handler pool constructs dozens of
     # identical instances (25 handlers x 2 tiers), so log each resolved config once.
@@ -169,8 +169,10 @@ class OllamaLLM(AbstractLLM):
 
     # Ollama picks the tool-call parser from the model and runs it only when the request
     # declares a tool; with none declared a <tool_call> block is swallowed — in neither
-    # `content` nor `tool_calls`. So every request declares this one, static tool (part of
-    # the stable prefix) and the reader writes each parsed `tool_calls` entry back as call text
+    # `content` nor `tool_calls`. So every request to a model with the "tools" capability
+    # declares this one, static tool (part of the stable prefix; a model without the
+    # capability answers any declared tool with a 400, and has no parser to swallow a block
+    # — takes_tools) and the reader writes each parsed `tool_calls` entry back as call text
     # in the active command format (Qwen's under an Ollama smart tier), so the command
     # processor reads what the model wrote in the syntax it parses. The
     # description is against the drift seen in the probe, where the model held the one
@@ -302,29 +304,45 @@ class OllamaLLM(AbstractLLM):
             "stream": stream,
             "keep_alive": -1,
             "think": self.thinks(),
-            "tools": [self.STATIC_TOOL],
         }
+        if self.takes_tools():
+            req["tools"] = [self.STATIC_TOOL]
         if num_predict is not None:
             req["options"] = {"num_predict": num_predict}
         return req
 
     def thinks(self) -> bool:
         """Whether requests run with native thinking: on unless /api/show says the model has
-        no "thinking" capability (Ollama rejects think=true for such a model with a 400).
-        Probed once per (model, base_url); an unreachable host is assumed capable."""
+        no "thinking" capability (Ollama rejects think=true for such a model with a 400)."""
+        capabilities = self.capabilities()
+        return capabilities is None or "thinking" in capabilities
+
+    def takes_tools(self) -> bool:
+        """Whether requests declare STATIC_TOOL: on unless /api/show says the model has no
+        "tools" capability (Ollama answers a request declaring one with a 400, "does not
+        support tools" — gemma3, llava — so such a model gets no tool and its calls, if it
+        writes any, come through as text)."""
+        capabilities = self.capabilities()
+        return capabilities is None or "tools" in capabilities
+
+    def capabilities(self) -> set[str] | None:
+        """The capabilities /api/show lists for the model, probed once per (model, base_url);
+        None when the host could not be asked, which every capability then assumes it has."""
         key = (self.model, self.base_url)
-        if key not in OllamaLLM._thinking_capable:
-            capable = True
+        if key not in OllamaLLM._capabilities:
+            capabilities = None
             try:
                 resp = requests.post(f"{self.base_url}/api/show", json={"model": self.model},
                                      timeout=self._RENDER_TIMEOUT)
                 resp.raise_for_status()
-                capable = "thinking" in resp.json().get("capabilities", [])
-                info(f"Ollama '{self.model}' {'thinks natively' if capable else 'has no thinking capability — running without'}")
+                capabilities = set(resp.json().get("capabilities", []))
+                lacking = [c for c in ("thinking", "tools") if c not in capabilities]
+                info(f"Ollama '{self.model}' capabilities: {sorted(capabilities)}"
+                     + (f" — running without {' and '.join(lacking)}" if lacking else ""))
             except Exception as e:
-                trace(f"Ollama capability probe for '{self.model}' failed ({e}) — assuming it thinks")
-            OllamaLLM._thinking_capable[key] = capable
-        return OllamaLLM._thinking_capable[key]
+                trace(f"Ollama capability probe for '{self.model}' failed ({e}) — assuming it thinks and takes tools")
+            OllamaLLM._capabilities[key] = capabilities
+        return OllamaLLM._capabilities[key]
 
     def supports_native_thinking(self) -> bool:
         return self.thinks()
