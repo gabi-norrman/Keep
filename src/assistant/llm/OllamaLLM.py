@@ -85,11 +85,16 @@ class OllamaLLM(AbstractLLM):
     _SNAPSHOT_REFRESH_EVERY = 50
     _DEFAULT_BACKGROUND_IDLE_S = 20
 
-    # Native thinking is always on for a model that has it: a reasoning model denied its
-    # channel invents one (Qwen wrote its plan inside made-up <system> tags, which reached the
-    # user verbatim). The modelfile's samplers are the thinking-mode ones, so no override.
-    # The chat template renders every history turn identically with or without thinking —
-    # only the generation suffix differs — so the KV prefix is unaffected.
+    # Native thinking is on for a model that has it unless `ollama.think` says otherwise: a
+    # reasoning model denied its channel invents one (Qwen wrote its plan inside made-up
+    # <system> tags, which reached the user verbatim). The modelfile's samplers are the
+    # thinking-mode ones, so no override. The chat template renders every history turn
+    # identically with or without thinking — only the generation suffix differs — so the KV
+    # prefix is unaffected. `ollama.think` is the experiment knob: false turns the channel off
+    # (the prompt's <thinking> instruction then applies, as for any model without one), and a
+    # level — low, medium, high — is passed to Ollama as the `think` value for a model that
+    # takes levels (qwen3.8 does: measured 1.7k / 2.3k / 3.9k reasoning chars on one puzzle).
+    THINK_LEVELS = ('low', 'medium', 'high')
     # (model, base_url) -> the capabilities /api/show lists; None when the probe failed.
     _capabilities: dict[tuple[str, str], set[str] | None] = {}
 
@@ -201,7 +206,7 @@ class OllamaLLM(AbstractLLM):
             "messages": self._convert_anthropic_content(messages),
             "stream": stream,
             "keep_alive": -1,
-            "think": self.thinks(),
+            "think": self.think_setting() if self.thinks() else False,
         }
         if self.takes_tools():
             req["tools"] = [self.STATIC_TOOL]
@@ -209,9 +214,29 @@ class OllamaLLM(AbstractLLM):
             req["options"] = {"num_predict": num_predict}
         return req
 
+    @classmethod
+    def think_setting(cls) -> bool | str:
+        """`ollama.think`: True (the default) for native thinking, False for none, or one of
+        THINK_LEVELS to pass as the level; another spelling is logged and read as True."""
+        value = config.get('ollama.think', True)
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ('true', 'yes', 'on', '1'):
+            return True
+        if text in ('false', 'no', 'off', '0'):
+            return False
+        if text in cls.THINK_LEVELS:
+            return text
+        info(f"ollama.think '{value}' is not true, false or one of {', '.join(cls.THINK_LEVELS)} — thinking stays on")
+        return True
+
     def thinks(self) -> bool:
-        """Whether requests run with native thinking: on unless /api/show says the model has
-        no "thinking" capability (Ollama rejects think=true for such a model with a 400)."""
+        """Whether requests run with native thinking: on unless `ollama.think` is false or
+        /api/show says the model has no "thinking" capability (Ollama rejects think=true for
+        such a model with a 400)."""
+        if self.think_setting() is False:
+            return False
         capabilities = self.capabilities()
         return capabilities is None or "thinking" in capabilities
 
