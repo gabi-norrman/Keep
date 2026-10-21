@@ -175,6 +175,14 @@ class Ds4LLM(ChatGPTLLM):
         """The model reasons on its own unless the effort is "none"."""
         return self.reasoning_effort() != 'none'
 
+    def prefers_byte_prefix_tail(self) -> bool:
+        # ds4 reuses its live context only for a prompt that extends it token for token (its
+        # rewind is GLM-only). A trailing directive folded onto the last message is dropped when
+        # the next round renders that message as history, so the prefix diverged ~20 tokens
+        # before the previous prompt's end and every round fell back to the disk prefix
+        # (ds4-server log: `live kv cache miss ... common=<live - 20> reason=token-mismatch`).
+        return True
+
     def _effort_for(self, thinking: bool) -> str:
         return self.THINKING_REASONING_EFFORT if thinking else self.reasoning_effort()
 
