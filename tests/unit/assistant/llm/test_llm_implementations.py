@@ -2173,7 +2173,7 @@ class TestOllamaLLM:
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
             "keep_alive": -1,
-            "think": True,
+            "think": "medium",   # the default level (OllamaLLM.DEFAULT_THINK)
             "tools": [type(llm).STATIC_TOOL],
         }
 
@@ -2344,7 +2344,7 @@ class TestOllamaLLM:
         real = llm._build_request([{"role": "user", "content": "hi"}], stream=True)
         pre_heat = llm._build_request([{"role": "user", "content": "hi"}], stream=True, num_predict=1)
         assert "tools" not in real and "tools" not in pre_heat
-        assert real["think"] is True
+        assert real["think"] == "medium"
         assert mock_post.call_count == 1, "one probe of /api/show answers both capabilities"
 
     @patch('assistant.llm.OllamaLLM.requests.post')
@@ -2511,7 +2511,7 @@ class TestOllamaLLM:
         assert call_json["model"] == "gemma4:26b"
         assert call_json["stream"] is False
         assert call_json["keep_alive"] == -1
-        assert call_json["think"] is True
+        assert call_json["think"] == "medium"
 
     # --- the prefill tracker, fed from Ollama's log ----------------------
     # The estimate rules live in PrefillTracker (tests/unit/assistant/llm/test_prefill_tracker.py);

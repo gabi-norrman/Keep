@@ -90,11 +90,16 @@ class OllamaLLM(AbstractLLM):
     # <system> tags, which reached the user verbatim). The modelfile's samplers are the
     # thinking-mode ones, so no override. The chat template renders every history turn
     # identically with or without thinking — only the generation suffix differs — so the KV
-    # prefix is unaffected. `ollama.think` is the experiment knob: false turns the channel off
-    # (the prompt's <thinking> instruction then applies, as for any model without one), and a
-    # level — low, medium, high — is passed to Ollama as the `think` value for a model that
-    # takes levels (qwen3.8 does: measured 1.7k / 2.3k / 3.9k reasoning chars on one puzzle).
+    # prefix is unaffected. `ollama.think` sets the channel: a level — low, medium, high — is
+    # passed to Ollama as the `think` value, true leaves the level to the model, false turns the
+    # channel off (the prompt's <thinking> instruction then applies, as for any model without
+    # one). The default is medium: on the prompt test suite qwen3.8:27b-mlx passed 94.9–95.5%
+    # at medium against 92.1–92.7% at true, 93.3–93.8% at low, 93.8% at high and 89.3% off
+    # (two runs each, 2026-10-21), at the same wall time — the level steers the model more than
+    # it lengthens the reasoning (166 vs 160 output tokens a call). A model that takes no
+    # levels needs `ollama.think: true`.
     THINK_LEVELS = ('low', 'medium', 'high')
+    DEFAULT_THINK = 'medium'
     # (model, base_url) -> the capabilities /api/show lists; None when the probe failed.
     _capabilities: dict[tuple[str, str], set[str] | None] = {}
 
@@ -216,9 +221,10 @@ class OllamaLLM(AbstractLLM):
 
     @classmethod
     def think_setting(cls) -> bool | str:
-        """`ollama.think`: True (the default) for native thinking, False for none, or one of
-        THINK_LEVELS to pass as the level; another spelling is logged and read as True."""
-        value = config.get('ollama.think', True)
+        """`ollama.think`: one of THINK_LEVELS to pass as the level (DEFAULT_THINK when the key
+        is absent), True for native thinking at the model's own level, False for none; another
+        spelling is logged and read as the default."""
+        value = config.get('ollama.think', cls.DEFAULT_THINK)
         if isinstance(value, bool):
             return value
         text = str(value).strip().lower()
@@ -228,8 +234,8 @@ class OllamaLLM(AbstractLLM):
             return False
         if text in cls.THINK_LEVELS:
             return text
-        info(f"ollama.think '{value}' is not true, false or one of {', '.join(cls.THINK_LEVELS)} — thinking stays on")
-        return True
+        info(f"ollama.think '{value}' is not true, false or one of {', '.join(cls.THINK_LEVELS)} — using {cls.DEFAULT_THINK}")
+        return cls.DEFAULT_THINK
 
     def thinks(self) -> bool:
         """Whether requests run with native thinking: on unless `ollama.think` is false or

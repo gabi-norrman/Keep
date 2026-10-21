@@ -33,14 +33,19 @@ class TestThinkSetting:
             assert thinking_model._build_request([], stream=True)['think'] == level.lower()
             assert thinking_model.handles_thinking_internally()
 
-    def test_absent_key_and_true_spellings_keep_the_default(self, thinking_model):
-        for value in ({}, {'ollama.think': True}, {'ollama.think': 'yes'}):
+    def test_absent_key_sends_medium_the_level_that_scored_best(self, thinking_model):
+        """Measured 2026-10-21 on the prompt test suite: medium 94.9–95.5% against 92.1–92.7% at true."""
+        with _config({}):
+            assert thinking_model._build_request([], stream=True)['think'] == 'medium'
+
+    def test_true_spellings_leave_the_level_to_the_model(self, thinking_model):
+        for value in ({'ollama.think': True}, {'ollama.think': 'yes'}):
             with _config(value):
                 assert thinking_model._build_request([], stream=True)['think'] is True
 
-    def test_an_unknown_spelling_keeps_thinking_on(self, thinking_model):
+    def test_an_unknown_spelling_falls_back_to_the_default_level(self, thinking_model):
         with _config({'ollama.think': 'lots'}):
-            assert thinking_model._build_request([], stream=True)['think'] is True
+            assert thinking_model._build_request([], stream=True)['think'] == 'medium'
 
     def test_a_level_never_reaches_a_model_without_the_capability(self):
         llm = OllamaLLM('gemma-test', base_url='http://ollama.example:11434')

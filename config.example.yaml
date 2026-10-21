@@ -320,9 +320,11 @@ wake_word_near_misses: [mission, missions, we shall]
 #ollama:
 #  local_only: false
 #  base_url: http://192.168.1.50:11434
-#  think: true                    # Native thinking of a model that has it: true (default), false — off, the
-#                                 # prompt's <thinking> instruction applies instead —, or low / medium / high,
-#                                 # the level passed to a model that takes one (qwen3.8). Experiment knob.
+#  think: medium                  # Native thinking of a model that has it: low / medium / high — the level
+#                                 # passed to the model (qwen3.8 takes them; medium, the default, scored best
+#                                 # on the prompt test suite) —, true for the model's own level (a model that
+#                                 # takes no levels needs this), or false — off, the prompt's <thinking>
+#                                 # instruction applies instead.
 #  ssh_host: user@192.168.1.50    # Optional ssh target for remote log reads; defaults to the base_url hostname
 #  remote_log_path: /Users/user/Documents/Keep/log/ollama.log  # Optional; defaults to this repo layout
 #  background_idle_seconds: 20    # Photo indexing on Ollama runs only after this much quiet since the last
