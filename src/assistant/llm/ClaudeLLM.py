@@ -92,6 +92,9 @@ class ClaudeLLM(AbstractLLM):
     # costs 1.25x input, the 1h write 2x, and the read within the round is the same 0.1x either
     # way; prod wrote ~340K tokens a day of follow-up tails at the 1h tier.
     FOLLOW_UP_CACHE_TTL = "5m"
+    # The TTLs Anthropic offers, shortest first: a request's breakpoints may only get shorter.
+    CACHE_TTL_RANK = {"5m": 0, "1h": 1}
+    _ttl_cuts_logged: set[tuple[str, str]] = set()  # the pool builds one LLM per handler: say it once
 
     # Output caps. With adaptive thinking the thinking tokens count against max_tokens too,
     # so a thinking call that must emit a long answer (the memory curator rewrites a ~8k-token
@@ -111,6 +114,14 @@ class ClaudeLLM(AbstractLLM):
         self.prompt_cache = prompt_cache
         self.static_cache_ttl = static_cache_ttl or CLAUDE_STATIC_CACHE_TTL
         self.history_cache_ttl = history_cache_ttl or CLAUDE_HISTORY_CACHE_TTL
+        if self.CACHE_TTL_RANK[self.history_cache_ttl] > self.CACHE_TTL_RANK[self.static_cache_ttl]:
+            # Anthropic rejects a longer TTL after a shorter one, and the history breakpoint comes
+            # after the system blocks — the prompt test runner shortens the static TTL alone.
+            if (self.history_cache_ttl, self.static_cache_ttl) not in ClaudeLLM._ttl_cuts_logged:
+                ClaudeLLM._ttl_cuts_logged.add((self.history_cache_ttl, self.static_cache_ttl))
+                info(f"Claude cache: history TTL {self.history_cache_ttl} cut to the static TTL "
+                     f"{self.static_cache_ttl} — a breakpoint never outlives the blocks before it")
+            self.history_cache_ttl = self.static_cache_ttl
         self.client = None
         self._last_stop_reason = None
 

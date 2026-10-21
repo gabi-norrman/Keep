@@ -85,6 +85,26 @@ class TestRefusalFallback:
             assert fallback.handles_thinking_internally() is llm.handles_thinking_internally()
 
 
+@patch("assistant.llm.ClaudeLLM.config")
+class TestCacheTtlOrder:
+    """Anthropic's rule: a cache_control TTL may only get shorter through the request, and the
+    history breakpoint comes after the system blocks. The prompt test runner shortens the static
+    TTL alone (FLOXY_CLAUDE_STATIC_CACHE_TTL=5m), which left the history at 1h and every request
+    refused with a 400."""
+
+    def test_history_ttl_is_cut_to_a_shorter_static_ttl(self, mock_config):
+        llm = ClaudeLLM("claude-opus-5-5", static_cache_ttl="5m", history_cache_ttl="1h")
+        assert llm.history_cache_ttl == "5m"
+
+    def test_the_fallback_gets_a_history_ttl_its_short_static_ttl_allows(self, mock_config):
+        fallback = ClaudeLLM("claude-fable-5-1", static_cache_ttl="1h", history_cache_ttl="1h").refusal_fallback()
+        assert ClaudeLLM.CACHE_TTL_RANK[fallback.history_cache_ttl] <= ClaudeLLM.CACHE_TTL_RANK[fallback.static_cache_ttl]
+
+    def test_a_shorter_history_ttl_is_left_alone(self, mock_config):
+        llm = ClaudeLLM("claude-opus-5-5", static_cache_ttl="1h", history_cache_ttl="5m")
+        assert llm.history_cache_ttl == "5m"
+
+
 class TestIsRetryable:
     def test_529_is_retryable(self):
         assert ClaudeLLM._is_retryable(_make_overloaded_error()) is True
