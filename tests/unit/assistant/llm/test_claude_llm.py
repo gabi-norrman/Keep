@@ -46,6 +46,20 @@ class TestProvider:
         llm.model = "claude-opus-5"
         assert llm.display_model() == "Opus"
 
+    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"])
+    def test_every_claude_model_writes_commands_in_the_invoke_block_unless_the_tier_says_otherwise(self, model):
+        """The trained <function_calls> spelling is the class's default for the whole family;
+        `command_format:` on the tier still wins."""
+        from assistant.commands.formats.InvokeFormat import InvokeFormat
+        from assistant.commands.formats.KeepFormat import KeepFormat
+        llm = _make_llm()
+        llm.model = model
+        assert llm.command_format() is InvokeFormat
+        llm.use_command_format(KeepFormat)
+        assert llm.command_format() is KeepFormat
+        llm.use_command_format(None)
+        assert llm.command_format() is InvokeFormat
+
 
 @patch("assistant.llm.ClaudeLLM.config")
 class TestRefusalFallback:

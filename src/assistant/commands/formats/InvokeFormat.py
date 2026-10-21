@@ -17,9 +17,9 @@ the replies, a schema does not.
 `render_call` is also what a backend that parses the model's calls itself (`OllamaLLM`,
 `Ds4LLM`) writes a parsed call back into when this is the process's format.
 
-The format is offered by name (`command_format: invoke` on a tier) and is no backend's default:
-Claude follows Keep's syntax, so whether the trained spelling conforms better is a measurement
-to make, not a given.
+The format is `ClaudeLLM`'s default since 2026-10-21 (before that it was offered by name only,
+`command_format: invoke` on a tier, while Claude ran Keep's syntax); `command_format: keep` on
+the tier brings Keep's own back.
 
 A bare `<invoke …>…</invoke>` outside a `<function_calls>` block is read as a block of one: on
 the full prompt Opus 5.5 leaves the wrapper out about one reply in three (measured 2026-10-21,
