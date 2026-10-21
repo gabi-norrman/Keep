@@ -34,15 +34,19 @@ The replay covers one miss only: the next turn of the same dialog. Any other pro
 context, and that is the server's own fix — start it with a disk KV cache (`local_ds4_start.sh`
 in the repository root does):
 
-    ./ds4-server --kv-disk-dir ~/.ds4/server-kv --kv-disk-space-mb 16384
+    ./ds4-server --kv-disk-dir ~/.ds4/server-kv --kv-disk-space-mb 65536
 
 The server then saves whole prefixes (the first prompt cut back to its last user turn, every
 10k aligned tokens of a long prefill, the live state whenever another prompt evicts it, and at
 shutdown), and a request loads the longest saved prefix of its prompt and prefills the rest.
 Measured on the test host, 2026-10-20, a 16.5k-token prompt: the switch between two prompts
 12.3 s → 0.2 s on V4.1 Flash, 31 s → 0.17 s on GLM 5.2. One saved entry is ~111 MiB on Flash and
-~517 MiB on GLM at that length, so 16 GB holds about 140 or 30 of them; the default budget is
-4 GB. The two fixes are complementary, not alternatives: without the replay a turn after a
+~517 MiB on GLM at that length, ~253 MiB on Flash at Keep's 40k; the server's default budget is
+4 GB. The budget must stay well ahead of the saves: a full cache evicts the entry with no hits,
+which is the cold checkpoint a new prompt just stored, and that prompt then prefills from zero on
+every request (31 s at 40k; seen 2026-10-21 when the test suite's reasoning runs — a new prompt
+each, since the effort changes how the history renders — filled 16 GB in ~60 switches). The
+launcher's 64 GB holds ~250. The two fixes are complementary, not alternatives: without the replay a turn after a
 command diverges at the past call, no saved prefix ends there, and the whole history tail
 (15–35 KB, roughly 4k–9k tokens, a few seconds) is prefilled again every turn — the disk cache
 only brings the fallback down from the whole prompt to that tail.

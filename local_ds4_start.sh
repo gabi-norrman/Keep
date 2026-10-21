@@ -9,8 +9,13 @@
 # for a prompt that extends it, so without them every switch between two prompts (another
 # tier, the autonomous check, a Keep restart) prefills the whole prompt again — ~12 s for
 # 16k tokens instead of 0.2 s. With them the server saves prompt prefixes to disk and loads
-# the longest one that fits a request. One saved entry is ~111 MiB on Flash, so 16 GB holds
-# about 140 of them. (Keep's src/assistant/llm/Ds4LLM.py docstring has the measurements.)
+# the longest one that fits a request. (Keep's src/assistant/llm/Ds4LLM.py docstring has the
+# measurements.) The budget is 64 GB because the server saves the evicted live state on every
+# switch between prompts — ~253 MiB per entry at Keep's 40k-token prompt — and, once the budget
+# is full, evicts the entry with no hits yet, which is the cold checkpoint a new prompt just
+# stored: from then on every request of that prompt prefills the whole 40k from zero (31 s).
+# 16 GB held ~60 switches; 64 GB holds ~250. Measured 2026-10-21 on the prompt test suite,
+# where a reasoning effort other than none renders the history differently and is a new prompt.
 #
 # The server runs detached and appends to ds4-server.log in the ds4 folder (Keep's prompt tests
 # read it for the real prompt and the cache decisions; a restart keeps the earlier runs' lines,
@@ -28,7 +33,7 @@ MODEL="${MODEL:-gguf/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf}"
 # M5 Ultra (the server's startup "memory:" line), so 64k is cheap next to the 152 GiB model.
 CTX="${CTX:-65536}"
 KV_DIR="${KV_DIR:-$HOME/.ds4/server-kv}"
-KV_MB="${KV_MB:-16384}"
+KV_MB="${KV_MB:-65536}"
 # The disk cache's "cold" checkpoint (the prompt cut at its first user turn, what a sibling
 # request loads) is only written for a prompt up to this many tokens; the server's default
 # of 30000 left the 40k prompt-test prompt with no reusable entry at all — every test
