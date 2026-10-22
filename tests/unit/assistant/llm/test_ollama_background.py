@@ -107,7 +107,7 @@ class TestBackgroundCompletion:
         conn = FakeConn.instances[0]
         assert conn.sent[1] == "/api/chat" and conn.sent[2]["stream"] is True
         assert conn.closed
-        assert OllamaLLM._slot.active is False and OllamaLLM._slot.conn is None
+        assert OllamaLLM._slot.active is False and OllamaLLM._slot.sock is None
         # an image payload must not become what the next chat turn's prefix diagnostics compare against
         assert OllamaLLM._last_payload == "the last chat payload"
 
@@ -123,11 +123,11 @@ class TestBackgroundCompletion:
                 outcome["preempted_after"] = time.monotonic() - t0
         t = _run(bg)
         deadline = time.monotonic() + 1
-        while OllamaLLM._slot.conn is None and time.monotonic() < deadline:
+        while OllamaLLM._slot.sock is None and time.monotonic() < deadline:
             time.sleep(0.005)
-        conn = OllamaLLM._slot.conn
+        sock = OllamaLLM._slot.sock
         OllamaLLM._interactive_begin()
-        assert conn.sock.shut.is_set()
+        assert sock.shut.is_set()
         assert OllamaLLM._slot.active is False, "the interactive side waited for the background request to unwind"
         t.join(timeout=1)
         assert outcome["preempted_after"] < 1
@@ -198,7 +198,7 @@ class TestIdleGate:
         OllamaLLM._slot.active = True
         conn = FakeConn("h", 1)
         conn.connect()
-        OllamaLLM._slot.conn = conn
+        OllamaLLM._slot.sock = conn.sock
         llm = _llm()
         with patch.object(llm, '_rendered_prompt', return_value="sys<|im_end|>\n<|im_start|>assistant\n"), \
              patch('assistant.llm.OllamaLLM.requests.post') as post:

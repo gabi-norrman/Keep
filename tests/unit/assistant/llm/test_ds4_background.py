@@ -72,7 +72,11 @@ class FakeConn:
         self.sent = (method, path, json.loads(body))
 
     def getresponse(self):
-        return FakeResponse(self.sock, FakeConn.lines)
+        # ds4-server answers `Connection: close`, and http.client then hands the socket to the
+        # response and drops it from the connection — a gate holding `conn.sock` shuts nothing
+        response = FakeResponse(self.sock, FakeConn.lines)
+        self.sock = None
+        return response
 
     def close(self):
         self.closed = True
@@ -126,10 +130,11 @@ class TestBackgroundImageRequest:
         image_parts = [part for part in body["messages"][1]["content"] if part["type"] == "image_url"]
         assert len(image_parts) == 1 and image_parts[0]["image_url"]["url"].startswith("data:image/")
         assert conn.closed
-        assert Ds4LLM._slot.active is False and Ds4LLM._slot.conn is None
+        assert Ds4LLM._slot.active is False and Ds4LLM._slot.sock is None
         assert not _llm().client.chat.completions.create.called, "the SDK client is not involved"
 
     def test_a_chat_turn_arriving_mid_image_shuts_the_socket_and_preempts_the_caller(self):
+        """Once the server answered: a photo used to run its 60 s out ahead of the turn (2026-10-22)."""
         FakeConn.lines = []          # the read blocks like a prefill in progress
         outcome = {}
 
@@ -142,15 +147,15 @@ class TestBackgroundImageRequest:
                 outcome["preempted_after"] = time.monotonic() - t0
         t = _run(bg)
         deadline = time.monotonic() + 1
-        while Ds4LLM._slot.conn is None and time.monotonic() < deadline:
+        while Ds4LLM._slot.sock is None and time.monotonic() < deadline:
             time.sleep(0.005)
-        conn = Ds4LLM._slot.conn
+        sock = Ds4LLM._slot.sock
         llm = _llm()
         llm.client.chat.completions.create.return_value = iter([
             SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="hi", tool_calls=None), finish_reason=None)], usage=None)])
         with _config({}):
             assert list(llm.create_streaming_completion([{"role": "user", "content": "hello"}])) == ["hi"]
-        assert conn.sock.shut.is_set()
+        assert sock.shut.is_set()
         t.join(timeout=1)
         assert outcome["preempted_after"] < 1
         assert Ds4LLM._slot.interactive_active == 0, "the chat turn released the gate"
@@ -159,7 +164,7 @@ class TestBackgroundImageRequest:
         Ds4LLM._slot.active = True
         conn = FakeConn("h", 1)
         conn.connect()
-        Ds4LLM._slot.conn = conn
+        Ds4LLM._slot.sock = conn.sock
         llm = _llm()
         llm.client.chat.completions.create.return_value = SimpleNamespace(
             choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content="a cat"))])

@@ -11,7 +11,7 @@ LLMPreempted and resends when the slot is idle again.
 One instance per backend class, shared by its tiers: the tiers share the engine and its one
 slot. The backend wraps its interactive requests in `interactive_begin` / `interactive_end`,
 its background request in `acquire` / `release`, and registers the raw connection it reads
-the stream over with `register_connection` so the gate can shut it.
+the stream over with `register_connection` so the gate can shut its socket.
 """
 import http.client
 import socket
@@ -31,7 +31,7 @@ class BackgroundSlot:
         self._cond = threading.Condition()
         self.active = False                       # a background request holds the slot (acquire → release)
         self.abort = False                        # an interactive request wants the slot: the background one stands down
-        self.conn: http.client.HTTPConnection | None = None   # the background request's connection, once opened
+        self.sock: socket.socket | None = None    # the background request's socket, once connected
         self.interactive_active = 0               # interactive requests (and pre-heats) in flight or waiting for the slot
         self.interactive_last_end = 0.0           # monotonic; the idle clock a background request waits on
         self._thread = threading.local()          # .wait_s: how long this thread's last background request queued
@@ -39,7 +39,7 @@ class BackgroundSlot:
     def reset(self):
         """Back to the fresh state (tests)."""
         self.active = self.abort = False
-        self.conn = None
+        self.sock = None
         self.interactive_active, self.interactive_last_end = 0, 0.0
 
     # --- the interactive side -------------------------------------------------------------
@@ -52,9 +52,9 @@ class BackgroundSlot:
             if not self.active:
                 return
             self.abort = True
-            if self.conn is not None:
+            if self.sock is not None:
                 info(f"{self.engine}: interactive request arriving — aborting the background image request.")
-                self.shutdown_connection(self.conn)
+                self.shutdown_socket(self.sock)
             else:
                 trace(f"{self.engine}: interactive request arriving — the background request stands down before sending.")
             self._cond.notify_all()
@@ -96,7 +96,7 @@ class BackgroundSlot:
                 self._cond.wait(remaining)
             self.active = True
             self.abort = False
-            self.conn = None
+            self.sock = None
         if waited is not None:
             self._thread.wait_s = time.monotonic() - waited
             trace(f"{self.engine}: background request got the slot after {self._thread.wait_s:.1f}s")
@@ -104,19 +104,22 @@ class BackgroundSlot:
     def release(self):
         with self._cond:
             self.active = False
-            self.conn = None
+            self.sock = None
             self._cond.notify_all()
 
     def register_connection(self, conn: http.client.HTTPConnection):
         """Put the background request's open connection under the gate, so an interactive
         arrival can shut it even while the request still waits for the engine's first byte (an
-        image prefill happens before any header is sent). Closes it and raises LLMPreempted when
-        an interactive request already asked for the slot."""
+        image prefill happens before any header is sent). The socket is kept, not the connection:
+        a `Connection: close` response (ds4-server's) makes getresponse() drop `conn.sock` and
+        hand the socket to the response, and a gate holding the connection then shut nothing
+        (2026-10-22: a photo ran its 60 s out ahead of the user's turn). Closes the connection
+        and raises LLMPreempted when an interactive request already asked for the slot."""
         with self._cond:
             if self.abort:
                 conn.close()
                 raise LLMPreempted("interactive request arrived before the background request was sent")
-            self.conn = conn
+            self.sock = conn.sock
 
     def preempted(self, chunks: int) -> LLMPreempted | None:
         """After a background request failed: the LLMPreempted to raise instead when the
@@ -127,12 +130,9 @@ class BackgroundSlot:
         return LLMPreempted("interactive request took the slot")
 
     @staticmethod
-    def shutdown_connection(conn: http.client.HTTPConnection):
-        """Wake the thread blocked reading this connection: shutdown() interrupts a recv on
-        every platform, where close() alone does not. The engine sees the FIN and cancels the request."""
-        sock = getattr(conn, "sock", None)
-        if sock is None:
-            return
+    def shutdown_socket(sock: socket.socket):
+        """Wake the thread blocked reading this socket: shutdown() interrupts a recv on every
+        platform, where close() alone does not. The engine sees the FIN and cancels the request."""
         try:
             sock.shutdown(socket.SHUT_RDWR)
         except OSError:
