@@ -22,12 +22,20 @@
 # so a problem seen before the restart can still be read). The script waits until the API answers,
 # which takes a minute or two while the model is mapped. Stop it with `pkill ds4-server`.
 #
-# Overrides: DS4_DIR, MODEL (GGUF path), CTX (context tokens), KV_DIR, KV_MB, COLD_MAX, COLD_ANCHOR, HOST, PORT.
+# Images: the server refuses a request with an image unless it was started with the matching
+# vision encoder (`./download_model.sh ds41f-vision`, 0.9 GiB, ~1 GiB resident; an image costs
+# up to 1024 context tokens). Keep's Photos indexer sends images, so with `ollama.local_only`
+# routing its tiers here the encoder must be on. The script passes it when the file is present;
+# VISION= drops it, VISION=path names another one.
+#
+# Overrides: DS4_DIR, MODEL (GGUF path), VISION (encoder GGUF path), CTX (context tokens), KV_DIR, KV_MB,
+# COLD_MAX, COLD_ANCHOR, HOST, PORT.
 set -euo pipefail
 DS4_DIR="${DS4_DIR:-$(cd "$(dirname "$0")/.." && pwd)/ds4}"
 cd "$DS4_DIR" 2>/dev/null || { echo "no ds4 checkout at $DS4_DIR — clone github.com/antirez/ds4 beside this repository or set DS4_DIR"; exit 1; }
 
 MODEL="${MODEL:-gguf/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf}"
+VISION="${VISION-gguf/DeepSeek-V4.1-Flash-Vision.gguf}"
 # 64k: the test-suite prompt is ~16.5k tokens and one round's command results (the server log
 # tail alone is ~8.5k) took a test past 32k. The context buffers cost ~8 GiB per 32k on the
 # M5 Ultra (the server's startup "memory:" line), so 64k is cheap next to the 152 GiB model.
@@ -53,6 +61,10 @@ LOG=ds4-server.log
 
 [ -x ./ds4-server ] || { echo "no ds4-server binary in $DS4_DIR — run make there first"; exit 1; }
 [ -f "$MODEL" ] || { echo "model not found: $MODEL (run ./download_model.sh)"; exit 1; }
+if [ -n "$VISION" ] && [ ! -f "$VISION" ]; then
+    echo "no vision encoder at $VISION — starting without images (./download_model.sh ds41f-vision adds it)"
+    VISION=
+fi
 
 busy=$(lsof -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)
 if [ -n "$busy" ]; then
@@ -62,9 +74,10 @@ fi
 
 mkdir -p "$KV_DIR"
 
-echo "starting ds4-server: $MODEL, ctx $CTX, disk KV cache $KV_DIR ($KV_MB MB), $HOST:$PORT"
+echo "starting ds4-server: $MODEL, ${VISION:+vision $VISION, }ctx $CTX, disk KV cache $KV_DIR ($KV_MB MB), $HOST:$PORT"
 nohup ./ds4-server \
     --model "$MODEL" \
+    ${VISION:+--vision "$VISION"} \
     --ctx "$CTX" \
     --host "$HOST" \
     --port "$PORT" \
