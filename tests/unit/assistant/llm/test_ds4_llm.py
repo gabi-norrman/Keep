@@ -204,7 +204,15 @@ class TestStreaming:
         assert FMT.extract_all("".join(_stream(llm))) == [("turn_on", ["A"]), ("dim", ["B", "5"])]
 
     @patch('assistant.llm.Ds4LLM.note')
-    def test_withheld_text_with_no_tool_call_behind_it_is_released_as_written_and_noted(self, mock_note):
+    def test_a_dsml_block_under_the_dsml_format_is_released_as_written_without_a_note(self, mock_note):
+        llm, _ = _llm_with_stream([_chunk(content="Sure."), _chunk(content=CALL_TEXT), _chunk(choices=False)])
+        out = "".join(_stream(llm))
+        assert out == "Sure." + CALL_TEXT
+        assert not mock_note.called
+
+    @patch('assistant.llm.Ds4LLM.note')
+    def test_a_dsml_block_under_another_format_is_released_as_written_and_noted(self, mock_note):
+        CommandFormats.set_active(KeepFormat)
         llm, _ = _llm_with_stream([_chunk(content="Sure."), _chunk(content=CALL_TEXT), _chunk(choices=False)])
         out = "".join(_stream(llm))
         assert out == "Sure." + CALL_TEXT
@@ -227,21 +235,27 @@ class TestStreaming:
 
 
 class TestTheRequestShape:
-    """Contract with ds4-server's live KV cache (plan, 2026-10-20): a call turn is kept only in
-    the tool shape, which a request enters by declaring a tool — the same one every time."""
+    """Contract with ds4-server's live KV cache (2026-10-22): with no tool declared it continues
+    its live context from a thinking checkpoint when the request renders the visible text the
+    model wrote, so every request goes without tools and the rows go back verbatim."""
 
-    def test_every_request_declares_the_one_static_tool(self):
-        llm, create = _llm_with_stream([_chunk(content="x")])
-        _stream(llm)
-        tools = create.call_args.kwargs['tools']
-        assert len(tools) == 1 and tools[0]['function']['name'] == "load_toolkit"
-        assert tools[0] is Ds4LLM.STATIC_TOOL
+    @pytest.mark.parametrize("streaming", [True, False])
+    def test_no_request_declares_a_tool(self, streaming):
+        llm, create = _llm_with_stream([_chunk(content="x"), _chunk(choices=False)])
+        if streaming:
+            _stream(llm)
+        else:
+            create.return_value = SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="x", tool_calls=None))], usage=None)
+            p1, p2 = _config({})
+            with p1, p2:
+                llm.create_completion([{'role': 'user', 'content': 'hi'}])
+        assert 'tools' not in create.call_args.kwargs
 
-    def test_a_streamed_call_fills_the_store_and_the_next_request_replays_it_by_id(self):
-        llm, create = _llm_with_stream([
-            _chunk(reasoning="lamp on."), _chunk(content="\n\n" + CALL_TEXT.strip()),
-            _chunk(tool_calls=[_call_delta(id="call_7", name="turn_on", arguments='{"light_name":"kitchen lamp"}')]),
-            _chunk(choices=False)])
+    def test_a_call_written_as_text_goes_back_verbatim_on_the_next_request(self):
+        CommandFormats.set_active(KeepFormat)
+        llm, create = _llm_with_stream([_chunk(reasoning="lamp on."), _chunk(content='\n\nturn_on("Kitchen lamp")'),
+                                        _chunk(choices=False)])
         out = "".join(_stream(llm))
         row = out.replace("<thinking>lamp on.</thinking>", "").strip()  # what DialogManager's history keeps
         create.return_value = iter([_chunk(content="Done."), _chunk(choices=False)])
@@ -250,9 +264,17 @@ class TestTheRequestShape:
             list(llm.create_streaming_completion([{'role': 'user', 'content': 'hi'}, {'role': 'assistant', 'content': row},
                                                   {'role': 'user', 'content': 'result: \nKitchen lamp is on.'}]))
         sent = create.call_args.kwargs['messages']
-        assert sent[1]['reasoning_content'] == "lamp on."
-        assert sent[1]['content'] == "" and sent[1]['tool_calls'][0]['id'] == "call_7"
-        assert sent[2] == {'role': 'tool', 'tool_call_id': 'call_7', 'content': 'result: \nKitchen lamp is on.'}
+        assert sent[1] == {'role': 'assistant', 'content': '\n\nturn_on("Kitchen lamp")', 'reasoning_content': 'lamp on.'}
+        assert sent[2] == {'role': 'user', 'content': 'result: \nKitchen lamp is on.'}
+
+    def test_a_released_dsml_block_goes_back_verbatim_on_the_next_request(self):
+        llm, create = _llm_with_stream([_chunk(content="Sure."), _chunk(content=CALL_TEXT), _chunk(choices=False)])
+        row = "".join(_stream(llm)).strip()
+        create.return_value = iter([_chunk(content="Done."), _chunk(choices=False)])
+        p1, p2 = _config({})
+        with p1, p2:
+            list(llm.create_streaming_completion([{'role': 'user', 'content': 'hi'}, {'role': 'assistant', 'content': row}]))
+        assert create.call_args.kwargs['messages'][1]['content'] == "Sure." + CALL_TEXT
 
     def test_a_text_reply_keeps_its_reasoning_for_the_replay(self):
         llm, create = _llm_with_stream([_chunk(reasoning="say hi"), _chunk(content="Hej!"), _chunk(choices=False)])

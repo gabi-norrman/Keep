@@ -15,22 +15,30 @@ prompt's own <thinking> instruction applies instead.
 
 Commands: the default format is Keep's own call text (`KeepFormat`), the best of the formats
 on the prompt test suite with V4.1 Flash (measured 2026-10-22: 96.1 / 97.2 % pass at effort
-low, 7–8 s a test); the tier's `command_format:` key picks another. Whatever the format, the
-model may still write a DSML block (`DsmlFormat`, the V4.1 spelling), and ds4-server parses
-one itself whether or not the request declares tools — streamed, the raw block arrives as
-content deltas and then one `tool_calls` delta carries the whole call. The content is withheld
-from the first DSML sentinel on, and the merged `tool_calls` are written back as call text in
-the active command format and yielded, so the processor sees the call the model wrote in one
-piece (the server repairs a truncated block before it hands it over); withheld text with no
-rendered call behind it (no `tool_calls`, or a delta without a function name) is released as
-written for Keep's own parser.
+low, 7–8 s a test); the tier's `command_format:` key picks another. No request declares a
+tool, so the model writes every call as text in the prompt's syntax and the command processor
+reads it from the content. Whatever the format, the model may still write a DSML block
+(`DsmlFormat`, the V4.1 spelling); with no tool declared ds4-server leaves it in the content,
+and the stream withholds it from the first DSML sentinel on and releases it whole at the end,
+as written, for the processor — which reads it under a `command_format: dsml` tier. Should the
+server hand back parsed `tool_calls` all the same, they are written back as call text in the
+active format and yielded.
 
-The live KV cache (step 5b of docs/plans/COMMAND_FORMATS_PLAN.md): every request declares one
-static tool, so ds4 renders the history in its tool shape and the reasoning of every assistant
-turn is replayed in it; on the way out `Ds4Replay` rebuilds Keep's text rows into that shape —
-each past call as the `tool_calls` entry with the id ds4 assigned (ds4 then puts the sampled
-tokens back itself), its result as a `role: tool` message — from a side store this class fills
-after every reply. A follow-up turn then prefills only its own tail instead of the whole prompt.
+No tool, on purpose (2026-10-22, replacing step 5b of docs/plans/COMMAND_FORMATS_PLAN.md). One
+declared tool — Ollama's static `load_toolkit`, which Ollama needs to parse calls at all —
+switched ds4 to its tool rendering, which keeps a past call only as a `tool_calls` entry by the
+id ds4 assigned; Keep's history holds the call as text, so a command round never extended the
+live context and loaded the nearest disk prefix instead. And the model's call head picked among
+the declared tools: where its reasoning named a command of a toolkit it had just loaded, it
+often wrote `load_toolkit` for that toolkit again. Replaying the day's drifting prompts: 7 of 16
+such repeats with the tool, 1 of 16 without; over a fresh dialog 1.9k tokens prefilled per
+follow-up request with it, 0.8k without, 243 s of server time against 129 s. With no tool the
+server renders past turns without their reasoning and continues its live context from a
+thinking checkpoint whenever the request's rendered text extends the visible text the model
+wrote — so every assistant row goes out as the model wrote it, whitespace included, which
+`Ds4Replay` restores from a side store this class fills after every reply (Keep's history strips
+the rows). It also streams a text reply as it is written: with a tool declared and thinking on,
+ds4-server held a whole text reply back until generation ended (its second-reasoning guard).
 
 The replay covers one miss only: the next turn of the same dialog. Any other prompt in between
 (another tier, the autonomous check, a second dialog) or a server restart evicts the live
@@ -49,10 +57,10 @@ Measured on the test host, 2026-10-20, a 16.5k-token prompt: the switch between 
 which is the cold checkpoint a new prompt just stored, and that prompt then prefills from zero on
 every request (31 s at 40k; seen 2026-10-21 when the test suite's reasoning runs — a new prompt
 each, since the effort changes how the history renders — filled 16 GB in ~60 switches). The
-launcher's 64 GB holds ~250. The two fixes are complementary, not alternatives: without the replay a turn after a
-command diverges at the past call, no saved prefix ends there, and the whole history tail
-(15–35 KB, roughly 4k–9k tokens, a few seconds) is prefilled again every turn — the disk cache
-only brings the fallback down from the whole prompt to that tail.
+launcher's 64 GB holds ~250. The two fixes are complementary, not alternatives: the replay keeps
+the live context through a run of rounds, the disk cache brings a turn after another prompt
+back — a new user turn after an unrelated request restored all but 44 tokens of a 19k-token
+history (2026-10-22, the cache freshly emptied).
 
 Background work (photo indexing, `background=True`): the server serves one request at a time,
 so an image call goes through the single-slot gate every Ds4LLM shares (`BackgroundSlot`,
@@ -80,11 +88,13 @@ from types import SimpleNamespace
 from typing import Generator
 from urllib.parse import urlparse
 
+import httpx
+from openai import OpenAI
+
 from .AbstractLLM import LLMPreempted
 from .BackgroundSlot import BackgroundSlot
 from .ChatGPTLLM import ChatGPTLLM
 from .Ds4Replay import ReplayStore, replay
-from .OllamaLLM import OllamaLLM
 from .PrefillTracker import LogFormat, PrefillTracker, is_local_host, parse_last
 from assistant.commands.formats import DsmlFormat as dsml
 from assistant.commands.formats.CommandFormats import CommandFormats
@@ -121,14 +131,10 @@ class Ds4LLM(ChatGPTLLM):
     THINKING_REASONING_EFFORT = 'high'
     # ds4-server's spellings; "minimal" is the smallest non-zero level, "none" alone disables reasoning.
     REASONING_EFFORTS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
-    # ds4 parses a DSML block with or without tools declared, but its live KV cache keeps a
-    # call turn only in the tool shape (reasoning replayed, the call as `tool_calls` by id), and
-    # it renders the history in that shape once a request declares a tool — the same one every
-    # time, so the prefix is stable. Ollama's static tool, for the same reason it has one.
-    STATIC_TOOL = OllamaLLM.STATIC_TOOL
     _slot = BackgroundSlot("ds4")
     _logged_configs: set[tuple[str, str]] = set()
     _replay_store: ReplayStore | None = None
+    CONNECT_TIMEOUT_S = 5.0
 
     def __init__(self, model: str | None = None, base_url: str | None = None):
         """`model` is the tier's `model:` when it has one, else `ds4.model`, else the default."""
@@ -149,6 +155,21 @@ class Ds4LLM(ChatGPTLLM):
             cls._prefill.use_log(path)
         else:
             cls._prefill.use_log(path, ssh_host=config.get('ds4.ssh_host', host))
+
+    def initialize(self):
+        """No read timeout: a non-streamed reply says nothing until it is done, and the memory
+        curation (a whole bank rewritten at effort high, ~27 t/s) runs past the SDK's 600 s —
+        which then resent it, a fresh generation each time, to a server that serves one at a time."""
+        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url,
+                             timeout=httpx.Timeout(None, connect=self.CONNECT_TIMEOUT_S))
+        trace(f"ds4 client: no read timeout, {self.CONNECT_TIMEOUT_S:.0f} s to connect")
+
+    def _note_stop(self, finish_reason: str | None):
+        """Keep the reply's stop reason where `last_stop_reason` reads it, in Anthropic's spelling
+        for a reply cut at the output cap (`length` → `max_tokens`), so the curator's check sees it."""
+        self._last_stop_reason = 'max_tokens' if finish_reason == 'length' else finish_reason
+        if self._last_stop_reason == 'max_tokens':
+            info("ds4: the reply was cut off at the output limit (finish_reason=length)")
 
     @property
     def api_key(self) -> str:
@@ -236,7 +257,8 @@ class Ds4LLM(ChatGPTLLM):
 
     def _request_kwargs(self, messages: list[dict], thinking: bool, stream: bool) -> dict:
         messages = replay(self._convert_anthropic_content(messages), self.replay_store())
-        kwargs = dict(model=self.model, messages=messages, stream=stream, tools=[self.STATIC_TOOL],
+        # No `tools`: see the module docstring — a declared tool costs the live cache and pulls the model's calls to it.
+        kwargs = dict(model=self.model, messages=messages, stream=stream,
                       extra_body={'reasoning_effort': self._effort_for(thinking)})
         if stream:
             kwargs['stream_options'] = {'include_usage': True}
@@ -282,14 +304,20 @@ class Ds4LLM(ChatGPTLLM):
     def _tail(rendered: list[tuple[str, object]]) -> str:
         return "\n".join(text for text, _ in rendered)
 
-    def _remember(self, reply: str, reasoning: str, visible: str, rendered: list[tuple[str, object]]):
-        """Give the replay store what the next request needs to send this reply back in the
-        wire shape: `reply` as Keep's history will hold it, the reasoning, the content as ds4
-        canonicalises it (trailing whitespace trimmed before a call block), each rendered call
-        with ds4's id."""
-        calls = [(text, getattr(call, 'id', None), call.function.name, getattr(call.function, 'arguments', None) or "{}")
-                 for text, call in rendered]
-        self.replay_store().remember_reply(reply, reasoning, visible.rstrip() if calls else visible, calls)
+    def _closing(self, reply: str, withheld: str, rendered: list[tuple[str, object]]) -> tuple[str, str]:
+        """What follows the reply text — the parsed calls as call text on a line of their own, or
+        the withheld block released as written — and the content as the model wrote it, for the
+        replay store (before a parsed call: the text the server kept, trailing whitespace trimmed)."""
+        if rendered:
+            tail = self._tail(rendered)
+            return ("\n" + tail if reply and not reply.endswith("\n") else tail), reply.rstrip()
+        released = self._release_withheld(withheld)
+        return released, reply + released
+
+    def _remember(self, reply: str, reasoning: str, verbatim: str):
+        """Give the replay store what the next request needs to send this reply back as the
+        model wrote it: `reply` as Keep's history will hold it, the reasoning, the content."""
+        self.replay_store().remember_reply(reply, reasoning, verbatim)
 
     @staticmethod
     def _split_at_sentinel(text: str) -> tuple[str, str]:
@@ -307,9 +335,12 @@ class Ds4LLM(ChatGPTLLM):
         lost with it."""
         if not withheld:
             return ""
-        note(f"ds4 left DSML text in the content without a rendered tool call behind it — the model wrote a "
-             f"block the server did not take, or handed back a call without a name; the command parser reads "
-             f"it as written ({withheld.count(dsml.OPEN)} opener(s))")
+        if CommandFormats.active() is dsml.DsmlFormat:
+            trace(f"ds4: a DSML block released whole to the command parser ({withheld.count(dsml.OPEN)} opener(s))")
+            return withheld
+        note(f"ds4: the model wrote a DSML block although the prompt's syntax is {CommandFormats.active().name} "
+             f"(or the server handed back a call without a name); the command parser reads it as written "
+             f"({withheld.count(dsml.OPEN)} opener(s))")
         return withheld
 
     def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
@@ -330,6 +361,7 @@ class Ds4LLM(ChatGPTLLM):
             Ds4LLM._slot.interactive_end()
 
     def _stream(self, messages: list[dict], thinking: bool, started: float, token: int | None) -> Generator[str, None, None]:
+        self._last_stop_reason = None
         response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=True))
         in_thinking, reasoning, usage = False, "", None
         first_token_at: float | None = None
@@ -340,6 +372,8 @@ class Ds4LLM(ChatGPTLLM):
                 usage = chunk.usage
             if not chunk.choices:
                 continue
+            if chunk.choices[0].finish_reason:
+                self._note_stop(chunk.choices[0].finish_reason)
             delta = chunk.choices[0].delta
             if first_token_at is None and (delta.content or getattr(delta, 'reasoning_content', None)
                                            or getattr(delta, 'tool_calls', None)):
@@ -379,12 +413,10 @@ class Ds4LLM(ChatGPTLLM):
         if withheld:
             trace(f"ds4 withheld {len(withheld)} chars of DSML text from the reply ({len(calls)} tool call(s) parsed)")
         rendered = self._rendered_calls([calls[i] for i in sorted(calls)])
-        tail = self._tail(rendered) or self._release_withheld(withheld)
+        tail, verbatim = self._closing(reply, withheld, rendered)
         if tail:
-            if reply and not reply.endswith("\n"):
-                tail = "\n" + tail
             yield tail
-        self._remember(reply + tail, reasoning, reply, rendered)
+        self._remember(reply + tail, reasoning, verbatim)
         prefilled = self._log_usage(usage, started, len(reasoning))
         if prefilled is not None and first_token_at is not None:
             # The time to the first token is the prefill plus one decode step (and any wait in
@@ -408,11 +440,13 @@ class Ds4LLM(ChatGPTLLM):
         started = time.monotonic()
         Ds4LLM._slot.interactive_begin()
         token = self._prefill.begin()
+        self._last_stop_reason = None
         try:
             response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=False))
         finally:
             self._prefill.end(token)
             Ds4LLM._slot.interactive_end()
+        self._note_stop(response.choices[0].finish_reason)
         message = response.choices[0].message
         reasoning = getattr(message, 'reasoning_content', None) or ""
         if reasoning:
@@ -421,10 +455,8 @@ class Ds4LLM(ChatGPTLLM):
         calls = getattr(message, 'tool_calls', None) or []
         content, withheld = self._split_at_sentinel(message.content or "")
         rendered = self._rendered_calls(calls)
-        tail = self._tail(rendered) or self._release_withheld(withheld)
-        if tail and content and not content.endswith("\n"):
-            tail = "\n" + tail
-        self._remember(content + tail, reasoning, content, rendered)
+        tail, verbatim = self._closing(content, withheld, rendered)
+        self._remember(content + tail, reasoning, verbatim)
         return content + tail
 
     # --- images -----------------------------------------------------------------------------

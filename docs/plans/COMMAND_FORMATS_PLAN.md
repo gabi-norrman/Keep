@@ -582,6 +582,8 @@ the dev `config.yaml` uses (`ollama.local_only: Ds4LLM`); (4) `keep_turn.py` is 
 Nothing of 5a was left out; the deviations from the plan's wording are the `instructions()` source (ds4_server.c's V4.1
 block, not the re-spelled V4 template), the shared `NamedParameterFormat` base, and the `local_only` routing brought over.
 
+Status (5b, reverted 2026-10-22): `Ds4LLM` declares no tool any more. Under Keep's syntax the replay never rebuilt a call (it finds DSML blocks only), so command rounds missed the live cache and loaded the nearest disk prefix, and the one declared `load_toolkit` drew the model's calls: it reloaded a toolkit it had just loaded where its reasoning named one of its commands. Without a tool ds4 continues the live context from its thinking checkpoint when the assistant rows go out as the model wrote them, which `Ds4Replay` now restores — it keeps only the verbatim content and the reasoning (A/B on the test host, 2026-10-22: repeated loads 7 of 16 replays → 1 of 16; tokens prefilled per follow-up 1.9k → 0.8k; server time over a dialog 243 s → 129 s). The `Ds4LLM` docstring has the details.
+
 Status (5b): DONE 2026-10-20, not committed. **Built**: `src/assistant/llm/Ds4Replay.py` — `ReplayStore`, the side store
 (`turns`: assistant row as the history holds it, stripped → `{reasoning, content}` with the content verbatim as the model
 wrote it; `calls`: rendered block text → `{id, name, arguments}` — ds4's `call_…` id from `_ToolCall.id`; `results`: the
