@@ -61,8 +61,10 @@ def _enabled(name: str, running_as_testsuite: bool) -> bool:
     from common import ConfigStore
     if name == "http":
         return True  # every other interface registers routes on its app
-    if name == "telegram" and running_as_testsuite:
-        info("Telegram interface skipped in testsuite mode.")
+    if name in ("telegram", "console") and running_as_testsuite:
+        # The prompt suite runs one server per worker; a console per server would mean each
+        # racing for the one TUI port and a tui.py client landing in a test server.
+        info(f"{name.capitalize()} interface skipped in testsuite mode.")
         return False
     return ConfigStore.interface_enabled(name)
 

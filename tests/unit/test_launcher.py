@@ -206,10 +206,15 @@ class TestInterfaceFlags:
         with patch.object(config, 'get', side_effect=lambda key, default=None: overrides.get(key, real_get(key, default))):
             assert TelegramInterface.enabled(config) is False
 
-    def test_testsuite_mode_skips_telegram(self):
+    def test_testsuite_mode_skips_the_chat_interfaces(self):
+        """The prompt suite's servers answer /stream alone: no Telegram bot, and no console,
+        whose TUI server would make every worker race for the one TUI port."""
         import floxy_ai_server
         assert floxy_ai_server._enabled("telegram", running_as_testsuite=True) is False
+        assert floxy_ai_server._enabled("console", running_as_testsuite=True) is False
         assert floxy_ai_server._enabled("http", running_as_testsuite=True) is True
+        with patch.object(config, 'get', side_effect=lambda key, default=None: default):
+            assert floxy_ai_server._enabled("console", running_as_testsuite=False) is True
 
 
 @pytest.mark.unit
