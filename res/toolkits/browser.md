@@ -32,7 +32,8 @@ WARNING line — trust the snapshot, not the URL you asked for.
 Every action returns a fresh snapshot, taken once the page has reacted. INDICES RESET each snapshot — always use
 indices from the most recent one, never an old one. If the page looks exactly as before the action, the snapshot
 starts with a NOTE saying so: the action had no visible effect or the page is still working on it (a slow login
-step) — `browse_snapshot` re-reads it.
+step) — `browse_snapshot` re-reads it. A request the action sent that the server refused (4xx/5xx) or that failed
+is listed in that NOTE with its response body: usually why a submit did nothing.
 
 If a click opens a popup or new window (bank payments, BankID, OAuth logins), the session follows it: the popup
 becomes the active page for all browse commands and the snapshot says so in a NOTE. When it closes you are switched
@@ -70,9 +71,9 @@ itself times out after 10 s.
 
 `browse_network(url_filter: str = "")` — the session's XHR/fetch/document traffic so far (every tab, popups included), oldest
 first: time, tab, method, status, URL, MIME, an excerpt of the request body (`>`) and of JSON/text response bodies
-(`<`). `url_filter` is an optional URL regex. Read-only, no snapshot. This is how you learn what a page that "just
-keeps waiting" is told by its backend — a poll answering `pending`, `complete`, `failed` or a 4xx settles what a
-screenshot cannot.
+(`<`). `url_filter` is an optional URL regex — a path (`addresses/v1`), not a word (`cart`). Read-only, no
+snapshot. This is how you learn what a page that "just keeps waiting" is told by its backend — a poll answering
+`pending`, `complete`, `failed` or a 4xx settles what a screenshot cannot.
 
 `browse_click_at(x: int, y: int)` — last resort: one REAL mouse click at viewport coordinates (CSS pixels, as
 `getBoundingClientRect()` reports) for something no snapshot lists. Get the iframe's rect with `browse_eval`, add the

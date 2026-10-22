@@ -3,6 +3,7 @@ the LLM already saw: the page is watched through its text signature — the chan
 before the readiness gate, the settle wait, the one-retry on an unchanged page, and the
 NOTE when the page really did not move."""
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -56,20 +57,27 @@ def probes(*seq):
 @pytest.mark.unit
 class TestActionMark:
 
+    def test_records_the_moment_of_the_action(self):
+        wa = make_wa()
+        with probes(probe()):
+            before = time.time()
+            mark = run(wa._async_action_mark())
+        assert before <= mark['net_ts'] <= time.time()
+
     def test_records_the_text_signature(self):
         wa = make_wa()
         with probes(probe(sig='S1')):
-            assert run(wa._async_action_mark()) == {'sig': 'S1'}
+            assert run(wa._async_action_mark())['sig'] == 'S1'
 
     def test_probe_failure_leaves_no_signature(self):
         wa = make_wa()
         with patch.object(WebAccess, '_evaluate', new=AsyncMock(side_effect=asyncio.TimeoutError())):
-            assert run(wa._async_action_mark()) == {'sig': None}
+            assert run(wa._async_action_mark())['sig'] is None
 
     def test_non_dict_probe_leaves_no_signature(self):
         wa = make_wa()
         with patch.object(WebAccess, '_evaluate', new=AsyncMock(return_value='iframe')):
-            assert run(wa._async_action_mark()) == {'sig': None}
+            assert run(wa._async_action_mark())['sig'] is None
 
 
 @pytest.mark.unit
@@ -201,6 +209,42 @@ class TestSnapshotAfterAction:
         assert result.startswith("NOTE: the page looks exactly as it did before browse_act('3')")
         assert result.endswith("\n\nS2")
         assert 'browse_snapshot()' in result
+
+    def test_the_flag_lists_the_requests_the_action_sent_that_the_server_refused(self):
+        # The 2026-10-22 Tesla checkout: Nästa drew nothing, the 400 behind it sat in the
+        # capture — the NOTE must carry it, response body included, not leave it to a
+        # browse_network call rounds later.
+        wa = make_wa()
+        wa._clear_network_log()
+        mark = {'sig': 'OLD', 'net_ts': 100.0}
+        stale = {'rid': 'a', 'ts': 90.0, 'tab': 't', 'type': 'XHR', 'method': 'POST',
+                 'url': 'https://shop.example/addresses/v1', 'post': '', 'status': 400, 'mime': 'application/json',
+                 'size': 10, 'body': '{"errorMessage":"stale"}', 'note': '', 'done': True}
+        fresh = dict(stale, rid='b', ts=101.0, body='{"errorMessage":"Error while adding invoice information."}')
+        fine_ = dict(stale, rid='c', ts=101.5, url='https://shop.example/auditrecords/v1', status=200, body='{}')
+        for e in (stale, fresh, fine_):
+            wa._network_add(e)
+        p = tail_patches(['S1', 'S2'], ['OLD'])
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            result = run(wa._async_snapshot_after_action(mark, "browse_act('7')"))
+        head = result.split('\n\nS2')[0]
+        assert 'POST 400 https://shop.example/addresses/v1' in head
+        assert 'Error while adding invoice information' in head
+        assert 'stale' not in head, "a failure from before the action is not the action's"
+        assert 'auditrecords' not in head, "a request that succeeded is not listed"
+        assert result.endswith('\n\nS2')
+
+    def test_a_mark_without_a_moment_flags_without_a_failure_list(self):
+        wa = make_wa()
+        wa._clear_network_log()
+        wa._network_add({'rid': 'a', 'ts': 1.0, 'tab': 't', 'type': 'XHR', 'method': 'POST',
+                         'url': 'https://shop.example/x', 'post': '', 'status': 500, 'mime': '',
+                         'size': None, 'body': None, 'note': '', 'done': True})
+        p = tail_patches(['S1', 'S2'], ['OLD'])
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            result = run(wa._async_snapshot_after_action({'sig': 'OLD'}, "browse_act('7')"))
+        assert result.startswith('NOTE: the page looks exactly')
+        assert 'shop.example/x' not in result
 
     def test_verdict_off_keeps_the_waits_but_never_retries_or_flags(self):
         # A click inside an iframe: the parent may still react (a 3-D Secure submit),
