@@ -1,4 +1,4 @@
-"""Talks to a local ds4-server through its OpenAI-compatible API and runs Keep's commands in DeepSeek's DSML call syntax.
+"""Talks to a local ds4-server through its OpenAI-compatible API and runs Keep's commands in Keep's own call text.
 
 ds4 (antirez's DwarfStar engine) serves one large open-weight model — DeepSeek V4.1 Flash by
 default — resident on this machine's GPU, at `ds4.base_url` (default http://127.0.0.1:8000/v1);
@@ -13,14 +13,17 @@ memory curator) gets "high", every other one the `ds4.reasoning_effort` key, def
 a conversation turn answers in seconds; "none" turns server-side reasoning off, and then the
 prompt's own <thinking> instruction applies instead.
 
-Commands: the model writes its calls as DSML blocks (`DsmlFormat`, the V4.1 spelling), and
-ds4-server parses them itself whether or not the request declares tools — streamed, the raw
-block arrives as content deltas and then one `tool_calls` delta carries the whole call. The
-content is withheld from the first DSML sentinel on, and the merged `tool_calls` are written
-back as call text in the active command format and yielded, so the processor sees the call
-the model wrote in one piece (the server repairs a truncated block before it hands it over);
-withheld text with no rendered call behind it (no `tool_calls`, or a delta without a function
-name) is released as written for Keep's own parser.
+Commands: the default format is Keep's own call text (`KeepFormat`), the best of the formats
+on the prompt test suite with V4.1 Flash (measured 2026-10-22: 96.1 / 97.2 % pass at effort
+low, 7–8 s a test); the tier's `command_format:` key picks another. Whatever the format, the
+model may still write a DSML block (`DsmlFormat`, the V4.1 spelling), and ds4-server parses
+one itself whether or not the request declares tools — streamed, the raw block arrives as
+content deltas and then one `tool_calls` delta carries the whole call. The content is withheld
+from the first DSML sentinel on, and the merged `tool_calls` are written back as call text in
+the active command format and yielded, so the processor sees the call the model wrote in one
+piece (the server repairs a truncated block before it hands it over); withheld text with no
+rendered call behind it (no `tool_calls`, or a delta without a function name) is released as
+written for Keep's own parser.
 
 The live KV cache (step 5b of docs/plans/COMMAND_FORMATS_PLAN.md): every request declares one
 static tool, so ds4 renders the history in its tool shape and the reasoning of every assistant
@@ -72,6 +75,7 @@ from .OllamaLLM import OllamaLLM
 from .PrefillTracker import LogFormat, PrefillTracker, is_local_host, parse_last
 from assistant.commands.formats import DsmlFormat as dsml
 from assistant.commands.formats.CommandFormats import CommandFormats
+from assistant.commands.formats.KeepFormat import KeepFormat
 from common.ConfigManager import config
 from common.logging import info, trace, fine, note
 
@@ -153,8 +157,9 @@ class Ds4LLM(ChatGPTLLM):
         return True
 
     def default_command_format(self):
-        """DeepSeek's DSML syntax: what the model family ds4 serves here was trained on."""
-        return dsml.DsmlFormat
+        """Keep's own call text: on V4.1 Flash it passed more of the prompt test suite than DSML,
+        the syntax the model was trained on (measured 2026-10-22, see the module docstring)."""
+        return KeepFormat
 
     def prefers_query_as_own_turn(self) -> bool:
         """The test suite's query as its own user turn: ds4-server's cold checkpoint (with

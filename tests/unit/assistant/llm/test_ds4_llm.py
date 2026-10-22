@@ -103,11 +103,11 @@ class TestSetup:
         with p1, p2:
             assert Ds4LLM().model == Ds4LLM.DEFAULT_MODEL
 
-    def test_runs_the_dsml_command_format_and_a_wrapper_forwards_it(self):
+    def test_runs_keeps_own_command_format_and_a_wrapper_forwards_it(self):
         p1, p2 = _config({})
         with p1, p2:
-            assert Ds4LLM().command_format() is DsmlFormat
-            assert create_llm('Ds4LLM').command_format() is DsmlFormat
+            assert Ds4LLM().command_format() is KeepFormat
+            assert create_llm('Ds4LLM').command_format() is KeepFormat
 
     def test_the_query_is_not_prepended_because_ds4s_cache_matches_from_byte_zero(self):
         p1, p2 = _config({})
