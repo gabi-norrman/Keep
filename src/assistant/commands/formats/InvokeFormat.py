@@ -30,6 +30,12 @@ the same query on the same cached prompt — the API hands the text back as writ
 probe never showed it), and the call inside is complete and correct every time. The closer it still writes after the
 last of them is a block of nothing and is dropped, wherever in the reply a closer nothing opened
 stands.
+
+A fused invoke, `<invoke_load_toolkit>…</invoke_load_toolkit>` — the command name joined to
+the tag with `_` or `-` instead of standing in a `name` attribute, the `<parameter>` elements as
+in the real block — is read as an invoke of that name. Opus wrote one on the production server
+on 2026-10-22 under Keep's syntax with no `<invoke` anywhere in its prompt; neither syntax read
+it, so the raw XML went to Telegram and into the stored turn. The closer is the fused tag again.
 """
 import json
 import re
@@ -49,6 +55,8 @@ PARAMETER_CLOSE = "</parameter>"
 _INVOKE_RE = re.compile(rf'{INVOKE_OPEN}\s+name="([^"]*)"\s*>(.*?){INVOKE_CLOSE}', re.S)
 _PARAMETER_RE = re.compile(rf'{PARAMETER_OPEN}\s+name="([^"]*)"\s*>\n?(.*?)\n?{PARAMETER_CLOSE}', re.S)
 _INVOKE_NAME_RE = re.compile(rf'{INVOKE_OPEN}\s+name="([^"]*)"')
+_FUSED_RE = re.compile(rf'{INVOKE_OPEN}([_-])([A-Za-z][\w-]*)\s*>(.*?)</invoke\1\2\s*>', re.S)
+_FUSED_NAME_RE = re.compile(rf'{INVOKE_OPEN}([_-])([A-Za-z][\w-]*)\s*>')
 FUNCTION_OPEN = "<function>"
 FUNCTION_CLOSE = "</function>"
 
@@ -160,6 +168,8 @@ class InvokeFormat(NamedParameterFormat):
             return start, start + len(CLOSE), start, start
         if buffer.startswith(OPEN, start):
             closer, body = CLOSE, start + len(OPEN)
+        elif fused := _FUSED_NAME_RE.match(buffer, start):
+            closer, body = f"</invoke{fused.group(1)}{fused.group(2)}>", start
         else:
             closer, body = INVOKE_CLOSE, start
         close = buffer.find(closer, body)
@@ -195,8 +205,11 @@ class InvokeFormat(NamedParameterFormat):
         stripped = buffer.strip()
         if not stripped.startswith(self._OPENERS):
             return None
-        match = _INVOKE_NAME_RE.search(stripped)
-        return match.group(1).lower() if match else None
+        if match := _INVOKE_NAME_RE.search(stripped):
+            return match.group(1).lower()
+        if match := _FUSED_NAME_RE.search(stripped):
+            return match.group(2).lower()
+        return None
 
     def extract_all(self, text: str) -> list[tuple[str, list[str]]]:
         return [(name, self._positional(name, arguments))
@@ -216,6 +229,9 @@ class InvokeFormat(NamedParameterFormat):
 
     @staticmethod
     def _invokes(block: str) -> list[tuple[str, list[tuple[str, str]]]]:
-        """The `(name, [(parameter, value)])` of every invoke in a block, in order."""
-        return [(m.group(1).lower(), [(p.group(1), p.group(2)) for p in _PARAMETER_RE.finditer(m.group(2))])
-                for m in _INVOKE_RE.finditer(block)]
+        """The `(name, [(parameter, value)])` of every invoke in a block, in order — the named
+        ones and the fused ones (`<invoke_name>`) in the order they stand."""
+        found = [(m.start(), m.group(1), m.group(2)) for m in _INVOKE_RE.finditer(block)]
+        found += [(m.start(), m.group(2), m.group(3)) for m in _FUSED_RE.finditer(block)]
+        return [(name.lower(), [(p.group(1), p.group(2)) for p in _PARAMETER_RE.finditer(body)])
+                for _, name, body in sorted(found)]

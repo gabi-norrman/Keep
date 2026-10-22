@@ -383,3 +383,32 @@ class TestCut:
         assert fmt.cut(text, 3) == text
         assert fmt.cut(text, 10) == text
         assert fmt.cut("No calls at all.", 10) == "No calls at all."
+
+
+class TestFusedInvoke:
+    """Prod 2026-10-22 12:34: Opus joined the command name to the tag, `<invoke_load_toolkit>`,
+    with the real block's parameter element inside and the fused tag as the closer."""
+
+    FUSED = f'<invoke_load_toolkit>\n{parameter("name", "developer")}\n</invoke_load_toolkit>'
+
+    def test_the_production_reply_is_read_as_the_call_it_meant(self, fmt):
+        assert fmt.extract(self.FUSED + "\nDone.") == (("load_toolkit", ["developer"], "developer"), "\nDone.")
+        assert fmt.call_end(self.FUSED + "\nDone.") == len(self.FUSED)
+        assert fmt.blocks(self.FUSED) == [(0, len(self.FUSED), [("load_toolkit", [("name", "developer")])])]
+
+    def test_a_dash_joins_the_name_as_well_and_the_closer_must_match(self, fmt):
+        dashed = f'<invoke-turn_on>\n{parameter("light_name", "Lamp")}\n</invoke-turn_on>'
+        assert fmt.extract(dashed)[0] == ("turn_on", ["Lamp"], "Lamp")
+        assert not fmt.complete(f'<invoke_turn_on>\n{parameter("light_name", "Lamp")}\n{INVOKE_CLOSE}')
+
+    def test_held_back_while_open_and_reported_by_name_when_the_stream_ends_inside(self, fmt):
+        assert fmt.is_possibly_command(self.FUSED[:12]) and not fmt.complete(self.FUSED[:-5], streaming=True)
+        assert fmt.unterminated(self.FUSED[:-5]) == "load_toolkit"
+
+    def test_fused_and_named_invokes_in_one_block_come_in_text_order(self, fmt):
+        text = f'{OPEN}\n<invoke_restart_server>\n</invoke_restart_server>\n<invoke name="turn_on">\n{parameter("light_name", "Lamp")}\n{INVOKE_CLOSE}\n{CLOSE}'
+        assert fmt.extract_all(text) == [("restart_server", []), ("turn_on", ["Lamp"])]
+
+    def test_an_invoke_like_word_is_still_no_fused_call(self, fmt):
+        assert fmt.extract("<invoked> by the alarm </invoked>") == (None, None)
+        assert fmt.unterminated("<invoked> by the alarm") is None
