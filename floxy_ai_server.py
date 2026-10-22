@@ -223,6 +223,19 @@ class Server:
             pass
 
 
+def _isolate_database(port: int):
+    """A test server runs from the same root as the developer's live server, so its dialog
+    would land in the live floxy.db and reach that server's window at its next reload. It
+    gets a fresh file of its own instead, one per port."""
+    from common.FloxyDatabase import FloxyDatabase
+    from common.Paths import CACHE_DIR
+    CACHE_DIR.mkdir(exist_ok=True)
+    path = CACHE_DIR / f"testsuite-{port}.db"
+    path.unlink(missing_ok=True)
+    FloxyDatabase.DB_PATH = str(path)
+    info(f"Testsuite server: database isolated at {path}")
+
+
 def build(port: int, running_as_testsuite: bool = False) -> Server:
     """Construct the assistant and start every enabled interface; nothing serves yet."""
     from assistant.Assistant import Assistant
@@ -238,6 +251,8 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
     info(f"Version {Version.detail()}")
     _trace_prepend_setting()
     TempMonitor.check_installed()
+    if running_as_testsuite:
+        _isolate_database(port)
     FloxyDatabase.get_instance()
     # A vault value the LLM writes back through a placeholder (a config_set of an api_hash)
     # is restored before the command runs and would otherwise land in floxy.out in clear.
