@@ -453,6 +453,17 @@ class MusicIntegration(Integration):
         error(f"Zone '{normalized_name}' not found")
         return None
 
+    def zone_problem(self, room_name: str) -> str:
+        """"" when the room names a reachable Sonos zone, else why not — the zone commands
+        return it as their error, so the LLM can tell the user instead of falling silent."""
+        if self._get_zone(room_name):
+            return ""
+        known = sorted(self._sonos_zones_cache)
+        info(f"Sonos: no zone '{room_name}', {len(known)} known")
+        if not known:
+            return f"no Sonos zone '{room_name}': no Sonos speaker answers on the network, so nothing can play"
+        return f"no Sonos zone '{room_name}'; the zones are: {', '.join(known)}"
+
     def _get_coordinator(self, zone: soco.SoCo) -> soco.SoCo:
         """Get the group coordinator for a zone. If zone is in a group, returns the coordinator.
         If zone is standalone, returns the zone itself. A zone the topology no longer lists —

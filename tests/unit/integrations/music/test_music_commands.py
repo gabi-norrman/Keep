@@ -13,6 +13,7 @@ from integrations.music.SpotifyAuth import REDIRECT_URI
 @pytest.fixture
 def music_manager():
     manager = Mock()
+    manager.zone_problem.return_value = ""
     with patch.object(MusicCommands, '_get_music_manager', return_value=manager):
         yield manager
 
@@ -39,6 +40,20 @@ class TestCmdMusicPlayback:
         music_manager.get_favorites.return_value = ["Other Fav"]
         commands_instance.run("sonos_enqueue_and_play", ["Kitchen", "My Playlist"])
         music_manager.play_playlist.assert_called_once_with("Kitchen", "My Playlist", shuffle=True)
+
+    @pytest.mark.parametrize("command, params", [
+        ("play", ["Garage"]), ("pause", ["Garage"]), ("next", ["Garage"]),
+        ("volume_up", ["Garage"]), ("volume_down", ["Garage"]),
+        ("play_music", ["Garage", "S-0"]), ("sonos_enqueue_and_play", ["Garage", "My Fav"]),
+    ])
+    def test_an_unknown_zone_is_the_commands_error_and_nothing_plays(self, commands_instance, music_manager,
+                                                                      command, params):
+        music_manager.zone_problem.return_value = "no Sonos zone 'Garage'; the zones are: Bedroom"
+        result = commands_instance.run(command, params)
+        assert command in result and "Bedroom" in result
+        music_manager.zone_problem.assert_called_once_with("Garage")
+        for action in ("play", "pause", "next_track", "adjust_volume", "play_in_zone", "play_favorite", "play_playlist"):
+            getattr(music_manager, action).assert_not_called()
 
     def test_building_commands_does_not_build_the_music_integration(self):
         # A disabled Sonos must not be probed at startup: the integration is built by the

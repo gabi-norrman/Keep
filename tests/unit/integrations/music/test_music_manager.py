@@ -261,6 +261,27 @@ class TestSonosZonesCacheExpiry:
         assert mm._discover_sonos_zones() == {"Bedroom": old_zone}
 
 
+
+class TestZoneProblem:
+    def _with_zones(self, zones):
+        mm = make_music_manager(room_mapping={})
+        mm._sonos_zones_cache = zones
+        mm._sonos_zones_cache_time = time.time()
+        return mm
+
+    def test_a_known_zone_has_no_problem_whatever_its_case(self):
+        assert self._with_zones({"Living Room": Mock()}).zone_problem("living room") == ""
+
+    def test_an_unknown_zone_names_the_zones_there_are(self):
+        problem = self._with_zones({"Living Room": Mock(), "Bedroom": Mock()}).zone_problem("Garage")
+        assert "Garage" in problem and "Bedroom" in problem and "Living Room" in problem
+
+    @patch("integrations.music.MusicIntegration.soco.discover", return_value=None)
+    def test_with_no_speaker_on_the_network_the_problem_says_so(self, _discover):
+        problem = make_music_manager(room_mapping={}).zone_problem("Garage")
+        assert "Garage" in problem and "no Sonos speaker" in problem
+
+
 class TestPlayInZoneRouting:
     def test_short_id_resolves_from_cache(self):
         mm = make_music_manager()

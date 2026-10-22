@@ -30,22 +30,39 @@ class MusicCommands(CommandSet):
             return "play_music failed: expected 'zone, id' parameters"
         room = args[0].strip()
         id = args[1].strip()
+        if problem := self._zone_problem("play_music", room):
+            return problem
         self.music_manager.play_in_zone(id, room)
 
     def cmd_play(self, parameter_string: str):
+        if problem := self._zone_problem("play", parameter_string):
+            return problem
         self.music_manager.play(parameter_string)
 
     def cmd_pause(self, parameter_string: str):
+        if problem := self._zone_problem("pause", parameter_string):
+            return problem
         self.music_manager.pause(parameter_string)
 
     def cmd_next(self, parameter_string: str):
+        if problem := self._zone_problem("next", parameter_string):
+            return problem
         self.music_manager.next_track(parameter_string)
 
     def cmd_volume_up(self, parameter_string: str):
+        if problem := self._zone_problem("volume_up", parameter_string):
+            return problem
         self.music_manager.adjust_volume(parameter_string, 4)
 
     def cmd_volume_down(self, parameter_string: str):
+        if problem := self._zone_problem("volume_down", parameter_string):
+            return problem
         self.music_manager.adjust_volume(parameter_string, -4)
+
+    def _zone_problem(self, command: str, room: str) -> str:
+        """The command's error result when the room is no Sonos zone, else ""."""
+        problem = self.music_manager.zone_problem(room)
+        return f"{command} failed: {problem}" if problem else ""
 
     #  todo: this is not in the prompt, do we still want it?
     def cmd_sonos_enqueue_and_play(self, *args: str):
@@ -53,6 +70,8 @@ class MusicCommands(CommandSet):
             return "sonos_enqueue_and_play failed: expected 'zone, playlist' parameters"
         room = args[0].strip()
         playlist = args[1].strip()
+        if problem := self._zone_problem("sonos_enqueue_and_play", room):
+            return problem
 
         favorites = self.music_manager.get_favorites(room)
         if playlist in favorites:
