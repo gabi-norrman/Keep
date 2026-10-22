@@ -12,6 +12,7 @@ from assistant.llm import create_llm, local_only_class, parse_llm_config, tier_a
 from assistant.llm.Ds4LLM import Ds4LLM, Ds4LogFormat
 from assistant.llm.Ds4Replay import ReplayStore
 from assistant.llm.PrefillTracker import LogSource
+from assistant.llm.VaultLLM import VaultLLM
 
 CALL_TEXT = ('\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name="turn_on">\n'
              '<｜DSML｜ parameter name="light_name" string="true">kitchen lamp</｜DSML｜ parameter>\n'
@@ -25,11 +26,12 @@ def _config(values: dict):
     return patch('assistant.llm.config.get', side_effect=get), patch('assistant.llm.Ds4LLM.config.get', side_effect=get)
 
 
-def _chunk(content=None, reasoning=None, tool_calls=None, usage=None, choices=True):
+def _chunk(content=None, reasoning=None, tool_calls=None, usage=None, choices=True, finish_reason=None):
     delta = SimpleNamespace(content=content, tool_calls=tool_calls)
     if reasoning is not None:
         delta.reasoning_content = reasoning
-    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)] if choices else [], usage=usage)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)] if choices else [],
+                           usage=usage)
 
 
 def _call_delta(index=0, id=None, name=None, arguments=None):
@@ -82,11 +84,19 @@ class TestSetup:
     def test_the_openai_client_still_gets_a_key_and_the_configured_server(self):
         # The OpenAI SDK refuses to construct without a key; the server ignores whatever it is.
         p1, p2 = _config({'ds4.base_url': 'http://192.0.2.7:8000/v1'})
-        with p1, p2, patch('assistant.llm.ChatGPTLLM.OpenAI') as openai_cls:
+        with p1, p2, patch('assistant.llm.Ds4LLM.OpenAI') as openai_cls:
             Ds4LLM().initialize()
         kwargs = openai_cls.call_args.kwargs
         assert kwargs['base_url'] == 'http://192.0.2.7:8000/v1'
         assert kwargs['api_key']
+
+    def test_the_client_never_gives_up_on_a_slow_reply(self):
+        # A non-streamed curation says nothing for minutes; the SDK's 600 s read timeout resent it.
+        p1, p2 = _config({})
+        with p1, p2, patch('assistant.llm.Ds4LLM.OpenAI') as openai_cls:
+            Ds4LLM().initialize()
+        timeout = openai_cls.call_args.kwargs['timeout']
+        assert timeout.read is None and timeout.connect is not None
 
     def test_the_factory_builds_it_by_class_name(self):
         p1, p2 = _config({})
@@ -246,7 +256,7 @@ class TestTheRequestShape:
             _stream(llm)
         else:
             create.return_value = SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content="x", tool_calls=None))], usage=None)
+                choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content="x", tool_calls=None))], usage=None)
             p1, p2 = _config({})
             with p1, p2:
                 llm.create_completion([{'role': 'user', 'content': 'hi'}])
@@ -300,7 +310,7 @@ class TestTheRequestShape:
 class TestNonStreaming:
     def _completion(self, message):
         llm, create = _llm_with_stream([])
-        create.return_value = SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+        create.return_value = SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=message)], usage=None)
         p1, p2 = _config({})
         with p1, p2:
             return llm.create_completion([{'role': 'user', 'content': 'hi'}])
@@ -316,6 +326,32 @@ class TestNonStreaming:
         assert text.startswith(OPEN) and FMT.extract_all(text) == [("dim", ["Lamp", "1"])]
         text = self._completion(SimpleNamespace(content="Dimming.", reasoning_content=None, tool_calls=[call]))
         assert text.startswith("Dimming.\n") and FMT.extract_all(text) == [("dim", ["Lamp", "1"])]
+
+
+class TestStopReason:
+    """A reply cut at the output cap reads as 'max_tokens' through the vault wrapper every tier
+    gets — the spelling the memory curator checks before it saves a bank."""
+
+    @staticmethod
+    def _wrapped(llm):
+        return VaultLLM(llm)
+
+    def test_a_streamed_reply_cut_at_the_cap_is_max_tokens(self):
+        llm, _ = _llm_with_stream([_chunk(content="half a ba"), _chunk(finish_reason="length")])
+        _stream(llm)
+        assert self._wrapped(llm).last_stop_reason == 'max_tokens'
+
+    def test_a_non_streamed_reply_cut_at_the_cap_is_max_tokens_and_the_next_whole_one_is_not(self):
+        llm, create = _llm_with_stream([])
+        message = SimpleNamespace(content="half a ba", reasoning_content=None, tool_calls=None)
+        create.return_value = SimpleNamespace(choices=[SimpleNamespace(finish_reason='length', message=message)], usage=None)
+        p1, p2 = _config({})
+        with p1, p2:
+            llm.create_completion([{'role': 'user', 'content': 'hi'}])
+            assert self._wrapped(llm).last_stop_reason == 'max_tokens'
+            create.return_value.choices[0].finish_reason = 'stop'
+            llm.create_completion([{'role': 'user', 'content': 'hi'}])
+        assert self._wrapped(llm).last_stop_reason != 'max_tokens'
 
 
 class TestPrefillBar:
@@ -361,7 +397,7 @@ class TestPrefillBar:
             llm = Ds4LLM()
         llm.client = MagicMock()
         message = SimpleNamespace(content="Hi.", reasoning_content=None, tool_calls=None)
-        llm.client.chat.completions.create.return_value = SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+        llm.client.chat.completions.create.return_value = SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=message)], usage=None)
         with patch.object(Ds4LLM._prefill, 'begin', return_value=3) as begin, patch.object(Ds4LLM._prefill, 'end') as end, p1, p2:
             llm.create_completion([{'role': 'user', 'content': 'hi'}])
         begin.assert_called_once()

@@ -147,7 +147,7 @@ class TestBackgroundImageRequest:
         conn = Ds4LLM._slot.conn
         llm = _llm()
         llm.client.chat.completions.create.return_value = iter([
-            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="hi", tool_calls=None))], usage=None)])
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="hi", tool_calls=None), finish_reason=None)], usage=None)])
         with _config({}):
             assert list(llm.create_streaming_completion([{"role": "user", "content": "hello"}])) == ["hi"]
         assert conn.sock.shut.is_set()
@@ -162,7 +162,7 @@ class TestBackgroundImageRequest:
         Ds4LLM._slot.conn = conn
         llm = _llm()
         llm.client.chat.completions.create.return_value = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="a cat"))])
+            choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content="a cat"))])
         _run(lambda: (conn.sock.shut.wait(1), Ds4LLM._slot.release()))
         with _config({}):
             assert llm.create_completion_with_images(MESSAGES, [JPEG]) == "a cat"
