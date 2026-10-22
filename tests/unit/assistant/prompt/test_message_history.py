@@ -1255,6 +1255,30 @@ class TestToolkitEvictionStubs:
         assert [e["toolkits"] for e in self._stubs(section)] == [["browser", "web"]]
         assert self._stubs(section)[0]["timestamp"] == 1002.0, "the newest evicted row's place"
 
+    def test_a_preloaded_row_puts_no_name_in_the_stub(self):
+        """The preloader sends its toolkit again on the next request of the window, so a stub
+        telling the model to load it again would stand over the reload itself."""
+        section = _make_history_section()
+        section.trim_high_bytes = 2_000
+        section.trim_low_bytes = 1_000
+        preloaded = dict(self._toolkit_row("setup", 1002.0), source=section.preload_source("text"))
+        section.history = [preloaded] + self._turns(20, 1010.0)
+        msgs = section.get_history_messages()
+        assert "# Toolkit: setup" not in self._joined(msgs), "the row itself is trimmed"
+        assert not msgs[0]["content"].startswith("System (")
+        assert self._stubs(section) == []
+
+    def test_a_preloaded_row_beside_a_loaded_one_leaves_only_the_loaded_name(self):
+        section = _make_history_section()
+        section.trim_high_bytes = 2_000
+        section.trim_low_bytes = 1_000
+        preloaded = dict(self._toolkit_row("setup", 1000.0, size=300), source=section.preload_source("text"))
+        section.history = [preloaded, self._toolkit_row("browser", 1002.0)] + self._turns(20, 1010.0)
+        msgs = section.get_history_messages()
+        head = msgs[0]["content"].split("\n")[0]
+        assert "browser" in head and "setup" not in head
+        assert [e["toolkits"] for e in self._stubs(section)] == [["browser"]]
+
     def test_a_reloaded_toolkit_does_not_change_the_stub_naming_two(self):
         section, before = self._section_after_evicting_two()
         section.history.append(self._toolkit_row("web", 2000.0, size=10))

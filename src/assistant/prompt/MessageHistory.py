@@ -79,7 +79,10 @@ class MessageHistory:
     # browse_open). The stub carries the rule itself in one line and otherwise only the
     # names, since a voice day evicts a dozen at once (12 one-line stubs, 2.2KB, 2026-10-12).
     # A name leaves the stub when its toolkit is loaded again; the stub goes at the next
-    # trim, with the day's wipe, or when its last name leaves.
+    # trim, with the day's wipe, or when its last name leaves. A preloaded row never puts
+    # its name in: the preloader sends the toolkit again on the next request of its window,
+    # and a stub telling the model to load it again stood over the reload itself (ds4 looped
+    # on load_toolkit("setup") four times over that pair of lines, 2026-10-22).
     SOURCE_TOOLKIT_EVICTED = "toolkit_evicted"
     # The `source` of a `command` row a preload put in for one window: this prefix and the
     # window's name (preload_source / preload_window). A command row the LLM loaded itself
@@ -424,10 +427,18 @@ class MessageHistory:
         names = [] if dropped or stub is None else list(stub["toolkits"])
 
         evicted: dict[str, float] = {}
+        preloaded = set()
         for entry, _, _ in dropped:
             for name in self._toolkit_names(entry):
-                if name not in in_window:
-                    evicted[name] = max(evicted.get(name, 0.0), entry["timestamp"])
+                if name in in_window:
+                    continue
+                if self.preload_window(entry) is not None:
+                    preloaded.add(name)
+                    continue
+                evicted[name] = max(evicted.get(name, 0.0), entry["timestamp"])
+        if preloaded - set(evicted):
+            trace(f"MessageHistory: trim evicted the preloaded reference(s) of "
+                  f"{', '.join(sorted(preloaded - set(evicted)))} — the preloader brings them back, no stub")
         if evicted:
             info(f"MessageHistory: trim evicted the toolkit reference(s) of {', '.join(sorted(evicted))} "
                  f"— one stub names them at the newest row's place")
