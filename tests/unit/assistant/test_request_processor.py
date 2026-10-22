@@ -43,6 +43,7 @@ def handler():
     h.per_request_prefix = False
     h.request_context = RequestContext()
     h._rounds = []
+    h._silent_end_followed_up = False
     h.dialog_manager = Mock()
     h.dialog_manager.reply_to_llm = "User: hello how are you"
     h.dialog_manager.reply_text = "User: hello how are you"
@@ -136,6 +137,7 @@ class TestHandleBackgroundCommands:
         h.my_thread_name = "test"
         h.per_request_prefix = False
         h._rounds = []
+        h._silent_end_followed_up = False
         h.request_context = RequestContext(
             user_input="hello",
             user="User",
@@ -794,6 +796,74 @@ class TestHandleBackgroundCommands:
 
         assert new_dm.byte_prefix_tail is tail
 
+    # --- a request that would end with nothing said to the user ---
+
+    SELF_EVIDENT = {"turn_off", "pause"}
+
+    def _silent_dm(self, *executed):
+        dm = self._make_mock_dm()
+        dm.llm_response = ""
+        dm.command_processor.executed_commands = list(executed)
+        dm.command_processor.commands.is_self_evident.side_effect = self.SELF_EVIDENT.__contains__
+        return dm
+
+    def _end_request(self, handler, first, follow_up=None):
+        """Drive the end of a request whose rounds so far are [first]; returns the rounds
+        streamed after it."""
+        handler.dialog_manager = first
+        handler._rounds = [first]
+        streamed = []
+        follow_up = follow_up or self._make_mock_dm()
+        with patch.object(handler, 'stream_response', side_effect=lambda: iter(streamed.append(handler.dialog_manager) or [])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch.object(handler, '_new_dialog_manager', return_value=follow_up):
+            self._exhaust_generator(handler._handle_background_commands(Mock()))
+        return streamed
+
+    def test_a_request_ending_silently_on_bookkeeping_gets_one_round_to_reply(self, handler):
+        streamed = self._end_request(handler, self._silent_dm("open_url(https://example.com)", "checked_watch(news)"))
+        assert len(streamed) == 1
+        assert RequestProcessor.SILENT_END_NOTE in streamed[0].reply_to_llm
+
+    def test_a_request_ending_silently_on_actions_whose_effect_is_the_answer_stays_silent(self, handler):
+        assert self._end_request(handler, self._silent_dm("turn_off(Hall)", "pause(Kitchen)")) == []
+
+    def test_one_bookkeeping_command_beside_the_actions_still_gets_the_round(self, handler):
+        assert len(self._end_request(handler, self._silent_dm("turn_off(Hall)", "remember(x)"))) == 1
+
+    def test_a_round_with_no_command_after_earlier_ones_gets_the_round(self, handler):
+        earlier = self._silent_dm("open_url(https://example.com)")
+        last = self._silent_dm()
+        handler._rounds = [earlier]
+        handler.dialog_manager = last
+        handler._rounds.append(last)
+        with patch.object(handler, 'stream_response', return_value=iter([])) as stream, \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch.object(handler, '_new_dialog_manager', return_value=self._make_mock_dm()):
+            self._exhaust_generator(handler._handle_background_commands(Mock()))
+        stream.assert_called_once()
+
+    def test_a_request_that_said_something_gets_no_extra_round(self, handler):
+        dm = self._silent_dm("checked_watch(news)")
+        dm.llm_response = "Nothing new on the rumour front."
+        assert self._end_request(handler, dm) == []
+
+    def test_a_silent_reply_without_any_command_is_left_silent(self, handler):
+        assert self._end_request(handler, self._silent_dm()) == []
+
+    def test_the_extra_round_is_given_once_even_when_it_is_silent_too(self, handler):
+        assert len(self._end_request(handler, self._silent_dm("save_watch(a)"),
+                                     follow_up=self._silent_dm("save_watch(b)"))) == 1
+
+    def test_a_test_suite_request_gets_no_extra_round(self, handler):
+        handler.request_context.test = True
+        assert self._end_request(handler, self._silent_dm("checked_watch(news)")) == []
+
+
 # ---------------------------------------------------------------------------
 # Extended handler fixture for new tests
 # ---------------------------------------------------------------------------
@@ -841,6 +911,7 @@ def full_handler():
 # ---------------------------------------------------------------------------
 # TestInitializeAudioPlayback
 # ---------------------------------------------------------------------------
+
 
 class TestInitializeAudioPlayback:
     def test_server_sound_false_does_not_start_playback(self, full_handler):

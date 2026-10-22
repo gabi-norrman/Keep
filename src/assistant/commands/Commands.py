@@ -138,6 +138,10 @@ class Commands:
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
     PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch", "load_calendar"})
+    # Actions whose effect is the answer: a request ending on them without a word stays
+    # silent. Any other command ending a silent request gets one more round to reply
+    # (RequestProcessor._reply_owed). restart_server reports through a system note.
+    SELF_EVIDENT_COMMANDS = frozenset({"turn_on", "turn_off", "stop", "dim", "restart_server"})
     AI_MESSAGE_SUFFIX = "[Sent with the help of AI 🤖]"
     # The footer is on unless config.yaml says ai_message_footer: false — read at each send.
     AI_FOOTER_KEY = "ai_message_footer"
@@ -1891,6 +1895,9 @@ class Commands:
 
     def is_pure(self, command_name: str) -> bool:
         return command_name in self._owner(command_name).PURE_COMMANDS
+
+    def is_self_evident(self, command_name: str) -> bool:
+        return command_name in self._owner(command_name).SELF_EVIDENT_COMMANDS
 
     def is_multi_param(self, command_name: str) -> bool:
         return command_name in self._owner(command_name).MULTI_PARAM_COMMANDS

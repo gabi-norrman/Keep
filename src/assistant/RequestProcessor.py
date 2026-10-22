@@ -154,6 +154,12 @@ class RequestProcessor:
     MAX_REPEATED_ROUNDS = 2
     REPEATED_ROUND_NOTICE = "Stopped: the same command returned the same result three rounds in a row."
     LLM_OUTAGE_HISTORY_MARKER = "\n[the AI backend failed mid-reply]"
+    # The result of the one extra round a request gets when it would end without a word to
+    # the user although commands ran (see _reply_owed). ds4 often writes the bookkeeping call
+    # first and the answer never: a research turn ended on checked_watch, the user saw
+    # nothing (13 silent Telegram turns on 2026-10-22).
+    SILENT_END_NOTE = ("The commands ran, and nothing has been said to the user this turn. "
+                       "Reply to the user now.")
 
     def __init__(self, playback_factory: "Callable[[Callable[[], bool]], ServerPlayback] | None" = None,
                  voice_factory: "Callable[[str | None], VoiceSynthesizer] | None" = None,
@@ -182,6 +188,7 @@ class RequestProcessor:
         # Every dialog manager this request ran a round on, so the telemetry can name the
         # commands of the whole request, not only the last round's.
         self._rounds: list = []
+        self._silent_end_followed_up = False
         self.first_sound_chunk = True
         self.is_killed = False
         self.kill_reason = ""  # why kill() fired, so the turn gate can log a truthful abort
@@ -679,6 +686,31 @@ class RequestProcessor:
         trace("")
         return response_text
 
+    def _reply_owed(self) -> bool:
+        """True, once per request, when the request is about to end with nothing said to the
+        user although commands ran, and the last round's commands are not all ones whose
+        effect is the answer (a light turned off, the music paused): the result of the round
+        it then circles back with is SILENT_END_NOTE. A turn that ran no command stays
+        silent — the LLM chose to say nothing (a reaction to a message)."""
+        if self._silent_end_followed_up or self.ctx.test:
+            return False
+        if any(dm.llm_response.strip() for dm in self._rounds):
+            return False
+        ran = self._command_names()
+        if not ran:
+            return False
+        cp = self.dialog_manager.command_processor
+        last = [c.split("(", 1)[0] for c in cp.executed_commands]
+        if last and all(cp.commands.is_self_evident(name) for name in last):
+            trace(f"Request ends silently on {', '.join(last)} — the effect is the answer, no follow-up")
+            return False
+        self._silent_end_followed_up = True
+        info(f"Request would end with nothing said to the user after {', '.join(ran)} — "
+             f"one more round to reply")
+        cp.command_reply = self.SILENT_END_NOTE
+        cp.command_reply_contains_error = False
+        return True
+
     def _command_names(self) -> list[str]:
         """The names of the commands every round of this request ran, in order."""
         return [c.split("(", 1)[0] for dm in self._rounds for c in dm.command_processor.executed_commands]
@@ -744,7 +776,8 @@ class RequestProcessor:
         while (self.dialog_manager.command_processor.command_running_in_background or
                self.dialog_manager.command_processor.command_reply is not None or
                self.dialog_manager.command_processor.unterminated_command_report is not None or
-               not self.dialog_manager.command_processor.command_queue.empty()):
+               not self.dialog_manager.command_processor.command_queue.empty() or
+               self._reply_owed()):
             self._check_killed()
             round_num += 1
 
@@ -765,7 +798,8 @@ class RequestProcessor:
                 old_dialog_manager.command_processor.append_command_reply(report)
 
             if (old_dialog_manager.command_processor.command_reply is None and
-                    old_dialog_manager.command_processor.command_queue.empty()):
+                    old_dialog_manager.command_processor.command_queue.empty() and
+                    not self._reply_owed()):
                 info("Background command completed silently, skipping LLM follow-up.")
                 break
 

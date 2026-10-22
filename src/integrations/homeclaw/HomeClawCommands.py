@@ -15,6 +15,7 @@ class HomeClawCommands(CommandSet):
     MULTI_PARAM_COMMANDS = frozenset({"homekit_cover", "homekit_garage", "homekit_valve", "homekit_thermostat",
                                       "homekit_light", "homekit_scene"})
     SENSITIVE_COMMANDS = frozenset({"homekit_garage", "homekit_thermostat"})
+    SELF_EVIDENT_COMMANDS = frozenset({"homekit_light", "homekit_cover", "homekit_scene"})
     APPROVAL_NOTES = {
         "homekit_garage": "Opens or closes the garage door.",
         "homekit_thermostat": "Changes the temperature the thermostat heats to.",

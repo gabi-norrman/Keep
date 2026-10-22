@@ -11,6 +11,8 @@ class MusicCommands(CommandSet):
     """The music commands: playback and volume in a Sonos zone, Spotify search, playlists and
     favorites, and the sign-in of the user's Spotify account (spotify_login / spotify_login_code)."""
     MULTI_PARAM_COMMANDS = frozenset({"play_music", "sonos_enqueue_and_play"})
+    SELF_EVIDENT_COMMANDS = frozenset({"play", "pause", "next", "volume_up", "volume_down",
+                                       "play_music", "sonos_enqueue_and_play"})
 
     # Built by the first music command when Sonos & Spotify is disabled — never at startup,
     # where it would start discovering speakers on a network nobody asked it to look at.

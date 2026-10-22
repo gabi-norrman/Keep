@@ -33,6 +33,7 @@ class CommandSet:
     MULTI_PARAM_COMMANDS: frozenset = frozenset()
     SENSITIVE_COMMANDS: frozenset = frozenset()
     PURE_COMMANDS: frozenset = frozenset()
+    SELF_EVIDENT_COMMANDS: frozenset = frozenset()
     APPROVAL_NOTES: dict = {}
 
     def __init__(self, commands):
