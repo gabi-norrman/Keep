@@ -552,3 +552,29 @@ class TestCostSummary:
     def test_a_card_too_narrow_for_the_title_and_the_strip_draws_nothing(self):
         text, _ = self.strip(width=len("Anthropic API Cost") + len("Month $322 · Day $12 $3") + 5)
         assert text.strip() == ""
+
+
+class TestCostLegendNames:
+    """The cost card's legend cuts the longest workspace names to fit every entry, rather than
+    dropping the entries past the card's edge (the fifth workspace went missing on a 70-cell card)."""
+
+    WORKSPACES = ["Default", "Alice Carlsson", "Bob", "Marcus-dev", "Marcus-prod"]
+
+    @staticmethod
+    def legend_width(names):
+        return (sum(DashboardTab.LEGEND_KEY_W + len(n) for n in names)
+                + DashboardTab.LEGEND_GAP * (len(names) - 1))
+
+    def test_names_that_fit_are_left_whole(self):
+        assert DashboardTab._legend_names(self.WORKSPACES, 200) == self.WORKSPACES
+
+    def test_every_entry_fits_and_the_longest_names_are_cut_first(self):
+        names = DashboardTab._legend_names(self.WORKSPACES, 60)
+        assert self.legend_width(names) <= 60
+        assert names[0] == "Default" and names[2] == "Bob", "short names keep their length"
+        assert names[1].endswith("…") and names[1].startswith("Alice")
+
+    def test_no_name_is_cut_below_the_minimum(self):
+        names = DashboardTab._legend_names(self.WORKSPACES, 10)
+        assert min(len(n) for n in names) == len("Bob")
+        assert all(len(n) >= DashboardTab.LEGEND_MIN_NAME for n in names if n != "Bob")

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Callable, Dict, List, NamedTuple, Optional, Se
 from .TabView import TabView, CONTENT_TOP
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
-from interfaces.console.framework.TextWidth import display_width, fit
+from interfaces.console.framework.TextWidth import clip, display_width, fit
 from interfaces.console.widgets import Board, Tile
 from interfaces.console.widgets.Board import MeterRow
 from interfaces.console.widgets.FeedStrip import SHORT_NAMES, SYMBOL_FAILED, SYMBOL_PAUSED, SYMBOL_RUNNING, format_eta
@@ -1025,22 +1025,41 @@ class DashboardTab(TabView):
             screen.write_at(lx, label_y, label)
         screen.reset_color()
 
-        # Legend row — centered under the chart area
+        # Legend row — centered under the chart area, or across the whole card when wider
         legend_y = chart_y + chart_h + 1
-        entries = []
-        for mi, w in enumerate(workspaces):
-            entries.append((mi, w, len(f"\u2501\u2501 {w}   ")))
-        total_legend_w = sum(e[2] for e in entries) - 3 if entries else 0
-        lx = chart_x + max(0, (chart_w - total_legend_w) // 2)
-        for mi, name, entry_w in entries:
+        names = self._legend_names(workspaces, box_w - 4)
+        total_legend_w = sum(self.LEGEND_KEY_W + display_width(n) for n in names) + self.LEGEND_GAP * (len(names) - 1)
+        if total_legend_w <= chart_w:
+            lx = chart_x + (chart_w - total_legend_w) // 2
+        else:
+            lx = x + 2 + max(0, (box_w - 4 - total_legend_w) // 2)
+        for mi, name in enumerate(names):
+            entry_w = self.LEGEND_KEY_W + display_width(name)
             if lx + entry_w > x + box_w - 2:
                 break
             screen.set_color(self.WORKSPACE_COLORS[mi % len(self.WORKSPACE_COLORS)])
             screen.write_at(lx, legend_y, "\u2501\u2501")
             screen.set_color(Theme.COLOR_LABEL)
             screen.write_at(lx + 2, legend_y, f" {name}")
-            lx += entry_w
+            lx += entry_w + self.LEGEND_GAP
         screen.reset_color()
+
+    LEGEND_KEY_W = 3            # "━━ " before each name
+    LEGEND_GAP = 3
+    LEGEND_MIN_NAME = 4
+
+    @classmethod
+    def _legend_names(cls, workspaces: Sequence[str], width: int) -> List[str]:
+        """The workspace names for a legend `width` cells wide: the longest one cut by a cell
+        at a time, ending in an ellipsis, until every entry fits (or none is longer than
+        `LEGEND_MIN_NAME`)."""
+        widths = [display_width(w) for w in workspaces]
+        over = sum(widths) + cls.LEGEND_KEY_W * len(widths) + cls.LEGEND_GAP * (len(widths) - 1) - width
+        while over > 0 and widths and max(widths) > cls.LEGEND_MIN_NAME:
+            widths[widths.index(max(widths))] -= 1
+            over -= 1
+        return [w if display_width(w) <= cut else clip(w, cut - 1) + "\u2026"
+                for w, cut in zip(workspaces, widths)]
 
     def _draw_cost_summary(self, screen: TUIScreen, x: int, y: int, width: int):
         """The title strip's right end: the month's total, then yesterday's cost per workspace,
