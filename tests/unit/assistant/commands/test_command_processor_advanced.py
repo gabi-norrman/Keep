@@ -2101,6 +2101,28 @@ class TestUnterminatedCommandAtStreamEnd:
         self._reply(processor, dm, self.PROD_REPLY)
         assert processor.unterminated_command_report is None
 
+    # Prod 2026-10-22 12:34: `<invoke_load_toolkit>…</invoke_load_toolkit>` reached Telegram as the
+    # reply. That tag is read now; a shape no syntax reads is held as a possible call, ends the
+    # stream unread and is reported instead of shown.
+    MALFORMED = '<invoke:load_toolkit>\n<parameter name="name">developer</parameter>\n</invoke:load_toolkit>'
+
+    def test_a_tag_shaped_call_in_no_known_syntax_is_reported_and_not_shown(self, processor, dm):
+        assert self._reply(processor, dm, "On it.\n" + self.MALFORMED).strip() == "On it."
+        report = processor.take_unterminated_command_report()
+        assert "developer" in report.split("Received:")[1] and "syntax" in report
+        assert not re.match(r"\w+ was not run", report), "no command name was read, so none is claimed"
+
+    def test_a_lone_tag_followed_by_prose_is_shown_not_reported(self, processor, dm):
+        text = "<invoked> by the alarm, the lights came on."
+        assert self._reply(processor, dm, text) == text
+        assert processor.unterminated_command_report is None
+
+    def test_the_malformed_tag_report_is_dropped_on_a_killed_or_autonomous_run(self, processor, dm):
+        dm.is_killed = True
+        self._reply(processor, dm, self.MALFORMED)
+        assert processor.unterminated_command_report is None
+        self._reply(CommandProcessor(test_suite_mode=True), None, self.MALFORMED)
+
     def test_an_autonomous_run_reports_nothing(self, processor):
         self._reply(processor, None, self.PROD_REPLY)
         assert processor.unterminated_command_report is None

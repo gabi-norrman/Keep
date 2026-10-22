@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import queue
 import threading
@@ -614,6 +615,8 @@ class CommandProcessor:
                 trace(f"Stream ended with whitespace after the last command — dropping it: {leftover!r}")
             elif command_name := self.format.unterminated(leftover):
                 self._report_unterminated_command(command_name, leftover, dialog_manager)
+            elif self._MALFORMED_TAG_RE.match(leftover):
+                self._report_malformed_tag(leftover, dialog_manager)
             else:
                 # Held back only because it could still have grown into `name(` — it never did.
                 info(f"Stream ended on a bare command name, no call — releasing it as reply text: {leftover!r}")
@@ -629,19 +632,32 @@ class CommandProcessor:
 
     def _report_unterminated_command(self, command_name: str, leftover: str, dialog_manager):
         error(f"Stream ended inside an unterminated {command_name}( call — not run: {leftover!r}")
+        self._report_not_run(f"{command_name} was not run: the reply ended inside the call before it was "
+                             f"closed, so the call could not be read.", leftover, dialog_manager)
+
+    # Text the parser held back as a possible call that turned out to open with a tag and hold
+    # another one: a call in a shape no syntax reads (prod 2026-10-22: `<invoke_load_toolkit>`,
+    # before the fused tag was taught). A lone tag followed by prose is not one.
+    _MALFORMED_TAG_RE = re.compile(r"\s*<[A-Za-z/][^<>]*>.*<", re.S)
+
+    def _report_malformed_tag(self, leftover: str, dialog_manager):
+        error(f"Stream ended on tag-shaped text that is no call in any syntax read here — not run: {leftover!r}")
+        self._report_not_run("Nothing was run: the reply ended in tag-shaped text that is not a call in the "
+                             "syntax this prompt teaches, so no call could be read from it.", leftover, dialog_manager)
+
+    def _report_not_run(self, what: str, leftover: str, dialog_manager):
+        """Queue `what` for the circle-back round, with the dropped text quoted."""
         if dialog_manager is None:
-            info("No dialog to circle back through (autonomous run) — the unterminated command is only logged.")
+            info("No dialog to circle back through (autonomous run) — the dropped call is only logged.")
             return
         if self.is_killed or dialog_manager.is_killed:
-            info("Request was killed mid-command — the unterminated command is not reported to the LLM.")
+            info("Request was killed mid-command — the dropped call is not reported to the LLM.")
             return
         shown = leftover.strip()
         if len(shown) > self.UNTERMINATED_COMMAND_SHOWN_CHARS:
             shown = shown[:self.UNTERMINATED_COMMAND_SHOWN_CHARS] + "…"
         self.unterminated_command_report = (
-            f"{command_name} was not run: the reply ended inside the call before it was closed, so "
-            f"the call could not be read. Nothing after that point in the reply reached the user "
-            f"either. Received: {shown}")
+            f"{what} Nothing after that point in the reply reached the user either. Received: {shown}")
 
     def _killed(self, dialog_manager) -> bool:
         return self.is_killed or (dialog_manager is not None and dialog_manager.is_killed)
