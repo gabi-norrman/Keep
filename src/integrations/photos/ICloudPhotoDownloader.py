@@ -87,33 +87,33 @@ class ICloudPhotoDownloader(SingletonMixin):
         self._primary_zone: Optional[dict] = None
         self._shared_zone: Optional[dict] = None
         self._ready = False
-        self._not_configured = False
+        self._not_configured: Optional[str] = None  # the last config error, logged once per change
         self._init_lock = threading.Lock()
 
     def _ensure_service(self) -> bool:
         """Initialize CloudKit session from ICloudIntegration. Returns True if ready."""
         if self._ready:
             return True
-        if self._not_configured:
-            return False
 
         with self._init_lock:
             if self._ready:
                 return True
-            if self._not_configured:
-                return False
 
             from integrations.icloud.ICloudIntegration import ICloudIntegration, iCloudConfigurationError
             try:
                 api = ICloudIntegration.get_instance().api
             except iCloudConfigurationError as e:
-                # ICloudIntegration.get_instance() re-raises on every call when config is
-                # missing (a failed __init__ is never cached) — remember it here so we
-                # don't retry and log this per photo, per retry cycle.
-                info(f"ICloudPhotoDownloader: iCloud not configured ({e}) — "
-                     f"API downloads disabled, using brctl fallback only")
-                self._not_configured = True
+                # Asked again on every call (a failed __init__ is never cached and only reads the
+                # config), so a sign-in made after the first photo takes effect without a restart;
+                # logged only when the verdict changes, not per photo and retry cycle.
+                if str(e) != self._not_configured:
+                    info(f"ICloudPhotoDownloader: iCloud not configured ({e}) — "
+                         f"API downloads disabled, using brctl fallback until it is")
+                self._not_configured = str(e)
                 return False
+            if self._not_configured:
+                info("ICloudPhotoDownloader: iCloud is configured now — trying API downloads again")
+                self._not_configured = None
             if not api:
                 trace("ICloudPhotoDownloader: iCloud API not available")
                 return False

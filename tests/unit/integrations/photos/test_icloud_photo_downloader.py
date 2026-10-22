@@ -367,22 +367,20 @@ class TestEnsureService:
         assert dl._ready is True
 
     @pytest.mark.unit
-    def test_missing_config_disables_api_and_stops_retrying(self):
-        """Missing 'icloud' config raises on every get_instance() call (failed __init__
-        is never cached) — the downloader must remember it and not re-attempt per photo."""
+    def test_icloud_configured_after_first_photo_is_used_without_restart(self):
+        """The downloader once took a missing 'icloud' section as final, so a sign-in made while
+        the server ran left every photo on the brctl fallback until a restart (2026-10-22)."""
         from integrations.icloud.ICloudIntegration import iCloudConfigurationError
         dl = ICloudPhotoDownloader()
         with patch("integrations.icloud.ICloudIntegration.ICloudIntegration") as mock_ic:
             mock_ic.get_instance.side_effect = iCloudConfigurationError(
                 "Missing 'icloud' section in configuration.")
             assert dl._ensure_service() is False
-            assert dl._not_configured is True
             assert dl._ensure_service() is False
-            mock_ic.get_instance.assert_called_once()
 
-        # _reset() (session-level recovery) must not clear the config verdict
-        dl._reset()
-        assert dl._not_configured is True
+            mock_ic.get_instance.side_effect = None
+            mock_ic.get_instance.return_value.api = self._make_mock_api()
+            assert dl._ensure_service() is True
 
     @pytest.mark.unit
     def test_auth_error_triggers_session_refresh_and_retry(self, downloader):
