@@ -10,7 +10,8 @@ opens a call first in it, a call the invoke syntax read is logged at NOTE level 
 any other, and `rewritten` writes every such block back in the active syntax (its
 `render_tool_call`, the way `OllamaLLM` writes a server-parsed call) before the turn is
 stored, so the history holds nothing but the syntax the prompt teaches. The invoke format
-itself needs no rescue and `wrap` hands it back as it is.
+itself needs no rescue and `wrap` hands it back as it is. The fused spelling Opus wrote once
+(`<invoke_load_toolkit>`, 2026-10-22) is the invoke format's to read and is rescued the same way.
 """
 from typing import Iterator, Sequence
 

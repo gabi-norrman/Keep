@@ -83,6 +83,13 @@ class TestStreaming:
         assert out.strip() == ""
         assert processor.format.rescued == 1
 
+    def test_the_fused_production_reply_runs_the_call_and_shows_no_xml(self, processor):
+        # Prod 2026-10-22 12:34: `<invoke_load_toolkit>` under Keep's syntax, nothing in the prompt to prime it.
+        reply = "\n<invoke_load_toolkit>\n<parameter name=\"name\">developer</parameter>\n</invoke_load_toolkit>"
+        out = stream(processor, list(reply))
+        assert processor.calls == [("load_toolkit", ["developer"])]
+        assert out.strip() == "" and processor.format.rescued == 1
+
     def test_a_wrapped_block_of_two_invokes_after_prose_runs_both_and_keeps_the_prose(self, processor):
         reply = "On it.\n\n" + block("turn_on", ("light_name", "Lamp")) + "\n" + block("load_toolkit", ("name", '["email", "web"]')) + "\nDone."
         out = stream(processor, [reply[:4], reply[4:30], reply[30:]])
@@ -121,6 +128,11 @@ class TestRewritten:
         stored = fmt.rewritten(raw)
         assert "<" not in stored and stored.startswith("Dimming.\n\n")
         assert KeepFormat(NAMES).extract_all(stored) == [("dim", ["Kitchen lamp", "40"])]
+
+    def test_the_fused_block_is_stored_in_keep_syntax_too(self, fmt):
+        stored = fmt.rewritten('Loading.\n<invoke_load_toolkit>\n<parameter name="name">developer</parameter>\n</invoke_load_toolkit>')
+        assert "<" not in stored and stored.startswith("Loading.\n")
+        assert KeepFormat(NAMES).extract_all(stored) == [("load_toolkit", ["developer"])]
 
     def test_a_block_of_several_invokes_becomes_one_call_per_line(self, fmt):
         raw = block("turn_on", ("light_name", "Lamp")) + "\n" + block("load_toolkit", ("name", '["email", "web"]')) + "\nDone."
