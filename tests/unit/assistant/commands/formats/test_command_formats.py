@@ -80,7 +80,7 @@ def test_the_dialog_manager_sets_the_format_from_the_smart_tier(monkeypatch):
     with patch("assistant.DialogManager.TTFTMonitor"):
         dm = DialogManager(web_request_handler=Mock(), test_suite_mode=True)
     assert CommandFormats.active() is QwenFormat
-    assert type(dm.command_processor.format) is QwenFormat
+    assert type(dm.command_processor.format.primary) is QwenFormat  # the processor reads through the rescue wrapper
     dm.command_processor.kill()
 
 
@@ -99,6 +99,6 @@ def test_the_tier_config_override_beats_the_smart_class_in_the_dialog_manager(mo
         assert dm.ai_smart.command_format() is KeepFormat
         assert dm.ai_fast.command_format() is QwenFormat
         assert CommandFormats.active() is KeepFormat
-        assert type(dm.command_processor.format) is KeepFormat
+        assert type(dm.command_processor.format.primary) is KeepFormat
     finally:
         dm.command_processor.kill()

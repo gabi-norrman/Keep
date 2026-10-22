@@ -110,6 +110,12 @@ class CommandFormat(ABC):
         """Every call in a complete text, in order, as `(name, params)` — the cache layer's
         view of a stored reply, so no display text."""
 
+    def rewritten(self, text: str) -> str:
+        """A complete reply as the history stores it: every call in this syntax. A format
+        reads only its own syntax, so the text as written; the rescue (`RescueFormat`) renders
+        the calls it read in another one."""
+        return text
+
     def cut(self, text: str, count: int) -> str:
         """The text up to and including its `count`-th call, every block closed: what the
         processor keeps of a reply it stopped reading after that call (the runaway guard),

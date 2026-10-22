@@ -5,6 +5,7 @@ from assistant.DialogManager import DialogManager
 from assistant.AssistantEvents import AssistantObserver, observers
 from common.RequestKilledException import RequestKilledException
 from assistant.commands.CommandProcessor import CommandProcessor
+from assistant.commands.formats.KeepFormat import KeepFormat
 
 
 class FakeObserver(AssistantObserver):
@@ -31,6 +32,7 @@ class FakeCommandProcessor:
         self.invocations = []
         self.commands_dispatched = 0
         self.reset_parse_state_calls = 0
+        self.format = KeepFormat([])
 
     def reset_parse_state(self):
         self.reset_parse_state_calls += 1
@@ -1380,3 +1382,22 @@ def test_the_query_merges_into_the_toolkit_turn_in_production_and_on_a_backend_t
     assert len(user_turns) == 1
     assert user_turns[0]["content"].startswith("toolkit reference\n\nTurn on the kitchen lights")
     assert DialogManager.TEST_SUITE_TOOLKITS_ACK not in [m["content"] for m in dm.ai.observed_messages]
+
+
+@pytest.mark.unit
+def test_a_call_written_as_an_invoke_block_under_keep_runs_and_is_stored_in_keep_syntax(monkeypatch):
+    # Prod 2026-10-18 to -21: Opus under the keep format wrote the whole reply as an <invoke> block.
+    processor = CommandProcessor(test_suite_mode=True)
+    dm, console = make_dialog_manager(monkeypatch, [], command_processor=processor)
+    monkeypatch.setattr('assistant.DialogManager.time.time', TimeStub([1.0, 1.1, 1.2]))
+    dm.ai = FakeAI(['<invoke name="turn_on">\n<parameter name="light_name">Kitchen lamp</parameter>\n</invoke>\n'
+                    '</function_calls>'])
+
+    output = list(dm.stream_llm_response())
+    processor.command_queue.join()
+
+    assert "".join(output).strip() == ""
+    assert processor.commands_dispatched == 1
+    stored = dm.messages[-1]["content"]
+    assert "<invoke" not in stored and "</function_calls>" not in stored
+    assert KeepFormat(["turn_on"]).extract_all(stored) == [("turn_on", ["Kitchen lamp"])]

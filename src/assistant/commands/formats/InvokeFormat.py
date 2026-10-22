@@ -15,7 +15,9 @@ the block itself. Until 2026-10-21 a declaration kept Keep's `name(param: type)`
 filled that shape in as a call now and then: a hundred lines of a fillable call shape leak into
 the replies, a schema does not.
 `render_call` is also what a backend that parses the model's calls itself (`OllamaLLM`,
-`Ds4LLM`) writes a parsed call back into when this is the process's format.
+`Ds4LLM`) writes a parsed call back into when this is the process's format. Under every other
+format this one is the rescue (`RescueFormat`): a block the model writes in this shape anyway
+is read by it, run, and stored in the active syntax.
 
 The format is `ClaudeLLM`'s default since 2026-10-21 (before that it was offered by name only,
 `command_format: invoke` on a tier, while Claude ran Keep's syntax); `command_format: keep` on
@@ -196,12 +198,18 @@ class InvokeFormat(NamedParameterFormat):
         return match.group(1).lower() if match else None
 
     def extract_all(self, text: str) -> list[tuple[str, list[str]]]:
+        return [(name, self._positional(name, arguments))
+                for _, _, invokes in self.blocks(text) for name, arguments in invokes]
+
+    def blocks(self, text: str) -> list[tuple[int, int, list[tuple[str, list[tuple[str, str]]]]]]:
+        """Every block of the text in order as `(start, end, invokes)` — the invokes as
+        `(name, [(parameter, value)])` with the parameter names as the model wrote them, so a
+        caller may render the call in another syntax; a block of nothing has none."""
         found = []
         at = 0
         while span := self._span(text, at):
-            _, end, body, body_end = span
-            for name, arguments in self._invokes(text[body:body_end]):
-                found.append((name, self._positional(name, arguments)))
+            start, end, body, body_end = span
+            found.append((start, end, self._invokes(text[body:body_end])))
             at = end
         return found
 

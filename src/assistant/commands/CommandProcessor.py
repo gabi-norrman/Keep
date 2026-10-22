@@ -6,6 +6,7 @@ import time
 
 from common.DevelopmentConfig import LOCAL_DEVELOPMENT_MODE
 from .formats.CommandFormats import CommandFormats
+from .formats.RescueFormat import RescueFormat
 from .CommandEcho import describe_completion
 from .Commands import Commands
 from common.logging import error, trace, info, note, fine, masked_for_log
@@ -69,7 +70,10 @@ class CommandProcessor:
         self.reply_cut = False
         self.commands = Commands(self)
         self.possible_commands = self.commands.list_commands()
-        self.format = CommandFormats.active()(self.possible_commands)
+        # The active format, with Claude's <invoke> block read beside it for the call a model
+        # writes in that shape anyway (RescueFormat); the stored turn is rewritten to the
+        # active syntax by `format.rewritten` before the dialog keeps it.
+        self.format = RescueFormat.wrap(CommandFormats.active()(self.possible_commands))
         self.wait_has_been_done_for_this_request = False
         self.is_killed = False
         # For the orphaned-command handoff (see kill()): the most recently dispatched
