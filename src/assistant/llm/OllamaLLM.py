@@ -1,8 +1,6 @@
-import http.client
 import json
 import os
 import re
-import socket
 import threading
 import time
 from typing import Generator
@@ -11,6 +9,7 @@ from urllib.parse import urlparse
 import requests
 
 from .AbstractLLM import AbstractLLM, LLMPreempted
+from .BackgroundSlot import BackgroundSlot
 from .PrefillTracker import LogFormat, PrefillTracker, is_local_host, parse_last
 from assistant.commands.formats import QwenFormat as qwen
 from assistant.commands.formats.CommandFormats import CommandFormats
@@ -64,26 +63,17 @@ class OllamaLLM(AbstractLLM):
 
     # --- Background requests (photo indexing) --------------------------------
     # Ollama serves one request at a time (OLLAMA_NUM_PARALLEL=1, and the model fills the
-    # machine), so a background image call competes with the user's next turn for the one
-    # slot. A background request waits until nothing interactive is in flight and the runner
-    # has been idle for `ollama.background_idle_seconds`; an interactive request (or the
-    # pre-heat that follows a turn) arriving mid-image shuts the image request's socket —
-    # Ollama drops a sequence whose client is gone — and takes the slot within a fraction of
-    # a second. The evicted caller gets LLMPreempted and resends when the slot is idle again.
-    _bg_cond = threading.Condition()
-    _bg_active = False                  # a background request holds the slot (acquire → release)
-    _bg_abort = False                   # an interactive request wants the slot: the background one stands down
-    _bg_conn: http.client.HTTPConnection | None = None  # the background request's connection, once opened
-    _interactive_active = 0             # interactive requests and pre-heats in flight or waiting for the slot
-    _interactive_last_end = 0.0         # monotonic; the idle clock a background request waits on
+    # machine), so a background image call goes through the single-slot gate (BackgroundSlot):
+    # it waits until nothing interactive is in flight and the runner has been idle for
+    # `ollama.background_idle_seconds`, and an interactive request (or the pre-heat that
+    # follows a turn) arriving mid-image shuts its socket — Ollama drops a sequence whose
+    # client is gone — and takes the slot. The evicted caller gets LLMPreempted.
+    _slot = BackgroundSlot("Ollama")
     _bg_completed = 0                   # background requests finished since the last snapshot refresh
-    _bg_thread = threading.local()      # .wait_s: how long this thread's last background request queued
     _last_pre_heat_messages: list[dict] | None = None   # what the last pre-heat warmed
-    _PREEMPT_UNWIND_TIMEOUT_S = 5.0
     # A night of image requests each leaves a prefix-cache snapshot behind; every this many the
     # chat snapshot is re-warmed so the morning's first turn does not pay a cold prefill.
     _SNAPSHOT_REFRESH_EVERY = 50
-    _DEFAULT_BACKGROUND_IDLE_S = 20
 
     # Native thinking is on for a model that has it unless `ollama.think` says otherwise: a
     # reasoning model denied its channel invents one (Qwen wrote its plan inside made-up
@@ -391,99 +381,18 @@ class OllamaLLM(AbstractLLM):
 
     @classmethod
     def background_idle_seconds(cls) -> float:
-        return float(config.get('ollama.background_idle_seconds', cls._DEFAULT_BACKGROUND_IDLE_S))
+        return float(config.get('ollama.background_idle_seconds', BackgroundSlot.DEFAULT_IDLE_S))
 
     @classmethod
     def _interactive_begin(cls):
-        """An interactive request (or pre-heat) is about to go to Ollama: evict the background
-        request holding the slot, if any, and wait for it to unwind."""
-        with cls._bg_cond:
-            cls._interactive_active += 1
-            if not cls._bg_active:
-                return
-            cls._bg_abort = True
-            if cls._bg_conn is not None:
-                info("Ollama: interactive request arriving — aborting the background image request.")
-                cls._shutdown_connection(cls._bg_conn)
-            else:
-                trace("Ollama: interactive request arriving — the background request stands down before sending.")
-            cls._bg_cond.notify_all()
-            if not cls._bg_cond.wait_for(lambda: not cls._bg_active, timeout=cls._PREEMPT_UNWIND_TIMEOUT_S):
-                info(f"Ollama: background request did not unwind within {cls._PREEMPT_UNWIND_TIMEOUT_S:.0f}s — "
-                     "proceeding; it queues behind us in Ollama.")
+        cls._slot.interactive_begin()
 
     @classmethod
     def _interactive_end(cls, resets_idle: bool = True):
-        with cls._bg_cond:
-            cls._interactive_active = max(0, cls._interactive_active - 1)
-            if resets_idle:
-                cls._interactive_last_end = time.monotonic()
-            cls._bg_cond.notify_all()
+        cls._slot.interactive_end(resets_idle)
 
     def background_wait_seconds(self) -> float:
-        return getattr(OllamaLLM._bg_thread, "wait_s", 0.0)
-
-    @classmethod
-    def _acquire_background(cls):
-        """Block until the slot is free and has been idle for background_idle_seconds()."""
-        idle_s = cls.background_idle_seconds()
-        cls._bg_thread.wait_s = 0.0
-        with cls._bg_cond:
-            waited = None
-            while True:
-                if cls._interactive_active:
-                    remaining, why = None, "an interactive request is in flight"
-                elif cls._bg_active:
-                    remaining, why = None, "another background request holds it"
-                else:
-                    remaining = idle_s - (time.monotonic() - cls._interactive_last_end)
-                    if remaining <= 0:
-                        break
-                    why = f"it must idle {remaining:.0f}s more after the last interactive request"
-                if waited is None:
-                    waited = time.monotonic()
-                    trace(f"Ollama: background request waiting for the slot: {why}.")
-                cls._bg_cond.wait(remaining)
-            cls._bg_active = True
-            cls._bg_abort = False
-            cls._bg_conn = None
-        if waited is not None:
-            cls._bg_thread.wait_s = time.monotonic() - waited
-            trace(f"Ollama: background request got the slot after {cls._bg_thread.wait_s:.1f}s")
-
-    @classmethod
-    def _release_background(cls):
-        with cls._bg_cond:
-            cls._bg_active = False
-            cls._bg_conn = None
-            cls._bg_cond.notify_all()
-
-    @staticmethod
-    def _shutdown_connection(conn: http.client.HTTPConnection):
-        """Wake the thread blocked reading this connection: shutdown() interrupts a recv on
-        every platform, where close() alone does not. Ollama sees the FIN and cancels the request."""
-        sock = getattr(conn, "sock", None)
-        if sock is None:
-            return
-        try:
-            sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-
-    def _open_background_connection(self) -> http.client.HTTPConnection:
-        """Connect and register the connection under the gate, so an interactive arrival can
-        shut it even while we are still waiting for Ollama's first byte (the whole image
-        prefill happens before any header is sent)."""
-        url = urlparse(self.base_url)
-        cls = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
-        conn = cls(url.hostname, url.port, timeout=None)
-        conn.connect()
-        with OllamaLLM._bg_cond:
-            if OllamaLLM._bg_abort:
-                conn.close()
-                raise LLMPreempted("interactive request arrived before the background request was sent")
-            OllamaLLM._bg_conn = conn
-        return conn
+        return OllamaLLM._slot.wait_seconds()
 
     def _refresh_snapshot_if_due(self):
         """Every _SNAPSHOT_REFRESH_EVERY background requests, re-warm the last pre-heated chat
@@ -497,7 +406,7 @@ class OllamaLLM(AbstractLLM):
             trace("Ollama: snapshot refresh due but nothing has been pre-heated yet — skipping.")
             return
         with OllamaLLM._pre_heat_lock:
-            if OllamaLLM._pre_heat_in_flight or OllamaLLM._bg_abort:
+            if OllamaLLM._pre_heat_in_flight or OllamaLLM._slot.abort:
                 trace("Ollama: snapshot refresh skipped — a pre-heat is in flight or a user request is arriving.")
                 return
             OllamaLLM._pre_heat_in_flight = True
@@ -803,11 +712,13 @@ class OllamaLLM(AbstractLLM):
         No prefix-match diagnostics — an image payload matches nothing, and the last chat
         payload must stay what the next chat turn compares against."""
         body = json.dumps(self._build_request(messages, stream=True))
-        self._acquire_background()
+        slot = OllamaLLM._slot
+        slot.acquire(self.background_idle_seconds())
         token = self._prefill.begin(interactive=False)
         chunks: list[str] = []
         try:
-            conn = self._open_background_connection()
+            conn = slot.open_connection(self.base_url)
+            slot.register_connection(conn)
             conn.request("POST", "/api/chat", body=body, headers={"Content-Type": "application/json"})
             resp = conn.getresponse()
             if resp.status != 200:
@@ -831,11 +742,10 @@ class OllamaLLM(AbstractLLM):
         except LLMPreempted:
             raise
         except Exception:
-            if OllamaLLM._bg_abort:
-                info(f"Ollama: background image request aborted for an interactive one after {len(chunks)} chunk(s).")
-                raise LLMPreempted("interactive request took the Ollama slot") from None
+            if preempted := slot.preempted(len(chunks)):
+                raise preempted from None
             raise
         finally:
             self._prefill.end(token)
-            self._release_background()
+            slot.release()
         return "".join(chunks)

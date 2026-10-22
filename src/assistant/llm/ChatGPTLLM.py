@@ -102,37 +102,27 @@ class ChatGPTLLM(AbstractLLM):
 
     def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
         self._ensure_initialized()
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=self._convert_anthropic_content(self._image_messages(messages, images)),
+            stream=False
+        )
+        return response.choices[0].message.content
 
+    @classmethod
+    def _image_messages(cls, messages: list[dict], images: list) -> list[dict]:
+        """`messages` with the images attached to the first user message as data-URL parts."""
         processed_messages = []
-
         for msg in messages:
             if msg['role'] == 'user' and images:
                 content = [{"type": "text", "text": msg['content']}]
-
                 for image in images:
-                    image_content = self._process_image(image)
-                    content.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": image_content
-                        }
-                    })
-
-                processed_messages.append({
-                    "role": "user",
-                    "content": content
-                })
+                    content.append({"type": "image_url", "image_url": {"url": cls._process_image(image)}})
+                processed_messages.append({"role": "user", "content": content})
                 images = []
             else:
                 processed_messages.append(msg)
-
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=self._convert_anthropic_content(processed_messages),
-            stream=False
-        )
-
-        return response.choices[0].message.content
+        return processed_messages
 
     @staticmethod
     def _process_image(image) -> str:

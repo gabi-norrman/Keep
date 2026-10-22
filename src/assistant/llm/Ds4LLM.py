@@ -54,6 +54,16 @@ command diverges at the past call, no saved prefix ends there, and the whole his
 (15–35 KB, roughly 4k–9k tokens, a few seconds) is prefilled again every turn — the disk cache
 only brings the fallback down from the whole prompt to that tail.
 
+Background work (photo indexing, `background=True`): the server serves one request at a time,
+so an image call goes through the single-slot gate every Ds4LLM shares (`BackgroundSlot`,
+Ollama's): it waits until nothing interactive is in flight and the server has been idle
+`ds4.background_idle_seconds`, streams over a raw connection of its own, and a user turn arriving
+mid-image shuts that socket — ds4-server marks a job cancelled on the first failed write and
+stops it at the next token or prefill chunk — and takes the slot; the evicted caller gets
+LLMPreempted and resends when the slot is idle again. The eviction is noticed within a token
+while the image reply decodes; during its prefill the server only writes a keepalive every
+5 s, so a kill that lands then takes up to that long.
+
 The "Prefilling…" bar: ds4 says nothing on the wire until the first token (its SSE keepalive is a
 bare comment), so the prefill progress is read from the server's log by the class's one
 `PrefillTracker`, as Ollama's is — `ds4.log_path` (default `~/Documents/ds4/ds4-server.log`),
@@ -66,9 +76,12 @@ tokens minus the cached ones over the time to the first token).
 import json
 import re
 import time
+from types import SimpleNamespace
 from typing import Generator
 from urllib.parse import urlparse
 
+from .AbstractLLM import LLMPreempted
+from .BackgroundSlot import BackgroundSlot
 from .ChatGPTLLM import ChatGPTLLM
 from .Ds4Replay import ReplayStore, replay
 from .OllamaLLM import OllamaLLM
@@ -113,6 +126,7 @@ class Ds4LLM(ChatGPTLLM):
     # it renders the history in that shape once a request declares a tool — the same one every
     # time, so the prefix is stable. Ollama's static tool, for the same reason it has one.
     STATIC_TOOL = OllamaLLM.STATIC_TOOL
+    _slot = BackgroundSlot("ds4")
     _logged_configs: set[tuple[str, str]] = set()
     _replay_store: ReplayStore | None = None
 
@@ -204,6 +218,13 @@ class Ds4LLM(ChatGPTLLM):
 
     def _effort_for(self, thinking: bool) -> str:
         return self.THINKING_REASONING_EFFORT if thinking else self.reasoning_effort()
+
+    @classmethod
+    def background_idle_seconds(cls) -> float:
+        return float(config.get('ds4.background_idle_seconds', BackgroundSlot.DEFAULT_IDLE_S))
+
+    def background_wait_seconds(self) -> float:
+        return Ds4LLM._slot.wait_seconds()
 
     @classmethod
     def replay_store(cls) -> ReplayStore:
@@ -300,11 +321,13 @@ class Ds4LLM(ChatGPTLLM):
         chunk is logged."""
         self._ensure_initialized()
         started = time.monotonic()
+        Ds4LLM._slot.interactive_begin()
         token = self._prefill.begin()
         try:
             yield from self._stream(messages, thinking, started, token)
         finally:
             self._prefill.end(token)
+            Ds4LLM._slot.interactive_end()
 
     def _stream(self, messages: list[dict], thinking: bool, started: float, token: int | None) -> Generator[str, None, None]:
         response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=True))
@@ -383,11 +406,13 @@ class Ds4LLM(ChatGPTLLM):
         reasoning is logged, not returned."""
         self._ensure_initialized()
         started = time.monotonic()
+        Ds4LLM._slot.interactive_begin()
         token = self._prefill.begin()
         try:
             response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=False))
         finally:
             self._prefill.end(token)
+            Ds4LLM._slot.interactive_end()
         message = response.choices[0].message
         reasoning = getattr(message, 'reasoning_content', None) or ""
         if reasoning:
@@ -401,6 +426,86 @@ class Ds4LLM(ChatGPTLLM):
             tail = "\n" + tail
         self._remember(content + tail, reasoning, content, rendered)
         return content + tail
+
+    # --- images -----------------------------------------------------------------------------
+
+    def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
+        """A background image request (photo indexing) goes through the slot gate over a raw
+        connection the gate can shut; an interactive one is the plain call, evicting any
+        background request first."""
+        if background:
+            return self._background_completion(self._image_messages(messages, images))
+        Ds4LLM._slot.interactive_begin()
+        try:
+            return super().create_completion_with_images(messages, images)
+        finally:
+            Ds4LLM._slot.interactive_end()
+
+    def _background_completion(self, messages: list[dict]) -> str:
+        """The abortable image request: waits for the idle slot, streams the answer over its
+        own connection (SSE, the OpenAI shape: `data: {chunk}` lines, `data: [DONE]` last, a
+        bare `: prefill` comment as the keepalive while the server prefills) and raises
+        LLMPreempted when a user request evicts it. No tool is declared: an image request
+        matches no live context anyway, and its reply is text."""
+        body = json.dumps({'model': self.model, 'messages': messages, 'stream': True,
+                           'stream_options': {'include_usage': True},
+                           'reasoning_effort': self.reasoning_effort()})
+        path = urlparse(self.base_url).path.rstrip('/') + '/chat/completions'
+        slot = Ds4LLM._slot
+        slot.acquire(self.background_idle_seconds())
+        started = time.monotonic()
+        token = self._prefill.begin(interactive=False)
+        chunks: list[str] = []
+        reasoning_chars, usage = 0, None
+        try:
+            conn = slot.open_connection(self.base_url)
+            slot.register_connection(conn)
+            conn.request("POST", path, body=body, headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            if resp.status != 200:
+                raise RuntimeError(f"ds4 {path} returned {resp.status}: {resp.read(500)!r}")
+            for raw in iter(resp.readline, b""):
+                line = raw.strip()
+                if not line.startswith(b"data:"):
+                    continue    # the SSE keepalive comment, or a blank line
+                payload = line[5:].strip()
+                if payload == b"[DONE]":
+                    break
+                data = json.loads(payload)
+                if data.get('usage'):
+                    usage = _Usage(data['usage'])
+                for choice in data.get('choices') or []:
+                    delta = choice.get('delta') or {}
+                    if delta.get('reasoning_content'):
+                        self._prefill.first_token(token)
+                        reasoning_chars += len(delta['reasoning_content'])
+                    if delta.get('content'):
+                        self._prefill.first_token(token)
+                        chunks.append(delta['content'])
+            else:
+                raise RuntimeError("ds4 closed the stream before the response was done")
+            conn.close()
+        except LLMPreempted:
+            raise
+        except Exception:
+            if preempted := slot.preempted(len(chunks)):
+                raise preempted from None
+            raise
+        finally:
+            self._prefill.end(token)
+            slot.release()
+        self._log_usage(usage, started, reasoning_chars)
+        return "".join(chunks)
+
+
+class _Usage:
+    """The usage object of a raw SSE chunk in the SDK's attribute shape, for `_log_usage`."""
+
+    def __init__(self, data: dict):
+        self.prompt_tokens = data.get('prompt_tokens', 0)
+        self.completion_tokens = data.get('completion_tokens', 0)
+        details = data.get('prompt_tokens_details') or {}
+        self.prompt_tokens_details = SimpleNamespace(cached_tokens=details.get('cached_tokens'))
 
 
 class _ToolCall:

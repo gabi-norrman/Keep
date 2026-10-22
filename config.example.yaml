@@ -349,6 +349,8 @@ wake_word_near_misses: [mission, missions, we shall]
 #                                  # "Prefilling…" bar reads the prefill progress from it. Optional.
 #  ssh_host: user@192.168.1.50     # Where to read that log over ssh when base_url is another machine;
 #                                  # defaults to the base_url host. Optional.
+#  background_idle_seconds: 20     # Photo indexing on ds4 runs only after this much quiet since the last
+#                                  # chat request; a user request arriving mid-image aborts the image
 
 # Where the //FP and //TP debug commands collect the latest conversations' audio as labelled
 # false/true wake-word positives. Optional — defaults to cache/stt_samples/{false-positive,en}.

@@ -1,5 +1,6 @@
-"""The Ollama background gate: photo indexing runs only while the single-slot runner is idle,
-and a user request arriving mid-image shuts the image request's socket and takes the slot."""
+"""The Ollama background gate (the shared BackgroundSlot): photo indexing runs only while the
+single-slot runner is idle, and a user request arriving mid-image shuts the image request's
+socket and takes the slot."""
 import json
 import threading
 import time
@@ -72,11 +73,7 @@ class FakeConn:
 @pytest.fixture(autouse=True)
 def _fresh_gate():
     def reset():
-        OllamaLLM._bg_active = False
-        OllamaLLM._bg_abort = False
-        OllamaLLM._bg_conn = None
-        OllamaLLM._interactive_active = 0
-        OllamaLLM._interactive_last_end = 0.0
+        OllamaLLM._slot.reset()
         OllamaLLM._bg_completed = 0
         OllamaLLM._last_pre_heat_messages = None
         OllamaLLM._pre_heat_in_flight = False
@@ -110,7 +107,7 @@ class TestBackgroundCompletion:
         conn = FakeConn.instances[0]
         assert conn.sent[1] == "/api/chat" and conn.sent[2]["stream"] is True
         assert conn.closed
-        assert OllamaLLM._bg_active is False and OllamaLLM._bg_conn is None
+        assert OllamaLLM._slot.active is False and OllamaLLM._slot.conn is None
         # an image payload must not become what the next chat turn's prefix diagnostics compare against
         assert OllamaLLM._last_payload == "the last chat payload"
 
@@ -126,26 +123,28 @@ class TestBackgroundCompletion:
                 outcome["preempted_after"] = time.monotonic() - t0
         t = _run(bg)
         deadline = time.monotonic() + 1
-        while OllamaLLM._bg_conn is None and time.monotonic() < deadline:
+        while OllamaLLM._slot.conn is None and time.monotonic() < deadline:
             time.sleep(0.005)
-        conn = OllamaLLM._bg_conn
+        conn = OllamaLLM._slot.conn
         OllamaLLM._interactive_begin()
         assert conn.sock.shut.is_set()
-        assert OllamaLLM._bg_active is False, "the interactive side waited for the background request to unwind"
+        assert OllamaLLM._slot.active is False, "the interactive side waited for the background request to unwind"
         t.join(timeout=1)
         assert outcome["preempted_after"] < 1
         OllamaLLM._interactive_end()
 
     def test_stands_down_when_preempted_before_the_request_is_sent(self):
-        OllamaLLM._acquire_background()
+        OllamaLLM._slot.acquire(OllamaLLM.background_idle_seconds())
         t = _run(OllamaLLM._interactive_begin)
         deadline = time.monotonic() + 1
-        while not OllamaLLM._bg_abort and time.monotonic() < deadline:
+        while not OllamaLLM._slot.abort and time.monotonic() < deadline:
             time.sleep(0.005)
+        conn = FakeConn("h", 1)
+        conn.connect()
         with pytest.raises(LLMPreempted):
-            _llm()._open_background_connection()
-        assert FakeConn.instances[0].closed
-        OllamaLLM._release_background()
+            OllamaLLM._slot.register_connection(conn)
+        assert conn.closed
+        OllamaLLM._slot.release()
         t.join(timeout=1)
         assert not t.is_alive()
 
@@ -153,7 +152,7 @@ class TestBackgroundCompletion:
         FakeConn.lines = [b"not json\n"]
         with pytest.raises(ValueError):
             _llm()._background_completion(MESSAGES)
-        assert OllamaLLM._bg_active is False
+        assert OllamaLLM._slot.active is False
 
 
 @pytest.mark.unit
@@ -163,52 +162,52 @@ class TestIdleGate:
             OllamaLLM._interactive_begin()
             OllamaLLM._interactive_end()
             t0 = time.monotonic()
-            OllamaLLM._acquire_background()
+            OllamaLLM._slot.acquire(OllamaLLM.background_idle_seconds())
         assert time.monotonic() - t0 >= 0.03
 
     def test_waits_while_an_interactive_request_is_in_flight(self):
         OllamaLLM._interactive_begin()
         acquired = threading.Event()
-        _run(lambda: (OllamaLLM._acquire_background(), acquired.set()))
+        _run(lambda: (OllamaLLM._slot.acquire(OllamaLLM.background_idle_seconds()), acquired.set()))
         assert not acquired.wait(0.03)
         OllamaLLM._interactive_end()
         assert acquired.wait(1)
 
     def test_one_background_request_at_a_time(self):
-        OllamaLLM._acquire_background()
+        OllamaLLM._slot.acquire(OllamaLLM.background_idle_seconds())
         acquired = threading.Event()
-        _run(lambda: (OllamaLLM._acquire_background(), acquired.set()))
+        _run(lambda: (OllamaLLM._slot.acquire(OllamaLLM.background_idle_seconds()), acquired.set()))
         assert not acquired.wait(0.03)
-        OllamaLLM._release_background()
+        OllamaLLM._slot.release()
         assert acquired.wait(1), "the second worker goes straight in — a background request does not restart the idle clock"
 
     def test_the_caller_can_read_how_long_its_request_queued(self):
-        OllamaLLM._acquire_background()
+        OllamaLLM._slot.acquire(OllamaLLM.background_idle_seconds())
         waits = {}
         def second():
-            OllamaLLM._acquire_background()
+            OllamaLLM._slot.acquire(OllamaLLM.background_idle_seconds())
             waits["s"] = _llm().background_wait_seconds()
         t = _run(second)
         time.sleep(0.04)
-        OllamaLLM._release_background()
+        OllamaLLM._slot.release()
         t.join(timeout=1)
         assert 0.03 <= waits["s"] < 1
         assert _llm().background_wait_seconds() == 0, "the wait is per thread — this one never queued"
 
     def test_the_post_turn_pre_heat_evicts_a_background_request(self):
-        OllamaLLM._bg_active = True
+        OllamaLLM._slot.active = True
         conn = FakeConn("h", 1)
         conn.connect()
-        OllamaLLM._bg_conn = conn
+        OllamaLLM._slot.conn = conn
         llm = _llm()
         with patch.object(llm, '_rendered_prompt', return_value="sys<|im_end|>\n<|im_start|>assistant\n"), \
              patch('assistant.llm.OllamaLLM.requests.post') as post:
             post.return_value.raise_for_status = Mock()
             t = _run(lambda: llm._pre_heat_raw_truncated([{"role": "user", "content": "x"}]))
             assert conn.sock.shut.wait(1)
-            OllamaLLM._release_background()
+            OllamaLLM._slot.release()
             t.join(timeout=1)
-        assert OllamaLLM._interactive_last_end > 0, "a pre-heat restarts the idle clock"
+        assert OllamaLLM._slot.interactive_last_end > 0, "a pre-heat restarts the idle clock"
 
 
 @pytest.mark.unit
@@ -231,7 +230,7 @@ class TestSnapshotRefresh:
              patch('assistant.llm.OllamaLLM.requests.post') as post:
             post.return_value.raise_for_status = Mock()
             assert llm._pre_heat_raw_truncated([{"role": "user", "content": "x"}], refresh=True)
-        assert OllamaLLM._interactive_last_end == 0.0 and OllamaLLM._interactive_active == 0
+        assert OllamaLLM._slot.interactive_last_end == 0.0 and OllamaLLM._slot.interactive_active == 0
 
     def test_skipped_while_a_real_pre_heat_is_in_flight(self):
         OllamaLLM._last_pre_heat_messages = [{"role": "user", "content": "chat"}]
