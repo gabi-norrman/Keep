@@ -19,7 +19,8 @@ from common.DevelopmentConfig import LOCAL_DEVELOPMENT_MODE
 from common.FloxyDatabase import FloxyDatabase, PHOTO_HISTORY_SOURCE
 from common.logging import info, error, fine, trace, note
 from .PhotoProcessor import (PhotoProcessor, PHOTOS_SQLITE_PATH, SYNDICATION_SAVED_ASSET_TYPE,
-                             ASSET_COLUMNS, APPLE_EPOCH_OFFSET, asset_kind_filter, asset_row)
+                             ASSET_COLUMNS, APPLE_EPOCH_OFFSET, asset_kind_filter, asset_row,
+                             indexed_kinds)
 
 POLL_INTERVAL = 10
 FETCH_BATCH_SIZE = 100
@@ -315,16 +316,19 @@ class PhotosIntegration(Integration, Feed):
         Re-reading the stretch costs a query: everything with a row is left alone."""
         processor = self._processor
         since, until = horizon_ts - APPLE_EPOCH_OFFSET, float(cursor or 0)
-        waiting = processor.count_unindexed_photos(after_apple_ts=since, before_apple_ts=until)
+        kinds = processor.sweep_kinds()
+        if kinds != indexed_kinds():
+            trace("Photos: no backend takes video, the sweep leaves the clips out")
+        waiting = processor.count_unindexed_photos(kinds, after_apple_ts=since, before_apple_ts=until)
         if not waiting:
             trace("Photos: sweep found nothing unindexed between the horizon and the cursor")
             return FeedBatch([], cursor=cursor, exhausted=True, remaining=0)
-        rows = processor.unindexed_between(since, until, FETCH_BATCH_SIZE)
+        rows = processor.unindexed_between(since, until, FETCH_BATCH_SIZE, kinds)
         note(f"Photos: {waiting} asset(s) behind the cursor have no index row (back to "
              f"{time.strftime('%Y-%m-%d', time.localtime(horizon_ts))}), indexing {len(rows)} of them now")
         if self._index(rows, " (sweeping behind the cursor)", batched=True, cursor=cursor):
             return FeedBatch(self._drain_entries(), cursor=cursor, exhausted=True, remaining=waiting)
-        left = processor.count_unindexed_photos(after_apple_ts=since, before_apple_ts=until)
+        left = processor.count_unindexed_photos(kinds, after_apple_ts=since, before_apple_ts=until)
         if left >= waiting:
             # nothing got a row (every download failed, the batch job is still unanswered): the
             # same rows would come straight back, so wait for the next sweep instead

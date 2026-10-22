@@ -505,15 +505,27 @@ class PhotoProcessor:
         name, model = parse_llm_config(self.tier(backfill))
         return create_llm(name, model).is_local()
 
-    def unindexed_between(self, after_apple_ts: float, before_apple_ts: float, limit: int) -> list[dict]:
-        """The oldest `limit` assets created after `after_apple_ts` and at or before
-        `before_apple_ts` that have no index row — the feed's sweep of the stretch behind its
-        cursor. Assets still without an iCloud GUID are left out, as everywhere."""
-        rows, _ = self._find_unprocessed(limit=limit, window=(after_apple_ts, before_apple_ts))
+    def sweep_kinds(self) -> tuple[int, ...]:
+        """The asset kinds the backfill can index now. A clip no backend takes never gets a row,
+        so a sweep that picked it would pick it again every time — and once a batch is all clips,
+        stall for good; it stays out of the sweep until a backend takes video."""
+        kinds = indexed_kinds()
+        if KIND_VIDEO in kinds and not self._get_llm(backfill=True).supports_video() and self._clip_llm() is None:
+            return tuple(k for k in kinds if k != KIND_VIDEO)
+        return kinds
+
+    def unindexed_between(self, after_apple_ts: float, before_apple_ts: float, limit: int,
+                          kinds: tuple[int, ...] | None = None) -> list[dict]:
+        """The oldest `limit` assets of `kinds` (default: every indexed kind) created after
+        `after_apple_ts` and at or before `before_apple_ts` that have no index row — the feed's
+        sweep of the stretch behind its cursor. Assets still without an iCloud GUID are left
+        out, as everywhere."""
+        rows, _ = self._find_unprocessed(limit=limit, window=(after_apple_ts, before_apple_ts), kinds=kinds)
         return rows
 
     def _find_unprocessed(self, album: Optional[str] = None, limit: int = 1,
-                          window: tuple[float, float] | None = None) -> tuple[list[dict], str]:
+                          window: tuple[float, float] | None = None,
+                          kinds: tuple[int, ...] | None = None) -> tuple[list[dict], str]:
         """Find unprocessed photos, newest first — or, with `window` (Apple timestamps,
         exclusive start, inclusive end), the ones created inside it, oldest first. Returns
         (rows, error_message)."""
@@ -527,7 +539,7 @@ class PhotoProcessor:
         try:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            kind_filter = asset_kind_filter()
+            kind_filter = asset_kind_filter(kinds)
             if album == "Favorites":
                 cursor.execute(f"""
                     SELECT {ASSET_COLUMNS}

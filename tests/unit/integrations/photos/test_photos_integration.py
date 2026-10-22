@@ -2729,9 +2729,11 @@ class TestPhotosFeedSweep:
         rows = [TestPhotosFeed._row("a", 600.0, "G-A")]
         batch, processor, _ = self._sweep([1, 0], rows)
         since, until = self.HORIZON - APPLE_EPOCH_OFFSET, float(self.CURSOR)
-        assert processor.count_unindexed_photos.call_args_list[0].kwargs == {"after_apple_ts": since,
-                                                                             "before_apple_ts": until}
-        processor.unindexed_between.assert_called_once_with(since, until, FETCH_BATCH_SIZE)
+        kinds = processor.sweep_kinds.return_value
+        first_count = processor.count_unindexed_photos.call_args_list[0]
+        assert first_count.args == (kinds,)
+        assert first_count.kwargs == {"after_apple_ts": since, "before_apple_ts": until}
+        processor.unindexed_between.assert_called_once_with(since, until, FETCH_BATCH_SIZE, kinds)
         handed = processor.process_rows.call_args
         assert handed.args[0] == rows and handed.kwargs["batched"] is True, "a sweep is backfill work"
         assert batch.cursor == self.CURSOR
@@ -2801,6 +2803,37 @@ class TestPhotosFeedSweep:
 
 
 @pytest.mark.unit
+class TestPhotoProcessorSweepKinds:
+    """A clip no backend takes never gets a row, so the sweep would pick the same clips every
+    time and, once a batch was all clips, stall for good (2026-10-22, ds4 on every tier)."""
+
+    def _kinds(self, indexing_takes_video, clip_llm, videos_enabled=True):
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        processor = PhotoProcessor()
+        processor._backfill_llm = Mock(supports_video=Mock(return_value=indexing_takes_video))
+        with patch.object(processor, '_clip_llm', return_value=clip_llm), \
+             patch('integrations.photos.PhotoProcessor.video_settings',
+                   return_value=Mock(enabled=videos_enabled)):
+            return processor.sweep_kinds()
+
+    def test_clips_stay_out_while_no_backend_takes_video(self):
+        from integrations.photos.PhotoProcessor import KIND_PHOTO
+        assert self._kinds(indexing_takes_video=False, clip_llm=None) == (KIND_PHOTO,)
+
+    def test_clips_are_swept_when_the_video_tier_takes_them(self):
+        from integrations.photos.PhotoProcessor import KIND_PHOTO, KIND_VIDEO
+        assert set(self._kinds(indexing_takes_video=False, clip_llm=Mock())) == {KIND_PHOTO, KIND_VIDEO}
+
+    def test_clips_are_swept_when_the_indexing_backend_takes_them(self):
+        from integrations.photos.PhotoProcessor import KIND_VIDEO
+        assert KIND_VIDEO in self._kinds(indexing_takes_video=True, clip_llm=None)
+
+    def test_videos_switched_off_are_never_swept(self):
+        from integrations.photos.PhotoProcessor import KIND_PHOTO
+        assert self._kinds(indexing_takes_video=True, clip_llm=Mock(), videos_enabled=False) == (KIND_PHOTO,)
+
+
+@pytest.mark.unit
 class TestPhotoProcessorUnindexedBetween:
     """`unindexed_between` and the bounded `count_unindexed_photos` agree on the stretch behind
     the feed's cursor: the GUID-bearing assets inside (after, before] without an index row."""
@@ -2856,6 +2889,24 @@ class TestPhotoProcessorUnindexedBetween:
             everything = PhotoProcessor().count_unindexed_photos()
         assert (after, window) == (1, 4)
         assert everything == after + window + 1, "the asset at the exclusive start is the one neither sees"
+
+    def test_kinds_narrow_both_the_rows_and_the_count(self, tmp_path):
+        from integrations.photos.PhotoProcessor import PhotoProcessor, KIND_PHOTO, KIND_VIDEO
+        conn, db_path = TestPhotoProcessorFindUnprocessed._make_photos_db(tmp_path)
+        insert = TestPhotoProcessorFindUnprocessed._insert_asset
+        insert(conn, 1, 'uuid-clip', 200.0, 'G-CLIP', kind=KIND_VIDEO)
+        insert(conn, 2, 'uuid-still', 300.0, 'G-STILL')
+        conn.commit()
+        conn.close()
+        lib, db = self._with_library(db_path)
+        with lib, db as mock_db, patch('integrations.photos.PhotoProcessor.video_settings',
+                                       return_value=Mock(enabled=True)):
+            mock_db.return_value.get_indexed_photo_guids.return_value = set()
+            rows = PhotoProcessor().unindexed_between(100.0, 500.0, limit=10, kinds=(KIND_PHOTO,))
+            count = PhotoProcessor().count_unindexed_photos((KIND_PHOTO,), after_apple_ts=100.0, before_apple_ts=500.0)
+            both = PhotoProcessor().unindexed_between(100.0, 500.0, limit=10)
+        assert [r["uuid"] for r in rows] == ['uuid-still'] and count == 1
+        assert [r["uuid"] for r in both] == ['uuid-clip', 'uuid-still']
 
 
 @pytest.mark.unit
