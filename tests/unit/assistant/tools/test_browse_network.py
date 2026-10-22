@@ -78,6 +78,35 @@ class TestCapture:
         assert [e['rid'] for e in wa._network_log] == ['api', 'doc']
         assert conn.send.await_count == 0
 
+    @pytest.mark.parametrize('url', [
+        'https://www.facebook.com/tr/?id=1&ev=PageView',
+        'https://www.google.se/pagead/1p-conversion/1125/?url=https%3A%2F%2Fshop.example%2Fcart',
+        'https://www.google.com/ccm/collect?en=purchase',
+        'https://region1.analytics.google.com/g/collect?v=2',
+        'https://o123.ingest.sentry.io/api/5/envelope/',
+    ])
+    def test_analytics_and_ad_beacons_are_not_captured_nor_in_flight(self, url):
+        # The 2026-10-22 Tesla checkout: pixels whose query strings said "cart" buried the one
+        # failing POST under browse_network("cart|order"), and a pixel that never answered held
+        # the network-idle wait at its cap on every step.
+        wa = bare_wa()
+        wa._network_last_activity = 0.0
+        wa._on_network_request(request_event('px', url, method='POST'), connection())
+        assert wa._network_log == []
+        assert wa._network_in_flight() == []
+        assert wa._network_last_activity == 0.0, "a beacon is not page activity"
+
+    @pytest.mark.parametrize('url', [
+        'https://checkoutshopper-live.adyen.com/checkoutshopper/v1/submitThreeDS2Fingerprint',
+        'https://api.stripe.com/v1/payment_intents/pi_1/confirm',
+        'https://shop.example/api/analytics-settings',
+        'https://auth.example/oauth2/v1/authorize',
+    ])
+    def test_payment_auth_and_first_party_traffic_is_still_captured(self, url):
+        wa = bare_wa()
+        wa._on_network_request(request_event('r', url, method='POST'), connection())
+        assert [e['url'] for e in wa._network_log] == [url]
+
     def test_form_post_body_is_url_decoded_so_the_vault_redactor_can_match_it(self):
         # The vault matches a password literally: percent-encoded it would slip past both the
         # log masker and the LLM-bound redaction, so the stored body is the decoded form.
@@ -312,6 +341,22 @@ class TestReport:
         dead_line = next(l for l in report.splitlines() if 'api/dead' in l)
         assert '…' in hang_line
         assert 'ERR_ABORTED' in dead_line
+
+    def test_failures_since_a_moment_are_the_refused_and_the_dead_requests_after_it(self):
+        wa = bare_wa()
+        conn = connection()
+        self.captured(wa, 'old', 'https://shop.example/addresses/v1', status=400)
+        old = entry(wa, 'old')
+        old['ts'] -= 10
+        self.captured(wa, 'ok', 'https://shop.example/addresses/validations/v1', status=200)
+        self.captured(wa, 'bad', 'https://shop.example/addresses/v1', status=400)
+        self.captured(wa, 'hang', 'https://shop.example/api/poll', status=None)
+        wa._on_network_request(request_event('dead', 'https://shop.example/api/dead'), conn)
+        wa._on_network_failed(failed_event('dead'), conn)
+        since = old['ts'] + 1
+        assert [e['rid'] for _, e in wa._network_failures_since(since)] == ['bad', 'dead']
+        assert [i for i, _ in wa._network_failures_since(since)] == [2, 4], "browse_network indices"
+        assert wa._network_failures_since(None) == []
 
     def test_url_filter_is_a_regex_that_keeps_session_indices(self):
         wa = bare_wa()

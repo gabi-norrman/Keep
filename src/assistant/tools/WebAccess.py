@@ -206,6 +206,21 @@ class WebAccess(Integration):
     # flow gave nothing to tell "signed but rejected" from "never completed".
     _NETWORK_LOG_MAX = 80
     _NETWORK_CAPTURE_TYPES = frozenset({'XHR', 'Fetch', 'Document', 'EventSource'})
+    # Analytics, ad-conversion and error-reporting beacons are never captured: they tell the
+    # LLM nothing about the page, their kilometre-long query strings matched the 2026-10-22
+    # Tesla checkout's browse_network("cart|order") filter and buried the one failing POST,
+    # they ate the ring buffer, and a Facebook pixel that never answers held the network-idle
+    # wait at its cap on every step. Payment and auth hosts (Adyen, Stripe, Klarna, BankID…)
+    # are not beacons and stay.
+    _NETWORK_NOISE_URL_RE = re.compile(
+        r'^https?://(?:[^/]*\.)?(?:'
+        r'facebook\.com/tr\b|connect\.facebook\.net|google-analytics\.com|analytics\.google\.com|'
+        r'googletagmanager\.com|googleadservices\.com|doubleclick\.net|googlesyndication\.com|'
+        r'google\.[a-z.]{2,6}/(?:pagead|ccm)/|bat\.bing\.com|clarity\.ms|hotjar\.com|'
+        r'segment\.(?:io|com)|mixpanel\.com|amplitude\.com|sentry\.io|datadoghq\.com|nr-data\.net|'
+        r'analytics\.tiktok\.com|ads\.linkedin\.com|tr\.snapchat\.com|ct\.pinterest\.com|'
+        r'criteo\.(?:com|net)|adnxs\.com|klaviyo\.com|fullstory\.com'
+        r')', re.I)
     _NETWORK_BODY_TYPES = frozenset({'XHR', 'Fetch', 'EventSource'})
     _NETWORK_BODY_MIME_RE = re.compile(r'json|text/|javascript|xml|x-www-form-urlencoded', re.I)
     _NETWORK_BODY_MAX = 1500          # chars of a body kept for browse_network
@@ -1121,6 +1136,14 @@ class WebAccess(Integration):
         return [e for e in getattr(self, '_network_requests', {}).values()
                 if not e['done'] and e['type'] != 'EventSource' and e['ts'] >= horizon]
 
+    def _network_failures_since(self, since: Optional[float]) -> list[tuple[int, dict]]:
+        """The captured requests sent at or after `since` that the server refused (4xx/5xx)
+        or that never got an answer, with their browse_network indices. None → nothing."""
+        if since is None:
+            return []
+        return [(i, e) for i, e in enumerate(getattr(self, '_network_log', None) or [])
+                if e['ts'] >= since and ((e['status'] or 0) >= 400 or e['note'].startswith('failed'))]
+
     def _network_add(self, entry: dict) -> None:
         self._network_touch()
         self._network_log.append(entry)
@@ -1170,6 +1193,9 @@ class WebAccess(Integration):
     def _on_network_request(self, event: 'cdp.network.RequestWillBeSent', connection=None) -> None:
         kind = self._network_type(event)
         if kind not in self._NETWORK_CAPTURE_TYPES:
+            return
+        if self._NETWORK_NOISE_URL_RE.match(event.request.url):
+            fine(f"network: beacon not captured — {event.request.method} {event.request.url[:80]}")
             return
         rid = str(event.request_id)
         redirect = getattr(event, 'redirect_response', None)
@@ -4351,8 +4377,8 @@ class WebAccess(Integration):
     async def _async_action_mark(self) -> dict:
         """The page as it is right before a click/key press: its text signature (None when
         the page cannot be asked), for _async_snapshot_after_action to tell a reaction from
-        silence."""
-        mark = {'sig': None}
+        silence, and the moment, so the requests the action sends can be told from older ones."""
+        mark = {'sig': None, 'net_ts': time.time()}
         if self._tab is not None:
             probe = await self._async_page_probe(self._tab)
             if probe:
@@ -4444,9 +4470,21 @@ class WebAccess(Integration):
         if probe is None or probe['sig'] != before:
             return snapshot
         note(f"{what}: page unchanged after the action")
-        return (f"NOTE: the page looks exactly as it did before {what} — the action had no visible "
+        head = (f"NOTE: the page looks exactly as it did before {what} — the action had no visible "
                 "effect, or the page is still working on it. If a change is expected, call "
-                "browse_snapshot() to re-read it.\n\n" + snapshot)
+                "browse_snapshot() to re-read it.")
+        # A server that refuses the submit with nothing drawn on the page (the 2026-10-22 Tesla
+        # checkout: Nästa did nothing, the 400 behind it sat in the capture) — say so here,
+        # where the LLM looks, rather than leave it to find browse_network five rounds later.
+        failures = self._network_failures_since(mark.get('net_ts'))
+        if failures:
+            info(f"{what}: {len(failures)} request(s) sent since the action failed — listed with the snapshot")
+            head += ("\nRequests sent since the action that the server refused or that failed, the likely "
+                     "reason nothing moved (browse_network has the rest):\n"
+                     + "\n".join(self._format_network_entry(i, e) for i, e in failures))
+        else:
+            fine(f"{what}: no failed request since the action to explain the unchanged page")
+        return head + "\n\n" + snapshot
 
     async def _async_browse_act(self, spec: str) -> str:
         if not self._browse_session_url:
