@@ -187,3 +187,47 @@ class TestStartupIntroOwnership:
             console.draw_screen(3, TUIScreen(80, 24))       # over to the tabs
         assert not console.intro.playing
         assert bar.call_count == 1 and home.events == ["draw"]
+
+
+class PastingTab(CapturingTab):
+    """A tab with a composer that takes a paste whole."""
+
+    def __init__(self, name):
+        super().__init__(name)
+        self.pastes = []
+
+    def paste_text(self, text):
+        self.pastes.append(text)
+        return True
+
+
+PASTE = ('\x1b[200~', '\x1b[201~')
+
+
+@pytest.mark.unit
+class TestPasteRouting:
+    def test_a_paste_reaches_a_composer_whole_with_unix_line_breaks(self):
+        home = PastingTab("Home")
+        console = make_console([home, FakeTab("Log")])
+        console.input_callback(f"{PASTE[0]}one\r\ntwo\rthree\n{PASTE[1]}", ADDR)
+        assert home.pastes == ["one\ntwo\nthree"]
+        assert home.events == [], "nothing was typed key by key"
+
+    def test_a_paste_is_typed_into_a_tab_without_a_composer(self):
+        search = CapturingTab("Log")
+        console = make_console([search, FakeTab("Home")])
+        console.input_callback(f"{PASTE[0]}ab{PASTE[1]}", ADDR)
+        assert search.events == ['a', 'b']
+
+    def test_a_paste_of_line_breaks_alone_does_nothing(self):
+        home = PastingTab("Home")
+        console = make_console([home, FakeTab("Log")])
+        console.input_callback(f"{PASTE[0]}\r\n{PASTE[1]}", ADDR)
+        assert home.pastes == [] and home.events == []
+
+    def test_a_paste_into_a_group_goes_to_its_active_sub_tab(self):
+        inner = PastingTab("Bank")
+        group = TabGroup("Memory", [inner, FakeTab("Watch")])
+        console = make_console([group, FakeTab("Log")])
+        console.input_callback(f"{PASTE[0]}note{PASTE[1]}", ADDR)
+        assert inner.pastes == ["note"]

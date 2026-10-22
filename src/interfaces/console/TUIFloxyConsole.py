@@ -186,6 +186,9 @@ class TUIFloxyConsole(AssistantObserver):
 
     def input_callback(self, key: str, client_addr: tuple):
         """Handle keyboard input from TUI clients"""
+        if key.startswith(TUIScreen.PASTE_START):
+            self._paste(key[len(TUIScreen.PASTE_START):-len(TUIScreen.PASTE_END)], client_addr)
+            return
         # Parse the key directly - TUIServer now sends complete keystrokes
         parsed_key = self._parse_key(key)
         if not parsed_key:
@@ -231,6 +234,26 @@ class TUIFloxyConsole(AssistantObserver):
         elif parsed_key == '\x12':  # Ctrl+R
             info(f"Client {client_addr} pressed Ctrl+R - restarting all connected Outposts.")
             self._broadcast_outpost_command("restart")
+
+    def _paste(self, text: str, client_addr: tuple):
+        """A bracketed paste from the terminal: one text, line breaks and all, to a tab that
+        takes one (the Home tab's composer); typed key by key into any other, as every paste
+        was before the markers were read — a line break is Enter there."""
+        text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+        if self.intro.playing:
+            info(f"Client {client_addr} pasted during the startup intro - skipping to the logo.")
+            self.intro.skip()
+            return
+        if not text:
+            trace(f"Client {client_addr} pasted nothing but line breaks, ignored")
+            return
+        active_tab = self.navigator.active_tab
+        if active_tab.paste_text(text):
+            return
+        trace(f"Client {client_addr} pasted {len(text)} chars into {active_tab.content_tab().name}, "
+              f"which takes no paste whole: typed key by key")
+        for ch in text:
+            self.input_callback(ch, client_addr)
 
     def attach_voice(self, speech_analyzer, outpost_server):
         """Called by the launcher once the voice interface is up (the console starts first

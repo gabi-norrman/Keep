@@ -48,6 +48,9 @@ class TabGroup(TabView):
     def handle_input(self, key: str) -> bool:
         return self.content_tab().handle_input(key)
 
+    def paste_text(self, text: str) -> bool:
+        return self.content_tab().paste_text(text)
+
     def on_activate(self):
         self.content_tab().on_activate()
 

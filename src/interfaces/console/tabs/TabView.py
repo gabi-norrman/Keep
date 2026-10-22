@@ -31,6 +31,11 @@ class TabView(ABC):
         """The tab whose content is on screen; a TabGroup answers with its active sub-tab."""
         return self
 
+    def paste_text(self, text: str) -> bool:
+        """A pasted text, line breaks included, taken whole by a tab with a composer for it;
+        False and the console types it key by key instead."""
+        return False
+
     @abstractmethod
     def draw(self, screen: TUIScreen, frame: int):
         """Draw the tab content to the screen"""

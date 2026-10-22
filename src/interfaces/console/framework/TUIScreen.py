@@ -150,6 +150,12 @@ class TUIScreen:
     # own, and popped before it is left; a terminal without the protocol ignores both.
     PUSH_KEY_REPORTING = f"{CSI}>1u"
     POP_KEY_REPORTING = f"{CSI}<u"
+    # Bracketed paste (DECSET 2004): a paste arrives between the two markers, so the server
+    # can hand it over whole instead of typing its newlines as Enter.
+    ENABLE_BRACKETED_PASTE = f"{CSI}?2004h"
+    DISABLE_BRACKETED_PASTE = f"{CSI}?2004l"
+    PASTE_START = f"{CSI}200~"
+    PASTE_END = f"{CSI}201~"
 
     # Text attributes
     RESET = f"{CSI}0m"

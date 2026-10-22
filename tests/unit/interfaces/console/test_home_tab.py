@@ -97,3 +97,14 @@ class TestPaste:
         pane.add_secret_prompt("t1", "API key", "")
         HomeTab(FakeConsole(), pane).handle_input('\x16')
         assert reads == [] and pane._secret_editor.text == "sk-456" and pane.editor.empty
+
+
+def test_a_paste_is_taken_whole_and_never_typed_over_an_approval_prompt():
+    pane = ChatPane()
+    tab = HomeTab(FakeConsole(), pane)
+    assert tab.paste_text("line one\nline two")
+    assert pane.editor.text == "line one\nline two", "the line break is text in the composer, not Enter"
+    pane.editor.clear()
+    pane.add_approval("t1", "Send the mail?", "")
+    assert tab.paste_text("yes"), "taken, so the console does not type 'y' into the prompt"
+    assert pane.editor.text == ""

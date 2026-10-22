@@ -17,6 +17,7 @@ HOST = sys.argv[1] if len(sys.argv) > 1 else "localhost"   # tui.py <host> for a
 CSI = "\x1b["
 DISABLE_MOUSE_TRACKING = f"{CSI}?1006l{CSI}?1000l"
 POP_KEY_REPORTING = f"{CSI}<u"   # undo the server's kitty keyboard protocol push
+DISABLE_BRACKETED_PASTE = f"{CSI}?2004l"
 EXIT_ALT_SCREEN = f"{CSI}?1049l"
 SHOW_CURSOR = f"{CSI}?25h"
 RESET = f"{CSI}0m"
@@ -37,7 +38,8 @@ sys.stdout.flush()
 
 def cleanup_terminal():
     """Reset terminal state - disable mouse tracking, exit alt screen, show cursor, drop the title"""
-    sys.stdout.write(DISABLE_MOUSE_TRACKING + POP_KEY_REPORTING + EXIT_ALT_SCREEN + SHOW_CURSOR + RESET + CLEAR_TITLE)
+    sys.stdout.write(DISABLE_MOUSE_TRACKING + DISABLE_BRACKETED_PASTE + POP_KEY_REPORTING + EXIT_ALT_SCREEN
+                     + SHOW_CURSOR + RESET + CLEAR_TITLE)
     sys.stdout.flush()
 
 

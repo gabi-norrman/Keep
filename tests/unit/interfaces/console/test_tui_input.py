@@ -280,3 +280,41 @@ class TestFramePacing:
         srv, slept = self._server(monkeypatch, now=100.0)
         monkeypatch.setattr(srv._wake, "wait", lambda timeout: True)
         assert srv._next_frame(100.0 + 0.2, FRAME_INTERVAL) == pytest.approx(100.0 + FRAME_INTERVAL)
+
+
+class TestBracketedPaste:
+    """A paste between the terminal's `ESC [ 200 ~` and `ESC [ 201 ~` markers is one key with
+    the whole text, however many reads and newlines it spans, not a keystroke per character."""
+    START, END = "\x1b[200~", "\x1b[201~"
+
+    def test_a_paste_with_newlines_is_one_key(self, server_keys):
+        srv, keys = server_keys
+        leftover = srv._process_client_bytes(f"a{self.START}one\rtwo\nthree{self.END}b", object(), ADDR)
+        assert keys == ["a", f"{self.START}one\rtwo\nthree{self.END}", "b"]
+        assert leftover == ""
+
+    def test_a_paste_split_over_reads_waits_for_its_end(self, server_keys):
+        srv, keys = server_keys
+        leftover = srv._process_client_bytes(f"{self.START}first\nsec", object(), ADDR)
+        assert keys == [] and leftover == f"{self.START}first\nsec"
+        leftover = srv._process_client_bytes(leftover + f"ond{self.END}\x1b[A", object(), ADDR)
+        assert keys == [f"{self.START}first\nsecond{self.END}", "\x1b[A"]
+        assert leftover == ""
+
+    def test_a_resize_line_before_the_paste_is_still_a_resize(self, server_keys):
+        srv, keys = server_keys
+        sock = object()
+        srv._process_client_bytes(f"RESIZE 50 120\n{self.START}x{self.END}", sock, ADDR)
+        assert srv.client_dimensions[sock] == (120, 50)
+        assert keys == [f"{self.START}x{self.END}"]
+
+    def test_an_escape_ahead_of_a_paste_was_the_escape_key(self, server_keys):
+        srv, keys = server_keys
+        srv._process_client_bytes(f"\x1b{self.START}x{self.END}", object(), ADDR)
+        assert keys == ["\x1b", f"{self.START}x{self.END}"]
+
+    def test_an_endless_paste_becomes_keys_past_the_cap(self, server_keys, monkeypatch):
+        monkeypatch.setattr(TUIServer, "_PASTE_MAX", 4)
+        srv, keys = server_keys
+        leftover = srv._process_client_bytes(f"{self.START}abcdef", object(), ADDR)
+        assert keys == list("abcdef") and leftover == ""

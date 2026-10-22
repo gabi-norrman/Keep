@@ -203,6 +203,7 @@ class TUIServer:
                 TUIScreen.BEGIN_SYNC +
                 TUIScreen.ENTER_ALT_SCREEN +
                 TUIScreen.PUSH_KEY_REPORTING +
+                TUIScreen.ENABLE_BRACKETED_PASTE +
                 TUIScreen.RESET + TUIScreen.BACKGROUND_SEQ + TUIScreen.CLEAR_SCREEN +
                 TUIScreen.HIDE_CURSOR +
                 TUIScreen.END_SYNC
@@ -379,6 +380,7 @@ class TUIServer:
         # screen itself when it quits).
         cleanup = (
             TUIScreen.BEGIN_SYNC +
+            TUIScreen.DISABLE_BRACKETED_PASTE +
             TUIScreen.POP_KEY_REPORTING +
             TUIScreen.SHOW_CURSOR +
             TUIScreen.RESET +
@@ -418,6 +420,57 @@ class TUIServer:
             self.wake()
 
     _CURSOR_REPORT = re.compile(r"\x1b\[\d+;\d+R")
+    _PASTE_MAX = 1_000_000   # chars a paste may wait for its end marker; past it the text is keys
+    _PASTE_PATIENCE = 2.0    # seconds the end marker may lag behind the start marker
+
+    def _process_client_bytes(self, buf: str, client_socket, addr, probe: Optional[LinkProbe] = None) -> str:
+        """Everything a client sent: a bracketed paste (`ESC [ 200 ~` … `ESC [ 201 ~`) is one
+        key carrying the whole text, markers included, however many reads and newlines it
+        spans — the resize split in `_process_lines` would cut it into lines otherwise. What
+        stands before a paste goes through the lines and keys first; an unfinished paste is
+        returned whole to wait for the next read."""
+        while True:
+            start = buf.find(TUIScreen.PASTE_START)
+            if start < 0:
+                return self._process_lines(buf, client_socket, addr, probe)
+            hung = self._process_lines(buf[:start], client_socket, addr, probe)
+            if hung == '\x1b':
+                self._emit_key('\x1b', addr)   # a paste followed it, so it was the key
+            elif hung:
+                trace(f"Dropping an unfinished escape sequence ahead of a paste from {addr}: {hung!r}")
+            body = start + len(TUIScreen.PASTE_START)
+            end = buf.find(TUIScreen.PASTE_END, body)
+            if end < 0:
+                if len(buf) - body > self._PASTE_MAX:
+                    info(f"TUI client {addr}: a paste of over {self._PASTE_MAX} chars has no end marker, read as keys")
+                    buf = buf[body:]
+                    continue
+                return buf[start:]
+            text = buf[body:end]
+            info(f"TUI client {addr} pasted {len(text)} chars on {text.count(chr(10)) + text.count(chr(13)) + 1} line(s)")
+            self._emit_key(buf[start:end + len(TUIScreen.PASTE_END)], addr)
+            buf = buf[end + len(TUIScreen.PASTE_END):]
+
+    def _process_lines(self, buf: str, client_socket, addr, probe: Optional[LinkProbe] = None) -> str:
+        """The client's lines: a `RESIZE rows cols` line is the terminal's new size, any other
+        text is keys. Returns the incomplete escape sequence (if any) left at the end."""
+        while '\n' in buf:
+            line, buf = buf.split('\n', 1)
+            if line.startswith("RESIZE "):
+                try:
+                    parts = line.split()
+                    if len(parts) == 3:
+                        rows, cols = int(parts[1]), int(parts[2])
+                        with self.clients_lock:
+                            self.client_dimensions[client_socket] = (cols, rows)
+                            self.last_resized_client = client_socket
+                        self.wake()
+                        fine(f"TUI Client {addr} resized to {cols} x {rows}")
+                except (ValueError, IndexError) as e:
+                    trace(f"Invalid resize command from {addr}: {line} ({e})")
+            else:
+                self._process_input_buffer(line, addr, probe)
+        return self._process_input_buffer(buf, addr, probe)
 
     def _process_input_buffer(self, buf: str, addr, probe: Optional[LinkProbe] = None) -> str:
         """Extract complete keystrokes from the buffer and hand each to the input callback.
@@ -485,6 +538,7 @@ class TUIServer:
         """Handle keyboard input and resize commands from a specific client"""
         try:
             buffer = ""
+            paste_since = None   # when the buffer started waiting for a paste's end marker
             probe = self.link_probes.get(client_socket)
 
             while self.running and client_socket in self.clients:
@@ -500,36 +554,24 @@ class TUIServer:
                             # Client disconnected
                             break
 
-                        # Convert bytes to string and add to buffer
                         buffer += data.decode('utf-8', errors='replace')
-
-                        # Check for resize commands in the buffer
-                        while '\n' in buffer:
-                            line, buffer = buffer.split('\n', 1)
-
-                            if line.startswith("RESIZE "):
-                                # Handle resize command
-                                try:
-                                    parts = line.split()
-                                    if len(parts) == 3:
-                                        rows, cols = int(parts[1]), int(parts[2])
-                                        with self.clients_lock:
-                                            self.client_dimensions[client_socket] = (cols, rows)
-                                            self.last_resized_client = client_socket
-                                        self.wake()
-                                        fine(f"TUI Client {addr} resized to {cols} x {rows}")
-                                except (ValueError, IndexError) as e:
-                                    trace(f"Invalid resize command from {addr}: {line} ({e})")
-                            else:
-                                # Process remaining part as regular input if not empty
-                                self._process_input_buffer(line, addr, probe)
-
-                        # Process remaining characters in buffer (no newline yet)
-                        buffer = self._process_input_buffer(buffer, addr, probe)
+                        buffer = self._process_client_bytes(buffer, client_socket, addr, probe)
                     elif buffer == '\x1b':
                         # Nothing followed the Escape within the select timeout: it was the key.
                         self._emit_key('\x1b', addr)
                         buffer = ""
+
+                    if buffer.startswith(TUIScreen.PASTE_START):
+                        if paste_since is None:
+                            paste_since = time.monotonic()
+                        elif time.monotonic() - paste_since > self._PASTE_PATIENCE:
+                            info(f"TUI client {addr}: a paste's end marker never came after {len(buffer)} chars, "
+                                 f"read as keys")
+                            buffer = self._process_client_bytes(buffer[len(TUIScreen.PASTE_START):],
+                                                                client_socket, addr, probe)
+                            paste_since = None
+                    else:
+                        paste_since = None
 
                 except socket.timeout:
                     continue

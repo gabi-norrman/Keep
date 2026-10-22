@@ -82,6 +82,14 @@ class HomeTab(TabView):
             return True
         return self.chat_pane.handle_input(key)
 
+    def paste_text(self, text: str) -> bool:
+        """The terminal's paste, whole, into the composer — or the masked field while a secret
+        prompt owns it. Always taken: while an approval prompt owns the composer the pane
+        ignores it, and typing it key by key over the prompt's y/n keys instead would answer it."""
+        if not self.chat_pane.paste_text(text):
+            info(f"Home tab: a paste of {len(text)} chars arrived while a prompt owns the composer, dropped")
+        return True
+
     def paste(self):
         """The clipboard into the composer: a picture is staged for the next message, text
         is inserted where the cursor is. The terminal never carries a picture, so this is the
