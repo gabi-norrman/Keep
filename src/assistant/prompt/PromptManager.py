@@ -68,12 +68,16 @@ class PromptManager:
     # prefix since the value is approximate between refreshes.
     _PHOTO_COUNT_REFRESH_S = 24 * 3600
 
-    def __init__(self, test_suite: bool = False, section_generators=None):
+    def __init__(self, test_suite: bool = False, section_generators=None, static_prompt: bool = False):
         """`section_generators` are the integration folders' generator classes to run beside the
         core's; the discovered ones (PromptSectionGenerator.discover) when None."""
         self.prompt = ""
         self._messages = None
         self.test_suite = test_suite
+        # The prompt test server: its prompt is testsuite_prompt.md with the household's data baked
+        # in, and nothing may assemble res/prompt.md over it. The unit tests build a test_suite
+        # manager too but keep this off — they swap the sections in and test the rebuilds.
+        self.static_prompt = static_prompt
         self._prompt_lock = threading.Lock()
         self._last_assembly_time = 0
         self._on_prompt_assembled_callbacks = []
@@ -411,7 +415,10 @@ class PromptManager:
         diffing against state that's about to be invalidated, or appending a delta
         whose content is already in a freshly-rebuilt prompt.
         """
-        if self.test_suite and "history" in self.sections:
+        if self.static_prompt:
+            # A rebuild would assemble res/prompt.md from the live sections of this machine — no
+            # house, no phones, the real memory bank — and every test after it would fail.
+            trace(f"Section '{section_name}' changed — the test-suite prompt is static, nothing to do")
             return
 
         # Translate display name → placeholder key (see _find_section_by_name).
@@ -482,7 +489,7 @@ class PromptManager:
 
         # _assemble_prompt acquires _prompt_lock itself, so call it outside our with block.
         if do_full_rebuild:
-            self._assemble_prompt(section_name, force=self.test_suite and "history" not in self.sections)
+            self._assemble_prompt(section_name, force=self.test_suite)
 
     @staticmethod
     def _compute_section_delta(old: str, new: str) -> str:
@@ -933,6 +940,13 @@ class PromptManager:
             return ""
         with self._prompt_lock:
             contents = {key: self.sections[key].get_content() for key in toolkit.sections if key in self.sections}
+            if self.test_suite:
+                # The suite runs no integration, so a carried section has no generator; the data is
+                # baked into testsuite_prompt.md instead, and a reload hands that back the way a live
+                # section would — a reload answered with nothing reads as "no devices" to the model.
+                for key in toolkit.sections:
+                    if key not in contents and (baked := self._baked_section(key)):
+                        contents[key] = baked
             if record:
                 for key, content in contents.items():
                     self._section_current[key] = content
@@ -943,6 +957,21 @@ class PromptManager:
         info(f"load_toolkit: {toolkit.name} brings its {', '.join(contents) or 'missing'} data ({len(data)} chars"
              f"{'' if record else ', not recorded as the baseline'})")
         return data
+
+    def _baked_section(self, key: str) -> str:
+        """The text under the section's top-level heading in the loaded prompt (the test suite's
+        baked data), up to the next top-level heading; empty when the prompt has no such heading."""
+        from assistant.commands import Toolkits
+        marker = f"\n# {Toolkits.SECTION_HEADINGS.get(key, key.upper())}\n"
+        start = self.prompt.find(marker)
+        if start < 0:
+            trace(f"load_toolkit: no baked '{key}' section in the test-suite prompt")
+            return ""
+        body_start = start + len(marker)
+        end = self.prompt.find("\n# ", body_start)
+        body = self.prompt[body_start:end if end >= 0 else None].strip()
+        info(f"load_toolkit: the baked '{key}' section of the test-suite prompt stands in for the live one ({len(body)} chars)")
+        return body
 
     def untracked_sections(self, toolkit) -> list[str]:
         """The toolkit's carried sections whose last-sent state is unknown: nothing was sent

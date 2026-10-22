@@ -247,7 +247,7 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
         seeded = MemoryFile.seed()  # before the prompt manager's memory section first reads the file
         FirstRun.begin_if_fresh(seeded)
 
-    prompt_manager = PromptManager(running_as_testsuite)
+    prompt_manager = PromptManager(running_as_testsuite, static_prompt=running_as_testsuite)
     SystemNote.set_history(prompt_manager.message_history)   # integrations' notes land in the dialog
     if running_as_testsuite:
         prompt_manager.load_test_suite_history("res/testsuite_history.json")

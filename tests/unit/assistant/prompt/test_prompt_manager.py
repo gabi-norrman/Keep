@@ -2229,3 +2229,38 @@ def test_a_prompt_assembled_before_the_format_was_set_is_rendered_again_in_the_n
         assert "<tool_call>" in manager.render_template('`load_toolkit("email")`')
     finally:
         CommandFormats.reset()
+
+
+@pytest.mark.unit
+def test_a_reload_in_the_test_suite_hands_back_the_baked_section_the_toolkit_carries(prompt_test_environment):
+    """The suite runs no integration, so the home section has no generator; its data is baked into
+    testsuite_prompt.md. A reload of the home toolkit must send that data, bounded by the next
+    top-level heading, as a live section would — an empty reload reads as an empty house."""
+    from assistant.commands import Toolkits
+    (prompt_test_environment["root"] / "testsuite_prompt.md").write_text(
+        "Header\n\n# HOME AUTOMATION DATA\n## LIGHTS\n\"Lamp [Kök]\": off\n\n## ACTIONS\n"
+        "\"TurnOnTheTV\": Turns on the TV\n\n# CURRENT CAR INFO\nKEP 47L parked at home\n")
+
+    manager = PromptManager(test_suite=True)
+    data = manager.carried_data(Toolkits.by_name("home"), record=False)
+
+    assert data.startswith("## HOME AUTOMATION DATA\n")
+    assert '"Lamp [Kök]": off' in data and '"TurnOnTheTV"' in data
+    assert "KEP 47L" not in data, "the car section after it is not the home data"
+    assert manager.carried_data(Toolkits.by_name("web"), record=False) == "", "no baked section, nothing to send"
+
+
+@pytest.mark.unit
+def test_a_live_section_update_never_rebuilds_the_test_suite_prompt(prompt_test_environment):
+    """The suite's prompt is the baked testsuite_prompt.md. The live sections of the machine still
+    run (vault, memory, integrations); their first change used to rebuild the prompt from
+    res/prompt.md with this machine's data — the house and the phones gone, and every test after
+    it failing with "I can't see any devices"."""
+    manager = PromptManager(test_suite=True, static_prompt=True)
+    baked = manager.prompt
+    assert "vault" in manager.sections, "the vault section is live in the suite too"
+
+    manager.on_section_updated("vault")
+
+    assert manager.prompt == baked == prompt_test_environment["testsuite_prompt"]
+    assert manager.get_messages()[0] == {"role": "system", "content": baked}
