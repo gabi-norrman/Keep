@@ -279,6 +279,78 @@ class TestHandleBackgroundCommands:
 
         assert len(rounds) == handler.MAX_UNTERMINATED_COMMAND_REPORTS
 
+    def _run_repeating_rounds(self, handler, reply="The setup toolkit was loaded at 11:04: use it from there.",
+                              commands=('load_toolkit("setup")',), replies=None):
+        """Drive the loop with every round running `commands` and getting `reply` (or the next
+        of `replies`) back, until the guard ends it; returns (round dms, yielded events)."""
+        rounds = []
+
+        def make_dm():
+            text = replies[len(rounds)] if replies else reply
+            dm = self._make_mock_dm(command_reply=text)
+            dm.command_processor.executed_commands = list(commands)
+            rounds.append(dm)
+            if len(rounds) > 10:
+                raise AssertionError("the loop did not end")
+            return dm
+
+        handler.dialog_manager = make_dm()
+        with patch.object(handler, 'stream_response', side_effect=lambda: iter([])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch('assistant.RequestProcessor.DialogManager', side_effect=lambda *a, **k: make_dm()):
+            yielded, _ = self._exhaust_generator(handler._handle_background_commands(Mock()))
+        return rounds, yielded
+
+    def test_a_round_repeating_the_previous_one_is_told_so_under_the_result(self, handler):
+        rounds, _ = self._run_repeating_rounds(handler)
+        first, second = rounds[1].reply_to_llm, rounds[2].reply_to_llm
+        assert first.startswith("result: \n") and "same" not in first, "the first time the result stands alone"
+        assert "use it from there" in second and "same" in second
+
+    def test_the_third_identical_round_ends_the_request(self, handler):
+        """ds4 at effort low reloaded a toolkit the window already held four rounds running
+        over the same 102-char answer, until Ctrl-C (2026-10-22)."""
+        rounds, yielded = self._run_repeating_rounds(handler)
+        assert len(rounds) == 1 + handler.MAX_REPEATED_ROUNDS + 1, "two repeats stream, the third round never does"
+        assert handler.dialog_manager is rounds[-1]
+        notices = [e for e in yielded if isinstance(e, Notice)]
+        assert len(notices) == 1 and isinstance(yielded[-1], RoundEnd)
+
+    def test_a_different_result_is_not_a_repeat(self, handler):
+        """The same command with a changing answer (a page refreshed, a log read on) is work."""
+        replies = ["line 1", "line 2", "line 3", "line 4", "line 5", "line 5", "line 5", "line 5"]
+        rounds, _ = self._run_repeating_rounds(handler, commands=("server_logs()",), replies=replies)
+        assert len(rounds) == 8, "the three identical tails end it, the changing ones did not"
+        assert "same" not in rounds[5].reply_to_llm, "the first 'line 5' is a change from 'line 4'"
+        assert "same" in rounds[6].reply_to_llm
+
+    def test_an_image_reply_is_never_a_repeat(self, handler):
+        rounds = []
+
+        def make_dm():
+            dm = self._make_mock_dm(command_reply=[{"type": "image", "source": {}}] if rounds else None)
+            dm.command_processor.executed_commands = ["fetch_camera_images()"] if rounds else []
+            rounds.append(dm)
+            if len(rounds) > 4:
+                dm.command_processor.command_reply = None
+                dm.command_processor.executed_commands = []
+            return dm
+
+        first = self._make_mock_dm(command_reply=[{"type": "image", "source": {}}])
+        first.command_processor.executed_commands = ["fetch_camera_images()"]
+        rounds.append(first)
+        handler.dialog_manager = first
+        with patch.object(handler, 'stream_response', side_effect=lambda: iter([])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch('assistant.RequestProcessor.DialogManager', side_effect=lambda *a, **k: make_dm()):
+            yielded, _ = self._exhaust_generator(handler._handle_background_commands(Mock()))
+        assert not [e for e in yielded if isinstance(e, Notice)]
+        assert len(rounds) == 5, "every image round streamed; the loop ended on the silent round"
+
     def test_error_reply_gets_error_framing(self, handler):
         """A command-error round is framed as an informational report — failures, what
         already ran, and that the previous reply was already spoken — not 'result:'."""

@@ -91,6 +91,13 @@ def _build_error_round_reply(command_reply, executed_commands: list) -> str | li
             f"{command_reply}\n{succeeded_line}\n\n{note_line}")
 
 
+def _build_repeated_round_reply(command_reply: str) -> str:
+    """Frame a round that repeated the previous round's commands to the same result.
+    Informational: the result again, and that it is the same as before."""
+    return (f"result: \n{command_reply}\n\nThis round ran the same command(s) as the previous round and the "
+            f"result is the same as before. Calling again returns it unchanged.")
+
+
 def _save_image_to_log(image_block: dict, request_id: str, index: int) -> str | None:
     from common.logging import disable_file_logging
     if disable_file_logging:
@@ -139,6 +146,13 @@ class RequestProcessor:
     LLM_OUTAGE_NOTICE = "The AI servers are unavailable right now. Please try again in a moment."
     LLM_FAILURE_DETAIL_MAX_CHARS = 300
     MAX_UNTERMINATED_COMMAND_REPORTS = 2
+    # A follow-up round that runs exactly the previous round's commands and gets the same
+    # text back learns nothing: the first repeat is told so under its result, the second
+    # ends the request (ds4 at effort low called load_toolkit("setup") four rounds running
+    # over a 102-char "it is above" answer until Ctrl-C, 2026-10-22). An image reply is
+    # never a repeat — a camera checked again is a new picture under the same text.
+    MAX_REPEATED_ROUNDS = 2
+    REPEATED_ROUND_NOTICE = "Stopped: the same command returned the same result three rounds in a row."
     LLM_OUTAGE_HISTORY_MARKER = "\n[the AI backend failed mid-reply]"
 
     def __init__(self, playback_factory: "Callable[[Callable[[], bool]], ServerPlayback] | None" = None,
@@ -725,6 +739,8 @@ class RequestProcessor:
         user_input_already_reported_on = None
         round_num = 0
         unterminated_reports = 0
+        previous_round: tuple | None = None
+        repeats = 0
         while (self.dialog_manager.command_processor.command_running_in_background or
                self.dialog_manager.command_processor.command_reply is not None or
                self.dialog_manager.command_processor.unterminated_command_report is not None or
@@ -789,24 +805,36 @@ class RequestProcessor:
             command_reply = old_dialog_manager.command_processor.command_reply
             fine("command reply:\n" + _format_command_reply(command_reply))
             self._invalidate_cached_response_if_device_missing(old_dialog_manager, command_reply)
+            executed = old_dialog_manager.command_processor.executed_commands
+            this_round = (tuple(executed), command_reply) if isinstance(command_reply, str) else None
+            repeats = repeats + 1 if this_round is not None and this_round == previous_round else 0
+            previous_round = this_round
             if old_dialog_manager.command_processor.command_reply_contains_error:
-                executed = old_dialog_manager.command_processor.executed_commands
                 info(f"Command reply contains error(s) — framing follow-up as an error report "
                      f"({len(executed)} command(s) already executed).")
                 self.dialog_manager.reply_to_llm = _build_error_round_reply(command_reply, executed)
             elif isinstance(command_reply, list):
                 self.dialog_manager.reply_to_llm = command_reply
+            elif repeats:
+                info(f"Round {round_num} repeated the previous round's command(s) to the same result "
+                     f"({repeats} of {self.MAX_REPEATED_ROUNDS}) — saying so under the result.")
+                self.dialog_manager.reply_to_llm = _build_repeated_round_reply(command_reply)
             else:
                 self.dialog_manager.reply_to_llm = f"result: \n{command_reply}"
             # A toolkit reference is stored whole: cut in half it is worse than none, and its
             # header would still count it as loaded. A round that batched a load_toolkit with
             # other commands (the prompt encourages batching) goes in uncapped too.
-            executed = old_dialog_manager.command_processor.executed_commands
             loaded_toolkit = any(c.startswith(("load_toolkit(", "load_watch(")) for c in executed)
             if loaded_toolkit and len(executed) > 1:
                 trace(f"Command result stored uncapped: load_toolkit ran alongside {len(executed) - 1} other command(s)")
             result_text = _command_result_for_history(self.dialog_manager.reply_to_llm)
             prompt_manager.add_command_result(result_text, cap=not loaded_toolkit)
+            if repeats >= self.MAX_REPEATED_ROUNDS:
+                error(f"Round {round_num} repeated the same command(s) to the same result for the {repeats}. time "
+                      f"({', '.join(executed)}) — ending the request instead of circling back again.")
+                yield Notice(self.REPEATED_ROUND_NOTICE)
+                yield RoundEnd()
+                return user_input_already_reported_on
             # The model gets the whole result, and so does every later round of this request;
             # the history keeps a cut copy of an oversized one, so no later request repeats the
             # tail. ClaudeLLM caches a follow-up round's tail for its short tier accordingly.
