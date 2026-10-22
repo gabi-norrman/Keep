@@ -97,10 +97,12 @@ class HistoryFeed(AssistantObserver):
 
     def _backfill(self):
         entries = self._history.get_merged_entries()
+        hidden = 0
         for entry in entries:
             self._seen.add(entry_key(entry))
-            self._insert(entry)
-        info(f"HistoryFeed: backfilled {len(entries)} history entries into the chat")
+            hidden += self._insert(entry)
+        info(f"HistoryFeed: backfilled {len(entries)} history entries into the chat"
+             f"{f', {hidden} hidden (command results and clock notes)' if hidden else ''}")
 
     def stop(self):
         self._history.unsubscribe(self._on_change)
@@ -190,8 +192,8 @@ class HistoryFeed(AssistantObserver):
               and normalize(entry["content"]) in self._pending_user_texts):
             self._pending_user_texts.remove(normalize(entry["content"]))
             trace("HistoryFeed: adopted the console's own user turn from history")
-        else:
-            self._insert(entry)
+        elif self._insert(entry):
+            trace(f"HistoryFeed: hiding a {role} row")
 
     def _place_assistant(self, entry: dict, since: float):
         """Show an assistant row, minus what a live bubble or notice since `since` already
@@ -246,32 +248,30 @@ class HistoryFeed(AssistantObserver):
         for echo in reply.after:
             self._pane.insert(KIND_NOTICE, command_line(echo), timestamp)
 
-    def _insert(self, entry: dict):
-        """Draw a history row nothing live has shown — every row of a backfill."""
+    def _insert(self, entry: dict) -> bool:
+        """Draw a history row nothing live has shown — every row of a backfill. True when the
+        row is one the chat never shows (a clock note, a command result while
+        SHOW_COMMAND_RESULTS is off), so a backfill can count them instead of logging each."""
         role = entry["role"]
         timestamp = entry["timestamp"]
         content = entry["content"]
-        if role == ROLE_NOTE:
-            trace("HistoryFeed: hiding a clock note row")
-            return
-        if role == ROLE_COMMAND and not SHOW_COMMAND_RESULTS:
-            trace("HistoryFeed: hiding a command result row (SHOW_COMMAND_RESULTS is off)")
-            return
+        if role == ROLE_NOTE or (role == ROLE_COMMAND and not SHOW_COMMAND_RESULTS):
+            return True
         if role == ROLE_ASSISTANT:
             self._draw(self._read(entry), timestamp)
-            return
+            return False
         if role == ROLE_SYSTEM:
             if entry.get("source") == SOURCE_CONSOLE and not SHOW_OPENING_BRIEFS:
                 # A system row from the console itself is the brief of a turn the server
                 # opened here (FirstRun); the reply is what the user should see, not it.
                 trace("HistoryFeed: hiding the brief of a server-opened turn (SHOW_OPENING_BRIEFS is off)")
-                return
+                return False
             header = MessageFormatter.format_header("System", None, entry.get("source"), entry.get("location"))
             if entry.get("source") in (SOURCE_PROMPT_DELTA, SOURCE_TOOLKIT_EVICTED):
                 # Both describe what the LLM's window holds, not the conversation.
                 if not SHOW_PROMPT_DELTAS:
                     trace(f"HistoryFeed: hiding a {entry['source']} note (SHOW_PROMPT_DELTAS is off)")
-                    return
+                    return False
                 kind = KIND_DIFF
             else:
                 kind = KIND_SYSTEM
@@ -284,3 +284,4 @@ class HistoryFeed(AssistantObserver):
             header = MessageFormatter.format_header(role.capitalize(), None, entry.get("source"),
                                                     entry.get("location"))
         self._pane.insert(kind, content, timestamp, header=header)
+        return False
