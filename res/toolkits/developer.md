@@ -83,12 +83,14 @@ the chat with approve/deny); if they deny, the command result says so and nothin
 ### Server logs
 To read this AI server's logs (your own logs) use:
 
-`server_logs(from_time: str = "")` — the last 200 lines
+`server_logs(from_time: str = "", pattern: str = "")` — the last 200 lines
 `server_logs("2026-10-07 09:26")` — the first 200 lines from that time (also `YYYY-MM-DD` for midnight, or `HH:MM` for today)
+`server_logs("", "volvo|401")` — only the lines matching the pattern (a case-insensitive regex) in the last 24 hours, with the traceback under a matching line
+`server_logs("2026-10-07", "ERROR")` — the matching lines from that time to the end of the log
 
 The lines are the info, note and error levels; the trace detail under them is left out.
 
-The log keeps weeks of history, so step through an older incident by calling again from where the last window ended.
+A window and a search both stop at 200 lines and say where they ended, so an older or longer incident is read by calling again from there. Looking for whether something happened or recurred, search with a pattern: a day of raw windows is thousands of lines and costs accordingly.
 
 ### Stop-and-wait
 `server_logs` returns data: emit it and stop generating; the result arrives in the next round.

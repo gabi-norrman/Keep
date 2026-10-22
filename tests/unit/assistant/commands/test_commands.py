@@ -725,12 +725,15 @@ class TestCmdServerLogs:
         assert "yesterday-ish" in result
 
     def test_command_hands_the_first_argument_or_none_to_the_fetch(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
-            commands_instance.cmd_server_logs("")
-            mock_bg.assert_called_once_with(commands_instance._fetch_server_logs, None)
-            mock_bg.reset_mock()
+        with patch.object(commands_instance, 'background_command') as mock_bg, \
+             patch.object(Commands, "_fetch_server_logs", return_value="ok") as fetch:
+            commands_instance.cmd_server_logs()
+            mock_bg.call_args.args[0]("")
+            fetch.assert_called_once_with(None, None)
+            fetch.reset_mock()
             commands_instance.cmd_server_logs('"2026-03-01 09:40"')
-            mock_bg.assert_called_once_with(commands_instance._fetch_server_logs, "2026-03-01 09:40")
+            mock_bg.call_args.args[0]("")
+            fetch.assert_called_once_with("2026-03-01 09:40", None)
 
 
 # ---------------------------------------------------------------------------
@@ -2622,3 +2625,95 @@ class TestIntegrationErrorsShowWhole:
                   "last_check_time": None, "consecutive_failures": 0, "restartable": True}
         line = commands_instance._describe_restart(status, True)
         assert self.LAST_STEP in line and line.endswith("chat.db)")
+
+
+# ---------------------------------------------------------------------------
+# TestServerLogsSearch — server_logs with a pattern
+# ---------------------------------------------------------------------------
+
+class TestServerLogsSearch:
+    @staticmethod
+    def _log(tmp_path, text):
+        log_file = tmp_path / "floxy.out"
+        log_file.write_text(text)
+        return patch("assistant.commands.Commands.SERVER_LOG_PATH", str(log_file))
+
+    @staticmethod
+    def _stamped(count=600):
+        # One line per minute from 08:00 on 2026-03-01; line i carries "line<i>".
+        return "".join(f"I│2026-03-01 {8 + i // 60:02d}:{i % 60:02d}:30.000 +0.000 │ main │ line{i}\n"
+                       for i in range(count))
+
+    def test_only_the_lines_matching_the_pattern_come_back(self, tmp_path):
+        with self._log(tmp_path, self._stamped()):
+            result = Commands._fetch_server_logs("2026-03-01", r"line2\d\d\b")
+        assert "line199\n" not in result and "line300\n" not in result
+        assert "line200\n" in result and "line299\n" in result
+        assert result.startswith("# Keep AI Server Logs (100 lines matching")
+
+    def test_the_search_starts_at_the_from_time(self, tmp_path):
+        with self._log(tmp_path, self._stamped()):
+            result = Commands._fetch_server_logs("2026-03-01 09:40", r"line\d*0\b")
+        assert "line90\n" not in result and "line100\n" in result
+
+    def test_the_pattern_is_case_insensitive(self, tmp_path):
+        with self._log(tmp_path, self._stamped(3)):
+            result = Commands._fetch_server_logs("2026-03-01", "LINE1")
+        assert "line1\n" in result and "line0\n" not in result
+
+    def test_text_that_is_not_a_regex_is_searched_literally(self, tmp_path):
+        text = "I│2026-03-01 08:00:00.000 │ main │ Volvo: 401 (unauthorized)\nI│2026-03-01 08:01:00.000 │ main │ fine\n"
+        with self._log(tmp_path, text):
+            result = Commands._fetch_server_logs("2026-03-01", "401 (unauthorized")
+        assert "Volvo: 401" in result and "fine" not in result
+
+    def test_a_traceback_under_a_matching_line_is_kept_and_one_under_another_line_is_not(self, tmp_path):
+        text = ("I│2026-03-01 08:00:00.000 │ main │ boom\nTraceback (most recent call last):\n  File a\n"
+                "I│2026-03-01 08:01:00.000 │ main │ quiet\n  File b\n"
+                "T│2026-03-01 08:02:00.000 │ main │ boom in trace\n")
+        with self._log(tmp_path, text):
+            result = Commands._fetch_server_logs("2026-03-01", "boom")
+        assert "boom\nTraceback (most recent call last):\n  File a\n" in result
+        assert "quiet" not in result and "File b" not in result and "in trace" not in result
+
+    def test_two_hundred_matches_end_the_search_and_the_header_says_where(self, tmp_path):
+        with self._log(tmp_path, self._stamped()):
+            result = Commands._fetch_server_logs("2026-03-01", "line")
+        header, body = result.split("\n", 1)
+        assert body.count("\n") == 200 and "line199\n" in body and "line200\n" not in body
+        assert "more may follow 2026-03-01 11:19:30" in header
+
+    def test_a_search_that_reads_the_rest_of_the_log_says_nothing_about_more(self, tmp_path):
+        with self._log(tmp_path, self._stamped(10)):
+            result = Commands._fetch_server_logs("2026-03-01", "line")
+        assert "more may follow" not in result
+
+    def test_without_a_from_time_the_search_covers_the_last_day(self, tmp_path):
+        from datetime import datetime, timedelta
+        stamp = lambda hours: (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+        text = f"I│{stamp(30)}.000 │ main │ boom old\nI│{stamp(1)}.000 │ main │ boom recent\n"
+        with self._log(tmp_path, text):
+            result = Commands._fetch_server_logs(None, "boom")
+        assert "boom recent" in result and "boom old" not in result
+
+    def test_no_match_says_so_with_the_range_searched(self, tmp_path):
+        with self._log(tmp_path, self._stamped(5)):
+            result = Commands._fetch_server_logs("2026-03-01", "volvo")
+        assert result.startswith("# Keep AI Server Logs")
+        assert "Nothing matching" in result and "volvo" in result and "2026-03-01" in result
+
+    def test_a_scan_limit_ends_the_search_and_names_the_last_stamp_read(self, tmp_path):
+        with self._log(tmp_path, self._stamped(50)), \
+             patch("assistant.commands.Commands.SERVER_LOG_SCAN_LIMIT", 300):
+            result = Commands._fetch_server_logs("2026-03-01", "nothing-here")
+        assert "Nothing matching" in result and "the search stopped at 2026-03-01 08:0" in result
+
+    def test_the_command_passes_the_time_and_the_pattern_on(self, commands_instance):
+        with patch.object(commands_instance, "background_command") as bg, \
+             patch.object(Commands, "_fetch_server_logs", return_value="ok") as fetch:
+            commands_instance.cmd_server_logs("", '"volvo|401"')
+            bg.call_args.args[0]("")
+        fetch.assert_called_once_with(None, "volvo|401")
+
+    def test_server_logs_is_a_multi_parameter_command_so_the_pattern_arrives_as_its_own_argument(self):
+        assert "server_logs" in Commands.MULTI_PARAM_COMMANDS

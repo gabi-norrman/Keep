@@ -57,6 +57,11 @@ SERVER_LOG_TAIL_LINES = 200
 SERVER_LOG_TAIL_BLOCK = 1 << 20
 # How close the seek for a from-time gets before the forward read takes over.
 SERVER_LOG_SEEK_BLOCK = 1 << 16
+# A pattern search with no from-time covers this many hours back; a search with a from-time runs
+# to the end of the log. Either stops after SERVER_LOG_TAIL_LINES matches or SERVER_LOG_SCAN_LIMIT
+# bytes read (about ten days of prod log) and says where, so the model can go on from there.
+SERVER_LOG_SEARCH_HOURS = 24
+SERVER_LOG_SCAN_LIMIT = 64 << 20
 
 
 def is_reference_result(body: str) -> bool:
@@ -125,7 +130,7 @@ class Commands:
     MULTI_PARAM_COMMANDS = frozenset({
         "send_email", "dim", "search_history", "show_history",
         "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
-        "vault_request", "config_set", "load_toolkit", "pr_feedback",
+        "vault_request", "config_set", "load_toolkit", "pr_feedback", "server_logs",
         "load_watch", "save_watch", "delete_watch",
         "load_procedure", "save_procedure", "delete_procedure", "post_message", "name_voice",
         "create_event", "delete_event", "move_event", "load_calendar", "fetch_camera_images", "car_navigate",
@@ -242,17 +247,20 @@ class Commands:
         info(f"Home automation logs fetched: {len(logs)} chars")
         return f"# Home Automation Error Logs\n{logs}"
 
-    def cmd_server_logs(self, parameter_string: str):
-        self.background_command(self._fetch_server_logs, self._first_argument(parameter_string) or None)
+    def cmd_server_logs(self, *args: str):
+        from_time, pattern = (list(a.strip().strip("\"'`") for a in args) + ["", ""])[:2]
+        self.background_command(lambda _: self._fetch_server_logs(from_time or None, pattern or None), "")
 
     @staticmethod
-    def _fetch_server_logs(from_time: Optional[str]) -> str:
+    def _fetch_server_logs(from_time: Optional[str], pattern: Optional[str] = None) -> str:
         start = Commands._parse_log_time(from_time) if from_time else None
         if from_time and start is None:
             info(f"server_logs: cannot read the time '{from_time}'")
             return (f"server_logs failed: cannot read the time '{from_time}'; "
                     "use YYYY-MM-DD HH:MM[:SS], YYYY-MM-DD or HH:MM[:SS] (today).")
         try:
+            if pattern:
+                return Commands._search_server_logs(start, pattern)
             if start is None:
                 chunk = Commands._tail_log_lines(SERVER_LOG_PATH, SERVER_LOG_TAIL_LINES)
                 window = f"last {len(chunk)} lines"
@@ -271,6 +279,67 @@ class Commands:
         text = "".join(chunk)
         info(f"Server logs fetched: {window}, {len(text)} chars")
         return f"{SERVER_LOG_HEADER} ({window})\n{text}"
+
+    @staticmethod
+    def _search_server_logs(start, pattern: str) -> str:
+        """The lines matching `pattern` (a case-insensitive regex, or the literal text when it
+        is not one) from `start` — the last SERVER_LOG_SEARCH_HOURS when none is given — so a
+        check that wants to know whether something recurred reads a few dozen lines instead of
+        a day of windows (one watch poll read twelve 200-line windows, 167K tokens, 2026-10-21)."""
+        from datetime import datetime, timedelta
+        try:
+            regex = re.compile(pattern, re.IGNORECASE)
+        except re.error:
+            regex = re.compile(re.escape(pattern), re.IGNORECASE)
+            trace(f"server_logs: '{pattern}' is not a regex, searching for it literally")
+        if start is None:
+            start = datetime.now().replace(microsecond=0) - timedelta(hours=SERVER_LOG_SEARCH_HOURS)
+        lines, stopped_at = Commands._log_lines_matching(SERVER_LOG_PATH, start, regex, SERVER_LOG_TAIL_LINES)
+        if not lines:
+            info(f"Server logs: nothing matching '{pattern}' from {start}")
+            tail = f" (the search stopped at {stopped_at})" if stopped_at else ""
+            return f"{SERVER_LOG_HEADER}\nNothing matching \"{pattern}\" from {start}{tail}."
+        window = f"{len(lines)} lines matching \"{pattern}\" from {start}"
+        if stopped_at:
+            window += f"; more may follow {stopped_at}"
+        text = "".join(lines)
+        info(f"Server logs fetched: {window}, {len(text)} chars")
+        return f"{SERVER_LOG_HEADER} ({window})\n{text}"
+
+    @staticmethod
+    def _log_lines_matching(path: str, start, regex, count: int) -> tuple[list[str], Optional[str]]:
+        """The lines at info() and above stamped at or after `start` that `regex` matches, each
+        with the unstamped continuation lines (a traceback) under it, read forward from the
+        seek. Stops after `count` matches or SERVER_LOG_SCAN_LIMIT bytes and then returns the
+        stamp of the last line read, so the caller can say where to continue; None when the
+        whole rest of the log was searched."""
+        key = start.strftime("%Y-%m-%d %H:%M:%S").encode()
+        matched, in_range, keep_continuation, stamp = [], False, False, None
+        with open(path, "rb") as f:
+            offset = Commands._seek_log_time(f, key)
+            f.seek(offset)
+            if offset:
+                f.readline()
+            limit = f.tell() + SERVER_LOG_SCAN_LIMIT
+            for raw in f:
+                line = server_log_line(raw.decode("utf-8", errors="replace"))
+                if line is None:
+                    continue
+                match = _LOG_TIMESTAMP.search(line)
+                if match:
+                    stamp = match.group()
+                    if not in_range:
+                        in_range = stamp.encode() >= key
+                        if not in_range:
+                            continue
+                    keep_continuation = bool(regex.search(line))
+                    if keep_continuation:
+                        matched.append(line)
+                elif in_range and keep_continuation:
+                    matched.append(line)
+                if len(matched) >= count or f.tell() > limit:
+                    return matched, stamp
+        return matched, None
 
     @staticmethod
     def _tail_log_lines(path: str, count: int) -> list[str]:
