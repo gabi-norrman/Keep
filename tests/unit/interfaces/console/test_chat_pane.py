@@ -1206,3 +1206,46 @@ class TestHeaderRows:
         pane.draw(screen, 0, 1, 1, 78, 12)
         assert pane._last_transcript_rows >= ChatPane.MIN_TRANSCRIPT_ROWS
         assert pane.header_scroll == 0
+
+
+class TestOpenLink:
+    """Ctrl+O opens the newest link on screen in the server machine's browser, and the footer
+    says so, bright, only while a link is on screen — a wrapped link is a dead click in a
+    terminal without hyperlinks."""
+
+    @pytest.fixture
+    def opened(self, monkeypatch):
+        urls = []
+        monkeypatch.setattr("common.Browser.open_url", lambda url: urls.append(url) or True)
+        return urls
+
+    def test_the_hint_leads_the_footer_in_orange_only_while_a_link_is_on_screen(self, pane, screen):
+        lines = draw(pane, screen)
+        assert ChatPane.LINK_HINT not in lines[HEIGHT - 1]
+        pane.add_assistant("Sign in at https://accounts.example/auth?x=1 please", final=True)
+        lines = draw(pane, screen)
+        footer = lines[HEIGHT - 1]
+        assert footer.startswith(f" {ChatPane.LINK_HINT}") and ChatPane.FOOTER.strip()[:6] in footer
+        cell = screen.next_frame[HEIGHT - 1][1]
+        assert cell.style.fg == ChatPane.COLOR_LINK_HINT and cell.style.bold
+
+    def test_ctrl_o_opens_the_newest_link_on_screen(self, pane, screen, opened):
+        pane.add_assistant("First https://one.example/a then https://two.example/b", final=True)
+        draw(pane, screen)
+        assert pane.handle_input('\x0f')
+        assert opened == ["https://two.example/b"]
+
+    def test_a_link_scrolled_off_screen_is_not_opened(self, pane, screen, opened):
+        pane.add_assistant("Old link https://old.example/", final=True)
+        for i in range(40):
+            pane.add_user(f"filler {i}")
+        lines = draw(pane, screen)
+        assert ChatPane.LINK_HINT not in lines[HEIGHT - 1]
+        assert pane.handle_input('\x0f') and opened == []
+
+    def test_ctrl_o_works_while_a_secret_prompt_owns_the_composer(self, pane, screen, opened):
+        pane.add_assistant("Get the key at https://console.example/keys", final=True)
+        pane.add_secret_prompt("t1", "API key", "")
+        draw(pane, screen)
+        pane.handle_input('\x0f')
+        assert opened == ["https://console.example/keys"]

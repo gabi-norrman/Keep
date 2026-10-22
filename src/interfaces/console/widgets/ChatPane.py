@@ -41,6 +41,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable, List, NamedTuple, Optional
 
 from assistant.commands.CommandEcho import describe_duration
+from common import Browser
 from common.logging import info, trace
 from common.vault.Redactor import Redactor
 from common.vault.Vault import Vault
@@ -135,6 +136,7 @@ class ChatPane:
     THUMBNAIL_ROWS = 4         # a staged picture's thumbnail above the composer, as tall as the transcript's smallest
     THUMBNAIL_GAP = 2          # columns between two thumbnails
     DEBUG_HINT = "^d debug"
+    LINK_HINT = "^o open link"   # shown, bright, while a link is on screen
     FALLBACK_NOTICE = FallbackNotice.PATTERN
     # A stripped command leaves a whitespace-only line behind ("text\n\n \n\ntext"): drawn
     # literally that is three empty rows, so any run of blank lines is one paragraph break.
@@ -163,6 +165,7 @@ class ChatPane:
     COLOR_EMPHASIS = Theme.mix(Theme.COLOR_TEXT, Theme.COLOR_YELLOW, 0.6)   # bold / italic in a reply
     COLOR_INPUT = Theme.COLOR_TEXT
     COLOR_DIM = Theme.COLOR_DIM
+    COLOR_LINK_HINT = Theme.COLOR_ORANGE
     COLOR_RULE = Theme.COLOR_FAINT
     COLOR_PROMPT = Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_GREEN, 0.8)
     COLOR_CODE = Theme.COLOR_YELLOW
@@ -199,6 +202,7 @@ class ChatPane:
         self._last_transcript_rows = 10
         self._min_transcript_rows = 10             # the rows left once the header is fully shown
         self._total_lines = 0
+        self._visible_links: List[str] = []       # the links on screen after the last draw, oldest first
         # A header (the Home tab's logo and title) takes `header_rows` rows at the top of the
         # transcript and scrolls away with it: once the lines fill the rows under it, every
         # further line lifts the header a row, `header_scroll` rows in all, until it is gone
@@ -445,6 +449,9 @@ class ChatPane:
     # --- input (TUI thread) -----------------------------------------------------------------
 
     def handle_input(self, key: str) -> bool:
+        if key == '\x0f':   # Ctrl+O
+            self.open_link()
+            return True
         if self._pending_secret is not None:
             return self._handle_secret_key(key)
         pending = self._pending_approval
@@ -483,6 +490,16 @@ class ChatPane:
                     self._images = []
             return True
         return self.editor.handle_key(key)
+
+    def open_link(self) -> bool:
+        """The newest link on screen, opened in the browser of the server's machine: the way
+        to follow a link in a terminal that wraps it unclickably. False with none on screen."""
+        if not self._visible_links:
+            info("ChatPane: Ctrl+O with no link on screen, nothing to open")
+            return False
+        url = self._visible_links[-1]
+        info(f"ChatPane: Ctrl+O opens the newest link on screen ({len(self._visible_links)} visible)")
+        return Browser.open_url(url)
 
     def _answer_approval(self, entry: Entry, decision: str):
         info(f"ChatPane: approval [{(entry.token or '')[:8]}] answered {decision} from the console")
@@ -579,6 +596,7 @@ class ChatPane:
         self.scroll_offset = min(self.scroll_offset, max_scroll)
         start = max(0, total - rows - self.scroll_offset)
         visible = lines[start:start + rows]
+        self._visible_links = list(dict.fromkeys(s.href for line in visible for s in line.spans if s.href))
         window = (start, y)
         if self._last_window is not None and window != self._last_window:
             # The CRT trails remember screen cells; once the lines under them moved the fade
@@ -1095,11 +1113,22 @@ class ChatPane:
             chips.pop()
         right_w = display_width(notice) if notice else strip_width(chips)
         hints_w = width - right_w - 2 if right_w else width
+        if self._visible_links:
+            # A link on screen: the key that opens it leads the hints, bright, since a
+            # wrapped link is a dead click in a terminal without hyperlinks.
+            link_hint = clip(f" {self.LINK_HINT}", max(0, hints_w))
+            screen.set_color(self.COLOR_LINK_HINT)
+            screen.bold()
+            screen.write_at(x, y, link_hint)
+            screen.reset_color()
+            x_hints, hints_w = x + display_width(link_hint) + 1, hints_w - display_width(link_hint) - 1
+        else:
+            x_hints = x
         hints = clip(footer, max(0, hints_w))
         screen.set_color(self.COLOR_DIM)
-        screen.write_at(x, y, hints)
+        screen.write_at(x_hints, y, hints)
         if self.footer_progress is not None:
-            self._draw_progress(screen, x + display_width(hints), x + width - right_w, y)
+            self._draw_progress(screen, x_hints + display_width(hints), x + width - right_w, y)
         if notice:
             screen.set_color(self.COLOR_NOTICE_FG)
             screen.bold()
