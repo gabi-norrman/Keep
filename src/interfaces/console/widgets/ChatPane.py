@@ -136,7 +136,10 @@ class ChatPane:
     THUMBNAIL_ROWS = 4         # a staged picture's thumbnail above the composer, as tall as the transcript's smallest
     THUMBNAIL_GAP = 2          # columns between two thumbnails
     DEBUG_HINT = "^d debug"
-    LINK_HINT = "^o open link"   # shown, bright, while a link is on screen
+    LINK_HINT = "^o open link"             # bright, while a link is on screen in a terminal without hyperlinks
+    CLICK_HINT = "⌘-click opens a link"    # dim, while a link is on screen in a terminal with them
+    LINK_OPENED = "Link opened in the browser on the machine Keep runs on."
+    LINK_NOT_OPENED = "The link could not be opened on the machine Keep runs on, see the log."
     FALLBACK_NOTICE = FallbackNotice.PATTERN
     # A stripped command leaves a whitespace-only line behind ("text\n\n \n\ntext"): drawn
     # literally that is three empty rows, so any run of blank lines is one paragraph break.
@@ -499,7 +502,10 @@ class ChatPane:
             return False
         url = self._visible_links[-1]
         info(f"ChatPane: Ctrl+O opens the newest link on screen ({len(self._visible_links)} visible)")
-        return Browser.open_url(url)
+        opened = Browser.open_url(url)
+        # Said in the transcript: over ssh the browser is on a screen the user is not looking at.
+        self.add_notice(self.LINK_OPENED if opened else self.LINK_NOT_OPENED)
+        return opened
 
     def _answer_approval(self, entry: Entry, decision: str):
         info(f"ChatPane: approval [{(entry.token or '')[:8]}] answered {decision} from the console")
@@ -1114,11 +1120,16 @@ class ChatPane:
         right_w = display_width(notice) if notice else strip_width(chips)
         hints_w = width - right_w - 2 if right_w else width
         if self._visible_links:
-            # A link on screen: the key that opens it leads the hints, bright, since a
-            # wrapped link is a dead click in a terminal without hyperlinks.
-            link_hint = clip(f" {self.LINK_HINT}", max(0, hints_w))
-            screen.set_color(self.COLOR_LINK_HINT)
-            screen.bold()
+            # A link on screen: in a terminal without hyperlinks a wrapped link is a dead
+            # click, so the key that opens it leads the hints, bright; in one with them, a
+            # dim word on how to click.
+            if screen.hyperlinks:
+                link_hint = clip(f" {self.CLICK_HINT}", max(0, hints_w))
+                screen.set_color(self.COLOR_DIM)
+            else:
+                link_hint = clip(f" {self.LINK_HINT}", max(0, hints_w))
+                screen.set_color(self.COLOR_LINK_HINT)
+                screen.bold()
             screen.write_at(x, y, link_hint)
             screen.reset_color()
             x_hints, hints_w = x + display_width(link_hint) + 1, hints_w - display_width(link_hint) - 1

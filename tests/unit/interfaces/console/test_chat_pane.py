@@ -7,7 +7,7 @@ from PIL import Image
 from interfaces.chat.ChatTypes import PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING, PHASE_WAITING, Progress
 from interfaces.console.framework.Pictures import Picture
 from interfaces.console.framework.TUIScreen import TUIScreen
-from interfaces.console.widgets.ChatPane import (BULLET, KIND_ASSISTANT, KIND_DIFF, KIND_SECRET, KIND_SYSTEM,
+from interfaces.console.widgets.ChatPane import (BULLET, KIND_ASSISTANT, KIND_DIFF, KIND_NOTICE, KIND_SECRET, KIND_SYSTEM,
                                                   KIND_USER, PROMPT, ChatPane, shimmer)
 from interfaces.console.widgets.DiffText import (COLOR_ADDED, COLOR_ADDED_HIGHLIGHT_BG, COLOR_ADDED_LINE_BG,
                                                  COLOR_GUTTER_DEL, COLOR_REMOVED, COLOR_REMOVED_LINE_BG)
@@ -1229,11 +1229,27 @@ class TestOpenLink:
         cell = screen.next_frame[HEIGHT - 1][1]
         assert cell.style.fg == ChatPane.COLOR_LINK_HINT and cell.style.bold
 
-    def test_ctrl_o_opens_the_newest_link_on_screen(self, pane, screen, opened):
+    def test_a_terminal_with_hyperlinks_gets_a_dim_word_on_clicking_instead(self, pane, screen):
+        pane.add_assistant("Sign in at https://accounts.example/auth?x=1 please", final=True)
+        screen.hyperlinks = True
+        footer = draw(pane, screen)[HEIGHT - 1]
+        assert footer.startswith(f" {ChatPane.CLICK_HINT}") and ChatPane.LINK_HINT not in footer
+        cell = screen.next_frame[HEIGHT - 1][1]
+        assert cell.style.fg == ChatPane.COLOR_DIM and not cell.style.bold
+
+    def test_ctrl_o_opens_the_newest_link_on_screen_and_says_so_in_the_transcript(self, pane, screen, opened):
         pane.add_assistant("First https://one.example/a then https://two.example/b", final=True)
         draw(pane, screen)
         assert pane.handle_input('\x0f')
         assert opened == ["https://two.example/b"]
+        assert pane.entries[-1].kind == KIND_NOTICE and "machine Keep runs on" in pane.entries[-1].body.text
+
+    def test_a_failed_open_is_said_too(self, pane, screen, monkeypatch):
+        monkeypatch.setattr("common.Browser.open_url", lambda url: False)
+        pane.add_assistant("See https://one.example/a", final=True)
+        draw(pane, screen)
+        assert not pane.open_link()
+        assert pane.entries[-1].kind == KIND_NOTICE and "could not" in pane.entries[-1].body.text
 
     def test_a_link_scrolled_off_screen_is_not_opened(self, pane, screen, opened):
         pane.add_assistant("Old link https://old.example/", final=True)

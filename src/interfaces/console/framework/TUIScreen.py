@@ -182,6 +182,7 @@ class TUIScreen:
         self.link_probe_wanted = False   # a tab that shows link_status sets this while drawing; probes only ride frames when one did
         self.half_blocks = True   # set by TUIServer from the client's terminal: False where `▀` renders badly (Terminal.app)
         self.graphics = False     # set by TUIServer from the client's terminal: True where it speaks the kitty graphics protocol
+        self.hyperlinks = False   # set by TUIServer from the client's terminal: True where a click opens an OSC 8 link
         self._placements: Dict[int, Tuple[Picture, Placement]] = {}   # the pictures of the frame being drawn, by image id
         self._shown: Dict[int, Placement] = {}                        # the pictures on the terminal's screen
         self._transmitted: Dict[int, Tuple[int, int]] = {}            # the boxes the terminal holds pictures for, oldest first

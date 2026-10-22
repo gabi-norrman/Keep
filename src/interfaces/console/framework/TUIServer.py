@@ -33,6 +33,9 @@ class TUIServer:
     # TERM_PROGRAM values (tui.py says "kitty" for kitty, which sets none) that draw pictures
     # through the kitty graphics protocol; tmux and screen hide the terminal, so none there.
     GRAPHICS_TERMINALS = {"ghostty", "iTerm.app", "WezTerm", "kitty"}
+    # The same four open an OSC 8 hyperlink on a click however it wraps; Terminal.app and an
+    # unknown terminal get the key that opens a link instead.
+    HYPERLINK_TERMINALS = GRAPHICS_TERMINALS
 
     def __init__(self, draw_screen_callback, host: str = '0.0.0.0', port: int = 5151,
                  input_callback: Optional[Callable[[str, tuple], None]] = None):
@@ -241,6 +244,11 @@ class TUIServer:
         others get them as half-block pixels."""
         return terminal in TUIServer.GRAPHICS_TERMINALS
 
+    @staticmethod
+    def hyperlinks_for(terminal: str) -> bool:
+        """Whether a client's terminal opens the pane's OSC 8 hyperlinks on a click."""
+        return terminal in TUIServer.HYPERLINK_TERMINALS
+
     def _drop_client(self, client: socket.socket, why: str):
         """Forget and close a client; the caller holds clients_lock."""
         self.clients.discard(client)
@@ -312,6 +320,7 @@ class TUIServer:
                     terminal = self.client_terminals.get(client_to_use, "")
                     half_blocks = self.half_blocks_for(terminal)
                     graphics = self.graphics_for(terminal)
+                    hyperlinks = self.hyperlinks_for(terminal)
 
             if not has_clients:
                 self._wake.wait(0.5)   # a connecting client wakes the loop
@@ -329,6 +338,11 @@ class TUIServer:
                 screen.graphics = graphics
                 self.force_full_redraw = True
                 info(f"TUI Server: pictures are {'graphics' if graphics else 'half-block pixels'} now, "
+                     f"for {terminal or 'an unknown terminal'}")
+            if screen.hyperlinks != hyperlinks:
+                screen.hyperlinks = hyperlinks
+                self.force_full_redraw = True
+                info(f"TUI Server: links {'open on a click' if hyperlinks else 'need the key'} now, "
                      f"for {terminal or 'an unknown terminal'}")
             screen.link_status = self.link_status() if self.probing else NO_LINK_STATUS
             screen.link_probe_wanted = False
