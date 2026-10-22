@@ -4,7 +4,6 @@ from typing import Generator
 import httpx
 
 from .AbstractLLM import AbstractLLM, LLMRefusalError, api_error_message
-from assistant.commands.formats import InvokeFormat as invoke
 from anthropic import Anthropic, APIConnectionError, APIStatusError
 from common.ConfigManager import config
 from common.DevelopmentConfig import BYTE_PREFIX_TAIL, CLAUDE_STATIC_CACHE_TTL, CLAUDE_HISTORY_CACHE_TTL
@@ -134,12 +133,6 @@ class ClaudeLLM(AbstractLLM):
             self.history_cache_ttl = self.static_cache_ttl
         self.client = None
         self._last_stop_reason = None
-
-    def default_command_format(self):
-        """Anthropic's <function_calls> / <invoke> block: the spelling every Claude model was
-        trained to call tools in (the default since 2026-10-21; `command_format: keep` on the
-        tier brings Keep's own syntax back)."""
-        return invoke.InvokeFormat
 
     def name(self) -> str:
         suffix = " (fast)" if self.speed == "fast" else ""

@@ -19,9 +19,10 @@ the replies, a schema does not.
 format this one is the rescue (`RescueFormat`): a block the model writes in this shape anyway
 is read by it, run, and stored in the active syntax.
 
-The format is `ClaudeLLM`'s default since 2026-10-21 (before that it was offered by name only,
-`command_format: invoke` on a tier, while Claude ran Keep's syntax); `command_format: keep` on
-the tier brings Keep's own back.
+The format is offered by name alone, `command_format: invoke` on a tier: Claude runs Keep's
+syntax by default, whose prompt is the shorter (a declaration here is a JSON-schema line, about
+twice the tokens of Keep's), and the rescue below covers the reply Opus writes in this shape
+anyway. It was `ClaudeLLM`'s default for one day, 2026-10-21 to -22.
 
 A bare `<invoke …>…</invoke>` outside a `<function_calls>` block is read as a block of one: on
 the full prompt Opus 5.5 leaves the wrapper out about one reply in three (measured 2026-10-21,

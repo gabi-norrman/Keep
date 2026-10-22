@@ -370,9 +370,11 @@ wake_word_near_misses: [mission, missions, we shall]
 #    # command_format: qwen   # Optional, any tier: the syntax the model writes its commands in — `keep` (Keep's own
 #                           # call text, what GPT, Gemini and Ds4LLM use), `qwen` (the <tool_call> block Qwen was
 #                           # trained on, OllamaLLM's own choice), `dsml` (DeepSeek's block, which ds4 parses) or
-#                           # `invoke` (the <function_calls>/<invoke> block Claude writes tool calls in,
-#                           # ClaudeLLM's own). Unset, the LLM class decides; set it for an Ollama model that is
-#                           # not a Qwen, or to try a syntax (`keep` on a Claude tier, say). The smart tier's
+#                           # `invoke` (the <function_calls>/<invoke> block Claude was trained to write tool
+#                           # calls in; a Claude tier reads one it writes anyway, whatever the format). Unset,
+#                           # the LLM class decides — Keep's own for Claude, GPT, Gemini and ds4, Qwen's for
+#                           # Ollama; set it for an Ollama model that is not a Qwen, or to try a syntax
+#                           # (`invoke` on a Claude tier, say). The smart tier's
 #                           # format is the one every reply is parsed in and the prompt's command texts are
 #                           # rendered in; a name no format has is logged and ignored.
 #  video:                   # describes video clips from iMessage / Telegram / email. Needs an LLM with native
