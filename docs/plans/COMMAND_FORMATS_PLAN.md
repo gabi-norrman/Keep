@@ -513,7 +513,7 @@ keyless client (`api_key` placeholder `'ds4'`, `api_key_name()` None like Ollama
 server-side reasoning off and `handles_thinking_internally()` follows it), `reasoning_content` deltas wrapped in
 `<thinking>`, a `ds4 metrics:` usage line, `prefers_prepended_user_query()` False — plus `tests/unit/assistant/llm/test_ds4_llm.py`,
 a `ds4:` section in `config.example.yaml`, and in `src/assistant/llm/__init__.py` a `local_only_class()` letting
-`ollama.local_only` hold a backend class name (`local_only: Ds4LLM` routes every tier to ds4). No format side at all (no
+`root `local_backend` key (now `local_backend: ds4` routes every tier to ds4). No format side at all (no
 `command_format`, no DSML handling). All of it was sound and is reused; the `local_only` class-name routing is outside the
 plan's wording but **this checkout's own `config.yaml` already says `local_only: Ds4LLM`**, which the old code read as `true`
 → OllamaLLM (and made `tests/unit/integrations/photos/test_photos_integration.py::TestPhotoProcessorIndexingLlm` fail on this

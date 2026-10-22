@@ -378,49 +378,62 @@ class TestPrefillBar:
         assert (log.path, log.ssh_host) == ('/srv/ds4.log', 'user@studio.local')
 
 
-class TestLocalOnlyRouting:
-    """`ollama.local_only` holding a class name routes every tier to that backend (the switch
-    the dev machine's config.yaml uses to run the whole assistant on ds4)."""
+class TestLocalBackendRouting:
+    """The root `local_backend` key names a local server by its config section and routes every
+    tier there (the switch the dev machine's config.yaml uses to run the whole assistant on ds4)."""
 
-    def _get(self, tier_cfg, local_only):
+    def _get(self, tier_cfg, local_backend):
         def get(key, default=None):
-            if key == 'ollama.local_only':
-                return local_only
+            if key == 'local_backend':
+                return local_backend
             if key.startswith('ai.'):
                 return tier_cfg
             return default
         return patch('assistant.llm.config.get', side_effect=get)
 
-    def test_true_still_means_ollama(self):
-        with self._get(None, True):
+    def test_ollama_routes_every_tier_to_ollama(self):
+        with self._get(None, 'ollama'):
             assert local_only_class() == 'OllamaLLM'
             assert parse_llm_config('smart') == ('OllamaLLM', None)
 
-    def test_the_text_a_config_set_stores_means_the_same_as_the_bool(self):
-        with self._get(None, "true"):
-            assert local_only_class() == 'OllamaLLM'
-        with self._get(None, "false"):
-            assert local_only_class() is None
+    def test_the_section_name_is_read_in_any_case_and_spacing(self):
+        with self._get(None, ' DS4 '):
+            assert local_only_class() == 'Ds4LLM'
 
-    def test_a_class_name_routes_every_cloud_tier_there_without_its_cloud_model(self):
-        with self._get(None, 'Ds4LLM'):
+    def test_a_bare_true_means_ollama_as_the_old_bool_switch_did(self):
+        with self._get(None, True):
+            assert local_only_class() == 'OllamaLLM'
+
+    def test_ds4_routes_every_cloud_tier_there_without_its_cloud_model(self):
+        with self._get(None, 'ds4'):
             for tier in ('fast', 'smart', 'vision', 'video', 'photo_indexing', 'memory_curator', 'cache_auditor'):
                 assert parse_llm_config(tier) == ('Ds4LLM', None)
 
-    def test_a_tier_already_on_the_named_class_keeps_its_model(self):
-        with self._get({'llm': 'Ds4LLM', 'model': 'glm-5.3'}, 'Ds4LLM'):
+    def test_a_tier_already_on_the_named_backend_keeps_its_model(self):
+        with self._get({'llm': 'Ds4LLM', 'model': 'glm-5.3'}, 'ds4'):
             assert parse_llm_config('smart') == ('Ds4LLM', 'glm-5.3')
 
     def test_a_tier_on_ollama_moves_too_and_loses_its_ollama_model(self):
-        with self._get({'llm': 'OllamaLLM', 'model': 'qwen3.8:4b'}, 'Ds4LLM'):
+        with self._get({'llm': 'OllamaLLM', 'model': 'qwen3.8:4b'}, 'ds4'):
             assert parse_llm_config('cache_auditor') == ('Ds4LLM', None)
 
     def test_code_quality_stays_on_the_claude_cli(self):
-        with self._get({'model': 'claude-sonnet-5-5'}, 'Ds4LLM'):
+        with self._get({'model': 'claude-sonnet-5-5'}, 'ds4'):
             assert parse_llm_config('code_quality') == ('ClaudeLLM', 'claude-sonnet-5-5')
 
-    @pytest.mark.parametrize("off", [False, None, "", "   "])
+    @pytest.mark.parametrize("off", [False, None, "", "   ", "none", "off", "false"])
     def test_off_values_leave_the_cloud_tiers_alone(self, off):
         with self._get({'llm': 'GeminiLLM', 'model': 'gemini-3.8-flash'}, off):
             assert local_only_class() is None
             assert parse_llm_config('video') == ('GeminiLLM', 'gemini-3.8-flash')
+
+    def test_a_name_no_backend_has_is_off_and_logged(self):
+        from assistant import llm as llm_module
+        llm_module._local_backend_warned.clear()
+        with self._get({'llm': 'GeminiLLM', 'model': 'gemini-3.8-flash'}, 'Ds4LLM'), \
+                patch('assistant.llm.error') as err:
+            assert local_only_class() is None
+            assert parse_llm_config('video') == ('GeminiLLM', 'gemini-3.8-flash')
+            assert local_only_class() is None
+        assert err.call_count == 1
+        assert 'ds4llm' in err.call_args[0][0].lower()

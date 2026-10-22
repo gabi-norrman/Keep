@@ -24,7 +24,7 @@
 #
 # Images: the server refuses a request with an image unless it was started with the matching
 # vision encoder (`./download_model.sh ds41f-vision`, 0.9 GiB, ~1 GiB resident; an image costs
-# up to 1024 context tokens). Keep's Photos indexer sends images, so with `ollama.local_only`
+# up to 1024 context tokens). Keep's Photos indexer sends images, so with `local_backend: ds4`
 # routing its tiers here the encoder must be on. The script passes it when the file is present;
 # VISION= drops it, VISION=path names another one.
 #

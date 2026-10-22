@@ -19,11 +19,11 @@ from common.vault.Vault import Vault
 # ===========================================================================
 
 class TestParseLLMConfig:
-    def _patch_config(self, tier_value, local_only=False):
+    def _patch_config(self, tier_value, local_only='none'):
         """Patch assistant.llm.config.get: every ai.<tier> lookup yields tier_value (or raises it),
-        ollama.local_only yields local_only, anything else its default."""
+        local_backend yields local_only, anything else its default."""
         def get(key, default=None):
-            if key == 'ollama.local_only':
+            if key == 'local_backend':
                 return local_only
             if key.startswith('ai.'):
                 if isinstance(tier_value, Exception):
@@ -65,7 +65,7 @@ class TestParseLLMConfig:
 
     def test_local_only_routes_cloud_default_tier_to_ollama_without_its_model(self):
         # No ai block at all: the cloud default (a Claude/Gemini model name) must not leak to Ollama.
-        p, _ = self._patch_config(None, local_only=True)
+        p, _ = self._patch_config(None, local_only='ollama')
         try:
             for tier in ('fast', 'smart', 'vision', 'video', 'photo_indexing', 'photo_backfill', 'memory_curator'):
                 assert parse_llm_config(tier) == ('OllamaLLM', None)
@@ -73,14 +73,14 @@ class TestParseLLMConfig:
             p.stop()
 
     def test_local_only_overrides_an_explicit_cloud_tier(self):
-        p, _ = self._patch_config({'llm': 'GeminiLLM', 'model': 'gemini-3.8-flash'}, local_only=True)
+        p, _ = self._patch_config({'llm': 'GeminiLLM', 'model': 'gemini-3.8-flash'}, local_only='ollama')
         try:
             assert parse_llm_config('video') == ('OllamaLLM', None)
         finally:
             p.stop()
 
     def test_local_only_keeps_the_model_of_a_tier_already_on_ollama(self):
-        p, _ = self._patch_config({'llm': 'OllamaLLM', 'model': 'qwen3.8:4b'}, local_only=True)
+        p, _ = self._patch_config({'llm': 'OllamaLLM', 'model': 'qwen3.8:4b'}, local_only='ollama')
         try:
             assert parse_llm_config('cache_auditor') == ('OllamaLLM', 'qwen3.8:4b')
         finally:
@@ -88,14 +88,14 @@ class TestParseLLMConfig:
 
     def test_local_only_leaves_code_quality_alone(self):
         # The nightly Claude Code CLI runs cannot move to Ollama; only its model is read.
-        p, _ = self._patch_config({'model': 'claude-sonnet-5-5'}, local_only=True)
+        p, _ = self._patch_config({'model': 'claude-sonnet-5-5'}, local_only='ollama')
         try:
             assert parse_llm_config('code_quality') == ('ClaudeLLM', 'claude-sonnet-5-5')
         finally:
             p.stop()
 
     def test_local_only_off_leaves_cloud_tiers_untouched(self):
-        p, _ = self._patch_config({'llm': 'GeminiLLM', 'model': 'gemini-3.8-flash'}, local_only=False)
+        p, _ = self._patch_config({'llm': 'GeminiLLM', 'model': 'gemini-3.8-flash'}, local_only='none')
         try:
             assert parse_llm_config('video') == ('GeminiLLM', 'gemini-3.8-flash')
         finally:
@@ -189,8 +189,8 @@ class TestCreateLLM:
 class TestCommandFormatOverride:
     def _patch_config(self, tier_value):
         def get(key, default=None):
-            if key == 'ollama.local_only':
-                return False
+            if key == 'local_backend':
+                return 'none'
             if key.startswith('ai.'):
                 return tier_value
             return default

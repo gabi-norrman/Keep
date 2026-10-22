@@ -2418,7 +2418,7 @@ class TestPhotoProcessorIndexingLlm:
         def no_ai_tiers(key, default=None):
             if key.startswith('ai.'):
                 raise KeyError(key)
-            if key == 'ollama.local_only':  # a config.yaml routing every tier to a local backend must not decide this
+            if key == 'local_backend':  # a config.yaml routing every tier to a local backend must not decide this
                 return False
             return real_get(key, default)
 

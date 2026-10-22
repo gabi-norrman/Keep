@@ -70,38 +70,43 @@ def messages_contain_images(messages: list[dict]) -> bool:
     return any(content_blocks_contain_images(m.get("content")) for m in messages)
 
 
-# Tiers `ollama.local_only` leaves alone: code_quality is the `claude` CLI, not an API backend.
+# Tiers `local_backend` leaves alone: code_quality is the `claude` CLI, not an API backend.
 _LOCAL_ONLY_EXEMPT = {'code_quality'}
 _local_only_logged: set[str] = set()
+# The root `local_backend` key names a local server by its config section; each is one LLM class.
+LOCAL_BACKENDS = {'ollama': 'OllamaLLM', 'ds4': 'Ds4LLM'}
+_local_backend_warned: set[str] = set()
 
 
 def local_only_class() -> str | None:
-    """The backend `ollama.local_only` routes every tier to: 'OllamaLLM' for `true`, the class
-    named when the key holds a class name (`Ds4LLM` for a local ds4-server), None when the switch
-    is off. `config_set` stores the typed text, so "true" and "false" mean the bools."""
-    value = config.get('ollama.local_only', False)
-    if isinstance(value, str):
-        value = value.strip()
-        if value.lower() in ('true', 'false'):
-            value = value.lower() == 'true'
-    if value is True:
-        return 'OllamaLLM'
-    if isinstance(value, str) and value:
-        return value
+    """The backend the root `local_backend` key routes every tier to: 'OllamaLLM' for `ollama`,
+    'Ds4LLM' for `ds4`, None for `none` (the default; `off`, false and empty mean the same — a
+    bare `off` is YAML's false). A name no local backend has is logged once and means off, so a
+    typo costs the switch, not the start."""
+    value = config.get('local_backend', 'none')
+    if isinstance(value, bool):
+        value = 'ollama' if value else 'none'
+    value = str(value or '').strip().lower()
+    if value in ('', 'off', 'false', 'none'):
+        return None
+    if value in LOCAL_BACKENDS:
+        return LOCAL_BACKENDS[value]
+    if value not in _local_backend_warned:
+        _local_backend_warned.add(value)
+        error(f"local_backend: '{value}' is not a local backend ({', '.join(LOCAL_BACKENDS)}) — the cloud tiers stay")
     return None
 
 
 def local_only_mode() -> bool:
-    """True when `ollama.local_only` routes every tier to one local backend (see local_only_class)."""
+    """True when `local_backend` routes every tier to one local backend (see local_only_class)."""
     return local_only_class() is not None
 
 
 def parse_llm_config(tier: str) -> tuple[str, str | None]:
     """Parse config for an LLM tier (e.g. 'fast', 'smart', 'cache_auditor'). Returns (class_name, model_or_None).
 
-    With `ollama.local_only` set every tier (except code_quality) runs on the one local backend it
-    names — OllamaLLM for `true`, or the class it holds (`Ds4LLM`) — regardless of its `ai.<tier>`
-    block or cloud default: a tier already on that backend keeps its configured model, any other
+    With `local_backend` set every tier (except code_quality) runs on the one local backend it
+    names — `ollama` or `ds4` — regardless of its `ai.<tier>` block or cloud default: a tier already on that backend keeps its configured model, any other
     tier falls back to the backend's default model — a cloud model name means nothing there."""
     llm, model = _configured_llm(tier)
     local = local_only_class()
@@ -109,7 +114,7 @@ def parse_llm_config(tier: str) -> tuple[str, str | None]:
         if llm != local:
             if tier not in _local_only_logged:
                 _local_only_logged.add(tier)
-                info(f"ollama.local_only: tier '{tier}' runs on {local} instead of {llm}"
+                info(f"local_backend: tier '{tier}' runs on {local} instead of {llm}"
                      f"{f' ({model})' if model else ''}")
             return local, None
         return llm, model
