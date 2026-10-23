@@ -37,8 +37,10 @@ class CommandProcessor:
     # The calls read run as usual; the stored turn is cut after the last of them
     # (`CommandFormat.cut`), so the next round looks like a reply of exactly that many — and
     # the command reply says the rest was dropped, so a follow-up round always comes
-    # (ten silent commands alone would end the request with the eleventh lost unmentioned).
-    MAX_COMMANDS_PER_REPLY = 10
+    # (a cap of silent commands alone would end the request with the next one lost unmentioned).
+    # 15 since 2026-10-23: the largest honest reply seen on prod in the cap's first two days ran
+    # nine, and the two runaways it caught (the same call repeated) hit any cap within a second.
+    MAX_COMMANDS_PER_REPLY = 15
     CUT_NOTE = ("Your reply was cut after {cap} commands, the most one reply may run: the first {cap} "
                 "ran, nothing after the last of them was read, so any later command in the reply did "
                 "not run and no text after it reached the user. Continue from here, {cap} commands per "
