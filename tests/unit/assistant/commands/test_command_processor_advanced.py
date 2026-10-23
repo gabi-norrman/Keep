@@ -2251,3 +2251,43 @@ class TestRemainderAfterACommand:
         assert processor.calls == [("turn_on", ["Lamp"]), ("turn_on", ["Hall"])]
         assert "which one next" not in shown and "<" not in shown
         assert shown.strip() == "Done."
+
+
+@pytest.mark.unit
+class TestRoundNote:
+    """What the request processor tells the model about the round itself (its reply was cut
+    at the output cap) stands ahead of the results, without the error framing, and survives
+    the background batch publishing after it."""
+
+    def test_a_note_alone_is_the_reply_and_no_error(self):
+        processor = CommandProcessor(test_suite_mode=True)
+        processor.add_note("your reply was cut")
+        assert processor.command_reply == "your reply was cut"
+        assert processor.command_reply_contains_error is False
+
+    def test_a_batch_published_after_the_note_keeps_it_in_front(self):
+        processor = CommandProcessor(test_suite_mode=True)
+        processor.add_note("your reply was cut")
+        processor.set_command_reply("lamp: on")
+        assert processor.command_reply == "your reply was cut\n\nlamp: on"
+        assert processor.command_reply_contains_error is False
+
+    def test_a_note_joins_a_block_list_as_its_first_text_block(self):
+        processor = CommandProcessor(test_suite_mode=True)
+        processor.set_command_reply([{"type": "image", "source": "x"}])
+        processor.add_note("your reply was cut")
+        assert processor.command_reply[0] == {"type": "text", "text": "your reply was cut"}
+        assert processor.command_reply[1]["type"] == "image"
+
+    def test_an_error_beside_the_note_still_flags_the_reply(self):
+        processor = CommandProcessor(test_suite_mode=True)
+        processor.add_note("your reply was cut")
+        processor.append_command_reply("Error: no such lamp")
+        assert processor.command_reply_contains_error is True
+
+    def test_consumed_with_the_reply(self):
+        processor = CommandProcessor(test_suite_mode=True)
+        processor.add_note("your reply was cut")
+        processor.clear_command_reply()
+        processor.set_command_reply("lamp: on")
+        assert processor.command_reply == "lamp: on"

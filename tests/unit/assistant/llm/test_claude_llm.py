@@ -829,3 +829,80 @@ class TestTestSuiteCachedTail:
         assert [b["text"] for b in blocks] == [TOOLKIT_TAIL]
         assert all(b["text"].strip() for m in params["messages"] if isinstance(m["content"], list) for b in m["content"])
         assert "cache_control" in blocks[0]
+
+
+def _cut_stream_events(text: str | None = None) -> list:
+    """A stream ended at the output cap: on Opus 5.5 at high effort the thinking alone can
+    use it up, so the only block is a thinking one and no text ever comes (issue #108)."""
+    events = _empty_stream_events()
+    block = MagicMock()
+    block.type = 'content_block_start'
+    block.content_block.type = 'thinking'
+    events[1].delta.stop_reason = 'max_tokens'
+    events[1].usage.output_tokens = 4096
+    return [events[0], block] + (_text_stream_events(text) if text else []) + [events[1]]
+
+
+@patch("assistant.llm.ClaudeLLM.config")
+class TestOutputCapHit:
+    """A reply cut at max_tokens is truncated, not empty: the identical request would think
+    itself dry the same way (three byte-identical, fully cached attempts on 2026-10-23), so
+    it is not re-sent — the caller reads the stop reason and tells the model instead."""
+
+    def test_a_stream_that_thought_through_the_cap_is_not_re_sent(self, mock_config):
+        llm = _make_llm()
+        llm.client.messages.create = Mock(side_effect=[iter(_cut_stream_events()), iter(_text_stream_events('x'))])
+
+        result = list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
+
+        assert result == []
+        assert llm.client.messages.create.call_count == 1
+        assert llm.last_stop_reason == 'max_tokens'
+
+    def test_text_cut_at_the_cap_is_passed_through_as_it_is(self, mock_config):
+        llm = _make_llm()
+        llm.client.messages.create = Mock(return_value=iter(_cut_stream_events('Plan: six automations, bui')))
+
+        result = list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
+
+        assert result == ['Plan: six automations, bui']
+        assert llm.last_stop_reason == 'max_tokens'
+
+    def test_the_stop_reason_of_the_previous_stream_does_not_outlive_it(self, mock_config):
+        llm = _make_llm()
+        llm.client.messages.create = Mock(side_effect=[iter(_cut_stream_events()), iter(_text_stream_events('x'))])
+        list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
+
+        list(llm.create_streaming_completion([{"role": "user", "content": "again"}]))
+
+        assert llm.last_stop_reason != 'max_tokens'
+
+    def test_a_killed_request_is_not_re_sent_after_an_empty_reply(self, mock_config):
+        """A superseded request went on to make two more full Opus calls after its kill."""
+        llm = _make_llm()
+
+        def attempt(**_):
+            if llm.client.messages.create.call_count > 1:
+                return iter(_text_stream_events('late'))
+            llm.cancel()  # the kill lands while the first attempt streams
+            return iter(_empty_stream_events())
+        llm.client.messages.create = Mock(side_effect=attempt)
+
+        result = list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
+
+        assert result == []
+        assert llm.client.messages.create.call_count == 1
+
+    def test_non_streaming_reply_cut_at_the_cap_is_not_re_sent(self, mock_config):
+        llm = _make_llm()
+        cut = MagicMock()
+        cut.usage.cache_creation_input_tokens = 0
+        cut.usage.cache_read_input_tokens = 0
+        cut.usage.input_tokens = 100
+        cut.content = []
+        cut.stop_reason = 'max_tokens'
+        llm.client.messages.create = Mock(return_value=cut)
+
+        assert llm.create_completion([{"role": "user", "content": "hi"}]) == ""
+        assert llm.client.messages.create.call_count == 1
+        assert llm.last_stop_reason == 'max_tokens'

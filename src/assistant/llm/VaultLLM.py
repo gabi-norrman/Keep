@@ -124,6 +124,14 @@ class VaultLLM(AbstractLLM):
         private names — so the curator's truncation check would always see None."""
         return self.llm.last_stop_reason
 
+    # The same trap: the request processor names the cap in the note a cut round circles
+    # back with, and a kill must stop the backend's re-sends — the defaults would answer.
+    def output_cap(self) -> int | None:
+        return self.llm.output_cap()
+
+    def cancel(self):
+        self.llm.cancel()
+
     def prefers_prepended_user_query(self) -> bool:
         return self.llm.prefers_prepended_user_query()
 

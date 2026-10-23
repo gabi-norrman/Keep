@@ -64,6 +64,10 @@ class CommandProcessor:
         self.command_reply = None
         self.command_reply_contains_error = False
         self._sync_replies: list[str] = []
+        # What the request processor tells the model about the round itself (its reply was
+        # cut at the output cap): in front of the results, no error framing, and kept when
+        # a background batch publishes after it.
+        self._notes: list[str] = []
         self._batch_reply: str | list | None = None
         self._batch_reply_contains_error = False
         # Written on the command worker thread; read by _handle_background_commands after
@@ -299,10 +303,17 @@ class CommandProcessor:
         self._log_command_reply(content)
         self._resolve_orphan_if_any()
 
+    def add_note(self, content: str):
+        """A note about the round for the model, ahead of the results — the round circles
+        back for it even when no command ran."""
+        self._notes.append(content)
+        self._compose_reply()
+        self._log_command_reply(content)
+
     def _compose_reply(self):
-        """The synchronous parts first, one per line, then the batch: in front of a block
-        list as one text block, before a text reply with a blank line between."""
-        sync_text = "\n".join(self._sync_replies)
+        """The notes and the synchronous parts first, one per line, then the batch: in front
+        of a block list as one text block, before a text reply with a blank line between."""
+        sync_text = "\n".join(self._notes + self._sync_replies)
         batch = self._batch_reply
         if isinstance(batch, list):
             self.command_reply = ([{"type": "text", "text": sync_text}] if sync_text else []) + batch
@@ -316,6 +327,7 @@ class CommandProcessor:
         self.command_reply = None
         self.command_reply_contains_error = False
         self._sync_replies = []
+        self._notes = []
         self._batch_reply = None
         self._batch_reply_contains_error = False
         self.commands.forget_batch_results()

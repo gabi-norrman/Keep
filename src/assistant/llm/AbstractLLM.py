@@ -182,6 +182,17 @@ class AbstractLLM(ABC):
         that persists a reply verbatim checks this for 'max_tokens' before trusting it."""
         return getattr(self, '_last_stop_reason', None)
 
+    def output_cap(self) -> int | None:
+        """The output-token cap a chat request is sent with, named in the note the request
+        circles back with when a round hits it (RequestProcessor), or None when the backend
+        has no fixed cap."""
+        return None
+
+    def cancel(self):
+        """The request this LLM serves was killed: a streaming call still running stops
+        re-sending (an empty reply's retry) and returns. Default: nothing to stop."""
+        pass
+
     def think(self, system_message: str, user_message: str, images: list | None = None, thinking: bool = False,
               background: bool = False) -> str:
         """

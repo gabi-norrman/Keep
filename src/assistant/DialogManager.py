@@ -275,6 +275,9 @@ class DialogManager:
         fine("Dialog manager is being killed.")
         self.command_processor.kill()
         self.is_killed = True
+        # A streaming call still running stops re-sending: a superseded request kept making
+        # full Opus calls for 80 s after its kill (2026-10-23, issue #108).
+        self.ai.cancel()
 
         voices = list(self._voices.values())
         if not voices:

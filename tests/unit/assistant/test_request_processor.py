@@ -44,6 +44,7 @@ def handler():
     h.request_context = RequestContext()
     h._rounds = []
     h._silent_end_followed_up = False
+    h._cap_hit_followed_up = False
     h.dialog_manager = Mock()
     h.dialog_manager.reply_to_llm = "User: hello how are you"
     h.dialog_manager.reply_text = "User: hello how are you"
@@ -138,6 +139,7 @@ class TestHandleBackgroundCommands:
         h.per_request_prefix = False
         h._rounds = []
         h._silent_end_followed_up = False
+        h._cap_hit_followed_up = False
         h.request_context = RequestContext(
             user_input="hello",
             user="User",
@@ -862,6 +864,81 @@ class TestHandleBackgroundCommands:
     def test_a_test_suite_request_gets_no_extra_round(self, handler):
         handler.request_context.test = True
         assert self._end_request(handler, self._silent_dm("checked_watch(news)")) == []
+
+    # --- a round the LLM ended at its output cap ---
+
+    def _cut_dm(self, said="", cap=16000):
+        """A round ended at max_tokens: `said` is what reached the user before the cut (nothing
+        when the thinking alone used the cap). The note goes through CommandProcessor.add_note,
+        which composes it into the reply the loop reads."""
+        dm = self._make_mock_dm()
+        dm.llm_response = dm.llm_response_raw = said
+        dm.ai.last_stop_reason = 'max_tokens'
+        dm.ai.output_cap.return_value = cap
+        dm.command_processor.add_note.side_effect = lambda text: setattr(dm.command_processor, 'command_reply', text)
+        return dm
+
+    def _drive_from(self, handler, first, follow_up=None):
+        """The request's first round is `first` and has just been streamed; returns the rounds
+        streamed after it and every event yielded while they ran."""
+        handler.dialog_manager = first
+        handler._rounds = [first]
+        handler._cap_hit()
+        streamed = []
+        follow_up = follow_up or self._make_mock_dm()
+        with patch.object(handler, 'stream_response', side_effect=lambda: iter(streamed.append(handler.dialog_manager) or [])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch.object(handler, '_new_dialog_manager', return_value=follow_up):
+            yielded, _ = self._exhaust_generator(handler._handle_background_commands(Mock()))
+        return streamed, yielded
+
+    def test_a_round_that_thought_through_the_cap_circles_back_told_so(self, handler):
+        streamed, _ = self._drive_from(handler, self._cut_dm())
+        assert len(streamed) == 1
+        note = streamed[0].reply_to_llm
+        assert "16000-token" in note and "nothing reached the user" in note
+
+    def test_a_reply_cut_mid_text_circles_back_with_where_it_stopped(self, handler):
+        streamed, _ = self._drive_from(handler, self._cut_dm("The plan:\n- six automations, one per lamp, bui"))
+        assert len(streamed) == 1
+        note = streamed[0].reply_to_llm
+        assert "one per lamp, bui" in note and "saw the text" in note
+        assert "nothing reached the user" not in note
+
+    def test_a_backend_without_a_fixed_cap_is_named_without_a_number(self, handler):
+        streamed, _ = self._drive_from(handler, self._cut_dm(cap=None))
+        assert "-token" not in streamed[0].reply_to_llm
+
+    def test_a_second_cut_ends_the_request_with_a_notice_to_the_user(self, handler):
+        streamed, yielded = self._drive_from(handler, self._cut_dm(), follow_up=self._cut_dm())
+        assert len(streamed) == 1
+        notices = [e.text for e in yielded if isinstance(e, Notice)]
+        assert notices == [RequestProcessor.CAP_HIT_NOTICE]
+        assert any(isinstance(e, RoundEnd) for e in yielded)
+
+    def test_a_round_that_ended_on_its_own_is_not_told_anything(self, handler):
+        dm = self._silent_dm()
+        dm.ai.last_stop_reason = 'end_turn'
+        streamed, _ = self._drive_from(handler, dm)
+        assert streamed == []
+        dm.command_processor.add_note.assert_not_called()
+
+    def test_the_note_stands_in_history_as_the_rounds_result(self, handler):
+        first = self._cut_dm()
+        handler.dialog_manager = first
+        handler._rounds = [first]
+        handler._cap_hit()
+        prompt_manager = Mock()
+        with patch.object(handler, 'stream_response', return_value=iter([])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch.object(handler, '_new_dialog_manager', return_value=self._make_mock_dm()):
+            self._exhaust_generator(handler._handle_background_commands(prompt_manager))
+        stored = prompt_manager.add_command_result.call_args.args[0]
+        assert "nothing reached the user" in stored
 
 
 # ---------------------------------------------------------------------------

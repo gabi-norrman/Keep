@@ -110,7 +110,12 @@ class ClaudeLLM(AbstractLLM):
     # bank) needs real headroom: at 16000 the curator's replies were cut mid-sentence for weeks,
     # and at 32000 a run whose thinking ran long was still cut in the bank's last section.
     THINKING_MAX_TOKENS = 64000
-    MAX_TOKENS = 4096
+    # The chat cap. The 5-generation models think without the parameter and the thinking
+    # counts here too: at 4096, Opus 5.5 at high effort thought through the whole cap three
+    # times running on a home-automation plan and the user got silence (issue #108). The
+    # largest chat output seen on prod before that was 3920 tokens; the cap costs nothing
+    # unless used, and a round that hits it is told so and gets one more (RequestProcessor).
+    MAX_TOKENS = 16000
     # The SDK refuses a non-streaming request whose max_tokens implies more than 10 minutes
     # (about 21k tokens) unless a timeout is given explicitly. 32000 tokens took ~7 minutes
     # at the rate the nightly curation has shown, so 30 minutes covers the cap with headroom.
@@ -133,6 +138,7 @@ class ClaudeLLM(AbstractLLM):
             self.history_cache_ttl = self.static_cache_ttl
         self.client = None
         self._last_stop_reason = None
+        self._cancelled = False
 
     def name(self) -> str:
         suffix = " (fast)" if self.speed == "fast" else ""
@@ -570,9 +576,17 @@ class ClaudeLLM(AbstractLLM):
         # Final attempt — let exceptions propagate
         yield from self._stream_once(api_params)
 
+    def output_cap(self) -> int | None:
+        return self.MAX_TOKENS
+
+    def cancel(self):
+        self._cancelled = True
+
     def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
                                     volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:
         self._ensure_initialized()
+        self._cancelled = False
+        self._last_stop_reason = None
 
         api_params = self._build_api_params(messages, thinking, stream=True, volatile_tail=volatile_tail,
                                             follow_up=follow_up)
@@ -586,6 +600,13 @@ class ClaudeLLM(AbstractLLM):
             except APIStatusError as e:
                 self._raise_if_workspace_required(e)
                 raise
+            if self._last_stop_reason == 'max_tokens':
+                # The reply is cut, not empty — a resend of the same request thinks itself
+                # dry the same way (three identical, fully cached attempts, issue #108).
+                # The caller reads the stop reason and tells the model what happened.
+                info(f"Claude hit max_tokens={api_params['max_tokens']} - the reply is cut short"
+                     + ("" if produced_text else " while still thinking, no text to pass on") + ", not retrying.")
+                return
             if produced_text:
                 return
             # The safety classifier is deterministic on identical input: re-sending only
@@ -593,6 +614,9 @@ class ClaudeLLM(AbstractLLM):
             if self._last_stop_reason == 'refusal':
                 info("Claude refused the request (stop_reason=refusal) - not retrying, raising LLMRefusalError.")
                 raise LLMRefusalError(f"{self.model} refused the request (stop_reason=refusal)")
+            if self._cancelled:
+                info("Claude replied with empty message, but the request was killed - not re-sending.")
+                return
             if attempt < self.EMPTY_REPLY_RETRIES:
                 info(f"Claude replied with empty message (attempt {attempt + 1}/{self.EMPTY_REPLY_RETRIES + 1}), "
                      "re-sending the request...")
@@ -642,7 +666,7 @@ class ClaudeLLM(AbstractLLM):
             except APIStatusError as e:
                 self._raise_if_workspace_required(e)
                 raise
-            if text.strip():
+            if text.strip() or self._last_stop_reason == 'max_tokens':
                 return text
             # Same rule as the streaming path: the classifier is deterministic, so the
             # first refusal is final — re-sending only adds refused requests.

@@ -62,6 +62,10 @@ class FakeAI:
         self.last_response_was_cached = False
         self.initialized = False
         self.observed_messages = None
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
 
     def command_format(self):
         from assistant.commands.formats.KeepFormat import KeepFormat
@@ -1401,3 +1405,11 @@ def test_a_call_written_as_an_invoke_block_under_keep_runs_and_is_stored_in_keep
     stored = dm.messages[-1]["content"]
     assert "<invoke" not in stored and "</function_calls>" not in stored
     assert KeepFormat(["turn_on"]).extract_all(stored) == [("turn_on", ["Kitchen lamp"])]
+
+
+@pytest.mark.unit
+def test_kill_tells_the_llm_to_stop_re_sending(monkeypatch):
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    dm.ai = Mock()
+    dm.kill()
+    dm.ai.cancel.assert_called_once()

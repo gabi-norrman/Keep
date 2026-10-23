@@ -147,6 +147,18 @@ class CachedLLM(AbstractLLM):
     def handles_thinking_internally(self) -> bool:
         return self.llm.handles_thinking_internally()
 
+    @property
+    def last_stop_reason(self) -> str | None:
+        """A served cached reply ended nowhere: None, so the wrapped LLM's last stop
+        reason is never taken for this reply's."""
+        return None if self.last_response_was_cached else self.llm.last_stop_reason
+
+    def output_cap(self) -> int | None:
+        return self.llm.output_cap()
+
+    def cancel(self):
+        self.llm.cancel()
+
     def prefers_byte_prefix_tail(self) -> bool:
         return self.llm.prefers_byte_prefix_tail()
 

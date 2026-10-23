@@ -287,6 +287,40 @@ class TestDelegation:
         assert VaultLLM(Refusing(), stocked).refuses_reasoning_requests() is True
         assert VaultLLM(Backend(), stocked).refuses_reasoning_requests() is False
 
+    def test_the_output_cap_and_a_kill_reach_the_wrapped_backend(self, stocked):
+        """The request processor names the backend's cap in the note a round cut at it
+        circles back with, and a kill must stop the backend's re-sends: both are AbstractLLM
+        defaults, so without an explicit forward the wrapper would answer for the backend."""
+        class Backend(AbstractLLM):
+            cancelled = False
+
+            def name(self):
+                return "Backend"
+
+            def create_completion(self, messages, thinking=False, volatile_tail=0, follow_up=False):
+                return ""
+
+            def create_completion_with_images(self, messages, images):
+                return ""
+
+            def create_streaming_completion(self, messages, thinking=False, volatile_tail=0, follow_up=False):
+                yield ""
+
+            def initialize(self):
+                return True
+
+            def output_cap(self):
+                return 16000
+
+            def cancel(self):
+                self.cancelled = True
+
+        backend = Backend()
+        wrapped = VaultLLM(backend, stocked)
+        assert wrapped.output_cap() == 16000
+        wrapped.cancel()
+        assert backend.cancelled is True
+
     def test_refusal_fallback_is_wrapped_in_the_same_vault(self, wrapped, inner, stocked, messages):
         """__getattr__ never reaches refusal_fallback (AbstractLLM defines it), so the
         wrapper must delegate explicitly — and the fallback answers the request this vault

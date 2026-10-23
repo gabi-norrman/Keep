@@ -160,6 +160,19 @@ class RequestProcessor:
     # nothing (13 silent Telegram turns on 2026-10-22).
     SILENT_END_NOTE = ("The commands ran, and nothing has been said to the user this turn. "
                        "Reply to the user now.")
+    # The note a round that ended at the LLM's output cap circles back with, as its result
+    # (see _cap_hit): the thinking counts against the cap on the 5-generation models, and
+    # Opus 5.5 at high effort thought through the whole of it three times running on a
+    # home-automation plan — the user got silence (2026-10-23, issue #108). The model
+    # cannot lower its own effort, so it is asked in words. Once per request: a second cut
+    # ends the request with CAP_HIT_NOTICE to the user.
+    CAP_HIT_THINKING_NOTE = ("Your reply hit {cap} while still thinking. No text was produced, so nothing "
+                             "reached the user and the attempt was discarded. Try again with less deliberation: "
+                             "reason briefly and answer, or split the task over several rounds.")
+    CAP_HIT_TEXT_NOTE = ("Your reply hit {cap} after: \"{tail}\". The user saw the text up to there. "
+                         "Continue from that point, briefly.")
+    CAP_HIT_TAIL_CHARS = 120
+    CAP_HIT_NOTICE = "The AI's reply was cut short at its output limit twice. Ask again, or in smaller steps."
 
     def __init__(self, playback_factory: "Callable[[Callable[[], bool]], ServerPlayback] | None" = None,
                  voice_factory: "Callable[[str | None], VoiceSynthesizer] | None" = None,
@@ -189,6 +202,7 @@ class RequestProcessor:
         # commands of the whole request, not only the last round's.
         self._rounds: list = []
         self._silent_end_followed_up = False
+        self._cap_hit_followed_up = False
         self.first_sound_chunk = True
         self.is_killed = False
         self.kill_reason = ""  # why kill() fired, so the turn gate can log a truthful abort
@@ -711,6 +725,32 @@ class RequestProcessor:
         cp.command_reply_contains_error = False
         return True
 
+    def _cap_hit(self) -> str | None:
+        """After a round the LLM ended at its output cap: the first time, the note it is told
+        so with is added to the round's result (so the request circles back, a round that ran
+        no command included, and the note stands in the history as a command result); the
+        second time, returns the notice the request ends with. None for a round that ended on
+        its own."""
+        dm = self.dialog_manager
+        if dm.ai.last_stop_reason != 'max_tokens':
+            return None
+        if self._cap_hit_followed_up:
+            error("The LLM hit its output cap again on the round it was told about it — ending the request.")
+            return self.CAP_HIT_NOTICE
+        self._cap_hit_followed_up = True
+        cap = dm.ai.output_cap()
+        cap_text = f"the {cap}-token output cap" if cap else "its output cap"
+        said = dm.llm_response.strip()
+        if said:
+            tail = said.splitlines()[-1][-self.CAP_HIT_TAIL_CHARS:]
+            info(f"LLM hit {cap_text} mid-reply, after {len(said)} chars — one more round to continue")
+            note_text = self.CAP_HIT_TEXT_NOTE.format(cap=cap_text, tail=tail)
+        else:
+            info(f"LLM hit {cap_text} while still thinking, nothing said — one more round to reply")
+            note_text = self.CAP_HIT_THINKING_NOTE.format(cap=cap_text)
+        dm.command_processor.add_note(note_text)
+        return None
+
     def _command_names(self) -> list[str]:
         """The names of the commands every round of this request ran, in order."""
         return [c.split("(", 1)[0] for dm in self._rounds for c in dm.command_processor.executed_commands]
@@ -886,7 +926,12 @@ class RequestProcessor:
                 yield Notice(self._llm_failure_notice(e))
                 yield RoundEnd()
                 return user_input_already_reported_on
+            cut_notice = self._cap_hit()
+            if cut_notice:
+                yield Notice(cut_notice)
             yield RoundEnd(self.dialog_manager.llm_response_raw)
+            if cut_notice:
+                return user_input_already_reported_on
             self._wait_for_initial_command()
             yield from self._drain_events()
             trace("Stream done.")
@@ -916,6 +961,7 @@ class RequestProcessor:
                     yield Notice(self._llm_failure_notice(e))
                     return
 
+                self._cap_hit()  # the first round is never the second cut: no notice to carry
                 yield RoundEnd(self.dialog_manager.llm_response_raw)
 
                 self._wait_for_initial_command()

@@ -319,7 +319,9 @@ class TestClaudeLLM:
         llm = ClaudeLLM()
         messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
         params = llm._build_api_params(messages, thinking=False, stream=True)
-        assert params['max_tokens'] == 4096
+        # The cap the request is sent with is the one the request processor names in the
+        # note a round that hits it circles back with.
+        assert params['max_tokens'] == llm.output_cap()
         assert 'thinking' not in params
         assert params['stream'] is True
 
