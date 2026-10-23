@@ -141,22 +141,25 @@ class TestBackgroundImageRequest:
         def bg():
             t0 = time.monotonic()
             try:
-                with _config({}):
-                    _llm().create_completion_with_images(MESSAGES, [JPEG], background=True)
+                _llm().create_completion_with_images(MESSAGES, [JPEG], background=True)
             except LLMPreempted:
                 outcome["preempted_after"] = time.monotonic() - t0
-        t = _run(bg)
-        deadline = time.monotonic() + 1
-        while Ds4LLM._slot.sock is None and time.monotonic() < deadline:
-            time.sleep(0.005)
-        sock = Ds4LLM._slot.sock
-        llm = _llm()
-        llm.client.chat.completions.create.return_value = iter([
-            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="hi", tool_calls=None), finish_reason=None)], usage=None)])
+        # One config patch around both threads: `patch` swaps the shared config's `get` and puts
+        # back what it found, so two patches of it unwound in the other order (the preempted
+        # thread leaves its block first) left a mock behind for the rest of the worker — the
+        # owner name then read "user" in whatever chat test ran next.
         with _config({}):
+            t = _run(bg)
+            deadline = time.monotonic() + 1
+            while Ds4LLM._slot.sock is None and time.monotonic() < deadline:
+                time.sleep(0.005)
+            sock = Ds4LLM._slot.sock
+            llm = _llm()
+            llm.client.chat.completions.create.return_value = iter([
+                SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="hi", tool_calls=None), finish_reason=None)], usage=None)])
             assert list(llm.create_streaming_completion([{"role": "user", "content": "hello"}])) == ["hi"]
-        assert sock.shut.is_set()
-        t.join(timeout=1)
+            assert sock.shut.is_set()
+            t.join(timeout=1)
         assert outcome["preempted_after"] < 1
         assert Ds4LLM._slot.interactive_active == 0, "the chat turn released the gate"
 

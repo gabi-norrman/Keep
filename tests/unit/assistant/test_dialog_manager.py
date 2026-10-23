@@ -1416,7 +1416,9 @@ def test_a_call_written_as_an_invoke_block_under_keep_runs_and_is_stored_in_keep
     output = list(dm.stream_llm_response())
     processor.command_queue.join()
 
-    assert "".join(output).strip() == ""
+    # The worker may finish the call before the stream ends, and its CommandRan event then
+    # rides in the stream beside the text; only the text must be empty.
+    assert "".join(c for c in output if isinstance(c, str)).strip() == ""
     assert processor.commands_dispatched == 1
     stored = dm.messages[-1]["content"]
     assert "<invoke" not in stored and "</function_calls>" not in stored
