@@ -36,10 +36,13 @@ cd "$DS4_DIR" 2>/dev/null || { echo "no ds4 checkout at $DS4_DIR — clone githu
 
 MODEL="${MODEL:-gguf/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf}"
 VISION="${VISION-gguf/DeepSeek-V4.1-Flash-Vision.gguf}"
-# 64k: the test-suite prompt is ~16.5k tokens and one round's command results (the server log
-# tail alone is ~8.5k) took a test past 32k. The context buffers cost ~8 GiB per 32k on the
-# M5 Ultra (the server's startup "memory:" line), so 64k is cheap next to the 152 GiB model.
-CTX="${CTX:-65536}"
+# 196k: the memory curator's nightly prompt reached 98k tokens on 2026-10-22 and failed at the
+# 64k window with a 400 (the first-run bootstrap chunks hit the same wall), and the test-suite
+# prompt is ~16.5k plus one round's command results (the server log tail alone is ~8.5k). The
+# model is trained to 1M positions. The window is cheap: the context buffers are ~8 GiB of
+# prefill scratch that does not grow with it plus ~6.4 KB a token of compressed KV, so 196k
+# costs ~2.5 GiB more than 64k (the server's startup "memory:" line) next to the 152 GiB model.
+CTX="${CTX:-196608}"
 KV_DIR="${KV_DIR:-$HOME/.ds4/server-kv}"
 KV_MB="${KV_MB:-65536}"
 # The disk cache's "cold" checkpoint (the prompt cut at its first user turn, what a sibling
