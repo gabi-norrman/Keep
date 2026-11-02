@@ -855,8 +855,8 @@ class AutonomousActionManager:
     @staticmethod
     def _nightly_curation_due(now: datetime) -> bool:
         """Whether tonight's curation still has to run: not when a dream journal was written
-        since today's CURATION_HOUR (a run before a restart), nor while the first-run pipeline
-        has yet to build the first bank (the nightly run would curate the stub)."""
+        since today's CURATION_HOUR (a run before a restart), nor while the first-run pipeline's
+        feeds are catching up for the first bank it is about to build (`FirstRun.curation_pending`)."""
         due_since = now.replace(hour=CURATION_HOUR, minute=0, second=0, microsecond=0)
         last_run = LongTermMemoryCurator.last_run_at()
         if last_run is not None and last_run >= due_since:
@@ -864,7 +864,7 @@ class AutonomousActionManager:
             return False
         from assistant import FirstRun
         if FirstRun.curation_pending():
-            info("Rem: the first-run pipeline has not built the first memory bank yet — skipping the nightly run")
+            info("Rem: the first-run pipeline is indexing toward the first memory bank — skipping the nightly run")
             return False
         if now.hour > CURATION_HOUR:
             info(f"Rem: no curation since {due_since:%H:%M} today — running it now, {now:%H:%M}")

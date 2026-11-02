@@ -32,7 +32,10 @@ feeds among iMessage and Photos to finish their first catch-up) → CURATING (th
 `LongTermMemoryCurator.run_span` from the Photos horizon to today, chunk progress persisted so
 a restart resumes, and published as `curation_progress()` for the Home tab's bar) → EXPANDING (the Photos horizon widened to `FULL_PHOTOS_BACKFILL_MONTHS`
 and the feed restarted, since every photo description carries the bank) → DONE. The nightly
-curation waits until the pipeline has curated once (`curation_pending`).
+curation runs from the first night whatever the stage — an install that never enables Photos
+stays in SETUP for good and still has its conversations to curate — and holds off only while
+the feeds are catching up for the first bank, for at most `INDEXING_CURATION_WAIT_DAYS`
+(`curation_pending`).
 
 Beside the stages, every poll of a young install probes for Full Disk Access (`common/FullDiskAccess`:
 can the process read chat.db) and, the first time it is granted, builds the Keep.app shortcut on
@@ -74,6 +77,11 @@ FTUE_INSTALL_DAYS = 7
 FTUE_SETUP_GRACE_HOURS = 48
 # When the last setup command ran — `note_setup_activity` writes it, `in_ftue` reads it.
 SETUP_ACTIVITY_FILE = CACHE_DIR / "setup_activity.json"
+
+# How long the nightly curation holds off while the feeds catch up for the first bank: the
+# pipeline curates the span itself once they are in, but a catch-up that stalls must not cost
+# the install its memory.
+INDEXING_CURATION_WAIT_DAYS = 2
 
 # Put in the LLM's window before every request while the FTUE lasts.
 FTUE_TOOLKITS = ("setup",)
@@ -368,10 +376,20 @@ def stage(path: Path = None) -> Stage | None:
     return state.stage if state else None
 
 
-def curation_pending(path: Path = None) -> bool:
-    """Whether the first curation is still ahead: the nightly run waits for it, so two days
-    of curation do not erode the stub before the real first pass."""
-    return stage(path) in (Stage.SETUP, Stage.INDEXING)
+def curation_pending(path: Path = None, now: float = None) -> bool:
+    """Whether the nightly run holds off for the first bank: the feeds are catching up and the
+    pipeline is about to curate their span, for at most `INDEXING_CURATION_WAIT_DAYS`. SETUP
+    does not wait — Photos may never be enabled, and the conversations alone are worth curating
+    from the first night on."""
+    state = State.load(path)
+    if state is None or state.stage != Stage.INDEXING:
+        return False
+    days = ((now if now is not None else time.time()) - state.entered_at) / 86400
+    if days >= INDEXING_CURATION_WAIT_DAYS:
+        info(f"First run: indexing for {days:.1f} days (>= {INDEXING_CURATION_WAIT_DAYS}) — "
+             f"the nightly curation no longer waits for the first bank")
+        return False
+    return True
 
 
 @dataclass(frozen=True)

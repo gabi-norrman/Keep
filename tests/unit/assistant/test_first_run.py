@@ -109,15 +109,26 @@ class TestBeginIfFresh:
 
 
 class TestStageQueries:
-    @pytest.mark.parametrize("stage, pending", [(Stage.SETUP, True), (Stage.INDEXING, True), (Stage.CURATING, False),
+    @pytest.mark.parametrize("stage, pending", [(Stage.SETUP, False), (Stage.INDEXING, True), (Stage.CURATING, False),
                                                 (Stage.EXPANDING, False), (Stage.DONE, False)])
-    def test_curation_pending_until_the_first_bank(self, tmp_path, stage, pending):
+    def test_curation_pending_only_while_indexing_for_the_first_bank(self, tmp_path, stage, pending):
+        """SETUP does not hold the nightly run back: an install that never enables Photos stays
+        there for good and would otherwise never get a memory."""
         path = tmp_path / "first_run.json"
         state = State.fresh()
         state.enter(stage)
         state.save(path)
         assert FirstRun.stage(path) == stage
         assert FirstRun.curation_pending(path) is pending
+
+    def test_a_stalled_catch_up_stops_holding_the_nightly_curation_back(self, tmp_path):
+        path = tmp_path / "first_run.json"
+        state = State.fresh(now=0)
+        state.enter(Stage.INDEXING, now=0)
+        state.save(path)
+        wait = FirstRun.INDEXING_CURATION_WAIT_DAYS * 86400
+        assert FirstRun.curation_pending(path, now=wait - 60) is True
+        assert FirstRun.curation_pending(path, now=wait + 60) is False
 
     def test_no_file_means_no_stage_and_nothing_pending(self, tmp_path):
         path = tmp_path / "nope.json"

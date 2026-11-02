@@ -685,9 +685,8 @@ class TestAutonomousActionManager:
 
     @patch('assistant.agents.AutonomousActionManager.create_llm')
     def test_nightly_curation_waits_for_the_first_run_pipeline(self, mock_claude):
-        """While the first-run pipeline still has to build the first bank, the nightly run
-        would curate the stub instead; the slot is skipped, and marked as used for the day
-        so the skip is not re-evaluated every tick."""
+        """While the first-run pipeline's feeds catch up for the first bank, the slot is
+        skipped, and marked as used for the day so the skip is not re-evaluated every tick."""
         mock_claude.return_value = Mock()
         mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(night=True), test_mode=True)
         assert self._run_two_iterations_at_four(mgr, curation_pending=True) == (0, 1)
