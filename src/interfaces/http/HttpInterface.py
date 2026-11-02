@@ -10,6 +10,7 @@ import threading
 from assistant.commands.formats.CommandFormats import CommandFormats
 from common import Version
 from common.logging import info, note, trace
+from interfaces.http import CrossSiteGuard
 from interfaces.http.routes import HttpDeps, register as register_stream_route
 from interfaces.Interface import Interface
 
@@ -50,6 +51,7 @@ class HttpInterface(Interface):
     def start(self, assistant, app=None) -> None:
         from quart import Quart
         self.app = Quart("floxy_ai_server")
+        CrossSiteGuard.install(self.app)
         self.deps = HttpDeps(assistant=assistant, voice_enabled=False)
         register_stream_route(self.app, self.deps)
 

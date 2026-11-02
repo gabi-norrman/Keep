@@ -244,9 +244,20 @@ class TestStreamRoute:
         from assistant.commands.DebugCommands import DebugCommands
         monkeypatch.setattr(DebugCommands, "is_command", staticmethod(lambda q: q == "!dbg"))
         monkeypatch.setattr(DebugCommands, "handle", lambda self, q: "debug reply")
-        r, body = get(app, "/stream?query=!dbg")
+        r, body = post(app, "/stream", json={"query": "!dbg"})
         assert r.status_code == 200 and body == b"debug reply"
         assert assistant.calls == []
+
+    def test_debug_command_over_get_is_refused_and_never_run(self, app, assistant, text_stream, monkeypatch):
+        """A GET is what an <img> on any web page can fire at the LAN; //wipe must not run that way."""
+        from assistant.commands.DebugCommands import DebugCommands
+        handled = []
+        monkeypatch.setattr(DebugCommands, "is_command", staticmethod(lambda q: q == "!dbg"))
+        monkeypatch.setattr(DebugCommands, "handle", lambda self, q: handled.append(q))
+        r, _ = get(app, "/stream?query=!dbg&request_id=r9")
+        assert r.status_code == 405
+        assert handled == [] and assistant.calls == []
+        text_stream.close.assert_called_once_with("r9")
 
     def test_identified_user_is_announced_to_the_text_stream(self, app, text_stream):
         get(app, "/stream?query=hi&user=Anna&request_id=r3&text=true")

@@ -90,6 +90,11 @@ def build_blueprint(deps: HttpDeps) -> Blueprint:
                     deps.text_stream.close(request_id)
 
             if DebugCommands.is_command(query):
+                if request.method != 'POST':
+                    # A GET is what an <img> on any web page can send; no Outpost sends `//` commands.
+                    info(f"Refused debug command over {request.method} from {request.remote_addr} — POST it.")
+                    close_text_stream("debug command over GET refused")
+                    return {"error": "debug commands must be POSTed"}, 405
                 # //wipe zips the database: keep it off the event loop.
                 reply = await asyncio.to_thread(DebugCommands.for_assistant(deps.assistant).handle, query)
                 close_text_stream("debug command handled")
