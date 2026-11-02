@@ -10,7 +10,10 @@ A row is drawn the way its stream showed it, whether it is backfilled or lands l
 assistant row is its prose plus one "Searching for …" notice per command it called
 (`StoredReplyReader` — the stored reply keeps the calls with their whole arguments, for the
 LLM), and the command result, clock note and opening-brief rows, which no stream ever
-showed, are left out.
+showed, are left out. So is the prose of a row that is nothing but the bare NO an
+autonomous check or a reaction answers when it has nothing to say (`ChatSession.is_no_reply`,
+the rule the chats suppress it by): the verdict is for the log, never for a bubble, while
+the notices of the commands the row called are still drawn.
 
 The console's own turns keep streaming live through `ConsoleTransport`; the feed
 recognises the history rows those turns produce and adopts them instead of showing a
@@ -46,6 +49,7 @@ from assistant.commands.StoredReplyReader import StoredReply, StoredReplyReader
 from assistant.tools.MessageFormatter import MessageFormatter
 from common.logging import info, trace
 from interfaces.chat import FallbackNotice
+from interfaces.chat.ChatSession import ChatSession
 from interfaces.chat.RichText import command_line, repair_markdown, strip_tags
 from interfaces.console.SystemEvents import markup
 from interfaces.console.widgets.ChatPane import (KIND_ASSISTANT, KIND_DIFF, KIND_NOTICE, KIND_SYSTEM, KIND_USER,
@@ -233,7 +237,14 @@ class HistoryFeed(AssistantObserver):
     def _read(self, entry: dict) -> StoredReply:
         if SHOW_COMMAND_ROUNDS:
             return StoredReply(entry["content"], [], [])
-        return self._reader.read(entry["content"])
+        reply = self._reader.read(entry["content"])
+        if reply.prose and ChatSession.is_no_reply(reply.prose):
+            # The closing verdict of an autonomous check (or a reaction's), stored with its
+            # commands; it was never said to anyone, so no bubble — the notices still show.
+            trace(f"HistoryFeed: an assistant row's prose is the NO verdict, not showing it as a bubble "
+                  f"({len(reply.before) + len(reply.after)} command notice(s) kept)")
+            return StoredReply("", reply.before, reply.after)
+        return reply
 
     def _draw(self, reply: StoredReply, timestamp: float):
         """An assistant row as its stream showed it: a notice per command, the prose as a bubble."""

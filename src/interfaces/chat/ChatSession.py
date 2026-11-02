@@ -470,9 +470,11 @@ class ChatSession:
         return f'User reacted {msg.reaction} to a message. {tail}'
 
     @staticmethod
-    def _is_no_reply(text: str) -> bool:
-        # Strip wrapping quotes AND trailing punctuation — the LLM is known to reply
-        # "No." or "NO!" despite being asked for a bare NO.
+    def is_no_reply(text: str) -> bool:
+        """The reply is the bare NO a reaction or an autonomous check answers when it has
+        nothing to say — the rule every chat shares, the console's history feed included.
+        Strips wrapping quotes AND trailing punctuation: the LLM is known to reply "No." or
+        "NO!" despite being asked for a bare NO."""
         return text.strip().strip('"\'.!? ').lower() == "no"
 
     @classmethod
@@ -480,7 +482,7 @@ class ChatSession:
         # A punctuated NO ("No.", "NO!") is also a possible prefix: the reply may still
         # continue ("No. The lights..."), so hold off displaying until more chunks arrive;
         # if the stream ends here it is suppressed without flashing.
-        return text.strip().lower() in cls._NO_REPLY_PREFIXES or cls._is_no_reply(text)
+        return text.strip().lower() in cls._NO_REPLY_PREFIXES or cls.is_no_reply(text)
 
     # --- the assistant stream -------------------------------------------------------------
 
@@ -620,7 +622,7 @@ class ChatSession:
                     break
 
                 if isinstance(event, RoundEnd):
-                    if suppress_no and self._is_no_reply(buffer):
+                    if suppress_no and self.is_no_reply(buffer):
                         info(f"{prefix}: AI declined to react (replied {buffer.strip()!r}), suppressing")
                         draft.discard()
                     elif buffer.strip():
@@ -690,7 +692,7 @@ class ChatSession:
             if spinner_mode:
                 draft.discard()
 
-            if suppress_no and self._is_no_reply(buffer):
+            if suppress_no and self.is_no_reply(buffer):
                 info(f"{prefix}: AI declined to react (replied {buffer.strip()!r}), suppressing")
                 draft.discard()
                 buffer = ""
