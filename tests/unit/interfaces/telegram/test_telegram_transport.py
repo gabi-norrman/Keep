@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from interfaces.chat.ChatTypes import (KIND_PHOTO, KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE,
+from interfaces.chat.ChatTypes import (KIND_DOCUMENT, KIND_PHOTO, KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE,
                                        PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING, PHASE_WAITING, Progress)
 
 MODULE = 'interfaces.telegram.TelegramTransport'
@@ -616,7 +616,7 @@ class TestInboundText:
         update.edited_message.text = "hello (edited)"
         ctx = _file_context()
         for handler in (transport._handle_message, transport._handle_photo, transport._handle_voice,
-                        transport._handle_video):
+                        transport._handle_video, transport._handle_document):
             await handler(update, ctx)
         hub.receive.assert_not_called()
         ctx.bot.get_file.assert_not_called()
@@ -754,11 +754,65 @@ class TestInboundMedia:
         assert "too large" in update.message.reply_text.call_args[0][0]
         hub.receive.assert_not_called()
 
+    @staticmethod
+    def _document_update(name="invoice.pdf", mime_type="application/pdf", file_size=2048, caption="Pay this?"):
+        update = _update(text=None)
+        update.message.caption = caption
+        update.message.document.file_id = "file_doc"
+        update.message.document.file_name = name
+        update.message.document.mime_type = mime_type
+        update.message.document.file_size = file_size
+        return update
+
+    @pytest.mark.asyncio
+    async def test_document_is_downloaded_with_its_name_type_and_caption(self, transport, hub):
+        update = self._document_update()
+        ctx = _file_context(b"%PDF-1.4 fake")
+        await transport._handle_document(update, ctx)
+        ctx.bot.get_file.assert_called_once_with("file_doc")
+        msg = received(hub)
+        assert msg.kind == KIND_DOCUMENT and msg.text == "Pay this?"
+        att = msg.attachments[0]
+        assert att.data == b"%PDF-1.4 fake" and att.name == "invoice.pdf" and att.mime_type == "application/pdf"
+        assert att.kind == KIND_DOCUMENT and not att.undelivered
+        assert transport._message_texts[(123, 10)] == "Pay this?"
+        update.message.reply_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_document_without_caption_is_tracked_by_its_name(self, transport, hub):
+        update = self._document_update(name="notes.md", mime_type=None, caption=None)
+        await transport._handle_document(update, _file_context(b"# notes"))
+        msg = received(hub)
+        assert msg.text == "" and msg.attachments[0].mime_type == "" and msg.attachments[0].name == "notes.md"
+        assert transport._message_texts[(123, 10)] == "[document notes.md]"
+
+    @pytest.mark.asyncio
+    async def test_document_over_the_bot_limit_reaches_the_assistant_undelivered(self, transport, hub):
+        # Unlike a video, a document over the cap is not refused at the door: the assistant is
+        # told the file's name and size and answers the message.
+        update = self._document_update(name="film.mov", mime_type="video/quicktime", file_size=25 * 1024 * 1024)
+        ctx = _file_context()
+        await transport._handle_document(update, ctx)
+        ctx.bot.get_file.assert_not_called()
+        update.message.reply_text.assert_not_called()
+        att = received(hub).attachments[0]
+        assert att.data == b"" and att.size == 25 * 1024 * 1024 and att.name == "film.mov"
+        assert "20 MB" in att.undelivered
+
+    @pytest.mark.asyncio
+    async def test_document_download_failure_tells_the_user(self, transport, hub):
+        update = self._document_update()
+        ctx = MagicMock()
+        ctx.bot.get_file = AsyncMock(side_effect=RuntimeError("network"))
+        await transport._handle_document(update, ctx)
+        assert "couldn't download" in update.message.reply_text.call_args[0][0]
+        hub.receive.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_unauthorized_media_is_rejected(self, hub):
         t = _make_transport(allowed=[999])
         t._hub = hub
-        for handler in (t._handle_photo, t._handle_voice, t._handle_video):
+        for handler in (t._handle_photo, t._handle_voice, t._handle_video, t._handle_document):
             update = _update(chat_id=123)
             await handler(update, _file_context())
             update.message.reply_text.assert_called_once_with("Sorry, you are not authorized to use this bot.")

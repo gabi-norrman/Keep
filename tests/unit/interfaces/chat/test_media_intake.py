@@ -1,0 +1,103 @@
+"""MediaIntake.document_text: what the assistant reads for a file a chat user sent — the PDF
+extractor the mail attachments use, a text file decoded, and the reasons a file gives no text."""
+from unittest.mock import patch
+
+import pytest
+
+from interfaces.chat import MediaIntake
+from interfaces.chat.ChatTypes import KIND_DOCUMENT, Attachment
+from interfaces.chat.MediaIntake import UnreadableDocument, describe_size, document_text, extract_document_text
+
+PDF_EXTRACTOR = "assistant.tools.PdfExtractor.extract_text"
+
+
+def document(data: bytes, mime_type: str, name: str, **kw) -> Attachment:
+    return Attachment(data, mime_type, KIND_DOCUMENT, name=name, **kw)
+
+
+@pytest.mark.unit
+class TestExtract:
+    def test_a_pdf_goes_through_the_mail_attachments_extractor(self):
+        with patch(PDF_EXTRACTOR, return_value="--- Page 1 ---\nTotal: 120 SEK") as extract:
+            text = extract_document_text("invoice.pdf", "application/pdf", b"%PDF-1.4")
+        extract.assert_called_once_with(b"%PDF-1.4")
+        assert "Total: 120 SEK" in text
+
+    def test_a_pdf_is_known_by_its_extension_when_the_sender_gave_no_type(self):
+        with patch(PDF_EXTRACTOR, return_value="text") as extract:
+            extract_document_text("scan.PDF", "application/octet-stream", b"%PDF-1.4")
+        extract.assert_called_once()
+
+    def test_a_pdf_without_a_text_layer_is_unreadable_with_the_extractors_reason(self):
+        with patch(PDF_EXTRACTOR, return_value="ERROR: PDF contains no extractable text (might be scanned/image-based)."):
+            with pytest.raises(UnreadableDocument, match="no extractable text"):
+                extract_document_text("scan.pdf", "application/pdf", b"%PDF-1.4")
+
+    @pytest.mark.parametrize("name,mime_type", [
+        ("notes.txt", "text/plain"),
+        ("notes.md", ""),                        # the extension alone decides
+        ("data.csv", "text/csv"),
+        ("README", "application/octet-stream"),  # neither: the content is sniffed as text
+    ])
+    def test_text_files_are_decoded(self, name, mime_type):
+        assert extract_document_text(name, mime_type, "Hallå Marcus\n".encode("utf-8")) == "Hallå Marcus\n"
+
+    def test_a_byte_order_mark_is_dropped_and_latin1_is_the_fallback(self):
+        assert extract_document_text("a.txt", "text/plain", b"\xef\xbb\xbfhello") == "hello"
+        assert extract_document_text("b.txt", "text/plain", "smörgås".encode("latin-1")) == "smörgås"
+
+    def test_binary_content_under_a_generic_type_is_unreadable(self):
+        with pytest.raises(UnreadableDocument):
+            extract_document_text("blob", "application/octet-stream", b"\x00\x01\x02\xff")
+
+    def test_a_type_without_a_reader_is_unreadable_by_name(self):
+        with pytest.raises(UnreadableDocument, match="application/zip"):
+            extract_document_text("photos.zip", "application/zip", b"PK\x03\x04")
+        with pytest.raises(UnreadableDocument, match=r"\.xlsx"):
+            extract_document_text("sheet.xlsx", "", b"PK\x03\x04")
+
+    def test_an_empty_text_file_is_unreadable(self):
+        with pytest.raises(UnreadableDocument, match="empty"):
+            extract_document_text("empty.txt", "text/plain", b"  \n")
+
+    def test_a_long_text_is_cut_at_the_cap_with_a_note(self):
+        text = extract_document_text("big.log", "text/plain", b"x" * (MediaIntake.DOCUMENT_TEXT_CHARS + 500))
+        kept, note = text.split("\n\n", 1)
+        assert kept == "x" * MediaIntake.DOCUMENT_TEXT_CHARS and "truncated" in note
+
+
+@pytest.mark.unit
+class TestDocumentText:
+    def test_the_body_names_the_file_its_type_and_size_then_the_caption_then_the_text(self):
+        body, headline = document_text(document(b"a,b\n1,2\n", "text/csv", "sales.csv"), "Which sold more?")
+        assert body == ("[User sent a document: sales.csv (text/csv, 8 bytes)]\n"
+                        "Caption: Which sold more?\n"
+                        "a,b\n1,2\n")
+        assert headline == "[User sent a document: sales.csv (text/csv, 8 bytes)]\nCaption: Which sold more?"
+
+    def test_no_caption_means_no_caption_line(self):
+        body, headline = document_text(document(b"hi", "text/plain", "a.txt"))
+        assert body.split("\n") == ["[User sent a document: a.txt (text/plain, 2 bytes)]", "hi"]
+        assert headline == body.split("\n")[0]
+
+    def test_an_undelivered_file_is_described_by_the_size_the_platform_reported(self):
+        att = document(b"", "video/quicktime", "film.mov", size=25 * 1024 * 1024, undelivered="it is over the cap")
+        body, headline = document_text(att)
+        assert "25.0 MB" in headline
+        assert body.endswith("The file was not downloaded: it is over the cap. Its contents are unknown.")
+
+    def test_an_unreadable_file_tells_the_assistant_why(self):
+        body, headline = document_text(document(b"PK\x03\x04", "application/zip", "photos.zip"), "Look")
+        assert body.startswith(headline)
+        assert "could not be read (no reader for application/zip)" in body and "unknown" in body
+
+    def test_a_nameless_file_with_no_type_still_gets_a_header(self):
+        body, _ = document_text(document(b"text", "", ""))
+        assert body.startswith("[User sent a document: unnamed (unknown type, 4 bytes)]")
+
+
+@pytest.mark.unit
+def test_describe_size_picks_the_unit():
+    assert describe_size(900) == "900 bytes"
+    assert describe_size(3 * 1024) == "3 KB"
+    assert describe_size(int(1.5 * 1024 * 1024)) == "1.5 MB"
