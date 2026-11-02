@@ -526,14 +526,15 @@ class DialogManager:
         yield notice
 
     def _leave_stream_at_the_cut(self, response):
-        """The processor hit its cap: close the stream so the model stops generating, and keep
-        of the turn exactly the calls that ran — the text up to the last of them, its block
-        closed — so the follow-up round reads a reply of that many commands and nothing says
-        there were more."""
-        cap = self.command_processor.MAX_COMMANDS_PER_REPLY
+        """The processor stopped reading the reply (its command cap, or a results block the
+        model wrote itself): close the stream so the model stops generating, and keep of the
+        turn exactly the calls that ran — the text up to the last of them, its block closed —
+        so the follow-up round reads a reply of that many commands and nothing says there
+        were more."""
+        ran = self.command_processor.commands_dispatched
         before = len(self.llm_response_raw)
-        self.llm_response_raw = self.command_processor.format.cut(self.llm_response_raw, cap)
-        info(f"Reply cut after {cap} commands — stream closed, the turn kept as those calls "
+        self.llm_response_raw = self.command_processor.kept_of(self.llm_response_raw)
+        info(f"Reply cut after {ran} commands — stream closed, the turn kept as those calls "
              f"({before} → {len(self.llm_response_raw)} chars received)")
         close = getattr(response, "close", None)
         if close is not None:

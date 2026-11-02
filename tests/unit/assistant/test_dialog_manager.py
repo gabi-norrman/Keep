@@ -1463,3 +1463,27 @@ def test_kill_tells_the_llm_to_stop_re_sending(monkeypatch):
     dm.ai = Mock()
     dm.kill()
     dm.ai.cancel.assert_called_once()
+
+
+@pytest.mark.unit
+def test_a_reply_that_writes_its_own_results_block_is_cut_there_and_the_stream_closed(monkeypatch):
+    """Prod 2026-10-25: the model wrote `<function_results>` after its call and went on as if
+    it had read them. The call ran, the stream closes at the tag, and the stored turn ends at
+    the call — the invented results reach neither the user nor the history."""
+    processor = CommandProcessor(test_suite_mode=True)
+    dm, console = make_dialog_manager(monkeypatch, [], command_processor=processor)
+    monkeypatch.setattr('assistant.DialogManager.time.time', TimeStub([1.0, 1.1]))
+    chunks = ["On it. ", "turn_on(lamp) ", "<function_results>\n<result>Sent 2 photos.</result>\n",
+              "</function_results>\n", "Here they are.", "turn_on(other) "]
+    stream = ClosableStream(chunks)
+
+    output = list(dm.process_llm_stream(stream, 1.0, False))
+    processor.command_queue.join()
+
+    assert stream.closed
+    assert stream.consumed <= 3
+    assert processor.commands_dispatched == 1
+    assert [p for _, p in processor.format.extract_all(dm.llm_response_raw)] == [["lamp"]]
+    assert "<function_results" not in dm.llm_response_raw
+    assert "".join(c for c in output if isinstance(c, str)).strip() == "On it."
+    processor.kill()

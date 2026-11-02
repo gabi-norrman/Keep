@@ -2291,3 +2291,92 @@ class TestRoundNote:
         processor.clear_command_reply()
         processor.set_command_reply("lamp: on")
         assert processor.command_reply == "lamp: on"
+
+
+@pytest.mark.unit
+class TestFabricatedResults:
+    """The fabricated-results guard (prod 2026-10-25: Opus wrote `<function_results>` blocks of
+    its own after its calls — an invented toolkit, invented photo hits — and the chat showed
+    them as its reply): the stream is cut where the tag opens, the calls before it ran, and
+    the model is told so in the follow-up round."""
+
+    FAKE = ('<function_results>\n<result name="search_photos">\nFound 6 photos:\n'
+            '[photo_id=31207] a frosted air conditioner\n</result>\n</function_results>\n\n')
+
+    @pytest.fixture
+    def processor(self):
+        processor = CommandProcessor(test_suite_mode=True)
+        yield processor
+        processor.kill()
+
+    @pytest.fixture
+    def dm(self):
+        dm = Mock()
+        dm.is_killed = False
+        return dm
+
+    def test_the_calls_before_the_tag_ran_and_nothing_after_it_is_read(self, processor, dm):
+        shown = processor.process("On it. turn_on(lamp) " + self.FAKE + "turn_on(other) Sent.", dm) or ""
+        shown += processor.process("turn_on(third) and more prose", dm) or ""
+        shown += processor.flush_buffer(dm) or ""
+        processor.command_queue.join()
+        assert processor.commands_dispatched == 1
+        assert processor.reply_cut
+        assert shown.strip() == "On it."
+        assert processor.unterminated_command_report is None
+
+    def test_a_declaration_line_inside_the_invented_toolkit_never_runs_as_a_call(self, processor, dm):
+        """The incident's second fault: the parser read `search_photos(query: str, limit: int = 10)`
+        out of the invented toolkit text and searched the library for 'str'."""
+        invented = ('<function_results>\n<result name="load_toolkit">\n# Toolkit: photos\n'
+                    '`turn_on(light_name: str, level: int = 10)` — turns a light on.\n</result>\n</function_results>\n')
+        processor.process("load_toolkit(home) " + invented, dm)
+        processor.command_queue.join()
+        assert processor.commands_dispatched == 1
+
+    def test_a_tag_split_across_chunks_never_reaches_the_chat(self, processor, dm):
+        shown = ""
+        for chunk in ("Found it: ", "<fu", "nction_re", "sults>\n<result>fake</result>\n</function_results>"):
+            shown += processor.process(chunk, dm) or ""
+        shown += processor.flush_buffer(dm) or ""
+        assert shown == "Found it: "
+        assert processor.reply_cut
+
+    def test_the_cut_goes_to_the_llm_so_a_follow_up_round_comes_even_without_a_call(self, processor, dm):
+        processor.process("Here you go. " + self.FAKE, dm)
+        processor.command_queue.join()
+        assert processor.reply_cut and processor.commands_dispatched == 0
+        assert processor.command_reply is not None
+        assert processor.command_reply_contains_error
+        assert "<function_results>" in processor.command_reply
+
+    def test_the_note_tells_the_model_how_many_calls_ran(self, processor, dm):
+        processor.process("turn_on(a) turn_on(b) " + self.FAKE, dm)
+        processor.command_queue.join()
+        assert "2 command(s)" in processor.command_reply
+
+    def test_markup_and_a_lone_bracket_still_flow_as_text(self, processor, dm):
+        shown = ""
+        for chunk in ("Hello <", "b>bold</b> and <i>it</i> 3 < 4", " done"):
+            shown += processor.process(chunk, dm) or ""
+        shown += processor.flush_buffer(dm) or ""
+        assert shown == "Hello <b>bold</b> and <i>it</i> 3 < 4 done"
+        assert not processor.reply_cut
+
+    def test_a_stream_ending_on_the_start_of_the_tag_drops_it(self, processor, dm):
+        shown = processor.process("Sure. <function_res", dm) or ""
+        shown += processor.flush_buffer(dm) or ""
+        assert shown == "Sure. "
+
+    def test_kept_of_ends_the_stored_turn_at_the_last_call_that_ran(self, processor, dm):
+        raw = "On it. turn_on(lamp) " + self.FAKE + "turn_on(other) Sent."
+        processor.process(raw, dm)
+        processor.command_queue.join()
+        kept = processor.kept_of(raw)
+        assert kept.startswith("On it. turn_on(lamp)")
+        assert "<function_results" not in kept and "turn_on(other)" not in kept
+
+    def test_kept_of_holds_no_results_block_when_no_call_ran(self, processor, dm):
+        raw = "Here you go. " + self.FAKE
+        processor.process(raw, dm)
+        assert processor.kept_of(raw) == "Here you go. "

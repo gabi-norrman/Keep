@@ -45,6 +45,19 @@ class CommandProcessor:
                 "ran, nothing after the last of them was read, so any later command in the reply did "
                 "not run and no text after it reached the user. Continue from here, {cap} commands per "
                 "reply at most.")
+    # The fabricated-results guard: a model that drifts into its trained tool loop writes the
+    # tool's reply itself — `<function_results>` holding an invented toolkit, invented search
+    # hits, an invented "Sent 2 photos." — and goes on as if it had read them (prod 2026-10-25,
+    # Opus on a photo question: the whole block reached the Telegram chat as reply text, and
+    # a declaration line inside the invented toolkit ran as a call). Only the system writes
+    # results: the stream is cut where the tag opens, the calls before it ran as usual, their
+    # real results come back in the follow-up round, and the stored turn ends at the last of
+    # them (`kept_of`), so the history never shows the model its own invented results.
+    FABRICATED_RESULTS_OPEN = "<function_results"
+    FABRICATED_RESULTS_NOTE = (
+        "Your reply wrote a <function_results> block of its own{after}. Only the system writes "
+        "results, so that block and everything after it were dropped unread and did not reach the "
+        "user. {real}")
 
     def __init__(self, test_suite_mode: bool):
         self.previous_content_buffer = ""
@@ -566,6 +579,15 @@ class CommandProcessor:
 
         self.debug(f"content: '{content}' previous_content_buffer: '{self.previous_content_buffer}'")
 
+        if (at := self.previous_content_buffer.find(self.FABRICATED_RESULTS_OPEN)) >= 0:
+            # The calls before the tag run as usual; the tag and all after it are dropped.
+            head, dropped = self.previous_content_buffer[:at], self.previous_content_buffer[at:]
+            self.previous_content_buffer = ""
+            shown = self._process_commands(head, dialog_manager) if head else None
+            if not self.reply_cut:
+                self._cut_at_fabricated_results(dropped)
+            return shown
+
         if self.is_possibly_command(self.previous_content_buffer):
             self.debug(f"  (possibly command)")
             if self.format.complete(self.previous_content_buffer, streaming=self._streaming):
@@ -599,17 +621,62 @@ class CommandProcessor:
             # Before flushing, check if the buffer tail could be the start of a command name.
             # This prevents losing partial command names when they arrive in the same token as preceding text.
             if self._streaming:
-                tail_pos = self.format.partial_tail(self.previous_content_buffer)
+                tail_pos = self._partial_tail(self.previous_content_buffer)
+                if tail_pos == 0:
+                    self.debug("the whole buffer may open a results block — retaining it")
+                    return None
                 if tail_pos > 0:
                     self.debug(f"retaining partial command tail at pos {tail_pos}")
                     before = self.previous_content_buffer[:tail_pos]
                     self.previous_content_buffer = self.previous_content_buffer[tail_pos:]
                     return before
+            elif (tail_pos := self._results_tail(self.previous_content_buffer)) >= 0 \
+                    and len(self.previous_content_buffer) - tail_pos >= 3:
+                info(f"Stream ended on the start of a <function_results> tag — dropping it: "
+                     f"{self.previous_content_buffer[tail_pos:]!r}")
+                self.previous_content_buffer = self.previous_content_buffer[:tail_pos]
 
             self.debug(f"no command possible")
             p = self.previous_content_buffer
             self.previous_content_buffer = ""
             return p
+
+    def _partial_tail(self, buffer: str) -> int:
+        """Where a possible start of a call or of a `<function_results` tag begins at the end
+        of the buffer: text to hold until the next chunk says what it is; -1 when none."""
+        tails = [pos for pos in (self.format.partial_tail(buffer), self._results_tail(buffer)) if pos >= 0]
+        return min(tails) if tails else -1
+
+    @classmethod
+    def _results_tail(cls, buffer: str) -> int:
+        """Where the buffer ends in a proper prefix of the `<function_results` tag, -1 when
+        it does not (`<` alone counts: the invoke rescue holds it the same way)."""
+        tag = cls.FABRICATED_RESULTS_OPEN
+        for length in range(min(len(tag) - 1, len(buffer)), 0, -1):
+            if buffer.endswith(tag[:length]):
+                return len(buffer) - length
+        return -1
+
+    def _cut_at_fabricated_results(self, dropped: str):
+        """The model wrote a results block itself: stop reading the reply here and tell it so
+        in the follow-up round, which comes for this note even when no call ran."""
+        ran = self.commands_dispatched
+        error(f"The reply wrote a <function_results> block of its own after {ran} command(s) — the stream "
+              f"is dropped from the tag on: {dropped[:160]!r}")
+        self.reply_cut = True
+        after = f" after {ran} command(s)" if ran else " before any command"
+        real = (f"The real result(s) of the {ran} command(s) that ran follow." if ran
+                else "No command ran, so there is no result.")
+        self.append_command_reply(self.FABRICATED_RESULTS_NOTE.format(after=after, real=real))
+
+    def kept_of(self, raw: str) -> str:
+        """What the dialog stores of a reply it stopped reading (`reply_cut`): the text up to
+        and including the last call that ran, every block closed, and never a results block
+        the model wrote — so the follow-up round reads a reply of exactly the calls that ran."""
+        kept = self.format.cut(raw, self.commands_dispatched)
+        if (at := kept.find(self.FABRICATED_RESULTS_OPEN)) >= 0:
+            kept = kept[:at]
+        return kept
 
     def flush_buffer(self, dialog_manager) -> str | None:
         """Flush any remaining buffer content with strict (non-streaming) parsing.
