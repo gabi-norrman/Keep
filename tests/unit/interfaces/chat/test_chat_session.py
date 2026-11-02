@@ -286,8 +286,8 @@ class TestSuppressNo:
         assert transport.finalized == ["NO"]
 
     def test_helpers(self):
-        assert ChatSession._is_no_reply("NO") and ChatSession._is_no_reply('"No."') and ChatSession._is_no_reply(" no ")
-        assert not ChatSession._is_no_reply("Nope") and not ChatSession._is_no_reply("No, thanks")
+        assert ChatSession.is_no_reply("NO") and ChatSession.is_no_reply('"No."') and ChatSession.is_no_reply(" no ")
+        assert not ChatSession.is_no_reply("Nope") and not ChatSession.is_no_reply("No, thanks")
         assert ChatSession._is_no_prefix("") and ChatSession._is_no_prefix("N") and ChatSession._is_no_prefix('"no')
         assert ChatSession._is_no_prefix("No.") and ChatSession._is_no_prefix("NO!")
         assert not ChatSession._is_no_prefix("Nope") and not ChatSession._is_no_prefix("No way")

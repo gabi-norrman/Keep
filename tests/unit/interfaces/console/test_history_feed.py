@@ -111,6 +111,34 @@ class TestBackfill:
         assert "**" not in text and "`" not in text and "<b>Kyrkogatan</b>" in text
 
 
+class TestNoVerdict:
+    """An autonomous check (or a reaction) that has nothing to say ends its reply with a bare
+    NO; stored with the commands it ran, the verdict is no bubble — the notices still are."""
+
+    AUTONOMOUS_ROW = ('save_watch("plejd-weekend-test", """Plejd PR 27: check the weekend scenes\n'
+                      'still fire.""", "2026-10-31 10:00", "3h")\nNO')
+
+    def test_a_backfilled_check_shows_its_notice_and_no_bubble(self, history, pane):
+        history.history = [entry("assistant", self.AUTONOMOUS_ROW, T0)]
+        HistoryFeed(history, pane).start()
+        assert kinds(pane) == [KIND_NOTICE]
+        assert "plejd-weekend-test" in pane.entries[0].body.text
+        assert not any("NO" in text for _, _, text in shown(pane))
+
+    def test_a_check_landing_live_shows_its_notice_and_no_bubble(self, history, pane, feed):
+        land(history, entry("assistant", 'google("ferry strike")\nNO', time.time()))
+        assert kinds(pane) == [KIND_NOTICE]
+
+    def test_a_punctuated_no_without_commands_shows_nothing(self, history, pane, feed):
+        land(history, entry("assistant", '"No."', time.time()))
+        assert pane.entries == []
+
+    def test_a_reply_that_only_starts_with_no_is_still_shown(self, history, pane, feed):
+        land(history, entry("assistant", 'google("ferry strike")\nNo, the ferries are still out.', time.time()))
+        assert kinds(pane) == [KIND_NOTICE, KIND_ASSISTANT]
+        assert pane.entries[1].body.text == "No, the ferries are still out."
+
+
 class TestLiveInserts:
     def test_new_rows_are_added_once_in_timestamp_order(self, history, pane, feed):
         land(history, entry("system", "second", T0 + 2))
