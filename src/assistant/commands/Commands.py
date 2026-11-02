@@ -189,6 +189,10 @@ class Commands:
         # and the RequestContext of the request (None for autonomous runs).
         self._current_profile = AUTONOMOUS
         self._current_context = None
+        # Epoch of the moment the turn that runs the command began (the request's arrival, the
+        # autonomous check's firing); None when unknown. server_logs lists the lines logged
+        # since then apart: they are the turn's own lines, not what it is looking for.
+        self.turn_started: Optional[float] = None
         # The notifier's handle for the running command's chat echo; background_command
         # takes it along so the background worker can complete the echo when the work ends.
         self._current_echo = None
@@ -255,10 +259,12 @@ class Commands:
 
     def cmd_server_logs(self, *args: str):
         from_time, pattern = (list(a.strip().strip("\"'`") for a in args) + ["", ""])[:2]
-        self.background_command(lambda _: self._fetch_server_logs(from_time or None, pattern or None), "")
+        turn_started = self.turn_started
+        self.background_command(lambda _: self._fetch_server_logs(from_time or None, pattern or None, turn_started), "")
 
     @staticmethod
-    def _fetch_server_logs(from_time: Optional[str], pattern: Optional[str] = None) -> str:
+    def _fetch_server_logs(from_time: Optional[str], pattern: Optional[str] = None,
+                           turn_started: Optional[float] = None) -> str:
         start = Commands._parse_log_time(from_time) if from_time else None
         if from_time and start is None:
             info(f"server_logs: cannot read the time '{from_time}'")
@@ -266,7 +272,7 @@ class Commands:
                     "use YYYY-MM-DD HH:MM[:SS], YYYY-MM-DD or HH:MM[:SS] (today).")
         try:
             if pattern:
-                return Commands._search_server_logs(start, pattern)
+                return Commands._search_server_logs(start, pattern, turn_started)
             if start is None:
                 chunk = Commands._tail_log_lines(SERVER_LOG_PATH, SERVER_LOG_TAIL_LINES)
                 window = f"last {len(chunk)} lines"
@@ -287,11 +293,17 @@ class Commands:
         return f"{SERVER_LOG_HEADER} ({window})\n{text}"
 
     @staticmethod
-    def _search_server_logs(start, pattern: str) -> str:
+    def _search_server_logs(start, pattern: str, turn_started: Optional[float] = None) -> str:
         """The lines matching `pattern` (a case-insensitive regex, or the literal text when it
         is not one) from `start` — the last SERVER_LOG_SEARCH_HOURS when none is given — so a
         check that wants to know whether something recurred reads a few dozen lines instead of
-        a day of windows (one watch poll read twelve 200-line windows, 167K tokens, 2026-10-21)."""
+        a day of windows (one watch poll read twelve 200-line windows, 167K tokens, 2026-10-21).
+
+        The matches stamped since `turn_started` stand apart under their own label: the turn
+        searching the log logs lines that match its own pattern (the due watcher names the
+        watch item, the command echo carries the pattern itself), and a check that read four
+        such lines as "4 matches" posted a wrong verdict on a PR (2026-10-27, issue #134). With
+        nothing before them the answer opens with "Nothing matching", as an empty search does."""
         from datetime import datetime, timedelta
         try:
             regex = re.compile(pattern, re.IGNORECASE)
@@ -301,16 +313,43 @@ class Commands:
         if start is None:
             start = datetime.now().replace(microsecond=0) - timedelta(hours=SERVER_LOG_SEARCH_HOURS)
         lines, stopped_at = Commands._log_lines_matching(SERVER_LOG_PATH, start, regex, SERVER_LOG_TAIL_LINES)
+        lines, own = Commands._split_own_turn_lines(lines, turn_started)
+        own_note = ""
+        if own:
+            since = datetime.fromtimestamp(turn_started).strftime("%H:%M:%S")
+            stamped = sum(1 for line in own if _LOG_TIMESTAMP.search(line))
+            own_note = (f"\n--- {stamped} matching lines logged since this turn began at {since}, "
+                        f"most likely the turn's own ---\n" + "".join(own))
         if not lines:
-            info(f"Server logs: nothing matching '{pattern}' from {start}")
+            before = f" before this turn began" if own else ""
+            info(f"Server logs: nothing matching '{pattern}' from {start}{before}"
+                 + (f" ({stamped} of the turn's own lines)" if own else ""))
             tail = f" (the search stopped at {stopped_at})" if stopped_at else ""
-            return f"{SERVER_LOG_HEADER}\nNothing matching \"{pattern}\" from {start}{tail}."
+            return f"{SERVER_LOG_HEADER}\nNothing matching \"{pattern}\" from {start}{before}{tail}.{own_note}"
         window = f"{len(lines)} lines matching \"{pattern}\" from {start}"
         if stopped_at:
             window += f"; more may follow {stopped_at}"
         text = "".join(lines)
-        info(f"Server logs fetched: {window}, {len(text)} chars")
-        return f"{SERVER_LOG_HEADER} ({window})\n{text}"
+        info(f"Server logs fetched: {window}, {len(text)} chars"
+             + (f", plus {stamped} of the turn's own lines" if own else ""))
+        return f"{SERVER_LOG_HEADER} ({window})\n{text}{own_note}"
+
+    @staticmethod
+    def _split_own_turn_lines(lines: list[str], turn_started: Optional[float]) -> tuple[list[str], list[str]]:
+        """`lines` in two: those stamped before `turn_started` and those stamped at or after it,
+        a continuation line going with the stamped line above it. The stamps carry whole
+        seconds, so the split falls on the second the turn began in."""
+        if turn_started is None or not lines:
+            return lines, []
+        from datetime import datetime
+        key = datetime.fromtimestamp(turn_started).strftime("%Y-%m-%d %H:%M:%S")
+        earlier, own, is_own = [], [], False
+        for line in lines:
+            match = _LOG_TIMESTAMP.search(line)
+            if match:
+                is_own = match.group() >= key
+            (own if is_own else earlier).append(line)
+        return earlier, own
 
     @staticmethod
     def _log_lines_matching(path: str, start, regex, count: int) -> tuple[list[str], Optional[str]]:
@@ -952,8 +991,10 @@ class Commands:
 
     def _run_pr_job(self, label: str, job: Callable[[], tuple[str, Optional[JobPullRequest]]]):
         """Run a Claude Code job that ends in a pull request in the background and deliver its
-        report: pushed to the chats, and summed up in the history (`_pr_outcome`). The PR is
-        the one the job found it opened, never one the report's text mentions."""
+        report: pushed to the chats, and summed up in the history as a system row with its
+        own time (`_pr_outcome`) — never as an assistant row, which the window glued onto
+        the reply that made the call (#137). The PR is the one the job found it opened,
+        never one the report's text mentions."""
         def _run_and_deliver(_params):
             try:
                 report, pr = job()
@@ -962,11 +1003,7 @@ class Commands:
                 fine(f"Report: {report}")
                 html_report = notifier().markdown_to_html(report + self._trial_invitation(pr))
                 sent = notifier().send_message(f"{label} report:\n\n{html_report}")
-                aam = AutonomousActionManager.get_instance()
-                if aam and aam.prompt_manager:
-                    aam.prompt_manager.update_history(None, None, self._pr_outcome(label, report, pr, sent))
-                else:
-                    info(f"{label}: no AutonomousActionManager yet, the outcome is not in the history")
+                system_note(label, self._pr_outcome(label, report, pr, sent), push=False)
             except Exception as e:
                 error(f"{label} failed: {e}")
 
@@ -987,7 +1024,7 @@ class Commands:
 
     @staticmethod
     def _pr_outcome(label: str, report: str, pr: Optional[JobPullRequest], sent: bool) -> str:
-        """The history row a finished PR job leaves — the PR it opened (number, title line,
+        """The system row a finished PR job leaves — the PR it opened (number, title line,
         URL) or that none was, so the LLM knows the outcome without the report: the "report
         sent" marker it left before told it nothing, and on 2026-10-11 it took a job for
         still running two hours after the PR was open. Without a chat to deliver to, the
@@ -1026,11 +1063,7 @@ class Commands:
                 else:
                     message = f"Issue report:\n\n{notifier().markdown_to_html(report)}"
                 sent = notifier().send_message(message)
-                aam = AutonomousActionManager.get_instance()
-                if aam and aam.prompt_manager:
-                    aam.prompt_manager.update_history(None, None, self._issue_outcome(report, number, url, sent))
-                else:
-                    info("report_issue: no AutonomousActionManager yet, the outcome is not in the history")
+                system_note("report_issue", self._issue_outcome(report, number, url, sent), push=False)
             except Exception as e:
                 error(f"report_issue failed: {e}")
 
@@ -1038,9 +1071,11 @@ class Commands:
 
     @staticmethod
     def _issue_outcome(report: str, number, url, sent: bool) -> str:
-        """The history row a finished report_issue job leaves: the issue's number and link
-        (the user was sent the link), or that none was filed and why — the report's title
-        line, and the whole report when no chat could show it. "[Issue reported]" /
+        """The system row a finished report_issue job leaves, timed on its own and never
+        part of the assistant turn that made the call (#137: rendered as the assistant's
+        words, the model called the real link its own invention): the issue's number and
+        link (the user was sent the link), or that none was filed and why — the report's
+        title line, and the whole report when no chat could show it. "[Issue reported]" /
         "[Issue report complete]" is the tag the LLM keys off; keep it first."""
         delivery = "" if sent else f" ({NO_NOTIFICATION_CHANNEL})"
         if number is not None:

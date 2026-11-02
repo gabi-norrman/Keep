@@ -414,15 +414,20 @@ class AutonomousActionManager:
             error(f"Failed to record the periodic check start: {e}")
 
     def activity_check(self, prompt: str | None = None, wakeup: dict | None = None,
-                       due: list[tuple[WatchList.Item, datetime]] | None = None) -> str:
+                       due: list[tuple[WatchList.Item, datetime]] | None = None,
+                       started: float | None = None) -> str:
         """One autonomous check. *wakeup* is the schedule-file entry when the check is a
         scheduled wake-up, *due* the watch items (with the moment each reached) when the due
-        watcher runs it: the instruction says so (SCHEDULED_WAKEUP_NOTE, DUE_ITEMS_NOTE)."""
+        watcher runs it: the instruction says so (SCHEDULED_WAKEUP_NOTE, DUE_ITEMS_NOTE).
+        *started* is when the check began logging (the due watcher's firing line comes before
+        this call); the check's commands get it, so server_logs can tell the check's own lines
+        from what it searches for."""
+        started = time.time() if started is None else started
         if not self.activity_check_lock.acquire(timeout=120):
             error("Could not acquire activity_check_lock — another check is stuck")
             return ""
         try:
-            return self._activity_check_inner(prompt, wakeup, due)
+            return self._activity_check_inner(prompt, wakeup, due, started)
         finally:
             self.activity_check_lock.release()
 
@@ -450,7 +455,8 @@ class AutonomousActionManager:
         return note
 
     def _activity_check_inner(self, prompt: str | None, wakeup: dict | None = None,
-                              due: list[tuple[WatchList.Item, datetime]] | None = None) -> str:
+                              due: list[tuple[WatchList.Item, datetime]] | None = None,
+                              started: float | None = None) -> str:
             if wakeup:
                 info(f"Check for autonomous action (wake-up scheduled at "
                      f"{time.strftime('%H:%M', time.localtime(wakeup['scheduled_at']))})...")
@@ -499,6 +505,7 @@ class AutonomousActionManager:
 
             from assistant.commands.CommandProcessor import CommandProcessor
             command_processor = CommandProcessor(self.test_mode)
+            command_processor.turn_started = started
             stray = self._run_commands(result, command_processor)
 
             # Wait for queued commands to be picked up and processed
@@ -728,8 +735,9 @@ class AutonomousActionManager:
             info(f"Due watcher: {names} reached — user interaction active or recent, trying again in a minute")
             return False
         self._fired_due.update((item.name, moment) for item, moment in reached)
+        started = time.time()
         info(f"Due watcher: firing a check for {names}")
-        self.activity_check(due=reached)
+        self.activity_check(due=reached, started=started)
         return True
 
     def _log_held_at_night(self, held: list[tuple[WatchList.Item, datetime]]):

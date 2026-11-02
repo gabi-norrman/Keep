@@ -97,5 +97,7 @@ The lines are the info, note and error levels; the trace detail under them is le
 
 A window and a search both stop at 200 lines and say where they ended, so an older or longer incident is read by calling again from there. Looking for whether something happened or recurred, search with a pattern: a day of raw windows is thousands of lines and costs accordingly.
 
+A search lists the matches logged since the current turn began apart, under their own label: those are the turn's own lines (the check that fired, the search command itself), not evidence that the thing happened. A search whose only matches are such lines opens with "Nothing matching".
+
 ### Stop-and-wait
 `server_logs` returns data: emit it and stop generating; the result arrives in the next round.

@@ -4,6 +4,7 @@ from collections import deque
 from unittest.mock import Mock, call, patch, MagicMock
 
 import pytest
+from datetime import datetime
 
 from assistant.ChannelProfile import profile_for
 from assistant.commands.CommandParser import CommandParser
@@ -730,11 +731,11 @@ class TestCmdServerLogs:
              patch.object(Commands, "_fetch_server_logs", return_value="ok") as fetch:
             commands_instance.cmd_server_logs()
             mock_bg.call_args.args[0]("")
-            fetch.assert_called_once_with(None, None)
+            fetch.assert_called_once_with(None, None, None)
             fetch.reset_mock()
             commands_instance.cmd_server_logs('"2026-03-01 09:40"')
             mock_bg.call_args.args[0]("")
-            fetch.assert_called_once_with("2026-03-01 09:40", None)
+            fetch.assert_called_once_with("2026-03-01 09:40", None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -956,19 +957,17 @@ class TestCmdSelfImprovement:
         chat = Mock()
         chat.markdown_to_html.side_effect = lambda md: md
         chat.send_message.return_value = sent
-        prompt_manager = Mock()
         with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
-             patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam, \
+             patch("assistant.commands.Commands.system_note") as note, \
              patch("assistant.Notifier._notifier", chat), \
              patch.object(commands_instance, "fire_and_forget", side_effect=lambda fn, p: fn(p)):
             mock_cqm.unavailable_reason.return_value = None
             mock_cqm.improve_code.return_value = (report, pr)
             mock_cqm.first_line.side_effect = CodeQualityMaintainer.first_line
-            mock_aam.get_instance.return_value = Mock(prompt_manager=prompt_manager)
             commands_instance.cmd_self_improvement("fix the timers")
-        prompt_manager.update_history.assert_called_once()
-        user, query, text = prompt_manager.update_history.call_args.args
-        assert user is None and query is None, "an assistant-side row, no user turn"
+        note.assert_called_once()
+        source, text = note.call_args.args
+        assert note.call_args.kwargs.get("push") is False, "the chat got the report already; the row is for the LLM"
         return text, chat
 
     def test_the_row_names_the_pr_its_title_and_its_url(self, commands_instance):
@@ -2472,7 +2471,7 @@ class TestCmdReportIssue:
         with patch("assistant.commands.Commands.CodeQualityMaintainer", wraps=CodeQualityMaintainer) as mock_cqm, \
              patch.object(commands_instance, "fire_and_forget") as fire, \
              patch("assistant.commands.Commands.notifier") as notifier, \
-             patch("assistant.commands.Commands.AutonomousActionManager") as aam:
+             patch("assistant.commands.Commands.system_note") as note:
             mock_cqm.unavailable_reason.return_value = ""
             mock_cqm.report_issue.return_value = report
             notifier.return_value.send_message.return_value = delivered
@@ -2480,8 +2479,41 @@ class TestCmdReportIssue:
             commands_instance.cmd_report_issue("the lights stayed on at 23:10")
             fire.call_args.args[0](fire.call_args.args[1])
         sent = notifier.return_value.send_message.call_args.args[0]
-        row = aam.get_instance.return_value.prompt_manager.update_history.call_args.args[2]
+        row = note.call_args.args[1]
+        assert note.call_args.kwargs.get("push") is False, "the link was sent already; the row is for the LLM"
         return sent, row
+
+    def test_the_outcome_is_a_system_row_of_its_own_outside_the_calling_turn(self):
+        """#137: stored as an assistant row, the outcome rendered glued onto the reply that
+        made the call, with no time — read literally, the model had written "#137 is live"
+        itself, and it told the user so. The row is now the system's, timed on its own."""
+        from assistant import SystemNote
+        from assistant.prompt.MessageHistory import MessageHistory
+        with patch.object(MessageHistory, "_load_history"), patch.object(MessageHistory, "_save_history_entry"):
+            history = MessageHistory()
+            history.history = [
+                {"role": "user", "content": "report this", "timestamp": 1_700_000_000.0},
+                {"role": "assistant", "content": 'On it.\n\nreport_issue("""the lights stayed on""")',
+                 "timestamp": 1_700_000_010.0},
+            ]
+            SystemNote.set_history(history)
+            try:
+                with patch("assistant.Notifier._notifier", Mock()):
+                    stored = SystemNote.system_note(
+                        "report_issue", Commands._issue_outcome("https://github.com/example/keep/issues/7\nLights",
+                                                                7, "https://github.com/example/keep/issues/7", True),
+                        timestamp=1_700_000_250.0, push=False)
+            finally:
+                SystemNote.set_history(None)
+            assert stored
+            row = history._save_history_entry.call_args.args
+            assert row[0] == "system" and row[3] == "report_issue"
+            history.history.append({"role": "system", "content": row[1], "timestamp": row[2], "source": row[3]})
+            messages = history.get_history_messages()
+        user_turn, assistant_turn, outcome_turn = messages
+        assert assistant_turn["role"] == "assistant" and "[Issue reported]" not in assistant_turn["content"]
+        assert outcome_turn["role"] == "user" and outcome_turn["content"].startswith("System (")
+        assert "[Issue reported] issue #7 is live" in outcome_turn["content"]
 
     def test_a_filed_issue_sends_the_user_its_link(self, commands_instance):
         url = "https://github.com/example/keep/issues/7"
@@ -2730,7 +2762,60 @@ class TestServerLogsSearch:
              patch.object(Commands, "_fetch_server_logs", return_value="ok") as fetch:
             commands_instance.cmd_server_logs("", '"volvo|401"')
             bg.call_args.args[0]("")
-        fetch.assert_called_once_with(None, "volvo|401")
+        fetch.assert_called_once_with(None, "volvo|401", None)
 
     def test_server_logs_is_a_multi_parameter_command_so_the_pattern_arrives_as_its_own_argument(self):
         assert "server_logs" in Commands.MULTI_PARAM_COMMANDS
+
+    # The lines a turn logs itself match its own search (issue #134: a due watcher naming a
+    # watch item "…spotify…", the "Running command: server_logs(…spotify…)" echo): they are
+    # listed apart, and with nothing before them the answer is "Nothing matching".
+    TURN_START = datetime(2026, 3, 1, 8, 3, 0).timestamp()
+
+    def test_matches_logged_since_the_turn_began_are_not_evidence(self, tmp_path):
+        text = ("I│2026-03-01 08:03:00.010 │ DueWatcher │ Due watcher: firing a check for boom-watch\n"
+                "I│2026-03-01 08:03:00.100 │ main │ Check for autonomous action (boom-watch)...\n"
+                "N│2026-03-01 08:03:05.000 │ main │ Running command: server_logs(08:00, boom)\n")
+        with self._log(tmp_path, text):
+            result = Commands._fetch_server_logs("2026-03-01 08:00", "boom", self.TURN_START)
+        header, body = result.split("\n", 1)
+        assert header.startswith("# Keep AI Server Logs")
+        assert body.startswith("Nothing matching \"boom\" from 2026-03-01 08:00:00 before this turn began")
+        # The own lines are still there to read, under a label that says what they are.
+        assert "3 matching lines logged since this turn began at 08:03:00" in body
+        assert body.index("Nothing matching") < body.index("Due watcher: firing")
+
+    def test_a_line_logged_earlier_in_the_second_the_turn_began_in_counts_as_the_turns_own(self, tmp_path):
+        # The stamps the search compares carry whole seconds.
+        text = "I│2026-03-01 08:02:59.100 │ main │ boom\n"
+        with self._log(tmp_path, text):
+            result = Commands._fetch_server_logs("2026-03-01 08:00", "boom",
+                                                 datetime(2026, 3, 1, 8, 2, 59, 900000).timestamp())
+        assert "Nothing matching" in result and "1 matching lines logged since" in result
+
+    def test_earlier_matches_come_first_and_the_turns_own_after_the_label(self, tmp_path):
+        text = ("I│2026-03-01 08:00:00.000 │ main │ boom at eight\n"
+                "I│2026-03-01 08:01:00.000 │ main │ quiet\n"
+                "I│2026-03-01 08:03:05.000 │ main │ Running command: server_logs(08:00, boom)\n"
+                "Traceback under the own line\n")
+        with self._log(tmp_path, text):
+            result = Commands._fetch_server_logs("2026-03-01 08:00", "boom", self.TURN_START)
+        header, body = result.split("\n", 1)
+        assert header.startswith("# Keep AI Server Logs (1 lines matching")
+        earlier, own = body.split("--- 1 matching lines logged since this turn began at 08:03:00")
+        assert "boom at eight" in earlier and "Running command" not in earlier
+        assert "Running command: server_logs" in own and "Traceback under the own line" in own
+
+    def test_without_a_turn_start_every_match_is_evidence(self, tmp_path):
+        text = "I│2026-03-01 08:03:05.000 │ main │ Running command: server_logs(08:00, boom)\n"
+        with self._log(tmp_path, text):
+            result = Commands._fetch_server_logs("2026-03-01 08:00", "boom")
+        assert "1 lines matching" in result and "logged since this turn began" not in result
+
+    def test_the_command_hands_the_turn_start_to_the_search(self, commands_instance):
+        commands_instance.turn_started = self.TURN_START
+        with patch.object(commands_instance, "background_command") as bg, \
+             patch.object(Commands, "_fetch_server_logs", return_value="ok") as fetch:
+            commands_instance.cmd_server_logs("", '"boom"')
+            bg.call_args.args[0]("")
+        fetch.assert_called_once_with(None, "boom", self.TURN_START)

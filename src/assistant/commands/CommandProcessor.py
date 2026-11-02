@@ -94,6 +94,9 @@ class CommandProcessor:
         # Set when the cap above is reached: the rest of the stream is ignored, and the
         # dialog closes it.
         self.reply_cut = False
+        # When the turn this processor serves began, for a processor without a request
+        # handler (the autonomous check sets it); see Commands.turn_started.
+        self.turn_started: float | None = None
         self.commands = Commands(self)
         self.possible_commands = self.commands.list_commands()
         # The active format, with Claude's <invoke> block read beside it for the call a model
@@ -178,6 +181,7 @@ class CommandProcessor:
                 else:
                     self.commands._current_profile = self._profile_for(dialog_manager)
                     self.commands._current_context = self._context_for(dialog_manager)
+                    self.commands.turn_started = self._turn_started_for(dialog_manager)
                     result = self._run_echoed(command_name, params, params_display, dialog_manager)
                     if result:
                         error_msg = f"Command {self._label(command_name, params_display)} returned an error: \"{result}\"."
@@ -451,6 +455,13 @@ class CommandProcessor:
             return dialog_manager.web_request_handler.ctx
         except AttributeError:
             return None
+
+    def _turn_started_for(self, dialog_manager) -> float | None:
+        """When the turn being processed began: the request's arrival for a dialog with a
+        handler, else what the processor's owner set (the autonomous check sets its own)."""
+        handler = getattr(dialog_manager, "web_request_handler", None)
+        started = getattr(handler, "turn_started", None)
+        return self.turn_started if started is None else started
 
     @classmethod
     def _profile_for(cls, dialog_manager) -> ChannelProfile:

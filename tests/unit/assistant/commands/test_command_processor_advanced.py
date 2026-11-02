@@ -2392,3 +2392,14 @@ class TestFabricatedResults:
         raw = "Here you go. " + self.FAKE
         processor.process(raw, dm)
         assert processor.kept_of(raw) == "Here you go. "
+
+
+class TestTurnStart:
+    def test_the_turn_start_is_the_requests_arrival_or_what_the_processors_owner_set(self):
+        from types import SimpleNamespace
+        processor = CommandProcessor(test_suite_mode=True)
+        processor.turn_started = 100.0  # the autonomous check sets this: it has no request handler
+        assert processor._turn_started_for(None) == 100.0
+        assert processor._turn_started_for(SimpleNamespace()) == 100.0
+        request = SimpleNamespace(web_request_handler=SimpleNamespace(turn_started=250.0))
+        assert processor._turn_started_for(request) == 250.0

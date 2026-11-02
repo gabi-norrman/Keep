@@ -201,6 +201,7 @@ class RequestProcessor:
         # Every dialog manager this request ran a round on, so the telemetry can name the
         # commands of the whole request, not only the last round's.
         self._rounds: list = []
+        self.turn_started = time.time()  # the request's arrival; CommandProcessor hands it to the commands
         self._silent_end_followed_up = False
         self._cap_hit_followed_up = False
         self._cut_round_result: str | None = None  # the second cut round's command result, for the history
