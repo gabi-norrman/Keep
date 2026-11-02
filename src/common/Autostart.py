@@ -89,13 +89,14 @@ def enable(app: Path = APP, script: Path = SCRIPT, run=subprocess.run) -> str | 
         error(f"Autostart: the login item could not be made — {failure}")
         return failure
     info(f"Autostart: {app.name} registered as a login item — the server starts at login")
-    _run_once(app, run)
+    run_once(app, run)
     return None
 
 
-def _run_once(app: Path, run):
+def run_once(app: Path, run=subprocess.run):
     """Launch the applet now: with the server up its script does nothing, but the applet's own
-    grants (a repository under ~/Documents) are asked for while the user is at the Mac."""
+    grants (a repository under ~/Documents) are asked for while the user is at the Mac. The
+    watchdog (`common/Watchdog`) does the same after rebuilding it."""
     try:
         result = run(["open", "-a", str(app)], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as e:

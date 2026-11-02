@@ -1,5 +1,6 @@
-"""autostart.sh, the login item's script: it starts the server through start.sh when nothing is
-running and leaves a server that is up — or still booting — alone. It never opens a console.
+"""autostart.sh, the login item's and the watchdog's script: it starts the server through
+start.sh when nothing is running and leaves a server that is up — or still booting — alone, as
+well as a start.sh in flight. It never opens a console.
 
 Run like keep.sh's tests: the script is copied into a tmp tree beside the stub `start.sh`, and
 the checked-in fake bin under `tests/unit/data/keep_sh/` answers for `lsof` and `pgrep`."""
@@ -69,6 +70,16 @@ class TestAutostart:
         result = harness.run()
         assert 'start.sh ran' not in result.stdout
         assert 'already running' in harness.restart_log()[0]
+
+    def test_a_start_sh_in_flight_is_not_doubled(self, harness):
+        # Between start.sh's kill of the old server and its launch of the new one neither the
+        # port nor the process exists; the watchdog firing there must not run a second start.sh.
+        harness.server(listening=False, process=False)
+        harness.env['KEEP_TEST_START_SH_RUNNING'] = '1'
+        result = harness.run()
+        assert result.returncode == 0
+        assert 'start.sh ran' not in result.stdout
+        assert len(harness.restart_log()) == 1 and 'start.sh is already running' in harness.restart_log()[0]
 
     def test_no_console_is_opened_either_way(self, harness):
         for listening in (False, True):

@@ -355,6 +355,8 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
         pipeline = FirstRun.Pipeline(prompt_manager.message_history)   # a no-op on an established install
         pipeline.start()
         agents.append(pipeline)
+        from common import Watchdog
+        Watchdog.sync(bool(config.get(Watchdog.KEY, False)))   # the launchd agent follows the key
 
     server = Server(assistant, interfaces, agents, integration_monitor, running_as_testsuite)
     server.startup_announcement = startup_announcement

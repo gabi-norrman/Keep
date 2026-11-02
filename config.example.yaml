@@ -261,6 +261,14 @@ is_developer: false
 # changes on a restart_server. Read at each fire, no restart needed.
 nightly_update: true
 
+# Relaunch the server when it dies. true: a launchd agent of your account opens "Keep Autostart.app"
+# (the login item) every 5 minutes, and its script starts the server through start.sh unless one is
+# up or starting — the same thing that happens at login, between logins too. false: a dead server
+# stays down until the next login or a start by hand. Applied when set and at each start, no restart
+# needed; the agent shows under System Settings > General > Login Items & Extensions, where it can
+# be switched off. It tells nobody that the server died (issue #127 has the external heartbeat).
+watchdog: false
+
 # Beta usage telemetry (assistant/Telemetry.py). An install is known by `id` alone, a random
 # value the server writes here on its first start; the events are one per user turn, one per
 # assistant turn (with the names of the commands it ran, never their arguments), one per

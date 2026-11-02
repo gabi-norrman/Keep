@@ -20,7 +20,7 @@ from assistant import Destinations, FirstRun, MemoryFile, Procedures, VoiceCandi
 from common.logging import trace, info, note, error, fine
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, JobPullRequest
 from common.ConfigManager import ConfigManager
-from common import ConfigSchema, ConfigStore, FullDiskAccess
+from common import ConfigSchema, ConfigStore, FullDiskAccess, Watchdog
 from common.ConfigStore import ConfigStoreError
 from common.DevelopmentConfig import PREPEND_USER_QUERY_KEY
 from assistant.ChannelProfile import AUTONOMOUS
@@ -1453,6 +1453,8 @@ class Commands:
     IS_DEVELOPER_HINT = ("Read at each prompt build: the self_improvement toolkit is offered (true) or "
                          "withdrawn (false) from the next turn on, no restart needed.")
     PREPEND_HINT = "Read at each request: in force from the next request on, no restart needed."
+    WATCHDOG_HINT = ("Applied now: the launchd agent that relaunches a dead server is installed (true) "
+                     "or removed (false), no restart needed.")
 
     @classmethod
     def _restart_hint(cls, key: str) -> str:
@@ -1460,6 +1462,8 @@ class Commands:
             return cls.DEVELOPER_RELEASE_HINT
         if key == "is_developer":
             return cls.IS_DEVELOPER_HINT
+        if key == Watchdog.KEY:
+            return cls.WATCHDOG_HINT
         if key == PREPEND_USER_QUERY_KEY:
             return cls.PREPEND_HINT
         if key == cls.AI_FOOTER_KEY:
@@ -1498,6 +1502,10 @@ class Commands:
         except ConfigStoreError as e:
             info(f"config_set: refused — {e}")
             return f"config_set failed: {e}"
+        if key == Watchdog.KEY:
+            failure = Watchdog.sync(bool(ConfigManager().get(Watchdog.KEY, False)))
+            if failure:
+                return f"{key} saved, but it could not be applied: {failure}"
         if interface and ConfigStore.interface_enabled(interface) == before:
             # Telegram and console are on by default: writing "true" for them changes nothing,
             # and the restart hint would send the LLM off to restart_server for no reason.
