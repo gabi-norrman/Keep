@@ -3292,6 +3292,16 @@ class TestNamesPhotosLearnedLater:
         assert all(r["redescribe"] for r in rows)
 
     @pytest.mark.unit
+    def test_a_face_of_a_person_photos_left_unnamed_adds_no_blank_name(self, tmp_path):
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        path = str(tmp_path / "Photos.sqlite")
+        self._photos_library(path, [(1, "U-GROUP", "G-GROUP", 100.0)],
+                             [(1, "Frances"), (1, ""), (1, "Charlotte"), (1, None)])
+        with patch('integrations.photos.PhotoProcessor.PHOTOS_SQLITE_PATH', path):
+            persons = PhotoProcessor._get_persons("U-GROUP")
+        assert sorted(p.strip() for p in persons.split(",")) == ["Charlotte", "Frances"]
+
+    @pytest.mark.unit
     def test_an_asset_is_offered_once_per_process_unless_the_backend_refused_it(self, tmp_path, floxy_db):
         assets = [(1, "U-A", "G-A", 100.0), (2, "U-B", "G-B", 200.0)]
         faces = [(1, "Frances"), (2, "Frances")]
