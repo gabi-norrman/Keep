@@ -507,6 +507,7 @@ class AutonomousActionManager:
             command_processor = CommandProcessor(self.test_mode)
             command_processor.turn_started = started
             stray = self._run_commands(result, command_processor)
+            result = self._kept_of_a_cut_reply(result, command_processor)
 
             # Wait for queued commands to be picked up and processed
             # (prevents race where we check flags before the worker thread sets them)
@@ -579,15 +580,16 @@ class AutonomousActionManager:
                 result = self._think(messages, follow_up=True)
                 trace(f"Follow-up thought for {time.time() - start_time:.2f}s")
                 fine(f"Follow-up raw result:\n {result}")
+
+                # The same processor reads every round of the check: the command cap is per reply.
+                command_processor.start_new_reply()
+                stray = self._run_commands(result, command_processor)
+                result = self._kept_of_a_cut_reply(result, command_processor)
                 self._save_autonomous_result_to_history(result)
                 follow_up_saved = True
 
                 # Add assistant response to messages for potential next iteration
                 messages.append({"role": "assistant", "content": result})
-
-                # The same processor reads every round of the check: the command cap is per reply.
-                command_processor.start_new_reply()
-                stray = self._run_commands(result, command_processor)
 
                 # Wait for queued follow-up commands to be picked up and processed
                 self._join_queue_with_timeout(command_processor.command_queue, timeout=30)
@@ -624,6 +626,20 @@ class AutonomousActionManager:
         if remaining:
             stray += remaining
         return stray
+
+    @staticmethod
+    def _kept_of_a_cut_reply(result: str, command_processor) -> str:
+        """What the check keeps of a reply the processor stopped reading (its command cap, or
+        a `<function_results>` block the model wrote itself): the calls that ran and nothing
+        after them, as the chat path stores a cut turn. The whole reply went on to the next
+        round and into the history before (2026-10-25: a 16k-token loop of invented results,
+        resent every round), so the model read its own invented results back."""
+        if command_processor.reply_cut is not True:   # `is`: the tests' mock processors
+            return result
+        kept = command_processor.kept_of(result)
+        info(f"Autonomous reply cut after {command_processor.commands_dispatched} command(s) — the next "
+             f"round and the history keep those calls only ({len(result)} → {len(kept)} chars)")
+        return kept
 
     # The sentinel the check answers with when there is nothing to say and nothing to do. A
     # model is bad at outputting nothing at all, so the instruction asks for this one word

@@ -1708,32 +1708,6 @@ class TestThinkingTagInstruction:
         assert "<thinking>" in AutonomousActionManager._action_prompt(Mock())
 
 
-class TestWatchToolkitInTheInstruction:
-    """The prompt documents `load_watch` alone; the commands that stamp or rewrite an item are
-    the watch toolkit's. A check with due items must use them, so its instruction carries the
-    reference — only then, and under the due items."""
-
-    def test_carried_under_the_due_items_when_an_item_is_due(self):
-        from assistant.commands import Toolkits
-        WatchList.save("water-meter", "read it", "2026-10-11 17:00", every="1h")
-        with patch.object(WatchList, "due_for_poll", return_value=True):
-            prompt = AutonomousActionManager._action_prompt(Mock())
-        reference = Toolkits.render(Toolkits.by_name("watch"))
-        assert reference in prompt
-        assert prompt.index("water-meter") < prompt.index(reference) < prompt.index("## Response Format")
-        assert "save_watch(" in reference and "checked_watch(" in reference
-
-    def test_left_out_when_nothing_is_due(self):
-        WatchList.save("water-meter", "read it", "2099-01-01")
-        prompt = AutonomousActionManager._action_prompt(Mock())
-        assert Toolkits_header() not in prompt and "save_watch(name" not in prompt
-
-
-def Toolkits_header() -> str:
-    from assistant.commands import Toolkits
-    return Toolkits.HEADER_PREFIX + "watch"
-
-
     @pytest.mark.parametrize("internal", [True, False])
     def test_activity_check_sends_the_prompt_built_for_its_llm(self, internal):
         """The refusals came from the check itself, not the helper: what reaches a model that
@@ -1819,6 +1793,38 @@ def Toolkits_header() -> str:
         assert llm.think_with_messages.call_count == 2   # the cut round, then the follow-up it earned
         assert not processor.reply_cut and processor.commands_dispatched == 1   # the follow-up's command ran
 
+    def test_a_results_block_the_model_wrote_is_kept_from_the_next_round_and_the_history(self):
+        """The processor stops reading at a <function_results> block the model wrote itself,
+        but the check used to resend the whole reply — invented declarations and all — in the
+        follow-up round and store it tag-stripped (2026-10-25: a 16k-token loop of them). The
+        check keeps the calls that ran and nothing after them, as the chat path does."""
+        from assistant.commands.CommandProcessor import CommandProcessor
+        mgr, llm = make_manager()
+        fabricated = ("turn_on(hall lamp)\n\n<function_results>\n## Commands\n`dim(light: str, level: int)`\n"
+                      "</function_results>\n\ndim(hall lamp, 20)")
+        llm.think_with_messages.side_effect = [fabricated, "NO"]
+        processors = []
+
+        def real_processor(test_mode):
+            processors.append(CommandProcessor(test_suite_mode=True))
+            return processors[-1]
+
+        mgr.test_mode = False
+        try:
+            with patch('assistant.commands.CommandProcessor.CommandProcessor', side_effect=real_processor):
+                mgr.activity_check(prompt="test prompt")
+        finally:
+            mgr.test_mode = True
+            for processor in processors:
+                processor.kill()
+
+        assert llm.think_with_messages.call_count == 2
+        follow_up_messages = llm.think_with_messages.call_args_list[1].args[0]
+        assistant_turns = [m["content"] for m in follow_up_messages if m["role"] == "assistant"]
+        assert assistant_turns[0] == "turn_on(hall lamp)"   # then the "NO" the follow-up answered
+        stored = [c.args[2] for c in mgr.prompt_manager.update_history.call_args_list]
+        assert stored and all("dim(" not in text and "Commands" not in text for text in stored)
+
     def test_the_refusal_fallback_gets_the_same_volatile_tail(self):
         mgr, llm = make_manager()
         llm.think_with_messages.side_effect = LLMRefusalError("refused")
@@ -1863,6 +1869,32 @@ def Toolkits_header() -> str:
 
 
 @pytest.mark.unit
+class TestWatchToolkitInTheInstruction:
+    """The prompt documents `load_watch` alone; the commands that stamp or rewrite an item are
+    the watch toolkit's. A check with due items must use them, so its instruction carries the
+    reference — only then, and under the due items."""
+
+    def test_carried_under_the_due_items_when_an_item_is_due(self):
+        from assistant.commands import Toolkits
+        WatchList.save("water-meter", "read it", "2026-10-11 17:00", every="1h")
+        with patch.object(WatchList, "due_for_poll", return_value=True):
+            prompt = AutonomousActionManager._action_prompt(Mock())
+        reference = Toolkits.render(Toolkits.by_name("watch"))
+        assert reference in prompt
+        assert prompt.index("water-meter") < prompt.index(reference) < prompt.index("## Response Format")
+        assert "save_watch(" in reference and "checked_watch(" in reference
+
+    def test_left_out_when_nothing_is_due(self):
+        WatchList.save("water-meter", "read it", "2099-01-01")
+        prompt = AutonomousActionManager._action_prompt(Mock())
+        assert Toolkits_header() not in prompt and "save_watch(name" not in prompt
+
+
+def Toolkits_header() -> str:
+    from assistant.commands import Toolkits
+    return Toolkits.HEADER_PREFIX + "watch"
+
+
 class TestWatchListInTheInstruction:
     def test_only_an_item_whose_poll_is_due_comes_whole_with_its_cadence_and_stamp(self):
         note = "order 4711 with the courier, " + "tracking page shows no movement yet, " * 4 + "door code needed"
