@@ -445,9 +445,11 @@ class TestWakeAssistant:
             "Marcus": User(id=42, first_name="Marcus"),   # the owner's private chat with the account
         }
 
-        async def say(text, sender_id=123, group="Family", bot=False, name="Alice", reply_to_sender=None):
+        async def say(text, sender_id=123, group="Family", bot=False, name="Alice", reply_to_sender=None,
+                      msg_id=1):
             event = Mock()
             event.message = _dated(_make_msg(sender_id, text, get_sender_name=name), 400.0)
+            event.message.id = msg_id
             if bot:
                 (await event.message.get_sender()).bot = True
             if reply_to_sender is not None:
@@ -463,10 +465,17 @@ class TestWakeAssistant:
             await m._handle_message(event)
             return m.fetch(repr(300.0), backfill=False).entries
 
+        def edit(text, msg_id, sender_id=777, chat_id=-5001):
+            event = Mock()
+            event.message = Mock(id=msg_id, text=text, sender_id=sender_id)
+            event.chat_id = chat_id
+            m._note_bot_edit(event)
+
         with patch('integrations.telegram_feed.TelegramFeedIntegration.config') as cfg, \
                 patch('assistant.Notifier._notifier', fake):
             cfg.get.side_effect = lambda key, default=None: self.CONFIG.get(key, default)
             cfg.get_owner_name.return_value = "Marcus"
+            m.edit = edit
             yield m, say, fake
 
     @pytest.mark.asyncio
@@ -650,6 +659,52 @@ class TestWakeAssistant:
         rows = await say("thanks!")
         fake.receive_chat_message.assert_called_once()
         assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_a_turn_the_chat_layer_refuses_leaves_the_follow_up_rule_armed(self, wake):
+        # Another assistant answered our bot while her reply was still in flight: the chat
+        # layer dropped that turn, and her reply then landed as an edit nobody saw. The owner's
+        # plain message hours later must still count as the one right after hers.
+        m, say, fake = wake
+        await say("Dinner is pasta", sender_id=777, bot=True, name="Keep", msg_id=10)
+        fake.receive_chat_message.return_value = False
+        await say("Pasta again? Try the tacos.", sender_id=888, bot=True, name="Erik's Keep", msg_id=11)
+        fake.receive_chat_message.assert_called_once()
+        fake.receive_chat_message.reset_mock()
+        fake.receive_chat_message.return_value = True
+        rows = await say("Michelle test", sender_id=999, msg_id=12)
+        fake.receive_chat_message.assert_called_once()
+        assert fake.receive_chat_message.call_args.args[2:4] == ("Marcus", "Michelle test") and rows == []
+
+    @pytest.mark.asyncio
+    async def test_her_reply_edited_into_the_draft_bubble_makes_her_the_last_sender_again(self, wake):
+        # Her reply never comes as a new message: she posts a spinner bubble and edits the text
+        # in. Another assistant's placeholder slipped in between, so without the edit the
+        # owner's next message would follow that one, not hers.
+        m, say, fake = wake
+        await say("`█`", sender_id=777, bot=True, name="Keep", msg_id=10)
+        await say("`█`", sender_id=888, bot=True, name="Erik's Keep", msg_id=11)
+        fake.receive_chat_message.assert_not_called()
+        m.edit("Dinner is pasta, 20 minutes to go.", msg_id=10)
+        rows = await say("Michelle test", sender_id=999, msg_id=12)
+        fake.receive_chat_message.assert_called_once()
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_a_reaction_to_her_bubble_or_an_edit_of_an_older_one_moves_nothing(self, wake):
+        # Telethon reports a reaction as an edit with the text unchanged; an older bubble
+        # edited is not the group's latest message either way.
+        m, say, fake = wake
+        await say("Dinner is pasta", sender_id=777, bot=True, name="Keep", msg_id=10)
+        await say("And the table is set.", sender_id=777, bot=True, name="Keep", msg_id=20)
+        await say("great, thanks", sender_id=124, name="Bob", msg_id=21)
+        fake.receive_chat_message.reset_mock()
+        m.edit("And the table is set.", msg_id=20)       # a reaction: same text
+        m.edit("Dinner is pasta — edited", msg_id=10)    # not her latest bubble
+        m.edit("Lunch is pasta", msg_id=20, sender_id=888)   # not her edit at all
+        rows = await say("who set it?", sender_id=125, name="Carol", msg_id=22)
+        fake.receive_chat_message.assert_not_called()
+        assert len(rows) == 1
 
     @pytest.mark.asyncio
     async def test_a_chat_without_a_peer_id_stays_a_context_row(self, wake):

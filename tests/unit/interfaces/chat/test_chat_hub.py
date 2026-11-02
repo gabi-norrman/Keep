@@ -869,12 +869,18 @@ class TestReceiveChatMessage:
 
     def test_the_message_becomes_a_turn_of_that_transport(self, hub, transport):
         seen = []
-        hub.receive = lambda t, m: seen.append((t, m))
+        hub.receive = lambda t, m: seen.append((t, m)) or True
         assert hub.receive_chat_message("TextChat", -5001, "Erik", "Michelle, hi", guest=True,
                                         sender_is_bot=False, chat_name="Family") is True
         (t, m), = seen
         assert t is transport and m.conversation == -5001 and m.sender == "Erik" and m.text == "Michelle, hi"
         assert m.guest is True and m.chat_name == "Family"
+
+    def test_a_message_the_session_drops_is_reported_as_not_taken(self, hub, transport):
+        # The feed keeps its "last sender" bookmark on the bot then: the group never saw this
+        # message answered, so the next one still follows the bot's.
+        hub.receive = lambda t, m: False
+        assert hub.receive_chat_message("TextChat", -5001, "Erik", "me too", guest=True, chat_name="Family") is False
 
     def test_no_transport_for_the_source_drops_it(self, hub):
         hub.receive = lambda t, m: pytest.fail("nothing should be received")

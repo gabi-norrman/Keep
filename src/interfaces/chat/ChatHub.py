@@ -119,9 +119,10 @@ class ChatHub(SingletonMixin):
                 trace(f"Chat session opened: {transport.name} [{conversation}]")
             return session
 
-    def receive(self, transport: ChatTransport, msg: IncomingMessage):
-        """A user action from a transport. Never blocks: the session works on its own thread."""
-        self.session_for(transport, msg.conversation).submit(msg)
+    def receive(self, transport: ChatTransport, msg: IncomingMessage) -> bool:
+        """A user action from a transport. Never blocks: the session works on its own thread.
+        False when the session dropped it on the spot (`ChatSession.submit`)."""
+        return self.session_for(transport, msg.conversation).submit(msg)
 
     def receive_chat_message(self, source: str, conversation: Any, sender: str, text: str, *,
                              guest: bool = False, sender_is_bot: bool = False,
@@ -129,16 +130,19 @@ class ChatHub(SingletonMixin):
         """Notifier: a feed saw *text* in *conversation* of the transport whose source is
         *source* (the owner's Telegram account reading a group the bot is in — the bot itself
         never receives a plain message there). The turn runs as if that transport had received
-        the message, so the reply goes out through it."""
+        the message, so the reply goes out through it. False when it never became a turn: no
+        such transport, or the session dropped it (a guest while a reply is in flight)."""
         transport = next((t for t in self.transports if t.source == source), None)
         if transport is None:
             info(f"No {source} transport is running, a chat message from {sender} in [{conversation}] is dropped")
             return False
         info(f"{transport.name} [{conversation}]: message from {sender} handed over by a feed"
              f"{' (guest)' if guest else ''}{' (bot)' if sender_is_bot else ''}")
-        self.receive(transport, IncomingMessage(conversation=conversation, sender=sender, text=text,
-                                                chat_name=chat_name, guest=guest, sender_is_bot=sender_is_bot))
-        return True
+        taken = self.receive(transport, IncomingMessage(conversation=conversation, sender=sender, text=text,
+                                                        chat_name=chat_name, guest=guest, sender_is_bot=sender_is_bot))
+        if not taken:
+            info(f"{transport.name} [{conversation}]: the message from {sender} was dropped by the session")
+        return taken
 
     def open_conversation(self, query: str) -> bool:
         """A turn the server starts (the first-run brief, the Full Disk Access grant seen):

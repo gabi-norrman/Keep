@@ -396,7 +396,7 @@ class TestIntake:
     def test_a_guest_cannot_run_a_debug_command(self, session, hub, transport):
         assistant = FakeAssistant([Token("Ok"), RoundEnd(), None])
         hub.assistant = assistant
-        session.submit(msg(text="//wipe confirm", chat_name="Family", guest=True))
+        assert session.submit(msg(text="//wipe confirm", chat_name="Family", guest=True)) is False
         assert not session.busy and transport.sent_texts == [] and assistant.requests == []
         assert hub.transcript == []
 
@@ -618,9 +618,9 @@ class TestIntake:
         session.SPINNER_TICK_SECONDS = 0.01
         owner = FakeAssistant([Token("Hel"), (5.0, Token("lo")), RoundEnd(), None])
         hub.assistant = owner
-        session.submit(msg(text="first"))
+        assert session.submit(msg(text="first")) is True
         assert wait_until(lambda: transport.texts == ["Hel"])
-        session.submit(msg(text="Michelle, me too", chat_name="Family", guest=True))
+        assert session.submit(msg(text="Michelle, me too", chat_name="Family", guest=True)) is False
         time.sleep(0.05)
         assert not owner.stream_obj.killed and session.busy
         assert len(owner.requests) == 1

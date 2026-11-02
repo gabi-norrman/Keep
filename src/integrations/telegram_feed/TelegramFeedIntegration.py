@@ -34,6 +34,7 @@ LOGIN_HINT = "sign the account in with telegram_login(phone) from the console ch
 CODE_REUSE_NOTE = ("Asked again within a few minutes, Telegram repeats the same code without sending a new message — "
                    "wait for that one before requesting another.")
 BOT_WAKE_CAP = 6            # wakes by another bot per group per hour: the brake if two assistants loop
+TURN, ROW, REFUSED = "turn", "row", "refused"   # what became of a live group message (_hand_over)
 BOT_WAKE_WINDOW = 3600.0
 
 
@@ -78,6 +79,7 @@ class TelegramFeedIntegration(Integration, Feed):
         self._directory_built: float = 0.0
         self._bot_wakes: dict[int, deque] = {}   # group chat id → times another bot woke the assistant
         self._last_sender: dict[int, int] = {}   # group chat id → sender of the last live message there
+        self._bot_bubbles: dict[int, tuple[int, str]] = {}   # group chat id → the bot's latest bubble (id, text)
 
     def _on_reset(self):
         self.shut_down()
@@ -217,7 +219,11 @@ class TelegramFeedIntegration(Integration, Feed):
         async def on_new_message(event):
             await self._handle_message(event)
 
-        fine("TelegramFeed: event handler registered, listening for messages")
+        @self._client.on(events.MessageEdited)
+        async def on_message_edited(event):
+            self._note_bot_edit(event)
+
+        fine("TelegramFeed: event handlers registered, listening for messages")
 
     async def _catch_up(self, since: float) -> list[FeedEntry]:
         """Messages newer than `since` across the most recent dialogs, newest dialog first;
@@ -347,7 +353,13 @@ class TelegramFeedIntegration(Integration, Feed):
         forget her name and the reply button when they answer her): handed to the chat layer
         as a turn of that group, so the reply goes out as the bot. The bot never receives such a
         message itself — in privacy mode Telegram delivers it only replies to its own bubbles —
-        but the owner's account sees the whole group, other bots included. True when handed over."""
+        but the owner's account sees the whole group, other bots included. True when handed over.
+
+        The "right after the bot" rule reads `_last_sender`, the sender of the group's latest
+        message. Every message moves it but one the chat layer refused (a guest's while a reply
+        was in flight): the group never saw that one answered, so the next message still
+        follows the bot. The bot's reply itself lands as an edit of her draft bubble, which
+        `_note_bot_edit` records."""
         from telethon import utils
         try:
             chat_id = utils.get_peer_id(chat)   # the Bot API id: -<id> for a group, -100<id> for a supergroup
@@ -361,21 +373,32 @@ class TelegramFeedIntegration(Integration, Feed):
             return False
         bot_id = self._bot_user_id()
         follows_bot = bot_id is not None and self._last_sender.get(chat_id) == bot_id
-        self._last_sender[chat_id] = msg.sender_id
+        outcome = await self._hand_over(msg, chat, chat_id, ids, bot_id, follows_bot)
+        if outcome == REFUSED:
+            trace(f"TelegramFeed: [{chat_id}] the refused turn from {msg.sender_id} leaves the last sender as is")
+        else:
+            self._last_sender[chat_id] = msg.sender_id
+        return outcome == TURN
+
+    async def _hand_over(self, msg, chat, chat_id: int, ids: list[int], bot_id: Optional[int],
+                         follows_bot: bool) -> str:
+        """`_wake_assistant`'s decision: TURN when handed over, ROW when the message stays a
+        context row (or nothing at all), REFUSED when the chat layer would not take the turn."""
         text = msg.text or ""
         if bot_id is not None and msg.sender_id == bot_id:
+            self._bot_bubbles[chat_id] = (msg.id, text)
             trace("TelegramFeed: the bot's own message in the group — not woken by herself")
-            return False
+            return ROW
         if not text:
-            return False
+            return ROW
         if self._is_draft_placeholder(msg):
             trace(f"TelegramFeed: {text!r} from {msg.sender_id} in '{getattr(chat, 'title', chat_id)}' is a "
                   f"streaming draft's placeholder (another assistant's bubble, its text arrives as an edit the "
                   f"feed never sees) — not woken")
-            return False
+            return ROW
         named = self._names_assistant(text)
         if not named and not follows_bot:
-            return False
+            return ROW
         how = "named the assistant" if named else "wrote right after the bot's own message"
         is_from_me = msg.sender_id == self._me.id
         if is_from_me:
@@ -389,19 +412,41 @@ class TelegramFeedIntegration(Integration, Feed):
             if is_prompt_injection(text):
                 info(f"TelegramFeed: {sender_name} {how} in a group, but the message looks like a prompt "
                      f"injection — not woken")
-                return False
+                return ROW
         if not is_bot and await self._replies_to_the_bot(msg, bot_id):
             trace(f"TelegramFeed: {sender_name} replies to the bot's own bubble — the bot receives it itself, "
                   f"not woken twice")
-            return False
+            return ROW
         if is_bot and not self._bot_wake_allowed(chat_id):
             info(f"TelegramFeed: {sender_name} (a bot) {how}, but bots woke her {BOT_WAKE_CAP} times this "
                  f"hour in [{chat_id}] — not woken (loop brake)")
-            return False
+            return ROW
         info(f"TelegramFeed: {sender_name}{' (bot)' if is_bot else ''}{' (guest)' if guest else ''} {how} "
              f"in '{getattr(chat, 'title', None)}' [{chat_id}], waking her")
-        return notifier().receive_chat_message(SOURCE_TELEGRAM, chat_id, sender_name, text, guest=guest,
-                                               sender_is_bot=is_bot, chat_name=getattr(chat, 'title', None))
+        taken = notifier().receive_chat_message(SOURCE_TELEGRAM, chat_id, sender_name, text, guest=guest,
+                                                sender_is_bot=is_bot, chat_name=getattr(chat, 'title', None))
+        return TURN if taken else REFUSED
+
+    def _note_bot_edit(self, event):
+        """The bot's reply is an edit of the draft bubble she posted first, so it never comes
+        through `NewMessage`: an edit that changes the text of her latest bubble in a group makes
+        her the group's last sender again. A reaction to the bubble arrives as an edit too, with
+        the text unchanged, and moves nothing."""
+        msg = event.message
+        bot_id = self._bot_user_id()
+        if bot_id is None or getattr(msg, 'sender_id', None) != bot_id:
+            return
+        chat_id = event.chat_id
+        bubble = self._bot_bubbles.get(chat_id)
+        if bubble is None or bubble[0] != msg.id:
+            trace(f"TelegramFeed: [{chat_id}] the bot edited a bubble that is not her latest one — ignored")
+            return
+        text = msg.text or ""
+        if text == bubble[1]:
+            return
+        self._bot_bubbles[chat_id] = (msg.id, text)
+        self._last_sender[chat_id] = bot_id
+        trace(f"TelegramFeed: [{chat_id}] the bot's bubble got its text — she is the last sender again")
 
     # --- sending ------------------------------------------------------------------------------
 

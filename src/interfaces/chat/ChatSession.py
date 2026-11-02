@@ -149,20 +149,22 @@ class ChatSession:
 
     # --- intake ---------------------------------------------------------------------------
 
-    def submit(self, msg: IncomingMessage):
-        """Hand the user's message to the assistant; never blocks the caller."""
+    def submit(self, msg: IncomingMessage) -> bool:
+        """Hand the user's message to the assistant; never blocks the caller. False when the
+        message is dropped on the spot (a guest's turn while a reply is in flight, a guest's
+        debug command): the feed that handed it over then knows the group never heard it answered."""
         if msg.chat_name and msg.chat_name != self._chat_name:
             info(f"{self._log_prefix()}: the chat is the group '{msg.chat_name}'")
             self._chat_name = msg.chat_name
         if msg.kind == KIND_PHOTO:
             self._add_to_album(msg)
-            return
+            return True
         if msg.kind == KIND_TEXT and DebugCommands.is_command(msg.text):
             if msg.guest:
                 info(f"{self._log_prefix()}: debug command {msg.text} from {msg.sender}, a guest — refused")
-                return
+                return False
             self._debug_command(msg)
-            return
+            return True
         with self._lock:
             album = self._album
         if msg.kind == KIND_TEXT and album is not None:
@@ -175,9 +177,9 @@ class ChatSession:
                 self._reset_album_timer(album, self.PHOTO_DEBOUNCE_SECONDS)
             info(f"{self._log_prefix()} text folded into photo batch: {msg.text}")
             self._hub.record(self._transport, self._conversation, "user", msg.text)
-            return
+            return True
         self._cancel_album()
-        self._start(msg)
+        return self._start(msg)
 
     def open(self, query: str):
         """A turn the server starts in this conversation (the first-run brief): *query*
@@ -213,7 +215,8 @@ class ChatSession:
             info(f"{self._log_prefix()}: cancelling the in-flight reply")
             request.cancel()
 
-    def _start(self, msg: IncomingMessage, images: Optional[list] = None):
+    def _start(self, msg: IncomingMessage, images: Optional[list] = None) -> bool:
+        """False when the message is dropped instead of starting (or waiting for) a turn."""
         request = _Request()
         with self._lock:
             previous = self._request
@@ -222,7 +225,7 @@ class ChatSession:
                 # refuses the guest's request, but only once this conversation's previous one
                 # is cancelled — too late for the owner. Dropped without a word, like there.
                 info(f"{self._log_prefix()}: a reply is in flight, the guest turn from {msg.sender} is dropped")
-                return
+                return False
             if previous is not None and msg.kind == KIND_REACTION:
                 # A reaction to the bubble still being written must not kill the reply: a killed
                 # request writes no history, and the retyped question that justifies losing it
@@ -232,13 +235,14 @@ class ChatSession:
                 self._deferred = msg
                 info(f"{self._log_prefix()}: a reply is in flight, the reaction {msg.reaction} from {msg.sender} "
                      f"waits for it" + (f" (replacing the {replaced.reaction} held before)" if replaced else ""))
-                return
+                return True
             self._request = request
         if previous is not None:
             info(f"{self._log_prefix()}: cancelling previous response (new message arrived)")
             previous.cancel()
         threading.Thread(target=self._serve, args=(request, msg, images),
                          name=f"{self._transport.name}Chat", daemon=True).start()
+        return True
 
     # --- albums ---------------------------------------------------------------------------
 
