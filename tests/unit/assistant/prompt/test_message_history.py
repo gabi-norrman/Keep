@@ -619,6 +619,110 @@ class TestFreshRowsDeferTheTrim:
 
 
 # ===========================================================================
+# TestBulkyRowsCollapseBeforeTheTrim
+# ===========================================================================
+
+class TestBulkyRowsCollapseBeforeTheTrim:
+    """Over the high watermark the trim collapses the bulky command rows (a toolkit
+    reference, a procedure) to a one-line stub before it drops any row: one command brings a
+    reference back, the user's answer of a minute ago nothing does (#135)."""
+
+    @staticmethod
+    def _section(high=4_000, low=2_000, ceiling=6_000, collapse=1_000, fresh=900):
+        section = _make_history_section()
+        section.trim_high_bytes = high
+        section.trim_low_bytes = low
+        section.trim_ceiling_bytes = ceiling
+        section.trim_collapse_bytes = collapse
+        section.trim_fresh_seconds = fresh
+        return section
+
+    @staticmethod
+    def _turns(n, age_of_newest, size=60, prefix="m"):
+        start = time.time() - age_of_newest - n
+        return [{"role": "Marcus", "content": f"{prefix}{i:03d}" + "x" * size, "timestamp": start + i,
+                 "source": None, "location": None} for i in range(n)]
+
+    @staticmethod
+    def _command_row(lead, age, size, source=None):
+        return {"role": "command", "content": f"result: \n{lead}\n" + "z" * size,
+                "timestamp": time.time() - age, "source": source, "location": None}
+
+    @staticmethod
+    def _joined(section, window="text"):
+        return "\n".join(m["content"] for m in section.get_history_messages(window=window))
+
+    def test_a_stale_bulky_row_collapses_and_the_conversation_stays_whole(self):
+        section = self._section()
+        turns = self._turns(10, age_of_newest=2_000)
+        section.history = turns[:5] + [self._command_row("# Procedure: ha-ui", age=2_010, size=4_000)] + turns[5:]
+        joined = self._joined(section)
+        assert "zzzz" not in joined and "# Procedure: ha-ui\nzzz" not in joined, "the body is gone"
+        assert 'began "# Procedure: ha-ui"' in joined and "3.9KB" in joined, "the stub says what stood there"
+        assert all(f"m{i:03d}" in joined for i in range(10)), "every conversation row survives"
+        assert section._trim_cutoff == 0.0, "nothing was dropped"
+
+    def test_at_the_ceiling_the_fresh_bulky_row_goes_not_the_fresh_exchange(self):
+        """The #135 shape: a decision 30 s old, then a huge procedure result that pushes the
+        window past the ceiling. The procedure collapses; the decision stays."""
+        section = self._section()
+        exchange = self._turns(3, age_of_newest=30, prefix="d")
+        section.history = (self._turns(20, age_of_newest=2_000) + exchange
+                           + [self._command_row("# Procedure: ha-ui", age=20, size=6_000)])
+        joined = self._joined(section)
+        assert all(f"d{i:03d}" in joined for i in range(3))
+        assert "zzzz" not in joined
+
+    def test_under_the_ceiling_a_fresh_bulky_row_stays_whole(self):
+        section = self._section()
+        section.history = self._turns(20, age_of_newest=2_000) + [self._command_row("# Procedure: p", age=20, size=3_000)]
+        joined = self._joined(section)
+        assert "zzzz" in joined, "the task is still using it"
+        assert section._trim_cutoff > 0.0, "the stale turns ahead of it went instead"
+
+    def test_the_collapse_stops_at_the_low_watermark_newest_rows_last(self):
+        section = self._section(low=2_500)
+        section.history = (self._turns(4, age_of_newest=3_000)
+                           + [self._command_row("# Procedure: old", age=2_500, size=3_000)]
+                           + self._turns(4, age_of_newest=2_000, prefix="n")
+                           + [self._command_row("# Procedure: new", age=1_500, size=1_500)])
+        joined = self._joined(section)
+        assert 'began "# Procedure: old"' in joined and "# Procedure: old\nzzz" not in joined
+        assert "# Procedure: new\nzzz" in joined, "the newer one was not needed to reach low"
+
+    def test_a_collapse_is_sticky_so_the_window_holds_still(self):
+        section = self._section()
+        section.history = self._turns(6, age_of_newest=2_000) + [self._command_row("# Procedure: p", age=1_990, size=4_000)]
+        first = section.get_history_messages()
+        section.history.append({"role": "Marcus", "content": "and now?", "timestamp": time.time(),
+                                "source": None, "location": None})
+        second = section.get_history_messages()
+        assert "zzzz" not in second[0]["content"]
+        assert second[0]["content"].startswith(first[0]["content"]), "the earlier window is a byte prefix"
+
+    def test_a_collapsed_toolkit_reference_is_evicted_not_loaded(self):
+        """The row is in the window but its text is gone: the eviction stub names the
+        toolkit, loaded_toolkits leaves it out (the preloader sends it again), and a delta
+        note of its carried section is not rendered against data the LLM no longer holds."""
+        section = self._section()
+        reference = self._command_row("# Toolkit: home", age=2_010, size=4_000)
+        section.history = self._turns(10, age_of_newest=2_000) + [reference]
+        section.add_transient_entry("system", "home moved on", time.time() - 1_000, source="prompt_delta", section="home")
+        msgs = section.get_history_messages()
+        joined = "\n".join(m["content"] for m in msgs)
+        assert "# Toolkit: home\nzzz" not in joined and "zzzz" not in joined
+        assert msgs[0]["content"].startswith("System (") and "home" in msgs[0]["content"].split("\n")[0]
+        assert section.loaded_toolkits() == {}
+        assert "home moved on" not in joined
+
+    def test_a_small_command_row_is_never_collapsed(self):
+        section = self._section()
+        section.history = self._turns(30, age_of_newest=2_000) + [self._command_row("result row", age=1_990, size=200)]
+        joined = self._joined(section)
+        assert "result row\nzzz" in joined
+
+
+# ===========================================================================
 # TestLoadSaveHistory
 # ===========================================================================
 
