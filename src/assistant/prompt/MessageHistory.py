@@ -127,7 +127,13 @@ class MessageHistory:
         self._trim_cutoff = 0.0
         # Timestamps of the `command` rows a trim collapsed to a stub (TRIM_COLLAPSE_BYTES).
         self._collapsed: set[float] = set()
-        self._deferred_trim_at = 0    # window size whose trim was last deferred, so the deferral logs once
+        # The TUI renders the window many times a second and nothing changes between renders,
+        # so the trim's "nothing to do" traces log once per state: the window size whose trim
+        # was last deferred, the size the collapse pass last looked at, the preloaded names
+        # a trim last evicted.
+        self._deferred_trim_at = 0
+        self._collapse_checked_at = 0
+        self._preloaded_evicted: set[str] = set()
         # Section keys whose prompt-delta notes a trim evicted. The notes are the only
         # thing telling the LLM the section moved on from the system prompt's baseline, so
         # PromptManager drains this set before every send and puts one fresh note back.
@@ -177,6 +183,7 @@ class MessageHistory:
         self.transient_entries = []
         self._trim_cutoff = 0.0
         self._collapsed = set()
+        self._preloaded_evicted = set()
         self._load_history()
         self.wipes += 1
         info(f"MessageHistory: wiped today's history ({deleted} rows), {len(self.history)} older entries remain")
@@ -432,7 +439,9 @@ class MessageHistory:
         the low watermark, and its size. A row younger than trim_fresh_seconds stays whole
         while the window is under the ceiling. The collapse is remembered (_collapsed)."""
         now = time.time()
-        collapsed = []
+        report = total != self._collapse_checked_at
+        self._collapse_checked_at = total
+        collapsed, whole = [], []
         for i, (entry, role, content) in enumerate(kept):
             if total <= self.trim_low_bytes:
                 break
@@ -443,8 +452,7 @@ class MessageHistory:
                 continue
             age = now - entry["timestamp"]
             if age < self.trim_fresh_seconds and total <= self.trim_ceiling_bytes:
-                trace(f"MessageHistory: a {size / 1024:.1f}KB command row of {age / 60:.1f}m stays whole — "
-                      f"younger than {self.trim_fresh_seconds // 60}m and the window is under the ceiling")
+                whole.append(f"{size / 1024:.1f}KB of {age / 60:.1f}m")
                 continue
             self._collapsed.add(entry["timestamp"])
             stub_text = self._collapsed_text(entry)
@@ -455,7 +463,10 @@ class MessageHistory:
             info(f"MessageHistory: window over {self.trim_high_bytes // 1024}KB — collapsed {len(collapsed)} bulky "
                  f"command row(s) to a stub before dropping anything: {', '.join(collapsed)}; "
                  f"window now {total / 1024:.1f}KB")
-        else:
+        elif report and whole:
+            trace(f"MessageHistory: {len(whole)} bulky command row(s) stay whole ahead of the trim — younger "
+                  f"than {self.trim_fresh_seconds // 60}m and the window is under the ceiling: {', '.join(whole)}")
+        elif report:
             trace("MessageHistory: no bulky command row to collapse ahead of the trim")
         return kept, total
 
@@ -518,9 +529,12 @@ class MessageHistory:
                     preloaded.add(name)
                     continue
                 evicted[name] = max(evicted.get(name, 0.0), entry["timestamp"])
-        if preloaded - set(evicted):
-            trace(f"MessageHistory: trim evicted the preloaded reference(s) of "
-                  f"{', '.join(sorted(preloaded - set(evicted)))} — the preloader brings them back, no stub")
+        preloaded -= set(evicted)
+        if preloaded != self._preloaded_evicted:
+            self._preloaded_evicted = preloaded
+            if preloaded:
+                trace(f"MessageHistory: trim evicted the preloaded reference(s) of "
+                      f"{', '.join(sorted(preloaded))} — the preloader brings them back, no stub")
         if evicted:
             names = sorted(set(names) | set(evicted))
         timestamp = max(evicted.values()) if evicted else (stub["timestamp"] if stub else 0.0)
