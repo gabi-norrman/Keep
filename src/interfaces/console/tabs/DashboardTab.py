@@ -7,8 +7,9 @@ from .TabView import TabView, CONTENT_TOP
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
 from interfaces.console.framework.TextWidth import clip, display_width, fit
-from interfaces.console.widgets import Board, Tile
+from interfaces.console.widgets import Board, ChartImage, Tile
 from interfaces.console.widgets.Board import MeterRow
+from interfaces.console.widgets.ChartImage import Bar, ChartPicture, Rule, Segment
 from interfaces.console.widgets.FeedStrip import SHORT_NAMES, SYMBOL_FAILED, SYMBOL_PAUSED, SYMBOL_RUNNING, format_eta
 from common.GpuMonitor import GpuMonitor
 from common.AnthropicCostMonitor import AnthropicCostMonitor
@@ -52,6 +53,11 @@ class DashboardTab(TabView):
     resource meters and prompt sections. Everything sits in flat tiles — a title strip over a
     tinted body — on a three-column grid (four for the status row).
 
+    On a terminal that shows pictures a chart's plot is a picture (`ChartImage`, one
+    `ChartPicture` per chart, redrawn in place as its data moves); the title strip, the axis
+    labels and the legend stay text. Elsewhere, and while a chart has nothing to show, the
+    plot is drawn in block characters.
+
     The samplers behind the charts run only while the tab shows (`on_activate` / `on_deactivate`);
     the log scan behind the per-day cache chart is the exception — a startup-and-daily job
     that starts with the console and runs whether the tab shows or not."""
@@ -66,6 +72,7 @@ class DashboardTab(TabView):
         self._frame = 0
         self._statuses: List[dict] = []
         self._cards: List[Tuple[int, int, int, int]] = []
+        self._chart_pictures: Dict[str, ChartPicture] = {}
 
         self.device_util = 0
         self.tiler_util = 0
@@ -154,6 +161,12 @@ class DashboardTab(TabView):
 
     def handle_input(self, key: str) -> bool:
         return False
+
+    def _chart_picture(self, name: str) -> ChartPicture:
+        found = self._chart_pictures.get(name)
+        if found is None:
+            found = self._chart_pictures[name] = ChartPicture(name)
+        return found
 
     def on_activate(self):
         self._monitor.start()
@@ -476,7 +489,10 @@ class DashboardTab(TabView):
         # The bad guide wins the row when both thresholds land on it
         self._draw_columns(screen, chart_x, chart_y, chart_w, chart_h, self.temp_history, max_value,
                            lambda v: self._temp_zone(v)[0],
-                           guides={0: Theme.COLOR_GRID, warn_row: warn_guide, bad_row: bad_guide})
+                           guides={0: Theme.COLOR_GRID, warn_row: warn_guide, bad_row: bad_guide},
+                           rules=[(0.0, Theme.COLOR_GRID), (self.TEMP_WARN_C / max_value, warn_guide),
+                                  (self.TEMP_BAD_C / max_value, bad_guide)],
+                           picture="CPU Temp")
 
     Y_AXIS_W = 5
 
@@ -484,7 +500,8 @@ class DashboardTab(TabView):
 
     def _draw_columns(self, screen: TUIScreen, chart_x: int, chart_y: int, chart_w: int, chart_h: int,
                       history, max_value: float, color_for: Callable[[float], Color],
-                      guides: Optional[Dict[int, Color]] = None, colors: Optional[Sequence[Color]] = None):
+                      guides: Optional[Dict[int, Color]] = None, colors: Optional[Sequence[Color]] = None,
+                      rules: Sequence[Rule] = (), picture: str = ""):
         """One column per value, the newest at the right, each bar shading up from its colour's
         deep companion to the colour itself — reached at the height of the tallest column on
         show, so a quiet chart keeps its colour. The shading never runs faster than the whole
@@ -496,11 +513,21 @@ class DashboardTab(TabView):
         (aligned with `history`); `guides` maps a chart row to the colour of a dashed line
         drawn across the empty part of the chart.
         A full cell is never drawn over the ground, so the seams Terminal.app leaves between
-        cells show the bar's colour."""
+        cells show the bar's colour.
+        With `picture` (the chart's name) on a screen that shows pictures, the columns are
+        the chart's picture instead, with `rules` — (fraction of `max_value`, colour) — as
+        its dashed lines; a chart with no column above zero stays characters."""
         data = list(history)
         own_colors = list(colors) if colors is not None else [None] * len(data)
         if len(data) > chart_w:
             data, own_colors = data[-chart_w:], own_colors[-chart_w:]
+        if picture and screen.graphics and any(value > 0 for value in data):
+            shown = [own or color_for(value) for value, own in zip(data, own_colors)]
+            image = self._chart_picture(picture).update(
+                chart_w, chart_h, (data, shown, max_value, list(rules)),
+                lambda: ChartImage.columns(data, shown, max_value, chart_w, chart_h, rules, self.SHADE_MIN_ROWS))
+            screen.image(chart_x, chart_y, image, chart_w, chart_h)
+            return
         padding = chart_w - len(data)
         data = [0.0] * padding + data
         own_colors = [None] * padding + own_colors
@@ -574,7 +601,9 @@ class DashboardTab(TabView):
         screen.reset_color()
 
         self._draw_columns(screen, chart_x, chart_y, chart_w, chart_h, history, max_value, lambda _: fg,
-                           guides={row: Theme.COLOR_GRID for row in rows}, colors=colors)
+                           guides={row: Theme.COLOR_GRID for row in rows}, colors=colors,
+                           rules=[(i / self.Y_TICKS, Theme.COLOR_GRID) for i in range(self.Y_TICKS + 1)],
+                           picture=label)
         if not history:
             note = "no samples yet"
             screen.set_color(Theme.COLOR_DIM)
@@ -912,6 +941,10 @@ class DashboardTab(TabView):
         # Round up to a nice number
         nice_max = self._nice_ceil(max_cost)
 
+        bars = self._cost_bars(display_date_strs, workspaces, daily_costs, nice_max, bar_w, gap,
+                               chart_w=x + box_w - 1 - chart_x)
+        pictured = screen.graphics and bool(bars)
+
         num_labels = 4
         tick_rows = self._tick_rows(chart_h, num_labels)
         for i, row in enumerate(tick_rows):
@@ -920,96 +953,103 @@ class DashboardTab(TabView):
             label_str = f"{label_val:.0f}" if label_val >= 1 or label_val == 0 else f"{label_val:.1f}"
             screen.set_color(Theme.COLOR_DIM)
             screen.write_at(x + 2, label_y, label_str.rjust(y_axis_w - 1))
-            screen.set_color(Theme.COLOR_GRID)
-            screen.write_at(chart_x, label_y, '┄' * chart_w)
+            if not pictured:     # the picture has the rules in it, and covers these cells
+                screen.set_color(Theme.COLOR_GRID)
+                screen.write_at(chart_x, label_y, '┄' * chart_w)
         screen.reset_color()
 
         # Draw bars
-        for day_idx in range(num_days):
-            col_x = chart_x + day_idx * (bar_w + gap)
-            if col_x + bar_w > x + box_w - 1:
-                break
+        if pictured:
+            rules = [(i / num_labels, Theme.COLOR_GRID) for i in range(num_labels + 1)]
+            image = self._chart_picture("Anthropic API Cost").update(
+                chart_w, chart_h, (bars, rules), lambda: ChartImage.render(bars, chart_w, chart_h, rules))
+            screen.image(chart_x, chart_y, image, chart_w, chart_h)
+        else:
+            for day_idx in range(num_days):
+                col_x = chart_x + day_idx * (bar_w + gap)
+                if col_x + bar_w > x + box_w - 1:
+                    break
 
-            day_data = daily_costs.get(display_date_strs[day_idx], {})
+                day_data = daily_costs.get(display_date_strs[day_idx], {})
 
-            # Build segments for this day (bottom to top)
-            segments = []
-            for mi, w in enumerate(workspaces):
-                cost = day_data.get(w, 0)
-                if cost > 0:
-                    segments.append((mi, cost))
+                # Build segments for this day (bottom to top)
+                segments = []
+                for mi, w in enumerate(workspaces):
+                    cost = day_data.get(w, 0)
+                    if cost > 0:
+                        segments.append((mi, cost))
 
-            if not segments:
-                continue
+                if not segments:
+                    continue
 
-            # Compute fractional row heights per segment
-            row_positions = []
-            cursor = 0.0
-            for mi, cost in segments:
-                rows = (cost / nice_max) * chart_h
-                row_positions.append((mi, cursor, cursor + rows))
-                cursor += rows
+                # Compute fractional row heights per segment
+                row_positions = []
+                cursor = 0.0
+                for mi, cost in segments:
+                    rows = (cost / nice_max) * chart_h
+                    row_positions.append((mi, cursor, cursor + rows))
+                    cursor += rows
 
-            cost_max_row = max(1, chart_h - 1)
-            for row in range(chart_h):
-                cell_y = chart_y + chart_h - 1 - row
-                grad_t = row / cost_max_row
-                row_bottom = float(row)
-                row_top = float(row + 1)
+                cost_max_row = max(1, chart_h - 1)
+                for row in range(chart_h):
+                    cell_y = chart_y + chart_h - 1 - row
+                    grad_t = row / cost_max_row
+                    row_bottom = float(row)
+                    row_top = float(row + 1)
 
-                overlapping = []
-                for mi, seg_start, seg_end in row_positions:
-                    if seg_end <= row_bottom or seg_start >= row_top:
-                        continue
-                    overlapping.append((mi, max(seg_start, row_bottom), min(seg_end, row_top)))
+                    overlapping = []
+                    for mi, seg_start, seg_end in row_positions:
+                        if seg_end <= row_bottom or seg_start >= row_top:
+                            continue
+                        overlapping.append((mi, max(seg_start, row_bottom), min(seg_end, row_top)))
 
-                if not overlapping:
-                    continue    # the rule drawn under the bars stays
-                elif len(overlapping) == 1:
-                    mi, cs, ce = overlapping[0]
-                    color = self._workspace_shade(mi, grad_t)
-                    fill = ce - cs
-                    if fill >= 0.99:
-                        char = '\u2588'
-                        fg_color = color
-                        bg_color = color
+                    if not overlapping:
+                        continue    # the rule drawn under the bars stays
+                    elif len(overlapping) == 1:
+                        mi, cs, ce = overlapping[0]
+                        color = self._workspace_shade(mi, grad_t)
+                        fill = ce - cs
+                        if fill >= 0.99:
+                            char = '\u2588'
+                            fg_color = color
+                            bg_color = color
+                        else:
+                            block_idx = max(1, min(7, round(fill * 8)))
+                            char = self.BLOCK_CHARS[block_idx]
+                            fg_color = color
+                            bg_color = Theme.COLOR_PANEL_BG
                     else:
-                        block_idx = max(1, min(7, round(fill * 8)))
-                        char = self.BLOCK_CHARS[block_idx]
-                        fg_color = color
-                        bg_color = Theme.COLOR_PANEL_BG
-                else:
-                    overlapping.sort(key=lambda s: s[1])
-                    mi_low = overlapping[0][0]
-                    mi_high = overlapping[-1][0]
-                    color_low = self._workspace_shade(mi_low, grad_t)
-                    color_high = self._workspace_shade(mi_high, grad_t)
-                    fill_low = overlapping[0][2] - row_bottom
-                    fill_total = overlapping[-1][2] - row_bottom
-                    if fill_total >= 0.99:
-                        # Row fully covered: render as dual-color block (lower seg color in
-                        # the bottom portion via fg, upper seg color in the rest via bg).
-                        block_idx = max(1, min(7, round(fill_low * 8)))
-                        char = self.BLOCK_CHARS[block_idx]
-                        fg_color = color_low
-                        bg_color = color_high
-                    else:
-                        # Segments don't reach row_top — render only the covered portion
-                        # against the panel background. Without this, bg_color = color_high
-                        # would paint the empty upper portion of the cell and visually
-                        # inflate the bar to a full row.
-                        block_idx = max(1, min(7, round(fill_total * 8)))
-                        char = self.BLOCK_CHARS[block_idx]
-                        fill_high = fill_total - fill_low
-                        fg_color = color_low if fill_low >= fill_high else color_high
-                        bg_color = Theme.COLOR_PANEL_BG
+                        overlapping.sort(key=lambda s: s[1])
+                        mi_low = overlapping[0][0]
+                        mi_high = overlapping[-1][0]
+                        color_low = self._workspace_shade(mi_low, grad_t)
+                        color_high = self._workspace_shade(mi_high, grad_t)
+                        fill_low = overlapping[0][2] - row_bottom
+                        fill_total = overlapping[-1][2] - row_bottom
+                        if fill_total >= 0.99:
+                            # Row fully covered: render as dual-color block (lower seg color in
+                            # the bottom portion via fg, upper seg color in the rest via bg).
+                            block_idx = max(1, min(7, round(fill_low * 8)))
+                            char = self.BLOCK_CHARS[block_idx]
+                            fg_color = color_low
+                            bg_color = color_high
+                        else:
+                            # Segments don't reach row_top — render only the covered portion
+                            # against the panel background. Without this, bg_color = color_high
+                            # would paint the empty upper portion of the cell and visually
+                            # inflate the bar to a full row.
+                            block_idx = max(1, min(7, round(fill_total * 8)))
+                            char = self.BLOCK_CHARS[block_idx]
+                            fill_high = fill_total - fill_low
+                            fg_color = color_low if fill_low >= fill_high else color_high
+                            bg_color = Theme.COLOR_PANEL_BG
 
-                screen.set_color(fg_color)
-                screen.set_bg_color(bg_color)
-                for bw in range(bar_w):
-                    screen.write_at(col_x + bw, cell_y, char)
+                    screen.set_color(fg_color)
+                    screen.set_bg_color(bg_color)
+                    for bw in range(bar_w):
+                        screen.write_at(col_x + bw, cell_y, char)
 
-            screen.reset_color()
+                screen.reset_color()
 
         label_y = chart_y + chart_h
         label_step = max(1, num_days // 5, math.ceil(8 / (bar_w + gap)))
@@ -1043,6 +1083,27 @@ class DashboardTab(TabView):
             screen.write_at(lx + 2, legend_y, f" {name}")
             lx += entry_w + self.LEGEND_GAP
         screen.reset_color()
+
+    def _cost_bars(self, date_strs: Sequence[str], workspaces: Sequence[str], daily_costs: dict, nice_max: float,
+                   bar_w: int, gap: int, chart_w: int) -> List[Bar]:
+        """The cost chart's days as stacked bars for its picture: a segment per workspace that
+        spent anything, bottom to top in workspace order, the days that fit in `chart_w` cells."""
+        bars = []
+        for day_idx, date_str in enumerate(date_strs):
+            x0 = day_idx * (bar_w + gap)
+            if x0 + bar_w > chart_w:
+                break
+            day_data = daily_costs.get(date_str, {})
+            segments, cursor = [], 0.0
+            for mi, w in enumerate(workspaces):
+                cost = day_data.get(w, 0)
+                if cost > 0:
+                    segments.append(Segment(cursor, cursor + cost / nice_max,
+                                            self.WORKSPACE_COLORS[mi % len(self.WORKSPACE_COLORS)]))
+                    cursor += cost / nice_max
+            if segments:
+                bars.append(Bar(x0, x0 + bar_w, segments))
+        return bars
 
     LEGEND_KEY_W = 3            # "━━ " before each name
     LEGEND_GAP = 3

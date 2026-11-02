@@ -112,8 +112,10 @@ class TUIScreen:
     speaks the kitty graphics protocol — a picture is sent once (`Pictures.transmit`, re-sent
     when its box changes) and placed over blank cells; the frame carries a placement only
     when it is new or moved, and a delete when one has gone, so a still picture costs nothing
-    per frame. `MAX_TRANSMITTED` pictures stay in the terminal for scrolling back; the oldest
-    off-screen one is freed past that. Without `graphics` a picture is half-block pixels in
+    per frame. A picture whose `revision` has moved on (`Picture.replace`) is taken down, sent
+    again under its id and placed again, all in one synchronized frame. `MAX_TRANSMITTED`
+    pictures stay in the terminal for scrolling back; the oldest off-screen one is freed past
+    that. Without `graphics` a picture is half-block pixels in
     the cells themselves (`Pixels.blit`), through the ordinary diff."""
 
     MAX_TRANSMITTED = 32
@@ -185,7 +187,7 @@ class TUIScreen:
         self.hyperlinks = False   # set by TUIServer from the client's terminal: True where a click opens an OSC 8 link
         self._placements: Dict[int, Tuple[Picture, Placement]] = {}   # the pictures of the frame being drawn, by image id
         self._shown: Dict[int, Placement] = {}                        # the pictures on the terminal's screen
-        self._transmitted: Dict[int, Tuple[int, int]] = {}            # the boxes the terminal holds pictures for, oldest first
+        self._transmitted: Dict[int, Tuple[int, int, int]] = {}       # (cols, rows, revision) the terminal holds each picture as, oldest first
 
     def resize(self, width: int, height: int):
         """Resize buffers and reset state."""
@@ -379,20 +381,25 @@ class TUIScreen:
         down and kept for a later frame, until MAX_TRANSMITTED others have come after it."""
         before: List[str] = []
         after: List[str] = []
+        def held(picture: Picture, placement: Placement) -> Tuple[int, int, int]:
+            return placement[2], placement[3], picture.revision
+
         for image_id, shown in self._shown.items():
             placed = self._placements.get(image_id)
-            if placed is None or placed[1] != shown:
+            if placed is None or placed[1] != shown or self._transmitted.get(image_id) != held(*placed):
                 before.append(Pictures.delete_placements(image_id))
         for image_id, (picture, placement) in self._placements.items():
-            if self._shown.get(image_id) == placement:
+            sent = self._transmitted.get(image_id)
+            if self._shown.get(image_id) == placement and sent == held(picture, placement):
                 continue
             x, y, cols, rows, first_row, visible = placement
             png, png_size = picture.png(cols, rows)
-            if self._transmitted.get(image_id) != (cols, rows):
+            if sent != held(picture, placement):
                 after.append(Pictures.transmit(image_id, png))
-                trace(f"TUIScreen: sending picture {image_id} ({len(png) // 1024} kB) for a {cols}x{rows} box")
+                if sent is None or sent[:2] != (cols, rows):   # a redrawn chart is re-sent every refresh: not worth a line
+                    trace(f"TUIScreen: sending picture {image_id} ({len(png) // 1024} kB) for a {cols}x{rows} box")
             self._transmitted.pop(image_id, None)
-            self._transmitted[image_id] = (cols, rows)
+            self._transmitted[image_id] = held(picture, placement)
             after.append(f"{self.CSI}{y};{x}H" + Pictures.place(image_id, cols, rows, png_size, first_row, visible))
         for image_id in [i for i in self._transmitted if i not in self._placements][
                 :max(0, len(self._transmitted) - self.MAX_TRANSMITTED)]:

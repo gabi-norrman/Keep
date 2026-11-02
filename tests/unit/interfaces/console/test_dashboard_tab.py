@@ -15,6 +15,7 @@ CHART_X, CHART_Y, CHART_W, CHART_H = 2, 2, 5, 4
 def make_tab():
     tab = DashboardTab.__new__(DashboardTab)   # no monitors: the drawing helpers need none
     tab._cards = []
+    tab._chart_pictures = {}
     return tab
 
 
@@ -578,3 +579,50 @@ class TestCostLegendNames:
         names = DashboardTab._legend_names(self.WORKSPACES, 10)
         assert min(len(n) for n in names) == len("Bob")
         assert all(len(n) >= DashboardTab.LEGEND_MIN_NAME for n in names if n != "Bob")
+
+
+@pytest.mark.unit
+class TestChartPictures:
+    def draw(self, tab, history, graphics=True):
+        screen = TUIScreen(20, 10)
+        screen.graphics = graphics
+        tab._draw_columns(screen, CHART_X, CHART_Y, CHART_W, CHART_H, history, 100.0, lambda v: C,
+                          picture="GPU Usage")
+        return screen
+
+    def test_on_a_graphics_terminal_the_columns_are_one_picture_over_the_plot(self):
+        screen = self.draw(make_tab(), [50.0, 100.0])
+        [(picture, placement)] = screen._placements.values()
+        assert placement[:4] == (CHART_X, CHART_Y, CHART_W, CHART_H)
+        assert all(column(screen, CHART_X + i) == " " * CHART_H for i in range(CHART_W))
+
+    def test_a_chart_keeps_its_picture_from_frame_to_frame(self):
+        tab = make_tab()
+        first = next(iter(self.draw(tab, [50.0])._placements))
+        assert next(iter(self.draw(tab, [50.0, 60.0])._placements)) == first
+
+    def test_without_graphics_the_columns_stay_characters(self):
+        screen = self.draw(make_tab(), [100.0], graphics=False)
+        assert screen._placements == {}
+        assert column(screen, CHART_X + CHART_W - 1) == "▄" * CHART_H
+
+    def test_a_chart_with_nothing_above_zero_stays_characters(self):
+        screen = self.draw(make_tab(), [0.0, 0.0])
+        assert screen._placements == {}
+
+
+@pytest.mark.unit
+class TestCostBars:
+    def test_a_day_stacks_its_workspaces_in_order_and_skips_the_idle_ones(self):
+        tab = make_tab()
+        costs = {"d1": {"a": 2.0, "b": 0.0, "c": 3.0}}
+        [bar] = tab._cost_bars(["d1"], ["a", "b", "c"], costs, 10.0, bar_w=2, gap=1, chart_w=40)
+        assert (bar.x0, bar.x1) == (0, 2)
+        assert [(s.start, s.end) for s in bar.segments] == [(0.0, 0.2), (0.2, 0.5)]
+        assert [s.color for s in bar.segments] == [DashboardTab.WORKSPACE_COLORS[0], DashboardTab.WORKSPACE_COLORS[2]]
+
+    def test_days_without_cost_are_gaps_and_days_past_the_width_are_left_out(self):
+        tab = make_tab()
+        costs = {"d1": {"a": 1.0}, "d3": {"a": 1.0}, "d4": {"a": 1.0}}
+        bars = tab._cost_bars(["d1", "d2", "d3", "d4"], ["a"], costs, 10.0, bar_w=1, gap=1, chart_w=5)
+        assert [bar.x0 for bar in bars] == [0, 4]

@@ -36,7 +36,8 @@ Box = Tuple[int, int]
 
 class Picture:
     """One decoded image and its renderings for the cell boxes it has been drawn in. `id` is
-    the protocol's image id, unique for the process."""
+    the protocol's image id, unique for the process; `revision` counts the times `replace`
+    has swapped the image, which the screen sends again under the same id."""
 
     _ids = itertools.count(1)
     _lock = threading.Lock()
@@ -46,6 +47,7 @@ class Picture:
             self.id = next(Picture._ids)
         self.image = image
         self.size_bytes = size_bytes
+        self.revision = 0
         self._png: Dict[Box, Tuple[bytes, Tuple[int, int]]] = {}
         self._pixels: Dict[Box, np.ndarray] = {}
 
@@ -65,6 +67,13 @@ class Picture:
         picture = cls(image, len(data))
         trace(f"Picture {picture.id}: {image.width}x{image.height} from {len(data)} bytes")
         return picture
+
+    def replace(self, image: Image.Image):
+        """Show `image` from now on, under the same id: a chart redrawn with new data."""
+        self.image = image
+        self.revision += 1
+        self._png.clear()
+        self._pixels.clear()
 
     @property
     def width(self) -> int:
@@ -96,8 +105,9 @@ class Picture:
             out = io.BytesIO()
             resized.save(out, format="PNG", compress_level=PNG_COMPRESS_LEVEL)
             cached = self._png[box] = (out.getvalue(), resized.size)
-            trace(f"Picture {self.id}: {resized.width}x{resized.height} PNG of {len(cached[0]) // 1024} kB "
-                  f"for a {cols}x{rows} box")
+            if self.revision == 0:      # a chart re-encodes on every redraw: only its first image is worth a line
+                trace(f"Picture {self.id}: {resized.width}x{resized.height} PNG of {len(cached[0]) // 1024} kB "
+                      f"for a {cols}x{rows} box")
         return cached
 
     def pixels(self, cols: int, rows: int) -> np.ndarray:

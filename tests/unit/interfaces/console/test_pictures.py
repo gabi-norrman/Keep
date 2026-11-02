@@ -156,6 +156,28 @@ class TestScreenImages:
         assert commands == [f"a=d,d=i,i={picture.id},q=2",
                             f"a=p,i={picture.id},c=36,r=11,C=1,q=2,x=0,y=17,w=300,h=183"]
 
+    def test_a_replaced_picture_is_taken_down_sent_again_under_its_id_and_placed(self, screen):
+        picture = Picture.decode(jpeg(300, 200))
+        screen.clear_buffer()
+        screen.image(3, 2, picture, 36, 12)
+        screen.get_frame(False)
+        picture.replace(Image.new("RGB", (300, 200), (10, 200, 10)))
+        screen.clear_buffer()
+        screen.image(3, 2, picture, 36, 12)
+        commands = apcs(screen.get_frame(False))
+        assert commands[0] == f"a=d,d=i,i={picture.id},q=2"
+        assert any(c.startswith(f"a=t,t=d,f=100,i={picture.id}") for c in commands)
+        assert commands[-1] == f"a=p,i={picture.id},c=36,r=12,C=1,q=2"
+        screen.clear_buffer()
+        screen.image(3, 2, picture, 36, 12)
+        assert screen.get_frame(False) == b""
+
+    def test_replace_drops_the_renderings_of_the_old_image(self):
+        picture = Picture.decode(jpeg(40, 20))
+        before = picture.png(4, 2)[0]
+        picture.replace(Image.new("RGB", (40, 20), (10, 200, 10)))
+        assert picture.png(4, 2)[0] != before
+
     def test_a_picture_that_went_is_taken_down_but_kept_for_later(self, screen):
         picture = Picture.decode(jpeg(300, 200))
         screen.clear_buffer()
