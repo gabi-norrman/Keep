@@ -30,6 +30,8 @@ from assistant.SystemNote import system_note
 from assistant.integration.Integration import Integration
 from common import ConfigStore
 from common.ConfigManager import config
+from common.DraftPlaceholder import (COMMAND_LABEL, COMMANDS_LABEL, PREFILL_LABEL, SPINNER_FRAMES_BRAILLE,
+                                     SPINNER_FRAMES_C64, THINKING_LABEL)
 from common.Mp4Metadata import mp4_display_size, mp4_duration_seconds, mp4_is_rotated
 from common.VideoRotation import bake_rotation
 from common.logging import error, fine, info, note, trace
@@ -65,14 +67,16 @@ class TelegramDraft:
     EDIT_INTERVAL_SLOW_SECONDS = 1.5
     EDIT_FAST_WINDOW_SECONDS = 30.0
     PROGRESS_INDICATOR_STYLE = "c64"
-    _SPINNER_FRAMES_BRAILLE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    # off-frame must be a visible non-whitespace char — Telegram rejects whitespace-only
-    # edits ("Text must be non-empty"); light-shade gives an authentic C64 fade-blink
-    _SPINNER_FRAMES_C64 = ["<code>█</code>", "<code>░</code>"]
+    # The frames and labels are common.DraftPlaceholder's, so the Telegram feed can tell another
+    # Keep's draft bubble from a message. The off-frame must be a visible non-whitespace char —
+    # Telegram rejects whitespace-only edits ("Text must be non-empty"); light-shade gives an
+    # authentic C64 fade-blink.
+    _SPINNER_FRAMES_BRAILLE = list(SPINNER_FRAMES_BRAILLE)
+    _SPINNER_FRAMES_C64 = [f"<code>{frame}</code>" for frame in SPINNER_FRAMES_C64]
     SPINNER_FRAMES = _SPINNER_FRAMES_C64 if PROGRESS_INDICATOR_STYLE == "c64" else _SPINNER_FRAMES_BRAILLE
-    THINKING_PREFIX = "Thinking…\n"
-    COMMAND_PREFIX = "Running command…\n"
-    COMMANDS_PREFIX = "Running commands…\n"
+    THINKING_PREFIX = f"{THINKING_LABEL}…\n"
+    COMMAND_PREFIX = f"{COMMAND_LABEL}…\n"
+    COMMANDS_PREFIX = f"{COMMANDS_LABEL}…\n"
 
     def __init__(self, transport: "TelegramTransport", chat_id: int):
         self._transport = transport
@@ -97,7 +101,7 @@ class TelegramDraft:
         if n <= 0:
             return cls.THINKING_PREFIX
         detail = cls._format_token_count(n) + (f" · {describe_rate(rate)}" if rate > 0 else "")
-        return f"Thinking ({detail})…\n"
+        return f"{THINKING_LABEL} ({detail})…\n"
 
     def _edit_interval(self) -> float:
         # Fast edits early for snappy feedback; once the response runs long, slow down to
@@ -122,7 +126,7 @@ class TelegramDraft:
             display = f"{self._thinking_label(progress.output_tokens, progress.rate)} {frame}"
         elif progress.phase == PHASE_PREFILL:
             detail = f"{progress.prefill:.0f}%" + (f" · {describe_rate(progress.rate)}" if progress.rate > 0 else "")
-            display = f"Prefilling ({detail})…\n {frame}"
+            display = f"{PREFILL_LABEL} ({detail})…\n {frame}"
         elif progress.phase == PHASE_COMMANDS:
             display = f"{self.COMMANDS_PREFIX if progress.commands > 1 else self.COMMAND_PREFIX} {frame}"
         else:
