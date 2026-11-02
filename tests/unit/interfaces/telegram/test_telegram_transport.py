@@ -1980,3 +1980,58 @@ class TestGroupsAndGuests:
         hub.resolve_approval.return_value = True
         await transport._handle_callback_query(self._tap(-5001, user_id=42), MagicMock())
         hub.resolve_approval.assert_called_once_with("abc123", "approve", "erik")
+
+
+@pytest.mark.unit
+class TestSplitPaste:
+    """A paste over Telegram's limit arrives as consecutive texts; the bot joins them (#133)."""
+    @property
+    def LONG(self):
+        return "x" * self.cls.SPLIT_PASTE_MIN_CHARS
+
+    @property
+    def cls(self):
+        from interfaces.telegram.TelegramTransport import TelegramTransport
+        return TelegramTransport
+
+    @pytest.mark.asyncio
+    async def test_a_long_text_is_held_and_joined_with_the_next(self, transport, hub):
+        await transport._handle_message(_update(message_id=10, text=self.LONG), MagicMock())
+        hub.receive.assert_not_called()
+        await transport._handle_message(_update(message_id=11, text="| tail |"), MagicMock())
+        msg = received(hub)
+        assert msg.text == self.LONG + "\n| tail |" and msg.message_id == 10
+        assert transport._split_pastes == {}
+
+    @pytest.mark.asyncio
+    async def test_a_part_cut_at_the_limit_itself_joins_without_a_break(self, transport, hub):
+        full = "y" * self.cls.max_message_length
+        await transport._handle_message(_update(message_id=10, text=full), MagicMock())
+        await transport._handle_message(_update(message_id=11, text="end"), MagicMock())
+        assert received(hub).text == full + "end"
+
+    @pytest.mark.asyncio
+    async def test_three_parts_become_one_message(self, transport, hub):
+        for i, text in enumerate((self.LONG, self.LONG, "end")):
+            await transport._handle_message(_update(message_id=10 + i, text=text), MagicMock())
+        assert received(hub).text == self.LONG + "\n" + self.LONG + "\nend"
+
+    @pytest.mark.asyncio
+    async def test_a_long_text_alone_goes_on_after_the_wait(self, transport, hub):
+        with patch.object(self.cls, "SPLIT_PASTE_WAIT_SECONDS", 0.01):
+            await transport._handle_message(_update(message_id=10, text=self.LONG), MagicMock())
+            hub.receive.assert_not_called()
+            await asyncio.sleep(0.04)
+        assert received(hub).text == self.LONG and transport._split_pastes == {}
+
+    @pytest.mark.asyncio
+    async def test_a_text_from_another_sender_does_not_join(self, transport, hub):
+        await transport._handle_message(_update(message_id=10, text=self.LONG, first_name="Anna"), MagicMock())
+        await transport._handle_message(_update(message_id=11, text="hi", first_name="Bob", user_id=8), MagicMock())
+        texts = [call.args[1].text for call in hub.receive.call_args_list]
+        assert texts == [self.LONG, "hi"]
+
+    @pytest.mark.asyncio
+    async def test_a_short_text_is_not_held(self, transport, hub):
+        await transport._handle_message(_update(text="x" * (self.cls.SPLIT_PASTE_MIN_CHARS - 1)), MagicMock())
+        received(hub)

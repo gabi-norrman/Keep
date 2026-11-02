@@ -15,6 +15,7 @@ worker threads; `_call()` runs a coroutine on the loop and waits, `_schedule()` 
 forgets. Handlers on the loop only ever `hub.receive()` (never blocks) and fire-and-forget.
 """
 import asyncio
+from dataclasses import replace
 import threading
 import time
 from html import escape
@@ -191,6 +192,13 @@ class TelegramTransport(Integration, ChatTransport):
 
     source = SOURCE_TELEGRAM
     max_message_length = 4096
+    # A paste longer than the limit reaches the bot as consecutive messages a few milliseconds
+    # apart. The clients cut near the limit at a line or word, so the first part is seldom
+    # exactly 4096 characters: a text at least this long is held this long for a next text
+    # from the same sender, and the parts go to the hub as one message instead of the second
+    # cancelling the first's turn (#133).
+    SPLIT_PASTE_MIN_CHARS = 3 * max_message_length // 4
+    SPLIT_PASTE_WAIT_SECONDS = 1.5
     lang = "en"
 
     # Longest we're willing to sleep out a flood ban to deliver a final message.
@@ -243,6 +251,8 @@ class TelegramTransport(Integration, ChatTransport):
         # chat_id → (message_id, token, title HTML) of the open secret prompt: while present,
         # the next text in that chat is an answer, not chat.
         self._secret_prompts: dict[int, tuple[int, str, str]] = {}
+        # chat_id → (the held first part, its release timer); only touched on the bot loop.
+        self._split_pastes: dict[int, tuple[IncomingMessage, asyncio.TimerHandle]] = {}
         # The group destinations this bot registered (post_message by group title or id).
         self._group_destinations: list[str] = []
 
@@ -768,11 +778,52 @@ class TelegramTransport(Integration, ChatTransport):
         self._track_message_text(chat_id, update.message.message_id, user_text)
         guest, is_bot = self._sender_facts(update)
         info(f"Telegram [{chat_id}]: {user_text}" + (" (guest)" if guest else "") + (" (bot)" if is_bot else ""))
-        await self._receive(update, IncomingMessage(
+        msg = IncomingMessage(
             conversation=chat_id, sender=self._sender_name(update), message_id=update.message.message_id,
             kind=KIND_TEXT, text=user_text, reply_to_text=self._reply_to_text(update),
             reply_to_bot=self._replies_to_bot(update), chat_name=self._chat_name(update),
-            guest=guest, sender_is_bot=is_bot))
+            guest=guest, sender_is_bot=is_bot)
+        held = self._split_pastes.pop(chat_id, None)
+        if held is not None:
+            first, timer = held
+            timer.cancel()
+            if first.sender == msg.sender:
+                msg = self._join_split_paste(first, msg)
+            else:
+                info(f"Telegram [{chat_id}]: the next text is from {msg.sender}, not {first.sender}: "
+                     f"the held text goes on its own")
+                await self._receive(update, first)
+        if len(user_text) >= self.SPLIT_PASTE_MIN_CHARS:
+            # The part just received may be the last one: a short part ends the paste, a long
+            # one may be followed by more.
+            self._hold_split_paste(update, msg)
+            return
+        await self._receive(update, msg)
+
+    def _hold_split_paste(self, update, msg: IncomingMessage):
+        chat_id = msg.conversation
+        loop = asyncio.get_running_loop()
+        timer = loop.call_later(self.SPLIT_PASTE_WAIT_SECONDS,
+                                lambda: loop.create_task(self._release_split_paste(update, chat_id)))
+        self._split_pastes[chat_id] = (msg, timer)
+        info(f"Telegram [{chat_id}]: a {len(msg.text)}-character text may be the first part of a split paste, "
+             f"held {self.SPLIT_PASTE_WAIT_SECONDS} s for the rest")
+
+    async def _release_split_paste(self, update, chat_id: int):
+        held = self._split_pastes.pop(chat_id, None)
+        if held is None:
+            return
+        info(f"Telegram [{chat_id}]: no further part came, the held text goes on its own")
+        await self._receive(update, held[0])
+
+    def _join_split_paste(self, first: IncomingMessage, second: IncomingMessage) -> IncomingMessage:
+        """The two parts as the one message the owner pasted: the first part's identity (its
+        message id and the reply it answers) with the texts joined — straight on when the client
+        cut at the limit itself, on a new line when it cut at a line or word."""
+        glue = "" if len(first.text) == self.max_message_length else "\n"
+        info(f"Telegram [{first.conversation}]: the next text joins the held part into one "
+             f"{len(first.text) + len(glue) + len(second.text)}-character message")
+        return replace(first, text=first.text + glue + second.text)
 
     async def _take_secret_reply(self, update, chat_id: int):
         """The text is the answer to the open secret prompt: hand it to the hub (off the loop —
