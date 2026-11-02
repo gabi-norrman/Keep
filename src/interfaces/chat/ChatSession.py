@@ -27,9 +27,9 @@ from common.logging import error, info, note, trace
 from common.vault.Redactor import Redactor
 from common.vault.Vault import Vault
 from interfaces.chat import MediaIntake, RichText
-from interfaces.chat.ChatTypes import (KIND_PHOTO, KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE,
-                                       PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING, PHASE_WAITING, IncomingMessage,
-                                       Progress)
+from interfaces.chat.ChatTypes import (KIND_DOCUMENT, KIND_PHOTO, KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE,
+                                       PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING, PHASE_WAITING, Attachment,
+                                       IncomingMessage, Progress)
 
 
 class _Request:
@@ -395,6 +395,12 @@ class ChatSession:
             user_text = f"[User sent a {label}] {description}"
             if msg.text:
                 user_text += f"\nCaption: {msg.text}"
+        elif msg.kind == KIND_DOCUMENT:
+            # The file's text is the body; the log and the transcript carry the headline only,
+            # a PDF's text runs to a hundred thousand characters.
+            att = (msg.attachments[0] if msg.attachments
+                   else Attachment(b"", "", KIND_DOCUMENT, undelivered="the transport brought no file"))
+            user_text, shown = MediaIntake.document_text(att, msg.text)
         else:
             user_text = msg.text
 
@@ -406,8 +412,9 @@ class ChatSession:
             return None
 
         query = self._with_reply_context(msg.reply_to_text, user_text)
-        info(f"{prefix}: {user_text}")
-        self._hub.record(self._transport, self._conversation, "user", user_text)
+        shown = shown if msg.kind == KIND_DOCUMENT else user_text
+        info(f"{prefix}: {shown}")
+        self._hub.record(self._transport, self._conversation, "user", shown)
         return query, images, False
 
     NO_TAIL = 'reply with "NO" if there is nothing to say.'

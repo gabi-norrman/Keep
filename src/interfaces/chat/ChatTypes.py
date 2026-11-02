@@ -6,6 +6,7 @@ KIND_TEXT = "text"
 KIND_PHOTO = "photo"
 KIND_VOICE = "voice"
 KIND_VIDEO = "video"
+KIND_DOCUMENT = "document"
 KIND_REACTION = "reaction"
 
 
@@ -14,9 +15,14 @@ class Attachment:
     """A file the user sent, already downloaded by the transport."""
     data: bytes
     mime_type: str
-    # "photo" | "voice" | "video" | "video_note" | "animation" — drives the intake and the
-    # wording the assistant sees ("[User sent a video note] …").
+    # "photo" | "voice" | "video" | "video_note" | "animation" | "document" — drives the intake
+    # and the wording the assistant sees ("[User sent a video note] …").
     kind: str = KIND_PHOTO
+    name: str = ""          # the file name a document was sent under
+    size: int = 0           # the size the platform reported, for a file that was not downloaded
+    # Why the transport did not bring the file (over the download cap): `data` is empty then
+    # and the assistant is told instead of the user, so the message still gets an answer.
+    undelivered: str = ""
 
     @property
     def label(self) -> str:
