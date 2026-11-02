@@ -156,6 +156,8 @@ class TestGenericEscapeSequences:
 class TestKeyNames:
     @pytest.mark.parametrize("seq, name", [
         ("\x1b[A", "up"), ("\x1b[1;2D", "shift_left"), ("\x1b[5~", "pageup"),
+        # the SS3 arrows Terminal.app sends for the mouse wheel on the alternate screen (#122)
+        ("\x1bOA", "up"), ("\x1bOB", "down"), ("\x1bOC", "right"), ("\x1bOD", "left"),
         ("\x1b[H", "home"), ("\x1b[1~", "home"), ("\x1bOH", "home"),
         ("\x1b[F", "end"), ("\x1b[4~", "end"), ("\x1bOF", "end"),
         ("\x1b[3~", "delete"),

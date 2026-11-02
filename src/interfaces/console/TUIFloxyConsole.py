@@ -280,6 +280,9 @@ class TUIFloxyConsole(AssistantObserver):
 
     _NAMED_KEYS = {
         '\x1b[A': 'up', '\x1b[B': 'down', '\x1b[C': 'right', '\x1b[D': 'left',
+        # The SS3 form: application cursor mode, and the mouse wheel as Terminal.app's
+        # "Scroll alternate screen" sends it (#122)
+        '\x1bOA': 'up', '\x1bOB': 'down', '\x1bOC': 'right', '\x1bOD': 'left',
         '\x1b[5~': 'pageup', '\x1b[6~': 'pagedown',
         # Shift+arrows: tab navigation (see TabNavigator), else page up/down
         '\x1b[1;2A': 'shift_up', '\x1b[1;2B': 'shift_down', '\x1b[1;2D': 'shift_left', '\x1b[1;2C': 'shift_right',
