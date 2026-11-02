@@ -21,6 +21,10 @@ a sensor, people leaving or arriving), its conditions (weekdays, …), whether i
 accessories grouped by setting ("off: A, B; on 30 %: C"). Without a name it lists them all; with one (part of a name)
 it also spells out the named scenes they run. The section's "Automations" lists them a line each; call this for what
 an automation actually does. Reading only — Keep cannot create, change, enable or disable automations.
+Keep itself verifies the runs of the timed automations: the accessories a run sets are read 3 minutes before it fires
+and again a few minutes after, and only a deviation reaches you — a system turn naming the accessory, what the run set,
+what it reports, the state before the run and HomeClaw's log of it. A run where everything took is a log line and
+nothing more, so there is nothing for a watch item to check.
 
 Every command but the scene sends the change and waits for the accessory to confirm it; the reply says when the
 accessory reports something else. Pass `dry_run` as `dry_run` — `homekit_cover("A1B2C3D4", 40, "dry_run")` — to

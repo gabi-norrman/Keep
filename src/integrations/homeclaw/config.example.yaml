@@ -16,3 +16,11 @@ homeclaw:
   # Characteristics whose changes homekit_events leaves out of the event log it reads — the
   # sensor readings and light tweaks that change all day. Remove one to have its changes listed.
   event_skip: [current_temperature, current_humidity, battery_level, color_temperature, hue, saturation, brightness]
+  # The timed automations (a clock time, sunrise/sunset with an offset — the latter needs location.home)
+  # are verified in code: the accessories a run sets are read 3 minutes before it fires and again
+  # verify_after_seconds after, and only an accessory that does not report what the run set reaches the
+  # assistant, as a system turn with the before/after states and the app's log of it. No watch item
+  # is needed for that. The wait must outlast the retry of whatever drives the lamps (a Home Assistant
+  # automation retrying after 90 s). false turns the check off.
+  verify_automations: true
+  verify_after_seconds: 180

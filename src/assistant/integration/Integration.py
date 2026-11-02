@@ -169,6 +169,13 @@ class Integration(SingletonMixin, ABC):
         """Error message from the most recent failure, or None if last check passed."""
         return self._last_error
 
+    def start(self) -> None:
+        """Begins the integration's own background work, a thread of its own: the monitor runs
+        it right after registration and again on every restart, in place included, so what
+        runs is replaced, and `_on_reset` is where it stops. Nothing by default. A Feed's
+        thread is FeedRunner's, started by the feed hook instead of this."""
+        pass
+
     def needs_2fa(self) -> bool:
         """Return True if this integration requires 2FA before it can operate.
         Must be lightweight — only inspect local state, never trigger 2FA emails."""

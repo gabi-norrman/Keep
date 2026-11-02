@@ -8,6 +8,8 @@ targets and the Index the commands resolve against. Every write is one `control`
 verify, a zone's addressed by its Valve service's UUID; a dry run asks the app to validate
 the same request without acting. A thermostat target outside `homeclaw.thermostat_range` is
 refused here, since the app validates the format, not the range.
+`start` runs the AutomationVerifier of HomeClawVerifier, the before/after check of the timed
+automations' runs, which wakes the assistant only on a deviation (issue #110).
 
 Not a Feed yet: `events` already turns the app's log into FeedEntry rows, so making it one —
 the changes poured into the history as they happen — is adding the base class, a cursor over
@@ -25,6 +27,7 @@ from common.ConfigManager import config
 from common.logging import info, trace
 from .HomeClawAutomations import is_hidden, render_detail, render_summary
 from .HomeClawClient import HomeClawClient, HomeClawError, HomeClawUnavailable
+from .HomeClawVerifier import DEFAULT_SETTLE_SECONDS, AutomationVerifier
 from .HomeClawModel import (
     COVER, DEFAULT_BRIDGE_FILTERS, GARAGE, IRRIGATION, SWITCHED, THERMOSTAT, Held, Index, Target, Unresolved,
     build_targets, event_entry, excluded, real_scenes, render, zones_of)
@@ -78,9 +81,26 @@ class HomeClawIntegration(Integration):
         self._by_accessory: dict[str, list[Target]] = {}
         self.held = Held()      # the section's rounded-and-held readings, across refreshes
         self._left_out: set[str] = set()        # accessory UUIDs excluded at the last refresh
+        self._verifier: Optional[AutomationVerifier] = None
 
     def _on_reset(self):
+        self._stop_verifier()
         self._client = None
+
+    def start(self):
+        """Begins the automation verifier (HomeClawVerifier) unless `homeclaw.verify_automations`
+        is off; a verifier already running (a restart in place) is replaced."""
+        self._stop_verifier()
+        if not config.get("homeclaw.verify_automations", True):
+            info("HomeClaw: the automation verifier is off (homeclaw.verify_automations)")
+            return
+        self._verifier = AutomationVerifier(self, int(config.get("homeclaw.verify_after_seconds", DEFAULT_SETTLE_SECONDS)))
+        self._verifier.start()
+
+    def _stop_verifier(self):
+        if self._verifier is not None:
+            self._verifier.stop()
+            self._verifier = None
 
     @property
     def name(self) -> str:

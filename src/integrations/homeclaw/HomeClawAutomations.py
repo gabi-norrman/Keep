@@ -46,7 +46,7 @@ def condition_text(condition: dict) -> str:
     return " ".join(parts) or str(condition.get("type") or "condition")
 
 
-def _value_text(characteristic: str, value) -> Optional[str]:
+def value_text(characteristic: str, value) -> Optional[str]:
     value = str(value).strip()
     if characteristic == "power":
         return "on" if value.lower() in ("1", "true", "on") else "off"
@@ -77,7 +77,7 @@ def actions_text(actions: list[dict]) -> str:
     for action in actions:
         key = str(action.get("accessory_id") or action.get("accessory") or "?")
         name = str(action.get("accessory") or key)
-        text = _value_text(str(action.get("characteristic") or ""), action.get("value"))
+        text = value_text(str(action.get("characteristic") or ""), action.get("value"))
         _, parts = per_accessory.setdefault(key, (name, []))
         if text not in parts:
             parts.append(text)

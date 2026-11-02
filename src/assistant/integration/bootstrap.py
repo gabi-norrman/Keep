@@ -29,7 +29,9 @@ def _integration_modules():
 
 
 def discover_integrations():
-    """Register every Integration subclass found in the integrations package; returns the monitor."""
+    """Register every Integration subclass found in the integrations package, each with its
+    `start` as the hook the monitor runs after registration and on every restart; returns
+    the monitor."""
     from assistant.integration.Feed import Feed
     from assistant.integration.IntegrationMonitor import IntegrationMonitor
     from assistant.tools.WebAccess import WebAccess
@@ -41,11 +43,16 @@ def discover_integrations():
         if issubclass(cls, Feed):
             feeds += 1   # registered by start_feeds, with the hook that runs it
             continue
-        monitor.register_class(cls)
+        monitor.register_class(cls, start=_start_background_work)
     monitor.register_class(WebAccess)
     info(f"Discovered {len(classes)} integrations (+ WebAccess), {feeds} of them feeds.")
     monitor.notify()
     return monitor
+
+
+def _start_background_work(integration):
+    """The start hook of every integration that is not a feed: its own `Integration.start`."""
+    integration.start()
 
 
 def integration_classes() -> list[type]:

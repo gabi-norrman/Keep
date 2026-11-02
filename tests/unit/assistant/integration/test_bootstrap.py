@@ -9,6 +9,7 @@ import pytest
 from assistant.integration import bootstrap
 from assistant.integration.Integration import Integration
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
+from assistant.tools.WebAccess import WebAccess
 
 
 @pytest.fixture
@@ -38,6 +39,14 @@ class TestDiscoverIntegrations:
         assert len(registered) == len(set(registered))
         # Nothing is registered by instance — that path skipped a raising constructor.
         monitor.register.assert_not_called()
+
+    def test_every_other_integration_starts_its_own_background_work_through_the_hook(self, monitor):
+        bootstrap.discover_integrations()
+        hooks = [call.kwargs.get("start") for call in monitor.register_class.call_args_list if call.args[0] is not WebAccess]
+        assert hooks and all(hooks)
+        integration = Mock(name="integration")
+        hooks[0](integration)
+        integration.start.assert_called_once_with()
 
     def test_feeds_are_left_to_start_feeds(self, monitor):
         from integrations.imessage.IMessageIntegration import IMessageIntegration
