@@ -15,6 +15,7 @@ from assistant.Notifier import SecretRejected, notifier
 from common.logging import info, trace, error, fine
 from assistant.PromptInjectionDetector import is_prompt_injection
 from common.ConfigManager import config
+from common.DraftPlaceholder import is_draft_placeholder
 from common.Paths import AISERVER_DIR
 from common.RateLimiter import RateLimiter
 from assistant.tools.MediaAnalyzer import media_analyzer, KIND_VIDEO
@@ -367,6 +368,11 @@ class TelegramFeedIntegration(Integration, Feed):
             return False
         if not text:
             return False
+        if self._is_draft_placeholder(msg):
+            trace(f"TelegramFeed: {text!r} from {msg.sender_id} in '{getattr(chat, 'title', chat_id)}' is a "
+                  f"streaming draft's placeholder (another assistant's bubble, its text arrives as an edit the "
+                  f"feed never sees) — not woken")
+            return False
         named = self._names_assistant(text)
         if not named and not follows_bot:
             return False
@@ -545,6 +551,10 @@ class TelegramFeedIntegration(Integration, Feed):
             # of a suppressed reply; the history holds her real reply first hand anyway.
             fine("TelegramFeed: skipped a message of Floxy's own bot (its reply is in the history already)")
             return None
+        if self._is_draft_placeholder(msg):
+            trace(f"TelegramFeed: skipped {msg.text!r} from {msg.sender_id} — a streaming draft's placeholder "
+                  f"(another assistant's bubble, no text yet), not a context row")
+            return None
 
         is_from_me = msg.sender_id == me.id
 
@@ -607,6 +617,12 @@ class TelegramFeedIntegration(Integration, Feed):
     def _is_own_bot_message(msg) -> bool:
         bot_id = TelegramFeedIntegration._bot_user_id()
         return bot_id is not None and getattr(msg, 'sender_id', None) == bot_id
+
+    @staticmethod
+    def _is_draft_placeholder(msg) -> bool:
+        """Another assistant's streaming bubble as the feed sees it: the first spinner frame, posted
+        before any text (the edit that fills it never reaches a NewMessage handler)."""
+        return not TelegramFeedIntegration._media_kind(msg) and is_draft_placeholder(msg.text or "")
 
     @staticmethod
     def _media_kind(msg) -> Optional[str]:

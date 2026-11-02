@@ -599,6 +599,28 @@ class TestWakeAssistant:
         assert fake.receive_chat_message.call_args.kwargs["sender_is_bot"] is True
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("placeholder", ["`█`", "`░`", "Thinking…\n `█`", "Running command…\n `░`"])
+    async def test_another_keeps_draft_bubble_after_the_bots_message_is_neither_a_turn_nor_a_row(self, wake,
+                                                                                                     placeholder):
+        # Issue #139: the other Keep posts its reply as a spinner frame and edits the text in
+        # later; the feed sees the frame alone (Telethon renders the <code> span in backticks)
+        # and, coming right after our bot's message, handed it over as a guest turn from a bot —
+        # a full LLM turn answering "`█`".
+        m, say, fake = wake
+        await say("Dinner is pasta", sender_id=777, bot=True, name="Keep")
+        rows = await say(placeholder, sender_id=888, bot=True, name="Erik's Keep")
+        fake.receive_chat_message.assert_not_called()
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_another_keeps_draft_bubble_in_a_group_without_the_bot_is_not_a_row_either(self, wake):
+        m, say, fake = wake
+        rows = await say("`█`", sender_id=888, group="Chess club", bot=True, name="Erik's Keep")
+        assert rows == []
+        rows = await say("Checkmate in three", sender_id=888, group="Chess club", bot=True, name="Erik's Keep")
+        assert len(rows) == 1 and "Checkmate in three" in rows[0].content
+
+    @pytest.mark.asyncio
     async def test_an_injection_right_after_the_bots_own_message_is_screened_like_a_named_one(self, wake):
         # The follow-up wake is a turn with the group's words in it just as a named one is, so
         # it passes the same gate: a guest's injection-shaped answer to her never starts a turn.

@@ -1074,6 +1074,25 @@ class TestTelegramDraft:
         d.EDIT_INTERVAL_SECONDS = 0.0
         return t, d
 
+    def test_every_first_frame_a_draft_posts_reads_as_a_placeholder_to_the_feed(self):
+        # Another Keep's Telegram feed sees our draft bubble as a new message holding whatever
+        # frame it was posted with (issue #139): every phase's frame must be one the shared
+        # placeholder test recognises, or that Keep answers to it.
+        from common.DraftPlaceholder import is_draft_placeholder
+        from interfaces.chat.ChatTypes import PHASE_COMMANDS
+        t, d = self._draft()
+        d.show_progress(Progress(PHASE_WAITING))
+        d.show_progress(Progress(PHASE_THINKING))
+        d.show_progress(Progress(PHASE_THINKING, output_tokens=20700, rate=45.4))
+        d.show_progress(Progress(PHASE_PREFILL, prefill=42.6, rate=1480.0))
+        d.show_progress(Progress(PHASE_COMMANDS, commands=1))
+        d.show_progress(Progress(PHASE_COMMANDS, commands=3))
+        assert len(t.texts) == 6
+        for text in t.texts:
+            assert is_draft_placeholder(text), text
+        d.update("Hello")
+        assert not is_draft_placeholder(t.texts[-1])
+
     def test_progress_frames_alternate_and_reply_replaces_them(self):
         from interfaces.telegram.TelegramTransport import TelegramDraft
         t, d = self._draft()
