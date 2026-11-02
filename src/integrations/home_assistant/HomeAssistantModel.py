@@ -8,13 +8,18 @@ and the integration holds an outage for UNAVAILABLE_HOLD_S before `outage_row` n
 a hub that drops for half a minute took every entity behind it through unavailable and "back"
 (three covers "closed" without moving, 2026-10-19). `unknown` is the same gap for a state-bearing
 entity — a person whose trackers blip goes `home → unknown → home` — so `feed_entry` never
-words what follows it either; the integration compares it with the last known state."""
+words what follows it either; the integration compares it with the last known state.
+`drop_reason` is the one gate on what the house data holds — the domain, the owner's rules
+(EntityRules), the registry's hidden and disabled flags, then Assist's exposure when
+`exposed_only` — and the integration asks it per event, so a tick of an entity the data never
+shows costs no rebuild."""
 import difflib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
+from .EntityRules import EXCLUDE, INCLUDE, EntityRules
 from assistant.integration.HomeAutomation import Entity, HomeAutomation, HomeSnapshot
 from assistant.integration.Feed import FeedEntry
 from common.logging import trace
@@ -127,6 +132,31 @@ def should_expose(state: dict, registries: Registries) -> bool:
     if domain == "sensor":
         return device_class in DEFAULT_EXPOSED_SENSOR_CLASSES
     return False
+
+
+def drop_reason(state: dict, registries: Registries, exposed_only: bool,
+                rules: Optional[EntityRules] = None) -> Optional[str]:
+    """Why the entity is not in the house data, None when it is: a domain with no list, an
+    exclude rule, hidden or disabled in the registry (whatever `exposed_only` says — a hidden
+    entity is one the owner took out of HA's own UI, issue #141), not exposed to Assist when
+    `exposed_only`. An include rule beats everything but the domain."""
+    entity_id = state["entity_id"]
+    if domain_of(entity_id) not in SECTION_OF:
+        return "domain"
+    verdict = rules.verdict(entity_id) if rules is not None else None
+    if verdict == INCLUDE:
+        return None
+    if verdict == EXCLUDE:
+        return "excluded"
+    entry = registries.entities.get(entity_id)
+    if entry is not None:
+        if entry.get("disabled_by"):
+            return "disabled"
+        if entry.get("hidden_by"):
+            return "hidden"
+    if exposed_only and not should_expose(state, registries):
+        return "not exposed"
+    return None
 
 
 def _device_class(state: dict, entry: Optional[dict]) -> Optional[str]:
@@ -280,25 +310,23 @@ def normalize(text: str) -> str:
     return _SPACES.sub(" ", text).strip().lower()
 
 
-def build(states: dict[str, dict], registries: Registries, exposed_only: bool) -> tuple[HomeSnapshot, NameIndex]:
-    """The four lists, sorted by name within each, plus the index of everything listed. An
-    entity whose name and area another entity already has gets its domain appended (`Kitchen
-    switch` beside `Kitchen light`), else its object id, so no two lines read the same; the
-    plain name still resolves to "could be ... — say which"."""
+def build(states: dict[str, dict], registries: Registries, exposed_only: bool,
+          rules: Optional[EntityRules] = None) -> tuple[HomeSnapshot, NameIndex]:
+    """The four lists, sorted by name within each, plus the index of everything listed (what
+    `drop_reason` lets through). An entity whose name and area another entity already has
+    gets its domain appended (`Kitchen switch` beside `Kitchen light`), else its object id, so
+    no two lines read the same; the plain name still resolves to "could be ... — say which"."""
     snapshot = HomeSnapshot()
     index = NameIndex()
-    dropped_domain = dropped_exposure = 0
+    dropped: dict[str, int] = {}
     chosen: list[tuple[str, str, Optional[dict], dict]] = []     # (section, name, area entry, state)
     for entity_id in sorted(states):
         state = states[entity_id]
-        section = SECTION_OF.get(domain_of(entity_id))
-        if section is None:
-            dropped_domain += 1
+        reason = drop_reason(state, registries, exposed_only, rules)
+        if reason is not None:
+            dropped[reason] = dropped.get(reason, 0) + 1
             continue
-        if exposed_only and not should_expose(state, registries):
-            dropped_exposure += 1
-            continue
-        chosen.append((section, friendly_name(state), area_of(entity_id, registries), state))
+        chosen.append((SECTION_OF[domain_of(entity_id)], friendly_name(state), area_of(entity_id, registries), state))
     names = _disambiguate(chosen)
     for (section, original, area, state), name in zip(chosen, names):
         entity_id = state["entity_id"]
@@ -311,7 +339,8 @@ def build(states: dict[str, dict], registries: Registries, exposed_only: bool) -
         getattr(snapshot, section).sort(key=lambda e: (e.name.lower(), e.area or ""))
     trace(f"Home Assistant: {len(index)} entities in the snapshot ({len(snapshot.lights)} lights, "
           f"{len(snapshot.sensors)} sensors, {len(snapshot.variables)} variables, {len(snapshot.actions)} "
-          f"actions); dropped {dropped_domain} by domain, {dropped_exposure} not exposed to Assist")
+          f"actions); dropped " + ", ".join(f"{dropped.get(reason, 0)} {reason}" for reason in
+                                            ("domain", "excluded", "hidden", "disabled", "not exposed")))
     return snapshot, index
 
 
@@ -320,6 +349,7 @@ def _disambiguate(chosen: list[tuple[str, str, Optional[dict], dict]]) -> list[s
     for i, (_, name, area, _state) in enumerate(chosen):
         seen.setdefault((name.lower(), (area or {}).get("name") or ""), []).append(i)
     names = [name for _, name, _, _ in chosen]
+    renamed = 0
     for indexes in seen.values():
         if len(indexes) < 2:
             continue
@@ -327,7 +357,9 @@ def _disambiguate(chosen: list[tuple[str, str, Optional[dict], dict]]) -> list[s
         for i, domain in zip(indexes, domains):
             suffix = domain if domains.count(domain) == 1 else entity_id_words(chosen[i][3]["entity_id"]).lower()
             names[i] = f"{names[i]} {suffix}"
-            trace(f"Home Assistant: '{chosen[i][1]}' is not unique — listed as '{names[i]}'")
+            renamed += 1
+    if renamed:     # one line per rebuild: a line per name was most of the log (issue #141)
+        trace(f"Home Assistant: {renamed} names are not unique — listed with their domain or object id appended")
     return names
 
 

@@ -23,8 +23,11 @@ home_assistant:
   #   scripts or automations (expose those there), never a hidden or disabled entity, nothing new when
   #   "expose new entities" is off.
   # false: every light, switch, fan, cover, lock, sensor, binary sensor, climate, media player, weather, input
-  #   helper, person, scene, script, button and automation, hidden ones included.
-  # Either way other domains (cameras, device trackers, updates, …) never reach Keep.
+  #   helper, person, scene, script, button and automation.
+  # Either way a hidden or disabled entity never reaches Keep, nor do other domains (cameras, device trackers,
+  # updates, …). On top of that the assistant keeps the owner's own rules (the home_assistant toolkit:
+  # exclude_entities / include_entities by entity id, glob or domain) in memory/home_assistant_entity_rules.txt —
+  # an include rule shows an entity whatever HA hides and whatever this key says.
   exposed_only: true
   # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
   prompt_filters: []

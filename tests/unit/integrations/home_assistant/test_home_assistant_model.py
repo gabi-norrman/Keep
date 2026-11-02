@@ -7,9 +7,10 @@ from pathlib import Path
 import pytest
 
 from assistant.integration.Feed import FeedEntry
+from integrations.home_assistant.EntityRules import EntityRules
 from integrations.home_assistant.HomeAssistantModel import (
-    NameIndex, Registries, Unresolved, area_of, bridges_unknown, build, feed_entry, format_value, outage_row,
-    recovery_row, should_expose, tracks_availability)
+    NameIndex, Registries, Unresolved, area_of, bridges_unknown, build, drop_reason, feed_entry, format_value,
+    outage_row, recovery_row, should_expose, tracks_availability)
 from assistant.integration.HomeAutomation import render
 
 DATA = Path(__file__).parents[2] / "data" / "home" / "ha"
@@ -65,10 +66,39 @@ class TestBuild:
         assert "lock.front" in index                        # a lock is not exposed by default; this one was chosen
         assert len(index) == 19
 
-    def test_everything_when_not_exposed_only(self, house):
+    def test_everything_but_the_hidden_when_not_exposed_only(self, house):
         _, index = build(*house, exposed_only=False)
         assert "light.bedroom" in index and "sensor.hue_signal" in index
-        assert len(index) == 23
+        assert "binary_sensor.hidden_motion" not in index
+        assert len(index) == 22
+
+
+@pytest.mark.unit
+class TestDropReason:
+    def test_hidden_and_disabled_are_dropped_whatever_exposed_only_says(self, house):
+        states, registries = house
+        registries.entities["light.hall"]["disabled_by"] = "user"
+        for exposed_only in (True, False):
+            assert drop_reason(states["binary_sensor.hidden_motion"], registries, exposed_only) == "hidden"
+            assert drop_reason(states["light.hall"], registries, exposed_only) == "disabled"
+        assert drop_reason(states["sun.sun"], registries, False) == "domain"
+        assert drop_reason(states["sensor.pressure"], registries, True) == "not exposed"
+        assert drop_reason(states["sensor.pressure"], registries, False) is None
+
+    def test_an_exclude_rule_drops_and_an_include_rule_wins(self, house, tmp_path):
+        states, registries = house
+        rules = EntityRules(tmp_path / "rules.txt")
+        rules.set("sensor", "exclude")
+        rules.set("binary_sensor.hidden_*", "include")
+        assert drop_reason(states["sensor.power"], registries, True, rules) == "excluded"
+        assert drop_reason(states["binary_sensor.hidden_motion"], registries, True, rules) is None
+        rules.set("binary_sensor.*", "exclude")
+        assert drop_reason(states["binary_sensor.hidden_motion"], registries, True, rules) is None   # include wins
+        assert drop_reason(states["binary_sensor.front_door"], registries, True, rules) == "excluded"
+        rules.set("sun.sun", "include")
+        assert drop_reason(states["sun.sun"], registries, False, rules) == "domain"            # never a list for it
+        _, index = build(states, registries, exposed_only=True, rules=rules)
+        assert "binary_sensor.hidden_motion" in index and "sensor.power" not in index
 
     def test_lists_are_sorted_by_name(self, house):
         snapshot, _ = build(*house, exposed_only=True)

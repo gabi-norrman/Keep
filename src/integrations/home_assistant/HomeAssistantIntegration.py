@@ -11,7 +11,11 @@ per device once the hold (UNAVAILABLE_HOLD_S) has run out; a recovery inside the
 silent, worded only as the real change from the pre-outage state. `unknown` is held the same
 way but without a hold or a row of its own (`_known`, the last known state): a person whose
 trackers blip goes `home → unknown → home`, which is no arrival (issue #140). REST is used for
-one thing the websocket does not offer, `GET /api/error_log`."""
+one thing the websocket does not offer, `GET /api/error_log`. An event of an entity the house
+data never shows (HomeAssistantModel.drop_reason: hidden, disabled, excluded by the owner's
+EntityRules, not exposed) only updates the mirror — no rebuild, no row — so a chatty diagnostic
+sensor costs nothing per tick (issue #141); the rules are edited through `exclude`, `include`,
+`clear_rule` and `rules_text`, what HomeAssistantCommands runs for the home_assistant toolkit."""
 import queue
 import threading
 import time
@@ -20,11 +24,12 @@ from typing import List, Optional
 
 import requests
 
+from .EntityRules import EXCLUDE, INCLUDE, EntityRules, RuleError
 from .HomeAssistantClient import HAError, HomeAssistantClient, NotConnected
 from .HomeAssistantModel import (
     ACTION_DOMAINS, ASSISTANT, LIGHT_DOMAINS, UNAVAILABLE_HOLD_S, NameIndex, Registries, Unresolved, bridges_unknown,
-    build, domain_of, feed_entry, friendly_name, is_unavailable, is_unknown, outage_row, recovery_row, state_time,
-    tracks_availability)
+    build, domain_of, drop_reason, feed_entry, friendly_name, is_unavailable, is_unknown, outage_row, recovery_row,
+    state_time, tracks_availability)
 from assistant.integration.HomeAutomation import HomeAutomation, HomeSnapshot
 from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
 from assistant.integration.Integration import Integration
@@ -85,6 +90,7 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         self._registries = Registries()
         self._registries_at = 0.0
         self._registries_stale = True
+        self._rules = EntityRules().load()
         self._snapshot = HomeSnapshot()
         self._index = NameIndex()
         self._dirty = True
@@ -226,7 +232,11 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
             self._registries_at = time.time()
             self._registries_stale = False
             self._dirty = True
-        info(f"Home Assistant: registries loaded ({', '.join(loaded) or 'nothing'})")
+        hidden = sum(1 for e in registries.entities.values() if e.get("hidden_by"))
+        disabled = sum(1 for e in registries.entities.values() if e.get("disabled_by"))
+        info(f"Home Assistant: registries loaded ({', '.join(loaded) or 'nothing'}); {hidden} hidden and {disabled} "
+             f"disabled entities stay out of the house data and the feed, {len(self._rules)} rule"
+             f"{'' if len(self._rules) == 1 else 's'} of the owner's apply")
 
     def _on_state_changed(self, event: dict):
         data = event.get("data") or {}
@@ -241,9 +251,12 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
                 self._known.pop(entity_id, None)
             else:
                 self._states[entity_id] = new
-            self._dirty = True
             index = self._index
             registry_entry = self._registries.entities.get(entity_id)
+            listed = new is not None and drop_reason(new, self._registries, self.exposed_only, self._rules) is None
+            if not listed and entity_id not in index:
+                return      # the mirror is current; nothing the house data or the feed shows has changed
+            self._dirty = True
         if old is not None and new is not None and is_unavailable(new) and not is_unavailable(old):
             self._outage_began(entity_id, self._last_known(entity_id, old), new, index, registry_entry)
             return
@@ -378,6 +391,59 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
                   f"— the snapshot shows their last available state")
         return {**self._states, **held}
 
+    # --- the owner's rules --------------------------------------------------------------------
+
+    def exclude(self, pattern: str) -> str:
+        return self._rule(pattern, EXCLUDE)
+
+    def include(self, pattern: str) -> str:
+        return self._rule(pattern, INCLUDE)
+
+    def _rule(self, pattern: str, kind: str) -> str:
+        try:
+            pattern, before = self._rules.set(pattern, kind)
+        except RuleError as e:
+            return str(e)
+        with self._lock:
+            self._dirty = True
+        effect = ("leave the house data, the event feed and the commands" if kind == EXCLUDE
+                  else "stay in the house data and the event feed whatever Home Assistant hides")
+        was = f" The rule replaces the {before} rule the pattern had." if before and before != kind else ""
+        return f"{kind.capitalize()}d {pattern}: {self._matching(pattern)} {effect}.{was}"
+
+    def clear_rule(self, pattern: str) -> str:
+        try:
+            pattern, before = self._rules.clear(pattern)
+        except RuleError as e:
+            return str(e)
+        if before is None:
+            return f"No rule for {pattern}." + (f"\nThe rules:\n{self.rules_text()}" if len(self._rules) else "")
+        with self._lock:
+            self._dirty = True
+        return (f"Cleared the {before} rule for {pattern}: {self._matching(pattern)} follow Home Assistant's own "
+                f"settings again.")
+
+    def rules_text(self) -> str:
+        rules = self._rules.rules()
+        if not rules:
+            info("Home Assistant: no rules of the owner's")
+            return "No rules: the house data follows Home Assistant's own settings" + \
+                (" (what is exposed to Assist)." if self.exposed_only else " (everything but hidden and disabled entities).")
+        return "\n".join(f"{kind} {pattern} — {self._matching(pattern)}" for pattern, kind in rules)
+
+    def _matching(self, pattern: str) -> str:
+        """`N entities (ids…)` the pattern matches in the mirror right now: the feedback that
+        tells the LLM whether the pattern is the one it meant."""
+        with self._lock:
+            filled, ids = self._filled, list(self._states)
+        if not filled:
+            return "the entities matching it (the count follows once Home Assistant is connected)"
+        matches = EntityRules.matches(pattern, ids)
+        if not matches:
+            return "no entity right now, so any that appears later"
+        shown = ", ".join(matches[:5]) + (", …" if len(matches) > 5 else "")
+        return f"{len(matches)} entit{'y' if len(matches) == 1 else 'ies'} ({shown})"
+
     def _on_registry_event(self, event: dict):
         trace(f"Home Assistant: {event.get('event_type')} — registries will be refreshed")
         with self._lock:
@@ -404,7 +470,8 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
             if any(not o.released and now - o.since >= UNAVAILABLE_HOLD_S for o in self._outages.values()):
                 self._dirty = True      # a hold ran out with no event and no fetch to notice
             if self._dirty:
-                self._snapshot, self._index = build(self._states_for_snapshot(now), self._registries, self.exposed_only)
+                self._snapshot, self._index = build(self._states_for_snapshot(now), self._registries, self.exposed_only,
+                                                    self._rules)
                 self._snapshot.taken_at = now
                 self._dirty = False
             return self._snapshot, self._index

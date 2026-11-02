@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 import pytest
 import requests
 
+from integrations.home_assistant.EntityRules import EntityRules
 from integrations.home_assistant.HomeAssistantClient import HAError, NotConnected
 from integrations.home_assistant.HomeAssistantIntegration import HomeAssistantIntegration, ERROR_LOG_LINES, REGISTRY_EVENTS, REGISTRY_TTL
 from assistant.integration.HomeAutomation import render
@@ -98,7 +99,13 @@ def cfg():
 
 
 @pytest.fixture
-def integration(cfg):
+def rules_path(tmp_path):
+    with patch.object(EntityRules, "PATH", tmp_path / "rules.txt"):
+        yield tmp_path / "rules.txt"
+
+
+@pytest.fixture
+def integration(cfg, rules_path):
     HomeAssistantIntegration.reset_instance()
     with patch(f"{MODULE}.config") as config:
         config.get.side_effect = lambda key, default=None: cfg.get(key, default)
@@ -233,10 +240,81 @@ class TestSnapshot:
         with pytest.raises(RuntimeError, match="token rejected"):
             integration.snapshot()
 
-    def test_exposed_only_false_shows_everything(self, integration, fake, cfg):
+    def test_exposed_only_false_shows_everything_but_the_hidden(self, integration, fake, cfg):
         cfg["home_assistant.exposed_only"] = False
         names = {e.name for e in integration.snapshot().lights}
         assert "Bedroom lamp" in names
+        assert "binary_sensor.hidden_motion" not in integration._index
+
+    def test_a_tick_of_an_entity_the_data_never_shows_costs_no_rebuild(self, integration, fake):
+        integration.snapshot()
+        fake.push("state_changed", {"entity_id": "sensor.pressure", "old_state": state("sensor.pressure", "1001"),
+                                    "new_state": state("sensor.pressure", "1002")})       # not exposed
+        fake.push("state_changed", {"entity_id": "binary_sensor.hidden_motion",
+                                    "old_state": state("binary_sensor.hidden_motion", "off"),
+                                    "new_state": state("binary_sensor.hidden_motion", "on")})
+        assert integration._dirty is False
+        assert integration._states["sensor.pressure"]["state"] == "1002"      # the mirror still follows
+        fake.push("state_changed", {"entity_id": "sensor.power", "old_state": state("sensor.power", "100"),
+                                    "new_state": state("sensor.power", "120")})           # exposed, listed
+        assert integration._dirty is True
+
+    def test_a_listed_entity_vanishing_rebuilds(self, integration, fake):
+        integration.snapshot()
+        fake.push("state_changed", {"entity_id": "light.hall", "old_state": state("light.hall", "on"), "new_state": None})
+        assert integration._dirty is True
+
+
+@pytest.mark.unit
+class TestRules:
+    def test_an_exclude_rule_takes_its_entities_out_of_the_data_and_persists(self, integration, fake, rules_path):
+        integration.snapshot()
+        reply = integration.exclude("sensor")
+        assert "sensor.*" in reply and "sensor.power" in reply
+        assert integration.snapshot().sensors and not [e for e in integration.snapshot().sensors if e.name == "Power"]
+        assert "sensor.power" not in integration._index
+        assert EntityRules(rules_path).load().verdict("sensor.power") == "exclude"
+
+    def test_an_excluded_entity_no_longer_dirties_nor_feeds(self, integration, fake):
+        integration.snapshot()
+        integration.exclude("binary_sensor.front_*")
+        integration.snapshot()
+        fake.push("state_changed", {"entity_id": "binary_sensor.front_door",
+                                    "old_state": state("binary_sensor.front_door", "off"),
+                                    "new_state": state("binary_sensor.front_door", "on", device_class="door")})
+        assert integration._dirty is False
+        assert integration.fetch(None, backfill=False).entries == []
+
+    def test_an_include_rule_shows_a_hidden_entity_and_its_changes(self, integration, fake):
+        integration.snapshot()
+        reply = integration.include("binary_sensor.hidden_motion")
+        assert "1 entity" in reply
+        integration.snapshot()
+        assert "binary_sensor.hidden_motion" in integration._index
+        fake.push("state_changed", {"entity_id": "binary_sensor.hidden_motion",
+                                    "old_state": state("binary_sensor.hidden_motion", "off"),
+                                    "new_state": state("binary_sensor.hidden_motion", "on", friendly_name="Hidden motion")})
+        assert [e.content for e in integration.fetch(None, backfill=False).entries] == ["Hidden motion [Hall] turned on"]
+
+    def test_clearing_a_rule_restores_home_assistants_settings(self, integration, fake):
+        integration.snapshot()
+        integration.include("binary_sensor.hidden_motion")
+        integration.snapshot()
+        assert "include" in integration.clear_rule("binary_sensor.hidden_motion")
+        integration.snapshot()
+        assert "binary_sensor.hidden_motion" not in integration._index
+        assert integration.clear_rule("binary_sensor.hidden_motion").startswith("No rule")
+
+    def test_a_pattern_matching_nothing_says_so_and_a_bad_one_is_refused(self, integration, fake):
+        integration.snapshot()
+        assert "no entity right now" in integration.exclude("sensor.unifi_*")
+        assert "sensor.unifi_*" in integration.rules_text()
+        assert "not an entity id pattern" in integration.exclude("the kitchen lamp")
+        assert "No pattern" in integration.include("")
+
+    def test_the_rules_survive_a_restart_of_the_integration(self, integration, fake):
+        integration.exclude("sensor.pressure")
+        assert HomeAssistantIntegration().rules_text().startswith("exclude sensor.pressure")
 
 
 @pytest.mark.unit
@@ -597,9 +675,12 @@ class TestUnknownGap:
               "person.ingeborg": "not_home"}
 
     @pytest.fixture
-    def household(self, integration, fake):
+    def household(self, integration, fake, cfg):
         """Before the first snapshot every entity is fed and named by its friendly name, so the
-        whole cast is on the feed without touching the fixture's house."""
+        whole cast is on the feed without touching the fixture's house; `exposed_only` is off
+        since only Marcus is exposed in the fixture and a not-exposed entity's event is dropped
+        before the feed sees it (issue #141)."""
+        cfg["home_assistant.exposed_only"] = False
         integration.client()
         return {entity_id: (value, entity_id.split(".")[1].capitalize()) for entity_id, value in self.PEOPLE.items()}
 
