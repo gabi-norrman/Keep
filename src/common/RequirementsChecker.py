@@ -6,6 +6,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from common import IntegrationDirs
 from common.logging import error, info, trace
 from common.Paths import AISERVER_DIR, LOG_DIR
 
@@ -56,7 +57,9 @@ class RequirementsChecker:
     A `-r other.txt` line is followed the way pip follows it — relative to the file it stands
     in — which is how the pins an integration keeps in its own folder
     (src/integrations/<name>/requirements.txt) are checked. Each file is read once per start:
-    the voice file's `-r requirements.txt` finds the base group already checked.
+    the voice file's `-r requirements.txt` finds the base group already checked. The local
+    integration folders (`extra_integration_dirs`, common/IntegrationDirs.py) are outside the
+    repository, so no file of it includes theirs: each one's `requirements.txt` is a group of its own.
 
     The same walk serves the updater: `sync` is what restart_server and the nightly update run
     between the pull and the restart, so a release that bumps a pin installs it while the old
@@ -66,7 +69,11 @@ class RequirementsChecker:
 
     @staticmethod
     def _groups() -> list[tuple[str, Path]]:
-        return [("base", REQUIREMENTS_FILE), ("voice", VOICE_REQUIREMENTS_FILE)]
+        return [("base", REQUIREMENTS_FILE), ("voice", VOICE_REQUIREMENTS_FILE)] + RequirementsChecker._local_groups()
+
+    @staticmethod
+    def _local_groups() -> list[tuple[str, Path]]:
+        return [(f"local {path.parent.name}", path) for path in IntegrationDirs.files("requirements.txt", local_only=True)]
 
     @staticmethod
     def verify_or_exit():
@@ -127,10 +134,12 @@ class RequirementsChecker:
 
     @staticmethod
     def install() -> str:
-        """Runs pip in this venv over the voice file (it includes everything), appending pip's
-        output to PIP_LOG. Returns "" when pip exited 0, else what went wrong."""
+        """Runs pip in this venv over the voice file (it includes everything in the repository) and
+        the local integration folders' files, appending pip's output to PIP_LOG. Returns "" when pip exited 0, else what went wrong."""
         cmd = [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
                "-r", str(VOICE_REQUIREMENTS_FILE)]
+        for _, path in RequirementsChecker._local_groups():
+            cmd += ["-r", str(path)]
         PIP_LOG.parent.mkdir(parents=True, exist_ok=True)
         info(f"pip install: {' '.join(cmd)} (output in {PIP_LOG})")
         started = datetime.now()

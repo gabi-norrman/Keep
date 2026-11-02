@@ -9,8 +9,9 @@ The example is one text made of several files: the root `config.example.yaml` an
 integration's own section, the fragment in its folder (`src/integrations/<name>/config.example.yaml`).
 A pointer line in the root (`# >> tesla: src/integrations/tesla/config.example.yaml`) is replaced by
 the fragment it names, so the section stands where it always did; a fragment nothing points at
-(a folder added later) follows after the root, by folder name. Everything below reads that one
-text and knows nothing of the files.
+(a folder added later) follows after the root, by folder name, and after those the fragments of
+the install's local integration folders (`extra_integration_dirs`, common/IntegrationDirs.py).
+Everything below reads that one text and knows nothing of the files.
 """
 import re
 from functools import lru_cache
@@ -19,6 +20,7 @@ from typing import Any, Optional
 
 import yaml
 
+from common import IntegrationDirs
 from common.Paths import AISERVER_DIR, INTEGRATIONS_DIR
 from common.logging import error, info, trace
 
@@ -131,7 +133,8 @@ def _lines() -> list[str]:
         pointed.add(path.resolve())
         out.extend(claim(path) or [])
     appended = 0
-    for path in sorted((root / _FRAGMENTS_FROM_ROOT).glob(f"*/{FRAGMENT_NAME}")):
+    local = IntegrationDirs.files(FRAGMENT_NAME, local_only=True)
+    for path in sorted((root / _FRAGMENTS_FROM_ROOT).glob(f"*/{FRAGMENT_NAME}")) + local:
         if path.resolve() in pointed:
             continue
         fragment = claim(path)

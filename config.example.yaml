@@ -16,6 +16,13 @@
 # ElevenLabs TTS. The assistant's enable_integration / disable_integration edit this list.
 enabled_integrations: []
 
+# Directories outside the checkout holding this install's own integration folders, laid out like
+# src/integrations/: ~/KeepLocal/schoolsoft/ is found by listing ~/KeepLocal. Each folder has the same
+# pieces as one of the repository's (<Name>Integration.py, toolkit.md, config.example.yaml, requirements.txt …)
+# and is enabled the same way, by its name in enabled_integrations; a pull never touches it. A folder named
+# like one of the repository's is left out. Read at start: a change needs restart_server.
+extra_integration_dirs: []
+
 api_keys:
   openai: YOUR_OPENAI_API_KEY_HERE
   anthropic: YOUR_ANTHROPIC_API_KEY_HERE

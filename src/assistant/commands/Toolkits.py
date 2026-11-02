@@ -43,7 +43,8 @@ from assistant.integration.VehicleProvider import VehicleProvider
 from assistant.integration.calendar.CalendarSource import CalendarSource
 from assistant.integration.mail.MailSource import MailSource
 from common.ConfigManager import config
-from common.Paths import INTEGRATIONS_DIR, RES_DIR
+from common import IntegrationDirs
+from common.Paths import RES_DIR
 from common.logging import error, trace
 
 TOOLKITS_DIR = RES_DIR / "toolkits"
@@ -147,12 +148,14 @@ def read_folder_toolkit(path: Path) -> Toolkit:
     return Toolkit(name.strip(), summary.strip(), tuple(commands), tuple(sections), hidden, file=path)
 
 
-def discover(root: Path = INTEGRATIONS_DIR) -> list[Toolkit]:
-    """The toolkits the integration folders under *root* own, in folder order. A file that
-    cannot be read as one is logged and left out: one broken folder must not take the
-    server down (for the folders in this repository the unit suite fails instead)."""
+def discover(root: Optional[Path] = None) -> list[Toolkit]:
+    """The toolkits the integration folders under *root* own, in folder order — without one, every
+    integration folder's, the repository's and then the local ones (common/IntegrationDirs.py).
+    A file that cannot be read as one is logged and left out: one broken folder must not take
+    the server down (for the folders in this repository the unit suite fails instead)."""
     found = []
-    for path in sorted(root.glob(f"*/{FOLDER_TOOLKIT_FILE}")):
+    paths = IntegrationDirs.files(FOLDER_TOOLKIT_FILE) if root is None else sorted(root.glob(f"*/{FOLDER_TOOLKIT_FILE}"))
+    for path in paths:
         try:
             found.append(read_folder_toolkit(path))
         except (ToolkitFileError, OSError) as e:

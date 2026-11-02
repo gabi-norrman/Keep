@@ -5,18 +5,27 @@ the feeds (iMessage, Telethon, Photos, Indigo, Home Assistant) that pour into th
 import importlib
 import pkgutil
 
-from common.logging import info
+from common.logging import error, info
 
 
 def _integration_modules():
     """Import and yield every assistant-side module of the `integrations` package, in the
-    package's walk order. A `*Tab` module is the console's (interfaces/console imports it),
-    never the assistant's."""
+    package's walk order — the local integration directories are part of its path. A `*Tab`
+    module is the console's (interfaces/console imports it), never the assistant's. A module
+    that fails to import is logged and left out: a broken folder costs only itself."""
     import integrations as integrations_pkg
-    for _finder, fqn, ispkg in pkgutil.walk_packages(integrations_pkg.__path__, integrations_pkg.__name__ + "."):
+
+    def skipped(fqn):
+        error(f"Integration package {fqn} could not be imported, left out")
+
+    for _finder, fqn, ispkg in pkgutil.walk_packages(integrations_pkg.__path__, integrations_pkg.__name__ + ".",
+                                                     onerror=skipped):
         if not ispkg and fqn.endswith("Tab"):
             continue
-        yield importlib.import_module(fqn)
+        try:
+            yield importlib.import_module(fqn)
+        except Exception as e:
+            error(f"Integration module {fqn} could not be imported, left out: {type(e).__name__}: {e}")
 
 
 def discover_integrations():

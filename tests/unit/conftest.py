@@ -82,6 +82,8 @@ CAST_CONFIG = {
     "wake_word_aliases": ["michel"],
     "wake_word_near_misses": ["mission", "missions", "we shall"],
     "ai_message_footer": True,
+    # The install's local integration folders are not the repository's: no test sees them.
+    "extra_integration_dirs": [],
 }
 _real_config_get = _config_module.config.get
 

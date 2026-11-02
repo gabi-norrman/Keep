@@ -93,6 +93,8 @@ source .venv/bin/activate && python <script.py>
   - `config.example.yaml` — its config section with the how-to comments, read into the one schema by `common/ConfigSchema.py` (see Config example above).
   - `requirements.txt` — pins of packages only this folder imports, included from the root file with `-r`.
 
+  **Local integrations**: an install's own integration folders can live outside the checkout — `extra_integration_dirs` in `config.yaml` lists directories laid out like `src/integrations/` (`~/KeepLocal` holding `schoolsoft/`, `podcasts/` …). `common/IntegrationDirs.py` resolves them; `src/integrations/__init__.py` appends them to the package's `__path__`, so a local folder is `integrations.<folder>` to every module discovery, and the file globs (toolkits, config fragments — appended after the repository's —, `requirements.txt` — a requirements group of its own, checked and installed with the rest) go through `IntegrationDirs.files()`. A local folder named like an earlier one is shadowed, logged and left out. The unit conftest pins the key to `[]`, so no test sees them.
+
   A broken folder costs only itself: a file discovery cannot read or import is logged and left out (for the folders of this repository the unit suite fails instead). Core reaches a folder through a contract or discovery, not by name — `tests/unit/test_integration_folders.py` holds the allowlists of the by-name imports that are left (core → folder, folder → folder, the launcher); shrink them, never grow them.
 
   **Adding an integration**: a folder with `__init__.py`; `<Name>Integration.py` whose class docstring has three paragraphs — what it is in a few words (the atlas description and the "Description" column of the console's Catalog tab), what it does for the user in one to three sentences (shown with the integration selected there), then the notes for whoever reads the code, which no UI shows — and whose constant `name` is what `enabled_integrations` lists; whichever of the pieces above it needs; a `GROUPS` blurb in `docs/atlas/descriptions.py`; tests in `tests/unit/integrations/<folder>/`. A folder that keeps a signed-in session in the tree lists its files in `wipe_targets()` and ends the session on the account in `log_out()` (`//wipe` gathers both by discovery); one with a login command of its own names it in `login_hint`. What is part of the prompt has a pinned order — give a new toolkit its place in `Toolkits.INDEX_ORDER` and a new section its place in `PromptManager.SECTION_ORDER`.
@@ -125,7 +127,8 @@ exercises the same code path. Use the standing cast and nothing from the real ho
   `192.0.2.0/24` or `100.64.0.0/10`, the house in `tests/unit/data/home/` (synthetic — regenerate its
   `*rendered.md` with the real renderer, never by hand)
 - a test must pass with any `config.yaml`, the example one included (`FLOXY_CONFIG=config.example.yaml`): the
-  conftest's `CAST_CONFIG` pins `owner_name`, the wake word keys and `ai_message_footer` to the cast's values;
+  conftest's `CAST_CONFIG` pins `owner_name`, the wake word keys and `ai_message_footer` to the cast's values
+  and `extra_integration_dirs` to `[]`;
   patch any other config value a test depends on
 
 **Tests not to write.** A test must assert something the author had to *derive*, never something copied from the
