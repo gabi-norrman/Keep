@@ -18,7 +18,7 @@ from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import CommandSet, Toolkits, ToolkitPreloader
 from assistant import Destinations, FirstRun, MemoryFile, Procedures, VoiceCandidates, WatchList
 from common.logging import trace, info, note, error, fine
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, JobPullRequest
 from common.ConfigManager import ConfigManager
 from common import ConfigSchema, ConfigStore, FullDiskAccess
 from common.ConfigStore import ConfigStoreError
@@ -920,7 +920,19 @@ class Commands:
             return "improve_integration failed: expected 'integration name, request' parameters"
         folder = self._integration_folder(name)
         if folder is None:
-            info(f"improve_integration: no integration named '{name}' — a new one")
+            near = self._integrations_resembling(name)
+            if near:
+                # A near miss is the integration misnamed ("Spotify" for "Sonos & Spotify"),
+                # not a new one: on 2026-10-26 two such jobs ran in new-integration mode and
+                # had the fix closed as straying. Ask back instead.
+                info(f"improve_integration: no integration named '{name}', but it resembles "
+                     f"{', '.join(n for n, _ in near)} — asking back instead of building a new one")
+                options = ", ".join(f"'{n}' (the {f} folder)" if f else f"'{n}'" for n, f in near)
+                return (f"improve_integration failed: no integration is named '{name}', but {options} "
+                        f"{'resembles' if len(near) == 1 else 'resemble'} it. Name the integration as "
+                        f"list_integrations shows it (or by its folder); a new integration is built only under a "
+                        f"name no existing integration resembles.")
+            info(f"improve_integration: no integration named '{name}' and none resembling it — a new one")
         else:
             info(f"improve_integration: '{name}' is the {folder} folder")
         self._run_pr_job("Integration improvement",
@@ -928,23 +940,30 @@ class Commands:
 
     def _integration_folder(self, name: str) -> Optional[str]:
         """The integration folder behind *name* (`src/integrations/<folder>/`), enabled or
-        not; None when no registered integration has that name."""
+        not; None when no registered integration has that name (or is that folder)."""
         monitor = self._integration_monitor()
         return monitor.folder_named(name) if monitor else None
 
-    def _run_pr_job(self, label: str, job: Callable[[], str]):
+    def _integrations_resembling(self, name: str) -> list[tuple[str, Optional[str]]]:
+        """(name, folder) of the registered integrations *name* is a near miss of."""
+        monitor = self._integration_monitor()
+        return monitor.resembling(name) if monitor else []
+
+    def _run_pr_job(self, label: str, job: Callable[[], tuple[str, Optional[JobPullRequest]]]):
         """Run a Claude Code job that ends in a pull request in the background and deliver its
-        report: pushed to the chats, and summed up in the history (`_pr_outcome`)."""
+        report: pushed to the chats, and summed up in the history (`_pr_outcome`). The PR is
+        the one the job found it opened, never one the report's text mentions."""
         def _run_and_deliver(_params):
             try:
-                report = job()
-                trace(f"Received {label.lower()} report from Code Quality Maintainer")
+                report, pr = job()
+                trace(f"Received {label.lower()} report from Code Quality Maintainer"
+                      f"{f' with PR #{pr.number}' if pr else ', no PR opened'}")
                 fine(f"Report: {report}")
-                html_report = notifier().markdown_to_html(report + self._trial_invitation(report))
+                html_report = notifier().markdown_to_html(report + self._trial_invitation(pr))
                 sent = notifier().send_message(f"{label} report:\n\n{html_report}")
                 aam = AutonomousActionManager.get_instance()
                 if aam and aam.prompt_manager:
-                    aam.prompt_manager.update_history(None, None, self._pr_outcome(label, report, sent))
+                    aam.prompt_manager.update_history(None, None, self._pr_outcome(label, report, pr, sent))
                 else:
                     info(f"{label}: no AutonomousActionManager yet, the outcome is not in the history")
             except Exception as e:
@@ -953,35 +972,34 @@ class Commands:
         self.fire_and_forget(_run_and_deliver, None)
 
     @staticmethod
-    def _trial_invitation(report: str) -> str:
-        """The paragraph under a report that opened a PR: the message is pushed to the chat as
-        is, no LLM speaks after a job, so the user is invited here to run the PR as a trial and
-        send their verdict — a tried PR with the tester's feedback is what the developers merge
-        first. "" for a report without a PR."""
-        number, _ = CodeQualityMaintainer.pull_request_in(report)
-        if number is None:
+    def _trial_invitation(pr: Optional[JobPullRequest]) -> str:
+        """The paragraph under a report whose job opened a PR: the message is pushed to the
+        chat as is, no LLM speaks after a job, so the user is invited here to run the PR as a
+        trial and send their verdict — a tried PR with the tester's feedback is what the
+        developers merge first. "" for a job without a PR."""
+        if pr is None:
             return ""
+        number = pr.number
         return (f"\n\n**Try it:** say \"try PR #{number}\" and the server runs it as a trial. Then tell me whether it "
                 f"works — I post your verdict on the PR. A PR that was tried and has your feedback is much more "
                 f"likely to be merged, and fast.")
 
     @staticmethod
-    def _pr_outcome(label: str, report: str, sent: bool) -> str:
+    def _pr_outcome(label: str, report: str, pr: Optional[JobPullRequest], sent: bool) -> str:
         """The history row a finished PR job leaves — the PR it opened (number, title line,
         URL) or that none was, so the LLM knows the outcome without the report: the "report
         sent" marker it left before told it nothing, and on 2026-10-11 it took a job for
         still running two hours after the PR was open. Without a chat to deliver to, the
         row carries the whole report. "[<label> complete]" is the tag the LLM keys off;
         keep it first."""
-        number, url = CodeQualityMaintainer.pull_request_in(report)
         title = CodeQualityMaintainer.first_line(report)
         delivery = "" if sent else f" ({NO_NOTIFICATION_CHANNEL})"
-        if number is not None:
-            text = f"[{label} complete]{delivery} PR #{number} open: {title}"
-            if url:
-                text += f"\n{url}"
-            text += (f"\nThe user was invited to run it with try_pull_request({number}) and to post their verdict "
-                     f"with pr_feedback({number}, text).")
+        if pr is not None:
+            text = f"[{label} complete]{delivery} PR #{pr.number} open: {title}"
+            if pr.url:
+                text += f"\n{pr.url}"
+            text += (f"\nThe user was invited to run it with try_pull_request({pr.number}) and to post their verdict "
+                     f"with pr_feedback({pr.number}, text).")
         else:
             text = f"[{label} complete]{delivery} no PR was created: {title}"
         if not sent:

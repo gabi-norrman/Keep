@@ -10,6 +10,7 @@ from assistant.commands.CommandParser import CommandParser
 from assistant import Procedures
 from assistant.commands import Toolkits, ToolkitPreloader
 from assistant.commands.Commands import Commands, is_reference_result
+from assistant.agents.CodeQualityMaintainer import JobPullRequest
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from assistant.tools.WebAccess import WebAccess
 
@@ -949,8 +950,9 @@ class TestCmdSelfImprovement:
     REPORT = ("## Timers keep their reason across a restart\n\n"
               "Changed `AutonomousActionManager.py` and its test.\n\n"
               "PR: https://github.com/example/keep/pull/49")
+    PR = JobPullRequest(49, "https://github.com/example/keep/pull/49", "timers-keep-reason")
 
-    def _run(self, commands_instance, report, sent=True):
+    def _run(self, commands_instance, report, sent=True, pr=None):
         chat = Mock()
         chat.markdown_to_html.side_effect = lambda md: md
         chat.send_message.return_value = sent
@@ -960,8 +962,7 @@ class TestCmdSelfImprovement:
              patch("assistant.Notifier._notifier", chat), \
              patch.object(commands_instance, "fire_and_forget", side_effect=lambda fn, p: fn(p)):
             mock_cqm.unavailable_reason.return_value = None
-            mock_cqm.improve_code.return_value = report
-            mock_cqm.pull_request_in.side_effect = CodeQualityMaintainer.pull_request_in
+            mock_cqm.improve_code.return_value = (report, pr)
             mock_cqm.first_line.side_effect = CodeQualityMaintainer.first_line
             mock_aam.get_instance.return_value = Mock(prompt_manager=prompt_manager)
             commands_instance.cmd_self_improvement("fix the timers")
@@ -971,20 +972,25 @@ class TestCmdSelfImprovement:
         return text, chat
 
     def test_the_row_names_the_pr_its_title_and_its_url(self, commands_instance):
-        text, chat = self._run(commands_instance, self.REPORT)
+        text, chat = self._run(commands_instance, self.REPORT, pr=self.PR)
         assert text.startswith("[Self-improvement complete] PR #49 open: Timers keep their reason across a restart")
         assert "https://github.com/example/keep/pull/49" in text
         assert "Changed" not in text, "the row is the outcome, not the report"
         chat.send_message.assert_called_once()
 
-    def test_a_pr_number_without_a_url_is_still_the_outcome(self, commands_instance):
-        text, _ = self._run(commands_instance, "Opened PR #12 with the fix.\n\nDetails follow.")
-        assert "PR #12 open: Opened PR #12 with the fix." in text
+    def test_a_pr_the_report_mentions_is_not_the_outcome_when_the_job_opened_none(self, commands_instance):
+        """2026-10-26: a declined job's report echoed "PR #120" from the request, and the chat
+        invited the user to try PR #120 — the developers' PR. The PR is the job's finding, the
+        report's text does not count."""
+        report = "I didn't open a PR. The same pattern as PR #120 (https://github.com/example/keep/pull/120)."
+        text, chat = self._run(commands_instance, report, pr=None)
+        assert text.startswith("[Self-improvement complete] no PR was created:")
+        assert "try PR" not in chat.send_message.call_args.args[0] and "try_pull_request" not in text
 
     def test_the_user_is_invited_to_try_the_pr_and_send_feedback(self, commands_instance):
         """No LLM speaks after a job — the report is pushed as is — so the invitation stands in
         the pushed message, and the row tells the LLM it was made; neither without a PR."""
-        text, chat = self._run(commands_instance, self.REPORT)
+        text, chat = self._run(commands_instance, self.REPORT, pr=self.PR)
         pushed = chat.send_message.call_args.args[0]
         assert "try PR #49" in pushed and "merged" in pushed
         assert "try_pull_request(49)" in text and "pr_feedback(49" in text
@@ -998,7 +1004,7 @@ class TestCmdSelfImprovement:
         assert "PR #" not in text
 
     def test_without_a_chat_the_row_carries_the_report(self, commands_instance):
-        text, _ = self._run(commands_instance, self.REPORT, sent=False)
+        text, _ = self._run(commands_instance, self.REPORT, sent=False, pr=self.PR)
         assert text.startswith("[Self-improvement complete] (failed: no notification channel")
         assert "PR #49 open" in text and "Changed `AutonomousActionManager.py`" in text
 
@@ -2411,14 +2417,15 @@ class TestCmdImproveIntegration:
     Code whole."""
 
     @staticmethod
-    def _run(commands_instance, payload, folder):
+    def _run(commands_instance, payload, folder, resembling=()):
         monitor = Mock()
         monitor.folder_named.return_value = folder
+        monitor.resembling.return_value = list(resembling)
         with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
              patch.object(commands_instance, "fire_and_forget") as fire, \
              patch.object(Commands, "_integration_monitor", staticmethod(lambda: monitor)):
             mock_cqm.unavailable_reason.return_value = ""
-            mock_cqm.improve_integration.return_value = "no PR"
+            mock_cqm.improve_integration.return_value = ("no PR", None)
             reply = commands_instance.cmd_improve_integration(payload)
             if fire.called:
                 fire.call_args.args[0](None)
@@ -2435,6 +2442,15 @@ class TestCmdImproveIntegration:
         _, _, job = self._run(commands_instance, "Ring, build an integration for the Ring doorbell", None)
         assert job.call_args.args[:2] == ("Ring", None)
 
+    def test_a_name_resembling_an_integration_is_asked_back_instead_of_built(self, commands_instance):
+        """2026-10-26: "Spotify" matched no integration (the name is "Sonos & Spotify"), so the
+        job ran as a new integration and its fix was closed as straying. A near miss is the
+        misnamed integration: no job starts, the reply names the one meant and its folder."""
+        reply, _, job = self._run(commands_instance, "Spotify, retry the playlist fetch once", None,
+                                  resembling=[("Sonos & Spotify", "music")])
+        job.assert_not_called()
+        assert reply.startswith("improve_integration failed") and "Sonos & Spotify" in reply and "music" in reply
+
     def test_a_missing_name_or_request_is_refused_before_claude_code(self, commands_instance):
         for payload in ("", "Tesla", "Tesla,   ", ", fix it"):
             reply, _, job = self._run(commands_instance, payload, "tesla")
@@ -2442,8 +2458,9 @@ class TestCmdImproveIntegration:
             job.assert_not_called()
 
     def test_the_outcome_row_names_the_pr_under_the_jobs_own_tag(self):
-        report = "Opened https://github.com/example/keep/pull/12\n\nTesla: close the trunk once"
-        row = Commands._pr_outcome("Integration improvement", report, sent=True)
+        report = "Opened the PR.\n\nTesla: close the trunk once"
+        pr = JobPullRequest(12, "https://github.com/example/keep/pull/12", "tesla-trunk")
+        row = Commands._pr_outcome("Integration improvement", report, pr, sent=True)
         assert row.startswith("[Integration improvement complete]") and "PR #12" in row
         assert "https://github.com/example/keep/pull/12" in row
 

@@ -1,6 +1,6 @@
 import threading
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from common.ConfigManager import ConfigManager
 from .Feed import Feed
@@ -210,15 +210,42 @@ class IntegrationMonitor:
         return self._enabled(self.contract_integrations(contract))
 
     def find(self, name: str) -> Optional[Integration]:
+        """The registered integration called *name*, or — none of that name — the one of the
+        folder called so (`music` for "Sonos & Spotify"; the folder is what a report names);
+        None otherwise. Case does not matter."""
         wanted = name.strip().lower()
-        for integration in self._snapshot():
+        integrations = self._snapshot()
+        for integration in integrations:
             if integration.name.lower() == wanted:
+                return integration
+        for integration in integrations:
+            if folder_of(self._class_of(integration)) == wanted:
+                trace(f"IntegrationMonitor: '{name}' is the folder of {integration.name}")
                 return integration
         return None
 
+    def resembling(self, name: str) -> List[Tuple[str, Optional[str]]]:
+        """(name, folder) of the registered integrations *name* is a near miss of: their name
+        or folder contains it, or it contains theirs ("Spotify" and "Sonos & Spotify", "Microsoft"
+        and "Microsoft 365"); a short name is a near miss of nothing, and so is nothing of a
+        short one, since "x" is in every other word. `find` first: an exact match is not a
+        near miss."""
+        wanted = name.strip().lower()
+        if len(wanted) < 3:
+            return []
+        found = []
+        for integration in self._snapshot():
+            label, folder = integration.name.lower(), folder_of(self._class_of(integration))
+            candidates = [c for c in (label, folder) if c and len(c) >= 3]
+            if any(wanted in c or c in wanted for c in candidates):
+                found.append((integration.name, folder))
+        trace(f"IntegrationMonitor: '{name}' resembles {[n for n, _ in found] or 'no integration'}")
+        return found
+
     def folder_named(self, name: str) -> Optional[str]:
         """The integration folder (`src/integrations/<folder>/`) of the integration called
-        *name*, enabled or not; None when none is registered under that name."""
+        *name* — or of the folder called so — enabled or not; None when none is registered
+        under that name."""
         integration = self.find(name)
         if integration is None:
             trace(f"IntegrationMonitor: no integration named '{name}'")

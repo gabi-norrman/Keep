@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeRunFailedError, ClaudeUsageLimitError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, JobPullRequest, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeRunFailedError, ClaudeUsageLimitError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -685,15 +685,15 @@ class TestImproveCode:
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=ClaudeNotLoggedInError())
     def test_explains_missing_login(self, mock_claude, mock_sub):
         mock_sub.return_value = Mock(stdout="", returncode=0)
-        assert CodeQualityMaintainer.improve_code("some bug") == NOT_LOGGED_IN_MESSAGE
+        assert CodeQualityMaintainer.improve_code("some bug") == (NOT_LOGGED_IN_MESSAGE, None)
         mock_sub.assert_called_with(["git", "checkout", "master"], "git checkout", GIT_TIMEOUT)
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=RuntimeError("claude exited 137"))
     def test_a_crashed_run_is_the_result_and_the_starting_branch_comes_back(self, mock_claude, mock_sub):
         mock_sub.return_value = Mock(stdout="release\n", returncode=0)
-        result = CodeQualityMaintainer._pr_job("prompt", "self-improvement")
-        assert result.startswith("Self-improvement failed") and "exited 137" in result
+        result, pr = CodeQualityMaintainer._pr_job("prompt", "self-improvement")
+        assert result.startswith("Self-improvement failed") and "exited 137" in result and pr is None
         assert mock_sub.call_args_list[-1] == call(["git", "checkout", "release"], "git checkout", GIT_TIMEOUT)
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
@@ -701,17 +701,20 @@ class TestImproveCode:
     def test_returns_fallback_on_no_output(self, mock_claude, mock_sub):
         mock_sub.return_value = Mock(stdout="", returncode=0)
         result = CodeQualityMaintainer.improve_code("some bug")
-        assert result == "Self-improvement produced no output."
+        assert result == ("Self-improvement produced no output.", None)
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_run_claude', return_value="done")
     def test_git_pull_then_claude_then_checkout_of_the_starting_branch(self, mock_claude, mock_sub):
         mock_sub.return_value = Mock(stdout="release\n", returncode=0)
         CodeQualityMaintainer.improve_code("bug")
-        assert mock_sub.call_args_list == [
-            call(["git", "rev-parse", "--abbrev-ref", "HEAD"], "git rev-parse", GIT_TIMEOUT),
-            call(["git", "pull"], "git pull", GIT_TIMEOUT),
-            call(["git", "checkout", "release"], "git checkout", GIT_TIMEOUT)]
+        commands = [c.args[0] for c in mock_sub.call_args_list]
+        assert [c for c in commands if c[0] == "git"] == [
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], ["git", "pull"],
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], ["git", "checkout", "release"]]
+        # The open PRs are listed before and after the run — what was open before is never the job's.
+        listings = [i for i, c in enumerate(commands) if c[:3] == ["gh", "pr", "list"]]
+        assert len(listings) == 2 and listings[0] < commands.index(["git", "pull"]) < listings[1]
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_detached_head_falls_back_to_master(self, mock_sub):
@@ -724,8 +727,8 @@ class TestImproveCode:
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude crashed"))
     def test_checkout_master_runs_on_claude_error(self, mock_claude, mock_sub):
         mock_sub.return_value = Mock(stdout="", returncode=0)
-        result = CodeQualityMaintainer.improve_code("bug")
-        assert "claude crashed" in result
+        result, pr = CodeQualityMaintainer.improve_code("bug")
+        assert "claude crashed" in result and pr is None
         checkout_calls = [c for c in mock_sub.call_args_list if c[0][0] == ["git", "checkout", "master"]]
         assert len(checkout_calls) == 1
 
@@ -737,8 +740,8 @@ class TestImproveCode:
                 raise Exception("git pull failed")
             return Mock(stdout="", returncode=0)
         mock_sub.side_effect = fail_pull_allow_checkout
-        result = CodeQualityMaintainer.improve_code("bug")
-        assert "git pull failed" in result
+        result, pr = CodeQualityMaintainer.improve_code("bug")
+        assert "git pull failed" in result and pr is None
         mock_claude.assert_not_called()
         checkout_calls = [c for c in mock_sub.call_args_list if c[0][0] == ["git", "checkout", "master"]]
         assert len(checkout_calls) == 1
@@ -1677,19 +1680,8 @@ class TestPullAndRestart:
 
 
 class TestReportOutcome:
-    """What cmd_self_improvement reads off a Claude Code report: the PR and the title line."""
-
-    def test_the_pr_url_gives_number_and_url(self):
-        report = "## Fix\n\nOpened https://github.com/example/keep/pull/49 with the change."
-        assert CodeQualityMaintainer.pull_request_in(report) == (49, "https://github.com/example/keep/pull/49")
-
-    def test_a_bare_mention_gives_the_number_only(self):
-        assert CodeQualityMaintainer.pull_request_in("Created pull request #7 and pushed.") == (7, None)
-        assert CodeQualityMaintainer.pull_request_in("PR #8 is up.") == (8, None)
-
-    def test_a_report_without_a_pr(self):
-        assert CodeQualityMaintainer.pull_request_in("Declined: too vague. See issue #3.") == (None, None)
-        assert CodeQualityMaintainer.pull_request_in("") == (None, None)
+    """What cmd_self_improvement reads off a Claude Code report: the title line. The PR is
+    not read off the text (`TestJobPullRequest`)."""
 
     def test_the_first_line_is_undressed_markdown(self):
         assert CodeQualityMaintainer.first_line("\n\n## **Timers keep their reason**\nbody") == "Timers keep their reason"
@@ -1750,72 +1742,190 @@ class TestScopeViolations:
         assert CodeQualityMaintainer.scope_violations([], "tesla")
 
 
+JOB_PR = JobPullRequest(31, "https://github.com/example/keep/pull/31", "tesla-trunk-once")
+
+
 @pytest.mark.unit
 class TestImproveIntegration:
     REPORT = "Done: https://github.com/example/keep/pull/31\n\nTesla: close the trunk once"
 
     @staticmethod
-    def _run(folder, files, report=None):
+    def _run(folder, files, report=None, pr=JOB_PR, existing=("tesla", "music", "microsoft")):
         with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
                 patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
-                patch.object(CodeQualityMaintainer, "_pr_job", return_value=report or TestImproveIntegration.REPORT) as job, \
-                patch.object(CodeQualityMaintainer, "_pr_files", return_value=("Tesla: trunk", files)), \
+                patch.object(CodeQualityMaintainer, "_pr_job",
+                             return_value=(report or TestImproveIntegration.REPORT, pr)) as job, \
+                patch.object(CodeQualityMaintainer, "_pr_files", return_value=("Tesla: trunk", files)) as pr_files, \
+                patch.object(CodeQualityMaintainer, "_existing_integration_folders", return_value=set(existing)), \
                 patch.object(CodeQualityMaintainer, "_close_pr") as close:
-            result = CodeQualityMaintainer.improve_integration("Tesla", folder, "close the trunk once")
-        return result, job, close
+            result, left_open = CodeQualityMaintainer.improve_integration("Tesla", folder, "close the trunk once")
+        job.pr_files = pr_files
+        return result, job, close, left_open
 
     def test_a_pr_inside_the_folder_is_left_open_and_reported_as_is(self):
-        result, job, close = self._run("tesla", [_file("src/integrations/tesla/TeslaCommands.py")])
-        assert result == self.REPORT
+        result, job, close, left_open = self._run("tesla", [_file("src/integrations/tesla/TeslaCommands.py")])
+        assert result == self.REPORT and left_open == JOB_PR
         close.assert_not_called()
         prompt = job.call_args.args[0]
         assert "src/integrations/tesla/" in prompt and "close the trunk once" in prompt
 
     def test_a_straying_pr_is_closed_and_the_user_sent_to_report_issue(self):
-        result, _, close = self._run("tesla", [_file("src/assistant/Assistant.py")])
+        result, _, close, left_open = self._run("tesla", [_file("src/assistant/Assistant.py")])
         close.assert_called_once()
         assert close.call_args.args[0] == 31 and "src/assistant/Assistant.py" in close.call_args.args[1]
         assert "closed" in result and "report_issue" in result and self.REPORT in result
+        assert left_open is None, "a closed PR is not one to try"
+        assert JOB_PR.head in result, "the user is told the branch survives the closing"
+
+    def test_a_report_that_mentions_another_pr_closes_nothing_when_the_job_opened_none(self):
+        """2026-10-26 08:11: the job declined and echoed "PR #120" from the request; the
+        developers' PR #120 was closed and its branch deleted. The PR is the one the job
+        opened — none here — and the report's text does not count."""
+        report = ("I didn't build anything or open a PR. Keep already has a Spotify integration, the music folder. "
+                  "The same pattern as the Microsoft 365 retry (PR #120, https://github.com/example/keep/pull/120).")
+        result, job, close, left_open = self._run(None, [_file("src/integrations/microsoft/GraphClient.py")],
+                                                  report=report, pr=None)
+        close.assert_not_called()
+        job.pr_files.assert_not_called()
+        assert result == report and left_open is None
+
+    def test_a_fix_confined_to_an_existing_folder_passes_even_without_a_resolved_folder(self):
+        """2026-10-26 22:00: "music" resolved to no integration (the name is "Sonos & Spotify"),
+        the job ran in new-integration mode, changed the music folder alone and was closed for
+        "changing an existing integration". A PR inside one existing folder is that folder's."""
+        files = [_file("src/integrations/music/MusicIntegration.py"),
+                 _file("tests/unit/integrations/music/test_music_manager.py")]
+        result, _, close, left_open = self._run(None, files, pr=JobPullRequest(132, "u", "music-retry"))
+        close.assert_not_called()
+        assert result == self.REPORT and left_open.number == 132
+
+    def test_a_new_integration_in_a_folder_the_checkout_lacks_is_still_judged_as_new(self):
+        files = [_file("src/integrations/ring/RingIntegration.py"), _file("src/integrations/ring/toolkit.md", "added")]
+        _, _, close, _ = self._run(None, files, existing=("tesla",))
+        close.assert_called_once()
+        assert "existing integration" in close.call_args.args[1]
+
+    def test_a_change_to_an_existing_folder_and_a_registry_file_stays_a_straying_one(self):
+        files = [_file("src/integrations/music/MusicIntegration.py"), _file("requirements.txt")]
+        _, _, close, _ = self._run(None, files)
+        close.assert_called_once()
 
     def test_a_pr_whose_files_cannot_be_read_is_closed_too(self):
         with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
-                patch.object(CodeQualityMaintainer, "_pr_job", return_value=self.REPORT), \
+                patch.object(CodeQualityMaintainer, "_pr_job", return_value=(self.REPORT, JOB_PR)), \
                 patch.object(CodeQualityMaintainer, "_pr_files", side_effect=RuntimeError("gh: rate limited")), \
                 patch.object(CodeQualityMaintainer, "_close_pr") as close:
-            result = CodeQualityMaintainer.improve_integration("Tesla", "tesla", "close the trunk once")
+            result, _ = CodeQualityMaintainer.improve_integration("Tesla", "tesla", "close the trunk once")
         close.assert_called_once()
         assert "rate limited" in result
 
     def test_the_tried_pr_is_never_closed_for_straying(self):
         # During a trial the job pushes onto the tried PR, whose files are the developers'
-        # whole change; closing it would delete the branch the server runs.
+        # whole change; closing it would end the trial the server runs.
         from assistant.agents.PullRequestTrial import PullRequestTrial, Trial
         trial = Trial(number=31, title="core refactor", head_ref="feat/core", since="14:02", return_branch="release")
         with patch.object(PullRequestTrial, "current", return_value=trial):
-            result, _, close = self._run("tesla", [_file("src/assistant/Assistant.py")])
+            result, _, close, _ = self._run("tesla", [_file("src/assistant/Assistant.py")])
         close.assert_not_called()
         assert result == self.REPORT
         other = Trial(number=30, title="t", head_ref="feat/x", since="14:02", return_branch="release")
         with patch.object(PullRequestTrial, "current", return_value=other):
-            _, _, close = self._run("tesla", [_file("src/assistant/Assistant.py")])
+            _, _, close, _ = self._run("tesla", [_file("src/assistant/Assistant.py")])
         close.assert_called_once()
 
     def test_a_declined_request_opens_nothing_to_check(self):
-        result, _, close = self._run("tesla", [], report="Declined: the request names no symptom.")
+        result, job, close, _ = self._run("tesla", [], report="Declined: the request names no symptom.", pr=None)
         assert result.startswith("Declined") and not close.called
+        job.pr_files.assert_not_called()
 
     def test_a_new_integration_gets_the_recipe_and_the_registry_files(self):
-        _, job, _ = self._run(None, [_file("src/integrations/ring/RingIntegration.py", "added")])
+        _, job, _, _ = self._run(None, [_file("src/integrations/ring/RingIntegration.py", "added")], existing=())
         prompt = job.call_args.args[0]
         assert "Adding an integration" in prompt and "docs/atlas/descriptions.py" in prompt
 
     def test_without_gh_nothing_runs(self):
         with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value="gh is out"), \
                 patch.object(CodeQualityMaintainer, "_pr_job") as job:
-            assert CodeQualityMaintainer.improve_integration("Tesla", "tesla", "x") == "gh is out"
+            assert CodeQualityMaintainer.improve_integration("Tesla", "tesla", "x") == ("gh is out", None)
             assert CodeQualityMaintainer.report_issue("x") == "gh is out"
-            assert CodeQualityMaintainer.improve_code("x") == "gh is out"
+            assert CodeQualityMaintainer.improve_code("x") == ("gh is out", None)
         job.assert_not_called()
+
+
+def _prs(*entries):
+    return {number: JobPullRequest(number, f"https://github.com/example/keep/pull/{number}", head)
+            for number, head in entries}
+
+
+@pytest.mark.unit
+class TestJobPullRequest:
+    """Which PR a job is held to have opened: one open after the run that was not open before
+    it, matched by the branch the run left the tree on. Never one the report mentions."""
+
+    @staticmethod
+    def _find(before, after, work_branch=None, trial=None):
+        from assistant.agents.PullRequestTrial import PullRequestTrial
+        with patch.object(CodeQualityMaintainer, "_open_pull_requests", return_value=after), \
+                patch.object(PullRequestTrial, "current", return_value=trial):
+            return CodeQualityMaintainer._job_pull_request("improve-integration Tesla", before, work_branch)
+
+    def test_the_new_pr_from_the_jobs_branch_is_the_jobs(self):
+        before, after = _prs((120, "microsoft-retry")), _prs((120, "microsoft-retry"), (133, "tesla-trunk"))
+        assert self._find(before, after, "tesla-trunk") == after[133]
+
+    def test_a_pr_open_before_the_run_is_never_the_jobs(self):
+        before = _prs((120, "microsoft-retry"))
+        assert self._find(before, dict(before), "microsoft-retry") is None
+        assert self._find(before, dict(before)) is None
+
+    def test_a_new_pr_from_another_branch_is_not_the_jobs_while_the_tree_sits_on_the_jobs_branch(self):
+        after = _prs((133, "someone-elses-branch"))
+        assert self._find({}, after, "tesla-trunk") is None
+
+    def test_the_only_new_pr_is_the_jobs_when_the_tree_is_back_on_its_branch(self):
+        after = _prs((133, "tesla-trunk"))
+        assert self._find({}, after) == after[133]
+        two = _prs((133, "tesla-trunk"), (134, "hue-dim"))
+        assert self._find({}, two) is None, "two new PRs and no branch to tell them apart: none is guessed"
+
+    def test_an_unlistable_state_means_no_pr(self):
+        assert self._find(None, _prs((133, "tesla-trunk")), "tesla-trunk") is None
+        assert self._find({}, None, "tesla-trunk") is None
+
+    def test_during_a_trial_the_tried_pr_is_the_jobs(self):
+        from assistant.agents.PullRequestTrial import Trial
+        trial = Trial(number=31, title="t", head_ref="feat/core", since="14:02", return_branch="release")
+        before = _prs((31, "feat/core"))
+        assert self._find(before, dict(before), trial=trial) == before[31]
+        assert self._find(before, {}, trial=trial) is None
+
+    @patch.object(CodeQualityMaintainer, "_run_subprocess")
+    def test_the_open_prs_are_read_from_gh(self, mock_sub):
+        mock_sub.return_value = Mock(returncode=0, stdout=json.dumps(
+            [{"number": 133, "url": "https://github.com/example/keep/pull/133", "headRefName": "tesla-trunk"}]))
+        assert CodeQualityMaintainer._open_pull_requests() == _prs((133, "tesla-trunk"))
+        mock_sub.return_value = Mock(returncode=1, stdout="", stderr="gh: HTTP 502")
+        assert CodeQualityMaintainer._open_pull_requests() is None
+
+    def test_the_pr_job_hands_the_pr_the_run_left_the_tree_on_back(self):
+        after = _prs((133, "tesla-trunk"))
+        with patch.object(CodeQualityMaintainer, "_run_subprocess", return_value=Mock(returncode=0, stdout="")), \
+                patch.object(CodeQualityMaintainer, "_current_branch", side_effect=["release", "tesla-trunk"]), \
+                patch.object(CodeQualityMaintainer, "_open_pull_requests", side_effect=[{}, after]), \
+                patch.object(CodeQualityMaintainer, "_run_claude", return_value="Opened the PR."), \
+                patch("assistant.agents.PullRequestTrial.PullRequestTrial.current", return_value=None):
+            report, pr = CodeQualityMaintainer._pr_job("prompt", "improve-integration Tesla")
+        assert (report, pr) == ("Opened the PR.", after[133])
+
+    @patch.object(CodeQualityMaintainer, "_run_subprocess")
+    def test_closing_a_pr_keeps_its_branch(self, mock_sub):
+        """A contract with gh: without --delete-branch the branch survives, so a closed PR is
+        reopened in one step instead of restored by hand (2026-10-26, twice)."""
+        mock_sub.return_value = Mock(returncode=0, stdout="", stderr="")
+        CodeQualityMaintainer._close_pr(132, "touches two folders")
+        command = mock_sub.call_args.args[0]
+        assert command[:4] == ["gh", "pr", "close", "132"] and "--delete-branch" not in command
+        assert "touches two folders" in command[command.index("--comment") + 1]
 
 
 @pytest.mark.unit
@@ -1875,7 +1985,7 @@ class TestPullRequestTrialHooks:
         with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
                 patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
                 patch.object(CodeQualityMaintainer, "_trial_instructions", return_value="\nPUSH TO PR #204\n"), \
-                patch.object(CodeQualityMaintainer, "_pr_job", return_value="no PR") as run:
+                patch.object(CodeQualityMaintainer, "_pr_job", return_value=("no PR", None)) as run:
             if job == "improve_code":
                 CodeQualityMaintainer.improve_code("fix the trunk")
             else:

@@ -126,6 +126,17 @@ REGISTRY_FILES = frozenset({
 _nightly_lock = threading.Lock()   # the scheduled run and //nightly work in the same checkout
 
 
+@dataclass(frozen=True)
+class JobPullRequest:
+    """The pull request a PR job opened, found among the repository's open PRs after the run
+    (`CodeQualityMaintainer._job_pull_request`) — never read off the report's text: on
+    2026-10-26 a report that echoed "PR #120" from the request had the scope check close
+    the developers' PR #120 and delete its branch, while the job had opened nothing."""
+    number: int
+    url: str
+    head: str
+
+
 class ClaudeUnavailableError(RuntimeError):
     """The `claude` CLI on the server cannot run a job; the message says what to do about it.
     `stops_the_night`: whether every later Claude Code run of the night would fail the same way."""
@@ -1286,24 +1297,27 @@ class CodeQualityMaintainer:
         return Version.version()
 
     @staticmethod
-    def improve_code(request: str) -> str:
+    def improve_code(request: str) -> tuple[str, Optional[JobPullRequest]]:
+        """A PR anywhere in the code base: the report and the PR the run opened (None for none)."""
         reason = CodeQualityMaintainer._github_unavailable()
         if reason:
-            return reason
+            return reason, None
         prompt = SELF_IMPROVEMENT_PROMPT.format(request=request, label=SELF_IMPROVEMENT_LABEL,
                                                 version=CodeQualityMaintainer._version())
         return CodeQualityMaintainer._pr_job(prompt + CodeQualityMaintainer._trial_instructions(), "self-improvement")
 
     @staticmethod
-    def improve_integration(name: str, folder: Optional[str], request: str) -> str:
+    def improve_integration(name: str, folder: Optional[str], request: str) -> tuple[str, Optional[JobPullRequest]]:
         """A PR confined to one integration: a change to the integration *name* in *folder*,
-        or — *folder* None, no integration of that name — a new one. After the run the PR's
-        files are checked against that scope (`scope_violations`) and a PR that strays is
-        closed, with the reason in the report, so a user's install can only ever open PRs
-        the developers can review as one integration's."""
+        or — *folder* None, no integration of that name — a new one. After the run the files
+        of the PR the run opened (that one alone, `_job_pull_request`; a run that opened none
+        has nothing checked) are checked against that scope (`scope_violations`, on the
+        folder `_judged_folder` settles) and a PR that strays is closed, its branch kept and
+        the reason in the report, so a user's install can only ever open PRs the developers
+        can review as one integration's. Returns the report and the PR left open, if any."""
         reason = CodeQualityMaintainer._github_unavailable()
         if reason:
-            return reason
+            return reason, None
         version = CodeQualityMaintainer._version()
         if folder is None:
             scope = INTEGRATION_SCOPE.format(folder="<folder>",
@@ -1315,32 +1329,34 @@ class CodeQualityMaintainer:
             scope = INTEGRATION_SCOPE.format(folder=folder, registry="")
             prompt = IMPROVE_INTEGRATION_PROMPT.format(name=name, request=request, scope=scope,
                                                        label=INTEGRATION_PR_LABEL, version=version)
-        report = CodeQualityMaintainer._pr_job(prompt + CodeQualityMaintainer._trial_instructions(),
-                                               f"improve-integration {name}")
-        number, _ = CodeQualityMaintainer.pull_request_in(report)
-        if number is None:
-            return report
-        if CodeQualityMaintainer._is_tried_pr(number):
+        label = f"improve-integration {name}"
+        report, pr = CodeQualityMaintainer._pr_job(prompt + CodeQualityMaintainer._trial_instructions(), label)
+        if pr is None:
+            info(f"CodeQualityMaintainer: {label} opened no PR, so nothing is checked against the integration scope")
+            return report, None
+        if CodeQualityMaintainer._is_tried_pr(pr.number):
             # During a trial the job pushed onto the tried PR — the developers' own, open
             # before this run and holding whatever it holds. Its files are not this job's
-            # scope to judge, and closing it would delete the branch the server runs.
-            info(f"CodeQualityMaintainer: PR #{number} is the tried PR, not checked against the integration scope")
-            return report
+            # scope to judge, and closing it would end the trial the server runs.
+            info(f"CodeQualityMaintainer: PR #{pr.number} is the tried PR, not checked against the integration scope")
+            return report, pr
         try:
-            title, files = CodeQualityMaintainer._pr_files(number)
-            violations = CodeQualityMaintainer.scope_violations(files, folder)
+            title, files = CodeQualityMaintainer._pr_files(pr.number)
+            judged = CodeQualityMaintainer._judged_folder(files, folder)
+            violations = CodeQualityMaintainer.scope_violations(files, judged)
         except Exception as e:
-            error(f"CodeQualityMaintainer: PR #{number} could not be checked against the integration scope: {e}")
-            violations = [f"its files could not be read ({e})"]
+            error(f"CodeQualityMaintainer: PR #{pr.number} could not be checked against the integration scope: {e}")
+            judged, violations = folder, [f"its files could not be read ({e})"]
         if not violations:
-            info(f"CodeQualityMaintainer: PR #{number} stays inside the {folder or 'new'} integration")
-            return report
+            info(f"CodeQualityMaintainer: PR #{pr.number} (from {pr.head}) stays inside the {judged or 'new'} "
+                 f"integration and is left open")
+            return report, pr
         reason = f"a PR from improve_integration must stay inside one integration, and this one {'; '.join(violations)}"
-        info(f"CodeQualityMaintainer: closing PR #{number} — {reason}")
-        CodeQualityMaintainer._close_pr(number, reason)
-        return (f"PR #{number} was closed again: {reason}.\n\nThe change needs more than the "
-                f"{name} integration — the user can file it for the developers with report_issue.\n\n"
-                f"Claude Code's report:\n{report}")
+        info(f"CodeQualityMaintainer: closing PR #{pr.number} (from {pr.head}, opened by {label}) — {reason}")
+        CodeQualityMaintainer._close_pr(pr.number, reason)
+        return (f"PR #{pr.number} was closed again: {reason}.\n\nIts branch {pr.head} is kept, so the developers "
+                f"can reopen it. A change that needs more than one integration can be filed for them with "
+                f"report_issue.\n\nClaude Code's report:\n{report}"), None
 
     @staticmethod
     def _is_tried_pr(number: int) -> bool:
@@ -1356,23 +1372,87 @@ class CodeQualityMaintainer:
         return PullRequestTrial.pr_job_instructions()
 
     @staticmethod
-    def _pr_job(prompt: str, label: str) -> str:
+    def _pr_job(prompt: str, label: str) -> tuple[str, Optional[JobPullRequest]]:
         """One Claude Code run that ends in a pull request: on the pulled current branch,
-        back on it afterwards whatever happened."""
+        back on it afterwards whatever happened. Returns the report and the PR the run
+        opened (`_job_pull_request`), None when it opened none or that cannot be told."""
         branch = CodeQualityMaintainer._current_branch()
+        open_before = CodeQualityMaintainer._open_pull_requests()
         try:
             info(f"CodeQualityMaintainer: starting {label}...")
             CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
             trace(f"prompt: {prompt}")
             result = CodeQualityMaintainer._run_claude(prompt, label)
-            return result if result else f"{label.capitalize()} produced no output."
+            left_on = CodeQualityMaintainer._current_branch()
+            pr = CodeQualityMaintainer._job_pull_request(label, open_before, left_on if left_on != branch else None)
+            return (result if result else f"{label.capitalize()} produced no output."), pr
         except ClaudeUnavailableError as e:
-            return str(e)
+            return str(e), None
         except Exception as e:
             error(f"CodeQualityMaintainer: {label} failed: {e}")
-            return f"{label.capitalize()} failed: {e}"
+            return f"{label.capitalize()} failed: {e}", None
         finally:
             CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+
+    @staticmethod
+    def _open_pull_requests() -> Optional[dict[int, JobPullRequest]]:
+        """The repository's open PRs by number; None when gh cannot list them — then no PR
+        can be told to be a job's, and none is judged."""
+        try:
+            result = CodeQualityMaintainer._run_subprocess(
+                ["gh", "pr", "list", "--state", "open", "--limit", "200", "--json", "number,url,headRefName"],
+                "gh pr list", GIT_TIMEOUT)
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or "").strip() or f"gh pr list exited {result.returncode}")
+            prs = json.loads(result.stdout or "[]")
+            return {pr["number"]: JobPullRequest(pr["number"], pr.get("url", ""), pr.get("headRefName", ""))
+                    for pr in prs}
+        except Exception as e:
+            error(f"CodeQualityMaintainer: could not list the open PRs: {e}")
+            return None
+
+    @staticmethod
+    def _job_pull_request(label: str, open_before: Optional[dict[int, JobPullRequest]],
+                          work_branch: Optional[str]) -> Optional[JobPullRequest]:
+        """The PR a job opened: during a trial the tried PR, which the job pushed onto; else
+        an open PR that was not open before the run — the one from *work_branch*, the branch
+        the run left the tree on, or the only new one when the tree is back on its own branch.
+        None when the job opened none, and when it cannot be told: a job's PR is never
+        guessed, since the scope check closes the PR it is handed."""
+        open_after = CodeQualityMaintainer._open_pull_requests()
+        if open_after is None:
+            info(f"CodeQualityMaintainer: {label}: the open PRs cannot be listed, so no PR is taken as the job's")
+            return None
+        from assistant.agents.PullRequestTrial import PullRequestTrial
+        trial = PullRequestTrial.current()
+        if trial is not None:
+            pr = open_after.get(trial.number)
+            verdict = "the PR it pushed onto" if pr else "which is no longer open, so no PR is the job's"
+            info(f"CodeQualityMaintainer: {label} ran during the trial of PR #{trial.number}, {verdict}")
+            return pr
+        if open_before is None:
+            info(f"CodeQualityMaintainer: {label}: the PRs open before the run are unknown, so no PR is taken as the job's")
+            return None
+        new = [pr for number, pr in open_after.items() if number not in open_before]
+        if not new:
+            info(f"CodeQualityMaintainer: {label} opened no pull request")
+            return None
+        listed = ", ".join(f"#{pr.number} from {pr.head}" for pr in new)
+        if work_branch:
+            for pr in new:
+                if pr.head == work_branch:
+                    info(f"CodeQualityMaintainer: {label} opened PR #{pr.number} from its branch {work_branch}")
+                    return pr
+            info(f"CodeQualityMaintainer: {label} left the tree on {work_branch} but no PR new since the run started "
+                 f"comes from it ({listed}); no PR is taken as the job's")
+            return None
+        if len(new) == 1:
+            info(f"CodeQualityMaintainer: {label} opened PR #{new[0].number} from {new[0].head}, "
+                 f"the one PR new since the run started")
+            return new[0]
+        info(f"CodeQualityMaintainer: {len(new)} PRs are new since {label} started ({listed}) and the tree is back "
+             f"on its own branch; none is taken as the job's")
+        return None
 
     @staticmethod
     def _folder_of_path(path: str) -> Optional[str]:
@@ -1381,6 +1461,37 @@ class CodeQualityMaintainer:
             if path.startswith(root):
                 rest = path[len(root):]
                 return rest.split("/", 1)[0] if "/" in rest else None
+        return None
+
+    @staticmethod
+    def _existing_integration_folders() -> set[str]:
+        """The integration folders of this checkout — on its own branch again after a run, so
+        a folder a PR adds is not among them."""
+        root = REPO_DIR / INTEGRATION_FOLDERS
+        if not root.is_dir():
+            return set()
+        return {p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("_")}
+
+    @staticmethod
+    def _judged_folder(files: list[dict], folder: Optional[str]) -> Optional[str]:
+        """The folder the scope check judges a PR against: *folder* when the job had one; for
+        a job without one (no integration of the name) the one existing folder every file sits
+        in, when there is such a one — the name resolved to nothing, but Claude Code found the
+        folder (2026-10-26: "music", named by its folder, got a fix confined to the music folder
+        closed as "an existing integration instead of a new one"); else None, a new
+        integration's."""
+        if folder is not None:
+            return folder
+        owners = {CodeQualityMaintainer._folder_of_path(path) for f in files
+                  for path in [f["filename"]] + ([f["previous_filename"]] if f.get("previous_filename") else [])}
+        if len(owners) == 1 and None not in owners:
+            (owner,) = owners
+            if owner in CodeQualityMaintainer._existing_integration_folders():
+                info(f"CodeQualityMaintainer: every file of the PR is in the existing {owner} folder, "
+                     f"so it is judged as a change to that integration, not as a new one")
+                return owner
+        trace(f"CodeQualityMaintainer: the PR is judged as a new integration's "
+              f"(folders touched: {sorted(o for o in owners if o) or 'none'})")
         return None
 
     @staticmethod
@@ -1423,10 +1534,12 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def _close_pr(number: int, reason: str):
-        comment = (f"Closed by Keep: {reason}. A change beyond one integration goes to the developers "
-                   f"as an issue (report_issue).")
+        """Closes the PR with the reason as a comment. The branch stays: a closed PR is reopened
+        in one step, a deleted branch is restored by hand (2026-10-26, twice)."""
+        comment = (f"Closed by Keep: {reason}. The branch is kept, so the PR can be reopened; a change beyond "
+                   f"one integration goes to the developers as an issue (report_issue).")
         result = CodeQualityMaintainer._run_subprocess(
-            ["gh", "pr", "close", str(number), "--comment", comment, "--delete-branch"],
+            ["gh", "pr", "close", str(number), "--comment", comment],
             f"gh pr close {number}", GIT_TIMEOUT)
         if result.returncode != 0:
             error(f"CodeQualityMaintainer: could not close PR #{number}: {result.stderr.strip()}")
@@ -1451,8 +1564,6 @@ class CodeQualityMaintainer:
             return f"The issue report failed: {e}"
         return result if result else "The issue report produced no output."
 
-    _PR_URL = re.compile(r"https?://github\.com/[\w.-]+/[\w.-]+/pull/(\d+)")
-    _PR_NUMBER = re.compile(r"\bPR\s*#(\d+)|\bpull request\s*#(\d+)", re.IGNORECASE)
     _ISSUE_URL = re.compile(r"https?://github\.com/[\w.-]+/[\w.-]+/issues/(\d+)(?:#issuecomment-\d+)?")
 
     @classmethod
@@ -1463,20 +1574,6 @@ class CodeQualityMaintainer:
         if match:
             return int(match.group(1)), match.group(0)
         trace("CodeQualityMaintainer: the report names no issue")
-        return None, None
-
-    @classmethod
-    def pull_request_in(cls, report: str) -> tuple[int | None, str | None]:
-        """(number, URL) of the pull request a self-improvement report names — the URL when
-        the report has one, else a "PR #N" mention without a URL; (None, None) for a report
-        that opened none (a declined request, a failed run)."""
-        match = cls._PR_URL.search(report or "")
-        if match:
-            return int(match.group(1)), match.group(0)
-        match = cls._PR_NUMBER.search(report or "")
-        if match:
-            return int(match.group(1) or match.group(2)), None
-        trace("CodeQualityMaintainer: the report names no pull request")
         return None, None
 
     @staticmethod

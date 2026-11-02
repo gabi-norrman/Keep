@@ -544,6 +544,47 @@ class TestRegisterClass:
         mock_config.register(FakeIntegration())
         assert mock_config.folder_named("FakeService") is None, "a class outside src/integrations has no folder"
 
+    def test_an_integration_is_found_by_its_folder_when_its_name_differs(self, mock_config):
+        """2026-10-26: improve_integration("music", ...) found no integration — the folder's
+        is called "Sonos & Spotify" — and the fix ran as a new integration. The folder name is
+        what a report calls the integration, so it finds it too; an exact name still wins."""
+        class MusicIntegration(FakeIntegration):
+            def __init__(self):
+                super().__init__("Sonos & Spotify", keys=["music"])
+        MusicIntegration.__module__ = "integrations.music.MusicIntegration"
+
+        class SonosIntegration(FakeIntegration):
+            def __init__(self):
+                super().__init__("Music", keys=["sonos"])
+        SonosIntegration.__module__ = "integrations.sonos.SonosIntegration"
+
+        mock_config.register(MusicIntegration())
+        assert mock_config.folder_named("music") == "music"
+        assert mock_config.find("MUSIC").name == "Sonos & Spotify"
+        mock_config.register(SonosIntegration())
+        assert mock_config.folder_named("music") == "sonos", "the integration named so comes before the folder"
+
+    def test_a_near_miss_names_the_integration_meant(self, mock_config):
+        class MusicIntegration(FakeIntegration):
+            def __init__(self):
+                super().__init__("Sonos & Spotify", keys=["music"])
+        MusicIntegration.__module__ = "integrations.music.MusicIntegration"
+
+        class XIntegration(FakeIntegration):
+            def __init__(self):
+                super().__init__("X", keys=["x"])
+        XIntegration.__module__ = "integrations.x.XIntegration"
+
+        mock_config.register(MusicIntegration())
+        mock_config.register(XIntegration())
+        mock_config.register(FakeIntegration("Microsoft 365"))
+        assert mock_config.resembling("Spotify") == [("Sonos & Spotify", "music")]
+        assert mock_config.resembling("the music player") == [("Sonos & Spotify", "music")]
+        assert mock_config.resembling("microsoft") == [("Microsoft 365", None)]
+        assert mock_config.resembling("Ring") == [], "a new service resembles nothing"
+        assert mock_config.resembling("Dropbox") == [], "a one-letter name is in every other word and is no near miss"
+        assert mock_config.resembling("x") == [], "nor is a one-letter name asked for"
+
 
 class TestRestart:
     def test_rebuilds_the_singleton_reruns_start_and_checks_health(self, mock_config):

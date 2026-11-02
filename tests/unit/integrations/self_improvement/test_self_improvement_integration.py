@@ -179,4 +179,4 @@ class TestGating:
                 patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
                 patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
                 patch.object(CodeQualityMaintainer, "_trial_instructions", return_value=""):
-            assert CodeQualityMaintainer.improve_code("fix it") == NOT_INSTALLED_MESSAGE
+            assert CodeQualityMaintainer.improve_code("fix it") == (NOT_INSTALLED_MESSAGE, None)
