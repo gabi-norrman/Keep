@@ -522,8 +522,6 @@ class MessageHistory:
             trace(f"MessageHistory: trim evicted the preloaded reference(s) of "
                   f"{', '.join(sorted(preloaded - set(evicted)))} — the preloader brings them back, no stub")
         if evicted:
-            info(f"MessageHistory: trim evicted the toolkit reference(s) of {', '.join(sorted(evicted))} "
-                 f"— one stub names them at the newest row's place")
             names = sorted(set(names) | set(evicted))
         timestamp = max(evicted.values()) if evicted else (stub["timestamp"] if stub else 0.0)
 
@@ -531,6 +529,10 @@ class MessageHistory:
             self.transient_entries = [e for e in self.transient_entries if e is not stub]
             stub = None
         if names and stub is None:
+            # Logged here, not where `evicted` is found: the window is rendered on every
+            # request and many times a second by the TUI, and the evicted rows stay evicted.
+            info(f"MessageHistory: trim evicted the toolkit reference(s) of {', '.join(names)} "
+                 f"— one stub names them at the newest row's place")
             stub = {"role": "system", "content": self._stub_text(names), "timestamp": timestamp,
                     "source": self.SOURCE_TOOLKIT_EVICTED, "location": None, "section": None,
                     "toolkits": names}
