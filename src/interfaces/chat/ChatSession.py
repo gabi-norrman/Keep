@@ -4,7 +4,9 @@ and the assistant's event stream becomes chat messages through the transport's `
 Shared by every chat interface. Owns the intake rules (reply quoting, reaction phrasing,
 voice transcription, video description, album batching), the reply state machine (progress
 while nothing is visible, streaming updates, one bubble per LLM round, message splitting,
-NO-reply suppression for reactions, the command status line) and supersede-on-new-message.
+NO-reply suppression for reactions, the command status line) and supersede-on-new-message —
+a new message kills the reply in flight; a reaction never does (the user is reacting to the
+very bubble being written), it waits and runs as its own turn once the reply is over.
 Nothing here knows which platform is on the other side.
 """
 import base64
@@ -124,6 +126,9 @@ class ChatSession:
         self._conversation = conversation
         self._lock = threading.Lock()
         self._request: Optional[_Request] = None
+        # A reaction that arrived while a reply was in flight: run once that reply is over
+        # (the latest one, when several). Guarded by _lock.
+        self._deferred: Optional[IncomingMessage] = None
         self._album: Optional[_Album] = None
         # The group's title when the transport knows one: every request from here carries it
         # as its location, so the turn header says which chat the assistant is in.
@@ -196,10 +201,14 @@ class ChatSession:
         threading.Thread(target=_run, name=f"{self._transport.name}Debug", daemon=True).start()
 
     def cancel(self):
-        """Drop the pending album and kill the in-flight reply (its draft is discarded)."""
+        """Drop the pending album and the reaction waiting for the reply, and kill the
+        in-flight reply (its draft is discarded)."""
         self._cancel_album()
         with self._lock:
             request = self._request
+            deferred, self._deferred = self._deferred, None
+        if deferred is not None:
+            info(f"{self._log_prefix()}: the reaction {deferred.reaction} waiting for the reply is dropped")
         if request is not None:
             info(f"{self._log_prefix()}: cancelling the in-flight reply")
             request.cancel()
@@ -213,6 +222,16 @@ class ChatSession:
                 # refuses the guest's request, but only once this conversation's previous one
                 # is cancelled — too late for the owner. Dropped without a word, like there.
                 info(f"{self._log_prefix()}: a reply is in flight, the guest turn from {msg.sender} is dropped")
+                return
+            if previous is not None and msg.kind == KIND_REACTION:
+                # A reaction to the bubble still being written must not kill the reply: a killed
+                # request writes no history, and the retyped question that justifies losing it
+                # never comes with a reaction. It waits its turn (the latest one, when several)
+                # and runs like any reaction once the reply is over — _serve dispatches it.
+                replaced = self._deferred
+                self._deferred = msg
+                info(f"{self._log_prefix()}: a reply is in flight, the reaction {msg.reaction} from {msg.sender} "
+                     f"waits for it" + (f" (replacing the {replaced.reaction} held before)" if replaced else ""))
                 return
             self._request = request
         if previous is not None:
@@ -331,13 +350,21 @@ class ChatSession:
         except Exception as e:
             error(f"{self._log_prefix()}: request failed: {e}")
         finally:
+            deferred = None
             with self._lock:
+                # The reaction held back waits for the reply in charge: a superseded request
+                # winding down late leaves it for its successor.
                 if self._request is request:
                     self._request = None
+                    deferred, self._deferred = self._deferred, None
             if not replied:
                 # _reply announces its own end; a message that never got that far must still
                 # balance the transport's bookkeeping (the console feed counts turns).
                 self._transport.reply_finished(self._conversation)
+            if deferred is not None:
+                info(f"{self._log_prefix()}: the reply is over, running the reaction {deferred.reaction} "
+                     f"that waited for it")
+                self._start(deferred)
 
     def _prepare(self, msg: IncomingMessage, images: Optional[list]):
         """The assistant query for a message: (query, images, suppress_no), or None when
