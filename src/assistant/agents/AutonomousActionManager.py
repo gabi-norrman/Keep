@@ -213,6 +213,8 @@ class AutonomousActionManager:
         # then does with the item. In memory only — a restart fires a reached moment again.
         self._fired_due: set[tuple[str, datetime]] = set()
         self._next_due_logged: Optional[datetime] = None   # the watcher logs the next moment when it changes
+        # The cadence polls held for the morning, said once each while Night mode lasts
+        self._held_at_night: set[tuple[str, datetime]] = set()
         self.due_thread = threading.Thread(target=self._run_due_watcher, daemon=True, name="DueWatcher")
         if not test_mode:
             self.thread.start()
@@ -332,6 +334,7 @@ class AutonomousActionManager:
 
     def _run_periodic_check(self):
         last_memory_curation_date = None
+        night_skip_logged = False
 
         next_check_at = self._first_check_at()
         while self.running:
@@ -348,7 +351,12 @@ class AutonomousActionManager:
 
             if self.prompt_manager.is_night_mode_active():
                 next_check_at = time.time() + PERIODIC_CHECK_INTERVAL_SECONDS
+                if not night_skip_logged:
+                    info("Periodic activity check skipped — Night mode is active; the due watcher "
+                         "still fires the watch items' due times")
+                night_skip_logged = True
                 continue
+            night_skip_logged = False
 
             if self.is_user_interaction_active():
                 next_check_at = time.time() + POSTPONED_CHECK_RETRY_SECONDS
@@ -687,8 +695,11 @@ class AutonomousActionManager:
         """One read of the watch list: fires a check for the reached moments not fired yet and
         says so; False when it fired nothing. A moment is fired once (`_fired_due`) — an item
         the LLM leaves unlooked-at after that is the periodic checks' business, which carry it
-        as a due item until a look. Night mode leaves the moment unfired, so it fires in the
-        morning; a user in flight leaves it for the next read a minute on."""
+        as a due item until a look. A due time is a clock time the user asked for, so it fires
+        in Night mode too (issue #119: a 06:15 check was held until the owner got up and asked);
+        a cadence poll is the check's own rhythm and Night mode leaves it unfired, like the
+        periodic check, so it fires in the morning. A user in flight leaves a moment for the
+        next read a minute on."""
         now = now or datetime.now()
         pending = WatchList.pending(now, within=timedelta(seconds=PERIODIC_CHECK_INTERVAL_SECONDS))
         # An item earns several moments at once (its due time and its cadence's next poll), each
@@ -696,6 +707,13 @@ class AutonomousActionManager:
         self._fired_due &= {(item.name, moment) for item, moment in pending}
         reached = [(item, moment) for item, moment in pending
                    if moment <= now and (item.name, moment) not in self._fired_due]
+        night = self.prompt_manager.is_night_mode_active()
+        if night:
+            held = [(item, moment) for item, moment in reached if WatchList.due_moment(item) != moment]
+            self._log_held_at_night(held)
+            reached = [pair for pair in reached if pair not in held]
+        else:
+            self._held_at_night.clear()
         if not reached:
             ahead = [moment for _, moment in pending if moment > now]
             next_due = min(ahead) if ahead else None
@@ -704,9 +722,8 @@ class AutonomousActionManager:
                 trace("Due watcher: " + (f"next moment at {next_due:%Y-%m-%d %H:%M}" if next_due else "no moment ahead"))
             return False
         names = ", ".join(item.name for item, _ in reached)
-        if self.prompt_manager.is_night_mode_active():
-            info(f"Due watcher: {names} reached — left for the morning, Night mode is active")
-            return False
+        if night:
+            info(f"Due watcher: {names} reached in Night mode — a due time fires night or not")
         if self.is_user_interaction_active():
             info(f"Due watcher: {names} reached — user interaction active or recent, trying again in a minute")
             return False
@@ -714,6 +731,15 @@ class AutonomousActionManager:
         info(f"Due watcher: firing a check for {names}")
         self.activity_check(due=reached)
         return True
+
+    def _log_held_at_night(self, held: list[tuple[WatchList.Item, datetime]]):
+        """Says once per moment which cadence polls wait for the morning — the watcher reads the
+        list every minute, and a line a minute for a whole night is noise."""
+        keys = {(item.name, moment) for item, moment in held}
+        if new := keys - self._held_at_night:
+            names = ", ".join(sorted(name for name, _ in new))
+            info(f"Due watcher: cadence poll of {names} reached — left for the morning, Night mode is active")
+        self._held_at_night = keys
 
     def schedule(self, minutes: float) -> None:
         """Wake in *minutes*. What the wake is for stays in the history or on the watch list —

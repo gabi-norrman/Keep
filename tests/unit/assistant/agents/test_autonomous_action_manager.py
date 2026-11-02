@@ -538,6 +538,26 @@ class TestAutonomousActionManager:
         assert call_count[0] == 0
         mgr.running = True  # restore
 
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_the_periodic_loop_says_once_per_night_that_it_skips(self, mock_claude):
+        """Issue #119: the night of 2026-10-24 left no periodic line in the log at all, so a
+        silent night read like a dead loop. One line per night, not one per tick."""
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(night=True), test_mode=True)
+        ticks = [0]
+
+        def patched_sleep(seconds):
+            ticks[0] += 1
+            if ticks[0] >= 4:
+                mgr.running = False
+
+        with patch('assistant.agents.AutonomousActionManager.time.sleep', side_effect=patched_sleep), \
+             patch('assistant.agents.AutonomousActionManager.info') as log, \
+             patch.object(mgr, 'activity_check', return_value="NO"):
+            mgr._run_periodic_check()
+        mgr.running = True
+        assert sum("Night mode" in c.args[0] for c in log.call_args_list) == 1
+
     @staticmethod
     def _run_loop(mgr, iterations: int, check=None, interaction_active: bool = False, check_seconds: float = 0.0):
         """Run the periodic loop for `iterations` sleeps on a fake clock that advances by
@@ -1319,12 +1339,66 @@ class TestDueWatcher:
         self.manager()._poll_due(datetime(2026, 10, 11, 17, 0))
         assert self.manager()._poll_due(datetime(2026, 10, 11, 23, 0)) is True
 
-    def test_night_mode_leaves_the_moment_for_the_morning(self):
-        self.watch("water-meter", "2026-10-11 17:00")
+    def test_a_due_time_fires_in_night_mode(self):
+        """Regression for issue #119: a one-off check the owner asked for at 06:15 was held
+        every minute until the owner got up and asked at 06:49 — a due time is a clock time
+        the user asked for, and Night mode is no reason to miss it."""
+        self.watch("airport-departures", "2026-10-25 06:15")
         mgr = self.manager(night=True)
-        assert mgr._poll_due(datetime(2026, 10, 11, 17, 0)) is False
+        assert mgr._poll_due(datetime(2026, 10, 25, 6, 14)) is False
+        assert mgr._poll_due(datetime(2026, 10, 25, 6, 15)) is True
+        assert mgr._poll_due(datetime(2026, 10, 25, 6, 16)) is False, "fired once, night or not"
+        (call,) = mgr.activity_check.call_args_list
+        assert [(item.name, moment) for item, moment in call.kwargs["due"]] == [("airport-departures", datetime(2026, 10, 25, 6, 15))]
+
+    def test_night_mode_leaves_a_cadence_poll_for_the_morning(self):
+        WatchList.save("car-arrival", "waiting for the car", None, every="3m")
+        checked = WatchList.stamp(WatchList.get("car-arrival").checked)
+        mgr = self.manager(night=True)
+        assert mgr._poll_due(checked + timedelta(minutes=3)) is False
+        assert mgr._poll_due(checked + timedelta(hours=5)) is False
         mgr.prompt_manager.is_night_mode_active.return_value = False
-        assert mgr._poll_due(datetime(2026, 10, 12, 7, 0)) is True
+        assert mgr._poll_due(checked + timedelta(hours=8)) is True
+
+    def test_at_night_an_item_s_due_time_fires_alone_and_its_cadence_poll_waits(self):
+        WatchList.save("water-meter", "read it and report", "2026-10-11 05:00", every="20m")
+        self.stamp_checked("water-meter", "2026-10-11 00:00")
+        mgr = self.manager(night=True)
+        assert mgr._poll_due(datetime(2026, 10, 11, 5, 0)) is True
+        (call,) = mgr.activity_check.call_args_list
+        assert [moment for _, moment in call.kwargs["due"]] == [datetime(2026, 10, 11, 5, 0)]
+        mgr.prompt_manager.is_night_mode_active.return_value = False
+        assert mgr._poll_due(datetime(2026, 10, 11, 7, 0)) is True, "the cadence poll held overnight fires in the morning"
+        assert [moment for _, moment in mgr.activity_check.call_args_list[1].kwargs["due"]] == [datetime(2026, 10, 11, 0, 20)]
+
+    def test_a_cadence_poll_held_at_night_is_logged_once_not_every_minute(self):
+        """The 06:15 item of issue #119 drew 35 identical lines, one per read."""
+        WatchList.save("car-arrival", "waiting for the car", None, every="3m")
+        checked = WatchList.stamp(WatchList.get("car-arrival").checked)
+        mgr = self.manager(night=True)
+        with patch("assistant.agents.AutonomousActionManager.info") as log:
+            for minute in range(3, 40):
+                mgr._poll_due(checked + timedelta(minutes=minute))
+            held = [c for c in log.call_args_list if "Night mode" in c.args[0]]
+        assert len(held) == 1 and "car-arrival" in held[0].args[0]
+        # The morning ends the hold; the next night says it again
+        mgr.prompt_manager.is_night_mode_active.return_value = False
+        with patch("assistant.agents.AutonomousActionManager.info"):
+            mgr._poll_due(checked + timedelta(minutes=40))
+        self.stamp_checked("car-arrival", (checked + timedelta(minutes=41)).strftime("%Y-%m-%d %H:%M"))
+        mgr.prompt_manager.is_night_mode_active.return_value = True
+        with patch("assistant.agents.AutonomousActionManager.info") as log:
+            mgr._poll_due(checked + timedelta(minutes=45))
+        assert any("Night mode" in c.args[0] for c in log.call_args_list)
+
+    def test_a_due_time_fired_in_night_mode_says_so_in_the_log(self):
+        self.watch("airport-departures", "2026-10-25 06:15")
+        mgr = self.manager(night=True)
+        with patch("assistant.agents.AutonomousActionManager.info") as log:
+            mgr._poll_due(datetime(2026, 10, 25, 6, 15))
+        lines = [c.args[0] for c in log.call_args_list]
+        assert any("Night mode" in line and "airport-departures" in line for line in lines)
+        assert not any("left for the morning" in line for line in lines)
 
     def test_a_user_in_flight_leaves_the_moment_for_the_next_read(self):
         self.watch("water-meter", "2026-10-11 17:00")
