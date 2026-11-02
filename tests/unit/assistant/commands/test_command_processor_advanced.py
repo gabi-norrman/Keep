@@ -1630,6 +1630,18 @@ class TestCommandProcessorSensitiveGate:
         assert approval_calls[0]["details"] == "Anna, are you home?"
         assert run_calls == [("send_imessage", ["Anna, are you home?"])]
 
+    @pytest.mark.parametrize("command, params", [
+        ("report_issue", ["The lights stayed on after 'släck allt' at 22:10"]),
+        ("pr_feedback", ["12", "tested, the dimmer still jumps"]),
+    ])
+    def test_github_bound_text_waits_for_approval_and_is_not_sent_on_deny(self, monkeypatch, command, params):
+        # Issue #138: the assistant filed an issue seconds after promising to show it first.
+        # Text leaving for GitHub is now a card the user reads before anything is sent.
+        _, run_calls, approval_calls, _ = self._run_with_decision("deny", monkeypatch, params=params, command=command)
+        assert run_calls == []
+        assert len(approval_calls) == 1
+        assert params[-1] in approval_calls[0]["details"]
+
     def test_gate_hands_the_notifier_a_kill_probe(self, monkeypatch):
         # The hub polls this while the card is open, so a superseded request withdraws its card.
         processor, _, approval_calls, _ = self._run_with_decision("deny", monkeypatch)

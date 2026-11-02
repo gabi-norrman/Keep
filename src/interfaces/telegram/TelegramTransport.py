@@ -1369,11 +1369,30 @@ class TelegramTransport(Integration, ChatTransport):
 
     # --- ChatTransport: approvals ---------------------------------------------------------------
 
+    APPROVAL_CUT_NOTE = "\n[… cut to fit the message; the full text is in the server log …]"
+
     def send_approval_prompt(self, conversation, token: str, title: str, details: str) -> Any:
-        body = f"<b>Approval needed</b>\n{escape(title)}"
+        head = f"<b>Approval needed</b>\n{escape(title)}"
+        body = head
         if details:
-            body += f"\n\n<blockquote>{escape(details)}</blockquote>"
+            body = f"{head}\n\n<blockquote>{self._fit_approval_details(details, head)}</blockquote>"
         return self._call(self._send_approval_async(conversation, token, body), "approval prompt", timeout=30)
+
+    def _fit_approval_details(self, details: str, head: str) -> str:
+        """The escaped details, cut so the card fits one Telegram message: a report_issue brief
+        can run past the limit, and an oversized send fails, which the hub reads as no chat to
+        ask and the command is blocked unseen. The raw text is cut (never the escaped one, so
+        no entity is split) and re-escaped until it fits."""
+        room = self.max_message_length - len(head) - len("\n\n<blockquote></blockquote>")
+        escaped = escape(details)
+        if len(escaped) <= room:
+            return escaped
+        room -= len(self.APPROVAL_CUT_NOTE)
+        raw = details[:room]
+        while len(escape(raw)) > room:
+            raw = raw[:len(raw) - (len(escape(raw)) - room)]
+        info(f"Approval card details cut to fit a Telegram message ({len(details)} → {len(raw)} chars)")
+        return escape(raw) + self.APPROVAL_CUT_NOTE
 
     async def _send_approval_async(self, chat_id: int, token: str, body: str) -> Optional[int]:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup

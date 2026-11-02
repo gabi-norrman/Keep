@@ -46,8 +46,10 @@ To report a bug or a problem to the developers, as a GitHub issue on your own re
 Claude Code investigates first (the logs, the code, what happened when), then writes the issue for the developers
 with the timeline, log excerpts and the suspected cause, and files it; a matching open issue gets a comment instead
 of a duplicate. It knows to leave out secrets and the household's personal data. Pass on what the user saw, in
-their words, with the time it happened; if a self-analysis ran first, feed its report in. When it is done the user
-is sent the link; tell them the issue is live there.
+their words, with the time it happened; if a self-analysis ran first, feed its report in. The user approves the
+report first (a prompt in the chat showing the text, with approve/deny, as for a restart), so nothing reaches
+GitHub unseen; if they deny, the command result says so and nothing is filed. When it is done the user is sent the
+link; tell them the issue is live there.
 
 Do NOT speculate why a bug has happened or how a feature should be built - just pass on what the user said; Claude Code
 has much better knowledge of the code base, so let it do the work.
@@ -68,9 +70,10 @@ same number picks the new commits up. The trial ends with `restart_server`, or b
 
 `pr_feedback(number: int, text: str)`
 
-Posts the user's verdict ("tested, works", "the lights still do not dim") as a comment on the PR. The number may be 
-left out during a trial. This is valuable information for the developers. Encourage the user to post feedback
-and include information that will be valuable to the developers. Don't post private information here. 
+Posts the user's verdict ("tested, works", "the lights still do not dim") as a comment on the PR. The number may be
+left out during a trial. The user approves the comment first (a prompt in the chat showing the text). This is
+valuable information for the developers. Encourage the user to post feedback and include information that will be
+valuable to the developers. Don't post private information here.
 
 ### Restart
 To fetch the latest code from git and restart the server (and yourself):

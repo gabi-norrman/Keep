@@ -1556,6 +1556,19 @@ class TestApprovals:
             transport.send_approval_prompt(555, "tok", "Plain", "")
             assert send.call_args[0][2] == "<b>Approval needed</b>\nPlain"
 
+    def test_oversized_details_are_cut_to_one_message_without_splitting_an_entity(self, transport):
+        # A report_issue brief can run past Telegram's limit; an oversized send fails and the
+        # hub then blocks the command unseen. The cut lands on the raw text, so an '&' near
+        # the edge never becomes a half entity.
+        details = ("x" * 4000 + " & ") * 3
+        with patch.object(transport, '_send_approval_async', return_value=MagicMock()) as send, \
+             patch.object(transport, '_call', side_effect=lambda coro, *a, **kw: coro):
+            transport.send_approval_prompt(555, "tok", "Reporting an issue", details)
+        body = send.call_args[0][2]
+        assert len(body) <= transport.max_message_length
+        assert body.endswith(transport.APPROVAL_CUT_NOTE + "</blockquote>")
+        assert body.count("&") == body.count("&amp;")  # every '&' is a whole entity
+
     @pytest.mark.asyncio
     async def test_prompt_send_failure_returns_none(self, transport):
         transport._application.bot.send_message = AsyncMock(side_effect=Exception("boom"))
