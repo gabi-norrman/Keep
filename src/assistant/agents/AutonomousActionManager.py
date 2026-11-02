@@ -39,6 +39,7 @@ USER_INTERACTION_STALE_COUNTER_SECONDS = 10 * 60
 # A wake-up that fell due while the server was down fires this long after startup — time for
 # the interfaces and integrations to come up before the check runs commands through them.
 MISSED_WAKEUP_STARTUP_GRACE_SECONDS = 30
+ACTIVITY_CHECK_LOCK_TIMEOUT_SECONDS = 120
 # Past this, a firing wake-up tells the LLM how late it is (a restart's few seconds need no note).
 WAKEUP_LATE_NOTE_THRESHOLD_SECONDS = 5 * 60
 # How often the due watcher reads the watch list for a due time or a short cadence that has
@@ -427,8 +428,12 @@ class AutonomousActionManager:
         this call); the check's commands get it, so server_logs can tell the check's own lines
         from what it searches for."""
         started = time.time() if started is None else started
-        if not self.activity_check_lock.acquire(timeout=120):
-            error("Could not acquire activity_check_lock — another check is stuck")
+        kind = "scheduled wake-up" if wakeup else "watch poll" if due else "check"
+        if not self.activity_check_lock.acquire(timeout=ACTIVITY_CHECK_LOCK_TIMEOUT_SECONDS):
+            error(f"Dropping this {kind}: checks run one at a time and the ones ahead of it "
+                  f"(a check takes up to a few minutes on a local model) still held the lock "
+                  f"after {ACTIVITY_CHECK_LOCK_TIMEOUT_SECONDS} s — several wake-ups scheduled "
+                  f"for the same minute queue up like this")
             return ""
         try:
             return self._activity_check_inner(prompt, wakeup, due, started)
