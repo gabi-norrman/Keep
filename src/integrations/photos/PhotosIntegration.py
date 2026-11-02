@@ -1,7 +1,8 @@
 """The Photos library as a Feed (plans/FEED_PLAN.md): `fetch` lists the assets created after the
 cursor, indexes the unindexed ones through PhotoProcessor and hands their history rows to
 FeedRunner; `sweep`, asked while the feed is live, does the same for the assets behind the
-cursor that have no row (a batch the provider refused, rows a migration forgot). The `photos`
+cursor that have no row (a batch the provider refused, rows a migration forgot) and, once there
+are none, describes again the assets on which Photos has named a face since. The `photos`
 table is the ledger, so re-reading a stretch of the library costs a query and nothing else; the
 cursor (an Apple creation timestamp) only decides where the next poll starts."""
 import os
@@ -322,7 +323,7 @@ class PhotosIntegration(Integration, Feed):
         waiting = processor.count_unindexed_photos(kinds, after_apple_ts=since, before_apple_ts=until)
         if not waiting:
             trace("Photos: sweep found nothing unindexed between the horizon and the cursor")
-            return FeedBatch([], cursor=cursor, exhausted=True, remaining=0)
+            return self._redescribe_renamed(cursor)
         rows = processor.unindexed_between(since, until, FETCH_BATCH_SIZE, kinds)
         note(f"Photos: {waiting} asset(s) behind the cursor have no index row (back to "
              f"{time.strftime('%Y-%m-%d', time.localtime(horizon_ts))}), indexing {len(rows)} of them now")
@@ -336,6 +337,21 @@ class PhotosIntegration(Integration, Feed):
             return FeedBatch(self._drain_entries(), cursor=cursor, exhausted=True, remaining=left)
         return FeedBatch(self._drain_entries(), cursor=cursor, exhausted=left == 0 or len(rows) < FETCH_BATCH_SIZE,
                          remaining=left)
+
+    def _redescribe_renamed(self, cursor: Optional[str]) -> FeedBatch:
+        """The sweep's second job, once nothing is unindexed: describe again, at the backfill's
+        price, the assets on which Photos has named a face since they were described, so the
+        description and the search carry the names. The history rows stay as they were."""
+        rows, total = self._processor.assets_with_new_names(FETCH_BATCH_SIZE)
+        if not rows:
+            return FeedBatch([], cursor=cursor, exhausted=True, remaining=0)
+        info(f"Photos: {total} indexed asset(s) have faces Photos named since they were described, "
+             f"re-describing {len(rows)} of them now")
+        refused = self._index(rows, " (new names in Photos)", batched=True, cursor=cursor)
+        refused_uuids = set(self._processor.refused_last_run())
+        self._processor.retry_renamed(r["cloud_asset_guid"] for r in rows if r["uuid"] in refused_uuids)
+        return FeedBatch(self._drain_entries(), cursor=cursor,
+                         exhausted=refused or total <= len(rows), remaining=0)
 
     @staticmethod
     def advance_cursor(current: float, rows: list, now: float) -> tuple[float, set[str]]:

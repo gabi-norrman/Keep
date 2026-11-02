@@ -873,6 +873,46 @@ class FloxyDatabase:
                 error(f"Error storing photo {asset_guid}: {e}")
                 return None
 
+    def update_photo_analysis(self, asset_guid: str, location_text: Optional[str], albums: Optional[str],
+                              persons: Optional[str], photo_type: Optional[str],
+                              short_description: str, detailed_description: str,
+                              pretty_score: int, family_importance_score: int,
+                              indexed_at: float) -> Optional[int]:
+        """Replace the description of an asset already indexed (a re-description); the row
+        keeps its id, so the `[photo_id=N]` references stay valid. Returns the id, or None
+        when the GUID has no row."""
+        with self.lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE photos SET location_text = ?, albums = ?, persons = ?, photo_type = ?,
+                        short_description = ?, detailed_description = ?, pretty_score = ?,
+                        family_importance_score = ?, indexed_at = ?
+                    WHERE asset_guid = ?
+                ''', (location_text, albums, persons, photo_type, short_description, detailed_description,
+                      pretty_score, family_importance_score, indexed_at, asset_guid))
+                row = cursor.execute('SELECT id FROM photos WHERE asset_guid = ?', (asset_guid,)).fetchone()
+                conn.commit()
+                conn.close()
+                return row[0] if row else None
+            except sqlite3.Error as e:
+                error(f"Error updating photo {asset_guid}: {e}")
+                return None
+
+    def get_indexed_photo_persons(self) -> dict[str, str]:
+        """asset_guid -> the persons stored with it, for every described (not skipped) asset."""
+        with self.lock:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                rows = conn.execute("SELECT asset_guid, coalesce(persons, '') FROM photos "
+                                    "WHERE photo_type IS NOT 'skipped'").fetchall()
+                conn.close()
+                return dict(rows)
+            except sqlite3.Error as e:
+                error(f"Error reading indexed photo persons: {e}")
+                return {}
+
     def photo_exists(self, asset_guid: str) -> bool:
         with self.lock:
             try:

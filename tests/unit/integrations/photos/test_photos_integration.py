@@ -2719,6 +2719,7 @@ class TestPhotosFeedSweep:
         processor.provider_unavailable.return_value = reason
         processor.provider_out_of_credits.return_value = False
         processor.refused_last_run.return_value = list(refused)
+        processor.assets_with_new_names.return_value = ([], 0)
         with patch.object(integration, '_provider_refused') as refused_hook:
             batch = integration.sweep(self.HORIZON, self.CURSOR)
         return batch, processor, refused_hook
@@ -3220,3 +3221,154 @@ class TestClipBackend:
         with patch.object(module.PhotoProcessor, '_build_clip_llm', return_value=None) as build:
             assert processor._clip_llm() is None and processor._clip_llm() is None
         assert build.call_count == 1
+
+
+class TestNamesPhotosLearnedLater:
+    """Photos names faces hours to weeks after the feed described a photo: the sweep, once
+    nothing is unindexed, describes those assets again so the names reach the index."""
+
+    @pytest.fixture(autouse=True)
+    def reset_singleton(self):
+        from integrations.photos.PhotosIntegration import PhotosIntegration
+        PhotosIntegration.reset_instance()
+        yield
+        PhotosIntegration.reset_instance()
+
+    @staticmethod
+    def _photos_library(path, assets, faces):
+        """assets: (pk, uuid, guid, date); faces: (asset pk, display name or None)."""
+        conn = sqlite3.connect(path)
+        conn.executescript("""
+            CREATE TABLE ZCLOUDMASTER (Z_PK INTEGER PRIMARY KEY, ZCLOUDMASTERGUID TEXT);
+            CREATE TABLE ZASSET (Z_PK INTEGER PRIMARY KEY, ZUUID TEXT, ZFILENAME TEXT, ZDIRECTORY TEXT,
+                ZDATECREATED REAL, ZLATITUDE REAL, ZLONGITUDE REAL, ZKINDSUBTYPE INTEGER, ZKIND INTEGER,
+                ZDURATION REAL, ZMASTER INTEGER, ZCLOUDASSETGUID TEXT, ZLIBRARYSCOPE INTEGER,
+                ZTRASHEDSTATE INTEGER, ZHIDDEN INTEGER);
+            CREATE TABLE ZPERSON (Z_PK INTEGER PRIMARY KEY, ZDISPLAYNAME TEXT);
+            CREATE TABLE ZDETECTEDFACE (Z_PK INTEGER PRIMARY KEY, ZASSETFORFACE INTEGER, ZPERSONFORFACE INTEGER);
+        """)
+        for pk, uuid, guid, date in assets:
+            conn.execute("INSERT INTO ZASSET VALUES (?, ?, 'IMG.heic', '0', ?, NULL, NULL, 0, 0, NULL, NULL, ?, 0, 0, 0)",
+                         (pk, uuid, date, guid))
+        people = {}
+        for asset_pk, name in faces:
+            if name not in people:
+                people[name] = len(people) + 1
+                conn.execute("INSERT INTO ZPERSON VALUES (?, ?)", (people[name], name))
+            conn.execute("INSERT INTO ZDETECTEDFACE (ZASSETFORFACE, ZPERSONFORFACE) VALUES (?, ?)",
+                         (asset_pk, people[name]))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def _index(db, guid, persons, photo_type="HDR"):
+        db.store_photo(asset_guid=guid, creation_date=1.0, latitude=None, longitude=None, location_text="",
+                       albums="", persons=persons, photo_type=photo_type, short_description="two girls in a pool",
+                       detailed_description="", pretty_score=50, family_importance_score=50, indexed_at=1.0)
+
+    def _stale(self, tmp_path, floxy_db, assets, faces, limit=10, processor=None):
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        path = str(tmp_path / "Photos.sqlite")
+        self._photos_library(path, assets, faces)
+        processor = processor or PhotoProcessor()
+        with patch('integrations.photos.PhotoProcessor.PHOTOS_SQLITE_PATH', path), \
+             patch.object(FloxyDatabase, 'get_instance', return_value=floxy_db):
+            return processor.assets_with_new_names(limit), processor
+
+    @pytest.mark.unit
+    def test_only_assets_with_a_name_the_description_lacks_are_offered(self, tmp_path, floxy_db):
+        assets = [(1, "U-NAMELESS", "G-NAMELESS", 100.0), (2, "U-CURRENT", "G-CURRENT", 200.0),
+                  (3, "U-ONE-MORE", "G-ONE-MORE", 300.0), (4, "U-UNINDEXED", "G-UNINDEXED", 400.0),
+                  (5, "U-SKIPPED", "G-SKIPPED", 500.0)]
+        faces = [(1, "Frances"), (2, "Charlotte"), (3, "Charlotte"), (3, "Ingeborg"), (4, "Frances"),
+                 (5, "Frances"), (1, None)]
+        self._index(floxy_db, "G-NAMELESS", "")
+        self._index(floxy_db, "G-CURRENT", "Charlotte")
+        self._index(floxy_db, "G-ONE-MORE", "Charlotte")
+        self._index(floxy_db, "G-SKIPPED", "", photo_type="skipped")
+        (rows, total), _ = self._stale(tmp_path, floxy_db, assets, faces)
+        assert [r["uuid"] for r in rows] == ["U-ONE-MORE", "U-NAMELESS"], "newest first"
+        assert total == 2
+        assert all(r["redescribe"] for r in rows)
+
+    @pytest.mark.unit
+    def test_an_asset_is_offered_once_per_process_unless_the_backend_refused_it(self, tmp_path, floxy_db):
+        assets = [(1, "U-A", "G-A", 100.0), (2, "U-B", "G-B", 200.0)]
+        faces = [(1, "Frances"), (2, "Frances")]
+        self._index(floxy_db, "G-A", "")
+        self._index(floxy_db, "G-B", "")
+        (first, total), processor = self._stale(tmp_path, floxy_db, assets, faces, limit=1)
+        assert ([r["uuid"] for r in first], total) == (["U-B"], 2)
+        processor.retry_renamed(["G-B"])
+        path = str(tmp_path / "Photos.sqlite")
+        with patch('integrations.photos.PhotoProcessor.PHOTOS_SQLITE_PATH', path), \
+             patch.object(FloxyDatabase, 'get_instance', return_value=floxy_db):
+            second, _ = processor.assets_with_new_names(10)
+            third, left = processor.assets_with_new_names(10)
+        assert sorted(r["uuid"] for r in second) == ["U-A", "U-B"]
+        assert (third, left) == ([], 0)
+
+    @pytest.mark.unit
+    def test_a_redescription_replaces_the_row_in_place_and_writes_no_history(self, floxy_db):
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        self._index(floxy_db, "G-POOL", "")
+        before = floxy_db.search_photos("pool")[0]
+        processor = PhotoProcessor()
+        row = {"uuid": "U-POOL", "cloud_asset_guid": "G-POOL", "creation_ts": 1.0, "latitude": None,
+               "longitude": None, "kind": "photo", "redescribe": True}
+        result = {"short_description": "Frances and Charlotte in a resort pool",
+                  "detailed_description": "Frances sits on Charlotte's shoulders.", "spoken_content": ""}
+        with patch.object(floxy_db, 'add_history_entry') as history:
+            photo_id = processor._store_analysis(floxy_db, row, result, "HDR", "", "", "Frances, Charlotte", 60, 70)
+        history.assert_not_called()
+        assert photo_id == before["id"], "the [photo_id=N] references keep pointing at the asset"
+        assert floxy_db.get_photo_count() == 1
+        found = floxy_db.search_photos("Frances")
+        assert [p["id"] for p in found] == [before["id"]], "the names are searchable"
+        assert found[0]["persons"] == "Frances, Charlotte"
+
+    @pytest.mark.unit
+    def test_a_redescribed_asset_already_indexed_still_goes_to_the_model(self):
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        processor = PhotoProcessor()
+        db = Mock()
+        db.photo_exists.return_value = True
+        row = {"uuid": "U1", "cloud_asset_guid": "G1", "kind": "photo", "redescribe": True}
+        with patch.object(FloxyDatabase, 'get_instance', return_value=db), \
+             patch.object(processor, '_prepare_photo', return_value=(None, False)) as prepare:
+            processor._process_one_inner(row)
+            processor._process_one_inner({**row, "redescribe": False})
+        assert prepare.call_count == 1
+
+    def _sweep(self, rows, total, refused=()):
+        integration, processor = TestPhotosFeed._opened()
+        processor.count_unindexed_photos.return_value = 0
+        processor.assets_with_new_names.return_value = (rows, total)
+        processor.refused_last_run.return_value = list(refused)
+        batch = integration.sweep(1_600_000_000.0, "750000000.0")
+        return batch, processor
+
+    @pytest.mark.unit
+    def test_the_sweep_redescribes_once_nothing_is_unindexed(self):
+        rows = [TestPhotosFeed._row("a", 600.0, "G-A")]
+        batch, processor = self._sweep(rows, total=1)
+        handed = processor.process_rows.call_args
+        assert handed.args[0] == rows and handed.kwargs["batched"] is True, "backfill work, backfill price"
+        assert batch.exhausted is True and batch.cursor == "750000000.0"
+
+    @pytest.mark.unit
+    def test_more_waiting_keeps_the_sweep_going(self):
+        batch, _ = self._sweep([TestPhotosFeed._row("a", 600.0, "G-A")], total=5)
+        assert batch.exhausted is False
+
+    @pytest.mark.unit
+    def test_assets_the_backend_refused_are_offered_again(self):
+        rows = [TestPhotosFeed._row("a", 600.0, "G-A"), TestPhotosFeed._row("b", 700.0, "G-B")]
+        _, processor = self._sweep(rows, total=2, refused=["b"])
+        assert list(processor.retry_renamed.call_args.args[0]) == ["G-B"]
+
+    @pytest.mark.unit
+    def test_nothing_renamed_touches_no_asset(self):
+        batch, processor = self._sweep([], total=0)
+        processor.process_rows.assert_not_called()
+        assert batch.exhausted is True

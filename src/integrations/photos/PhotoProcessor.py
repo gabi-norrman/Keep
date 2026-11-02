@@ -120,6 +120,15 @@ JOIN ZASSET ON ZASSET.Z_PK = ZDETECTEDFACE.ZASSETFORFACE
 WHERE ZASSET.ZUUID = ? AND ZPERSON.ZDISPLAYNAME IS NOT NULL
 """
 
+# PERSONS_QUERY for the whole library: every asset with a named face, and the names.
+NAMED_FACES_QUERY = """
+SELECT DISTINCT ZASSET.ZCLOUDASSETGUID, ZPERSON.ZDISPLAYNAME
+FROM ZDETECTEDFACE
+JOIN ZPERSON ON ZPERSON.Z_PK = ZDETECTEDFACE.ZPERSONFORFACE
+JOIN ZASSET ON ZASSET.Z_PK = ZDETECTEDFACE.ZASSETFORFACE
+WHERE ZASSET.ZCLOUDASSETGUID IS NOT NULL AND ZPERSON.ZDISPLAYNAME IS NOT NULL AND ZPERSON.ZDISPLAYNAME != ''
+"""
+
 ALBUMS_QUERY = """
 SELECT DISTINCT g.ZTITLE
 FROM Z_33ASSETS za
@@ -362,6 +371,51 @@ class PhotoProcessor:
         self._icloud_lock = threading.Lock()
         self._refused_last_run: list[str] = []    # uuids the backend refused in the last process_rows
         self._reasoning_logged: set[str] = set()  # backends reported as refusing the prompt's "thinking" field
+        self._renamed_tried: set[str] = set()     # GUIDs re-described for their names this process, never retried
+
+    def assets_with_new_names(self, limit: int) -> tuple[list[dict], int]:
+        """The indexed assets on which Photos has named a face since they were described —
+        Photos matches faces to people hours to weeks after a photo is taken, while the feed
+        describes it within the hour, so a fresh photo is nearly always described nameless.
+        Returns (up to `limit` asset rows, newest first, each marked `redescribe`; how many
+        such assets there are in all). An asset tried once this process is left out, so one
+        that keeps failing costs one attempt per restart."""
+        if not os.path.exists(PHOTOS_SQLITE_PATH):
+            return [], 0
+        named: dict[str, set[str]] = {}
+        conn = sqlite3.connect(f"file:{PHOTOS_SQLITE_PATH}?mode=ro", uri=True)
+        try:
+            for guid, name in conn.execute(NAMED_FACES_QUERY):
+                named.setdefault(guid, set()).add(name)
+            stored = FloxyDatabase.get_instance().get_indexed_photo_persons()
+            stale = [guid for guid, names in named.items()
+                     if guid in stored and guid not in self._renamed_tried
+                     and names - {p.strip() for p in stored[guid].split(",")}]
+            if not stale:
+                trace(f"Photos: every indexed asset already carries the names Photos has "
+                      f"({len(named)} asset(s) with named faces)")
+                return [], 0
+            conn.row_factory = sqlite3.Row
+            rows = []
+            for i in range(0, len(stale), 500):
+                chunk = stale[i:i + 500]
+                rows += conn.execute(f"""
+                    SELECT {ASSET_COLUMNS}
+                    FROM ZASSET a
+                    LEFT JOIN ZCLOUDMASTER m ON m.Z_PK = a.ZMASTER
+                    WHERE {asset_kind_filter()} AND a.ZTRASHEDSTATE = 0
+                      AND a.ZCLOUDASSETGUID IN ({','.join('?' * len(chunk))})
+                """, chunk).fetchall()
+        finally:
+            conn.close()
+        rows.sort(key=lambda r: r["ZDATECREATED"] or 0, reverse=True)
+        picked = [{**asset_row(r), "redescribe": True} for r in rows[:limit]]
+        self._renamed_tried.update(r["cloud_asset_guid"] for r in picked)
+        return picked, len(rows)
+
+    def retry_renamed(self, guids):
+        """Put assets the backend refused (402 / 429) back among those `assets_with_new_names` offers."""
+        self._renamed_tried.difference_update(guids)
 
     def remove_hidden_assets(self) -> int:
         """Drop indexed rows for assets the user has since hidden in Photos; returns how many."""
@@ -901,6 +955,18 @@ class PhotoProcessor:
         is_video = row.get("kind") == "video"
         duration = row.get("duration") if is_video else None
 
+        if row.get("redescribe"):
+            # The history keeps the row it got when the asset was first described: the
+            # re-description goes to the index alone.
+            photo_id = db.update_photo_analysis(
+                asset_guid=row["cloud_asset_guid"], location_text=location_text, albums=albums,
+                persons=persons, photo_type=media_type, short_description=result["short_description"],
+                detailed_description=result["detailed_description"], pretty_score=pretty,
+                family_importance_score=family, indexed_at=time.time())
+            info(f"Photos: re-described {uuid} with the names Photos now has [{persons}]: "
+                 f"'{result['short_description']}'")
+            return photo_id
+
         photo_id = db.store_photo(
             asset_guid=row["cloud_asset_guid"],
             creation_date=row["creation_ts"],
@@ -972,7 +1038,7 @@ class PhotoProcessor:
             fine(f"Photos: {uuid} has no iCloud asset GUID yet (not uploaded), deferring indexing")
             return False
 
-        if db.photo_exists(asset_guid):
+        if db.photo_exists(asset_guid) and not row.get("redescribe"):
             return False
 
         if row.get("kind") == "video":
