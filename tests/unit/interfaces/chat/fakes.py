@@ -1,4 +1,5 @@
 """Test doubles for the chat contract: a recording transport and a scripted assistant."""
+import threading
 import time
 from typing import Optional
 
@@ -143,7 +144,8 @@ class FakeTransport(ChatTransport):
 
 
 class FakeStream:
-    """Yields scripted events; an event may be a (delay_seconds, event) tuple."""
+    """Yields scripted events; an event may be a (delay_seconds, event) tuple, or a
+    threading.Event the stream waits on until the test sets it (a kill ends the wait)."""
 
     def __init__(self, events):
         self._events = iter(events)
@@ -153,17 +155,23 @@ class FakeStream:
         return self
 
     def __next__(self):
-        if self.killed:
-            raise StopIteration
-        item = next(self._events)
-        if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], (int, float)):
-            delay, item = item
-            deadline = time.monotonic() + delay
-            while time.monotonic() < deadline:
-                if self.killed:
-                    raise StopIteration
-                time.sleep(0.005)
-        return item
+        while True:
+            if self.killed:
+                raise StopIteration
+            item = next(self._events)
+            if isinstance(item, threading.Event):
+                while not item.wait(0.005):
+                    if self.killed:
+                        raise StopIteration
+                continue
+            if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], (int, float)):
+                delay, item = item
+                deadline = time.monotonic() + delay
+                while time.monotonic() < deadline:
+                    if self.killed:
+                        raise StopIteration
+                    time.sleep(0.005)
+            return item
 
     def kill(self):
         self.killed = True
