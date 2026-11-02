@@ -1951,6 +1951,13 @@ class Commands:
     def is_pure(self, command_name: str) -> bool:
         return command_name in self._owner(command_name).PURE_COMMANDS
 
+    @staticmethod
+    def is_stop_and_wait(command_name: str) -> bool:
+        """Whether the command's result comes in a follow-up round (the toolkits' Stop-and-wait
+        sections and the three loads): what the processor's after-the-fetch guard holds a
+        reply at. An undeclared name is not one."""
+        return command_name in Toolkits.stop_and_wait_commands()
+
     def is_self_evident(self, command_name: str) -> bool:
         return command_name in self._owner(command_name).SELF_EVIDENT_COMMANDS
 

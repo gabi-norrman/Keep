@@ -51,6 +51,11 @@ TOOLKITS_DIR = RES_DIR / "toolkits"
 # An integration folder's own toolkit: front matter, then the reference.
 FOLDER_TOOLKIT_FILE = "toolkit.md"
 _FRONT_MATTER_RE = re.compile(r"\A---\n(.*?\n)---\n", re.S)
+# A reference's stop-and-wait section: the heading to the next heading or the end of the text.
+_STOP_AND_WAIT_SECTION = re.compile(r"^### Stop-and-wait[ \t]*\n(.*?)(?=^#|\Z)", re.M | re.S)
+_BACKTICKED_NAME = re.compile(r"`([a-z][a-z0-9_]*)(?:\(\))?`")
+# What a section says instead of a list when the whole toolkit is stop-and-wait.
+EVERY_COMMAND_PHRASE = "Every command of this toolkit"
 _FRONT_MATTER_KEYS = {"name", "summary", "commands", "sections", "hidden"}
 # The header of a rendered toolkit; MessageHistory recognises loaded toolkits by it.
 HEADER_PREFIX = "# Toolkit: "
@@ -116,6 +121,19 @@ class Toolkit:
         """The reference as the LLM receives it: a folder toolkit's front matter is not part of it."""
         text = self.path.read_text(encoding="utf-8")
         return _FRONT_MATTER_RE.sub("", text, count=1) if self.file else text
+
+    def stop_and_wait(self) -> frozenset[str]:
+        """The commands the reference's `### Stop-and-wait` section names (or every command of
+        the toolkit when it says so): the ones whose result comes in a follow-up round. The
+        section is the one source — the processor's after-the-fetch guard reads it too, so
+        what the LLM is told and what the code enforces cannot drift apart."""
+        match = _STOP_AND_WAIT_SECTION.search(self.text())
+        if not match:
+            return frozenset()
+        section = match.group(1)
+        if EVERY_COMMAND_PHRASE in section:
+            return frozenset(self.commands)
+        return frozenset(_BACKTICKED_NAME.findall(section))
 
 
 class ToolkitFileError(Exception):
@@ -271,6 +289,25 @@ def names(monitor=None) -> list[str]:
     """The toolkits the LLM is offered by name (the hidden ones and the ones whose integration
     is off are not)."""
     return [t.name for t in offered(monitor) if not t.hidden]
+
+
+def stop_and_wait_commands() -> frozenset[str]:
+    """Every stop-and-wait command there is: the three loads the prompt itself documents and
+    what each toolkit's section names, whether the toolkit is offered or not — the guard is
+    about the shape of a reply, not about what the LLM may use."""
+    global _STOP_AND_WAIT
+    if _STOP_AND_WAIT is None:
+        names = set(LOADS)
+        for toolkit in TOOLKITS:
+            names |= toolkit.stop_and_wait()
+        _STOP_AND_WAIT = frozenset(names)
+        trace(f"Stop-and-wait commands: {len(_STOP_AND_WAIT)} ({len(LOADS)} loads, the rest from the toolkits)")
+    return _STOP_AND_WAIT
+
+
+# The stop-and-wait commands the prompt documents outside any toolkit (res/prompt.md).
+LOADS = ("load_toolkit", "load_procedure", "load_watch")
+_STOP_AND_WAIT: frozenset[str] | None = None
 
 
 def by_name(name: str) -> Toolkit | None:

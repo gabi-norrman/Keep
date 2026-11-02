@@ -21,3 +21,6 @@ call `list_reminders` first when you are not sure of the exact title.
 
 Lists are named exactly as `list_reminders` shows them. A to-do is not a watch item: what the family wants done goes
 here, what you yourself must act on later goes on the watch list.
+
+### Stop-and-wait
+`list_reminders` returns data: emit it and stop generating; the result arrives in the next round.

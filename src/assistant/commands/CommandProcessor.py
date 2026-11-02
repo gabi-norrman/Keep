@@ -54,6 +54,18 @@ class CommandProcessor:
     # real results come back in the follow-up round, and the stored turn ends at the last of
     # them (`kept_of`), so the history never shows the model its own invented results.
     FABRICATED_RESULTS_OPEN = "<function_results"
+    # The after-the-fetch guard (issue #134): once a reply has dispatched a stop-and-wait
+    # command (Commands.is_stop_and_wait — the toolkits' sections and the three loads), its
+    # result does not exist yet, so anything the reply goes on to write rests on nothing — a
+    # verdict posted on a PR, "✅ created" for a save that failed, a price list the model wrote
+    # for the page it had just opened (prod, 25–26 Oct 2026). Further stop-and-wait calls
+    # still pass (several fetches in one reply are common and fine); the first non-whitespace
+    # text or any other call cuts the reply there, as the cap does: not run, not shown, the
+    # stream closed, the stored turn ending at the last fetch, and the note below ahead of
+    # the real result in the follow-up round. A call written before the fetch has run already.
+    FETCH_CUT_NOTE = ("Your reply went on after `{fetch}` before its result existed, so it was cut there: "
+                      "{dropped} dropped unread, and nothing after that command reached the user. The result "
+                      "follows — answer from it now, and issue again any call you still want.")
     FABRICATED_RESULTS_NOTE = (
         "Your reply wrote a <function_results> block of its own{after}. Only the system writes "
         "results, so that block and everything after it were dropped unread and did not reach the "
@@ -94,6 +106,10 @@ class CommandProcessor:
         # Set when the cap above is reached: the rest of the stream is ignored, and the
         # dialog closes it.
         self.reply_cut = False
+        # The stop-and-wait command this reply dispatched last, None before the first: with
+        # one pending, text and other calls cut the reply (FETCH_CUT_NOTE).
+        self.fetch_pending: str | None = None
+        self.fetch_cut = False  # the reply was cut by that guard: the stored turn ends at the fetch
         # When the turn this processor serves began, for a processor without a request
         # handler (the autonomous check sets it); see Commands.turn_started.
         self.turn_started: float | None = None
@@ -402,6 +418,8 @@ class CommandProcessor:
         self.reset_parse_state()
         self.commands_dispatched = 0
         self.reply_cut = False
+        self.fetch_pending = None
+        self.fetch_cut = False
         self.unterminated_command_report = None
 
     # Runs on: command worker thread (called from Commands.background_command)
@@ -417,8 +435,13 @@ class CommandProcessor:
     def process_one_command(self, content: str, dialog_manager) -> str:
         call, remainder = self.format.extract(content)
         if call is not None:
-            command_name, params, _display = call
+            command_name, params, display = call
+            if self.fetch_pending and not self.commands.is_stop_and_wait(command_name):
+                self._cut_after_fetch(f"the call {self._label(command_name, display)}")
+                return ""
             self.invoke_command(command_name, params, dialog_manager)
+            if self.commands.is_stop_and_wait(command_name):
+                self.fetch_pending = command_name
             return remainder
         if remainder is not None:
             info(f"A complete call block without a call in it — dropped, the reply goes on after it: {content[:80]!r}")
@@ -626,6 +649,8 @@ class CommandProcessor:
                 self.debug(f"found embedded command at pos {cmd_pos}")
                 before = self.previous_content_buffer[:cmd_pos]
                 self.previous_content_buffer = self.previous_content_buffer[cmd_pos:]
+                if (before := self._released(before)) is None:
+                    return None
                 rest = self._process_commands("", dialog_manager)
                 return before + rest if rest else before
 
@@ -640,7 +665,7 @@ class CommandProcessor:
                     self.debug(f"retaining partial command tail at pos {tail_pos}")
                     before = self.previous_content_buffer[:tail_pos]
                     self.previous_content_buffer = self.previous_content_buffer[tail_pos:]
-                    return before
+                    return self._released(before)
             elif (tail_pos := self._results_tail(self.previous_content_buffer)) >= 0 \
                     and len(self.previous_content_buffer) - tail_pos >= 3:
                 info(f"Stream ended on the start of a <function_results> tag — dropping it: "
@@ -650,7 +675,25 @@ class CommandProcessor:
             self.debug(f"no command possible")
             p = self.previous_content_buffer
             self.previous_content_buffer = ""
-            return p
+            return self._released(p)
+
+    def _released(self, text: str) -> str | None:
+        """`text` as the reply may show it: itself, or None when a stop-and-wait command is
+        pending and the text says anything — the reply is cut there (FETCH_CUT_NOTE)."""
+        if self.fetch_pending and text.strip():
+            self._cut_after_fetch(f"{len(text.strip())} chars of text")
+            return None
+        return text
+
+    def _cut_after_fetch(self, dropped: str):
+        """The reply went on after a stop-and-wait command: stop reading it here, run and show
+        nothing more of it, and say so ahead of the fetch's result in the follow-up round."""
+        info(f"Reply cut after the stop-and-wait command {self.fetch_pending}: {dropped} written before its "
+             f"result existed — dropped unread")
+        self.reply_cut = True
+        self.fetch_cut = True
+        self.previous_content_buffer = ""
+        self.add_note(self.FETCH_CUT_NOTE.format(fetch=self.fetch_pending, dropped=dropped))
 
     def _partial_tail(self, buffer: str) -> int:
         """Where a possible start of a call or of a `<function_results` tag begins at the end
@@ -684,7 +727,7 @@ class CommandProcessor:
         """What the dialog stores of a reply it stopped reading (`reply_cut`): the text up to
         and including the last call that ran, every block closed, and never a results block
         the model wrote — so the follow-up round reads a reply of exactly the calls that ran."""
-        kept = self.format.cut(raw, self.commands_dispatched)
+        kept = self.format.cut(raw, self.commands_dispatched, after_last=self.fetch_cut)
         if (at := kept.find(self.FABRICATED_RESULTS_OPEN)) >= 0:
             kept = kept[:at]
         return kept
@@ -712,7 +755,7 @@ class CommandProcessor:
             else:
                 # Held back only because it could still have grown into `name(` — it never did.
                 info(f"Stream ended on a bare command name, no call — releasing it as reply text: {leftover!r}")
-                flushed = leftover
+                flushed = self._released(leftover)
         return flushed
 
     @staticmethod

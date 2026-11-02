@@ -425,7 +425,9 @@ class TestEmbeddedCommandDetection:
         r2 = processor.process("/b>open_url(https://example.com) Done!", mock_dialog_manager)
         combined = (r1 or "") + (r2 or "")
         assert "open_url" not in combined
-        assert "Done!" in combined
+        assert "Check this link</b>" in combined
+        # open_url is stop-and-wait: the prose after it is dropped (the after-the-fetch guard).
+        assert "Done!" not in combined and processor.reply_cut
 
     def test_command_after_arbitrary_text(self, processor, mock_dialog_manager):
         """Command preceded by non-command text in a single chunk"""
@@ -1418,7 +1420,8 @@ class TestStreamingListMarkerRaceCondition:
         out += processor.flush_buffer(mock_dialog_manager) or ""
         assert [q[0] for q in queued] == ["show_history", "list_integrations"]
         assert queued[0][1] == ["2026-09-07 00:00", "2026-09-07 23:59"]
-        assert "Checking Monday's history." in out
+        # Both are stop-and-wait: the sentence after them is dropped (the after-the-fetch guard).
+        assert "Checking Monday's history." not in out and processor.reply_cut
 
     def test_flush_buffer_resets_streaming_flag(self, processor, mock_dialog_manager):
         """flush_buffer temporarily disables streaming, then re-enables"""
@@ -2403,3 +2406,64 @@ class TestTurnStart:
         assert processor._turn_started_for(SimpleNamespace()) == 100.0
         request = SimpleNamespace(web_request_handler=SimpleNamespace(turn_started=250.0))
         assert processor._turn_started_for(request) == 250.0
+
+
+class TestAfterTheFetchGuard:
+    """A reply that goes on after a stop-and-wait command is cut there (issue #134)."""
+
+    @pytest.fixture
+    def processor(self, monkeypatch):
+        monkeypatch.setattr('assistant.commands.CommandProcessor.LOCAL_DEVELOPMENT_MODE', False)
+        p = CommandProcessor(test_suite_mode=False)
+        p.commands.run = lambda command, params: None
+        yield p
+        p.kill()
+
+    @staticmethod
+    def feed(processor, *chunks):
+        shown = [processor.process(chunk, None) for chunk in chunks]
+        shown.append(processor.flush_buffer(None))
+        processor.command_queue.join()
+        return "".join(s for s in shown if s)
+
+    def test_text_after_a_fetch_is_dropped_and_the_reply_cut(self, processor):
+        shown = self.feed(processor, 'search_email("invoice")\nFound it, it was paid on Monday.')
+        assert shown == ""
+        assert processor.reply_cut and processor.commands_dispatched == 1
+        assert "search_email" in processor.command_reply and "chars of text" in processor.command_reply
+        assert not processor.command_reply_contains_error
+
+    def test_another_call_after_a_fetch_is_not_run(self, processor):
+        shown = self.feed(processor, 'search_email("invoice")\nremember("the invoice was paid")\n')
+        assert shown == "" and processor.reply_cut
+        assert processor.commands_dispatched == 1
+        assert "remember" in processor.command_reply
+
+    def test_fetches_after_a_fetch_all_run(self, processor):
+        shown = self.feed(processor, 'search_email("invoice")\n\nsearch_email("receipt")\nopen_url("https://example.com")\n')
+        assert shown.strip() == "" and not processor.reply_cut
+        assert processor.commands_dispatched == 3 and processor.command_reply is None
+
+    def test_text_before_the_fetch_still_shows(self, processor):
+        shown = self.feed(processor, 'One moment. search_email("invoice")')
+        assert shown == "One moment. " and processor.commands_dispatched == 1 and not processor.reply_cut
+
+    def test_a_reply_without_a_fetch_is_untouched(self, processor):
+        shown = self.feed(processor, 'remember("paid")\nNoted.')
+        assert shown.strip() == "Noted." and not processor.reply_cut and processor.commands_dispatched == 1
+
+    def test_the_cut_holds_token_by_token(self, processor):
+        shown = self.feed(processor, 'search_em', 'ail("inv', 'oice")\n', '\n', 'Found', ' it.', ' remember("x")')
+        assert shown == "" and processor.reply_cut and processor.commands_dispatched == 1
+
+    def test_the_next_reply_through_the_same_processor_starts_clean(self, processor):
+        self.feed(processor, 'search_email("invoice")\nFound it.')
+        processor.start_new_reply()
+        assert processor.fetch_pending is None and not processor.reply_cut
+        shown = self.feed(processor, 'It was paid on Monday.')
+        assert shown == "It was paid on Monday."
+
+    def test_the_stored_turn_ends_at_the_fetch(self, processor):
+        raw = 'search_email("invoice")\nFound it, it was paid on Monday.'
+        self.feed(processor, raw)
+        assert processor.kept_of(raw).strip() == 'search_email("invoice")'

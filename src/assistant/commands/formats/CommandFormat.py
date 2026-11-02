@@ -116,11 +116,13 @@ class CommandFormat(ABC):
         the calls it read in another one."""
         return text
 
-    def cut(self, text: str, count: int) -> str:
+    def cut(self, text: str, count: int, after_last: bool = False) -> str:
         """The text up to and including its `count`-th call, every block closed: what the
         processor keeps of a reply it stopped reading after that call (the runaway guard),
         so the stored turn shows exactly the calls that ran. A text holding no more calls
-        than that comes back whole, the prose after its last call included."""
+        than that comes back whole, the prose after its last call included — unless
+        `after_last`, when it ends at that call too (the after-the-fetch guard: the prose
+        after the fetch was dropped unread, so the stored turn must not show it either)."""
         kept = 0
         at = 0
         while (start := self.find_start(text[at:])) >= 0:
@@ -137,6 +139,8 @@ class CommandFormat(ABC):
                 return text[:start] + self._cut_block(block, count - kept)
             kept += calls
             at = end
+            if after_last and kept >= count:
+                return text[:at]
         return text
 
     def _cut_block(self, block: str, keep: int) -> str:

@@ -237,16 +237,17 @@ class TestStreaming:
             out += text
         return out
 
-    def test_split_at_every_character_extracts_both_calls_and_releases_the_text_only(self, processor):
+    def test_split_at_every_character_extracts_both_calls_and_cuts_the_text_after_the_load(self, processor):
+        # load_toolkit is stop-and-wait: the prose after it is dropped (the after-the-fetch guard).
         out = self._stream(processor, list(self.REPLY))
         assert processor.calls == [("dim", ["Kitchen lamp", "40"]), ("load_toolkit", ["email", "web"])]
         assert OPEN not in out and INVOKE_OPEN not in out
-        assert out.startswith("Sure thing.") and out.rstrip().endswith("Done.")
+        assert out.startswith("Sure thing.") and "Done." not in out and processor.reply_cut
 
     def test_the_whole_reply_in_one_chunk_gives_the_same_result(self, processor):
         out = self._stream(processor, [self.REPLY])
         assert processor.calls == [("dim", ["Kitchen lamp", "40"]), ("load_toolkit", ["email", "web"])]
-        assert OPEN not in out and out.startswith("Sure thing.") and out.rstrip().endswith("Done.")
+        assert OPEN not in out and out.startswith("Sure thing.") and "Done." not in out and processor.reply_cut
 
     def test_the_server_shape_a_blank_line_then_the_block_is_a_call_and_no_text(self, processor):
         # ds4 streams "\n\n" and then the block; the processor must show nothing and run the call.

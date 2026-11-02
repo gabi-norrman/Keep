@@ -212,3 +212,39 @@ def test_icloud_login_code_is_a_setup_command_contract_with_the_setup_toolkit_te
     reads off the phone must be a setup command, and setup.md must document it."""
     assert Toolkits.owner_of("icloud_login_code").name == "setup"
     assert "icloud_login_code" in _documented(Toolkits.owner_of("icloud_login_code").path.read_text())
+
+
+class TestStopAndWait:
+    """The stop-and-wait set the processor's guard holds a reply at comes from the references'
+    own `### Stop-and-wait` sections, so the LLM's rule and the code's cannot drift apart."""
+
+    @staticmethod
+    def _toolkit(tmp_path, body, commands=("fetch_a", "fetch_b", "act")):
+        path = tmp_path / "toolkit.md"
+        path.write_text("---\nname: t\nsummary: s\ncommands: [" + ", ".join(commands) + "]\n---\n" + body)
+        return Toolkits.Toolkit("t", "s", tuple(commands), file=path)
+
+    def test_the_section_names_the_commands(self, tmp_path):
+        t = self._toolkit(tmp_path, "### Use\n`act` does things.\n\n### Stop-and-wait\n`fetch_a`, `fetch_b()` return data: "
+                                    "emit them and stop.\n\n### More\n`act` again\n")
+        assert t.stop_and_wait() == {"fetch_a", "fetch_b"}
+
+    def test_every_command_of_the_toolkit_when_the_section_says_so(self, tmp_path):
+        t = self._toolkit(tmp_path, "### Stop-and-wait\nEvery command of this toolkit returns data.\n")
+        assert t.stop_and_wait() == {"fetch_a", "fetch_b", "act"}
+
+    def test_no_section_means_none(self, tmp_path):
+        t = self._toolkit(tmp_path, "### Use\n`fetch_a` returns data in the next round, it says here, but no section.\n")
+        assert t.stop_and_wait() == frozenset()
+
+    def test_every_name_a_real_section_lists_is_a_command_of_some_toolkit(self):
+        known = {c for t in Toolkits.TOOLKITS for c in t.commands}
+        for t in Toolkits.TOOLKITS:
+            assert t.stop_and_wait() <= known, f"{t.name}: {sorted(t.stop_and_wait() - known)}"
+
+    def test_the_whole_set_holds_the_loads_and_what_the_sections_name(self):
+        whole = Toolkits.stop_and_wait_commands()
+        assert set(Toolkits.LOADS) <= whole
+        for t in Toolkits.TOOLKITS:
+            assert t.stop_and_wait() <= whole
+        assert "remember" not in whole and "post_message" not in whole

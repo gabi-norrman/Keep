@@ -90,11 +90,12 @@ class TestStreaming:
         assert processor.calls == [("load_toolkit", ["developer"])]
         assert out.strip() == "" and processor.format.rescued == 1
 
-    def test_a_wrapped_block_of_two_invokes_after_prose_runs_both_and_keeps_the_prose(self, processor):
+    def test_a_wrapped_block_of_two_invokes_after_prose_runs_both_and_keeps_the_prose_before_them(self, processor):
         reply = "On it.\n\n" + block("turn_on", ("light_name", "Lamp")) + "\n" + block("load_toolkit", ("name", '["email", "web"]')) + "\nDone."
         out = stream(processor, [reply[:4], reply[4:30], reply[30:]])
         assert processor.calls == [("turn_on", ["Lamp"]), ("load_toolkit", ["email", "web"])]
-        assert out.strip().startswith("On it.") and out.strip().endswith("Done.") and "<" not in out
+        assert out.strip().startswith("On it.") and "Done." not in out and "<" not in out
+        assert processor.reply_cut  # the prose after load_toolkit, a stop-and-wait command, is dropped
 
     def test_keep_calls_in_the_same_reply_still_run_in_order_with_the_rescued_one(self, processor):
         reply = 'turn_on("Hall") then ' + bare("dim", ("light_name", "Hall"), ("dim_percentage", "20")) + ' and restart_server()'

@@ -292,16 +292,17 @@ class TestStreaming:
             out += text
         return out
 
-    def test_split_at_every_character_extracts_both_calls_and_releases_the_text_only(self, processor):
+    def test_split_at_every_character_extracts_both_calls_and_cuts_the_text_after_the_load(self, processor):
+        # load_toolkit is stop-and-wait: the prose after it is dropped (the after-the-fetch guard).
         out = self._stream(processor, list(self.REPLY))
         assert processor.calls == [("dim", ["Kitchen lamp", "40"]), ("load_toolkit", ["email", "web"])]
         assert OPEN not in out and INVOKE_OPEN not in out
-        assert out.startswith("Sure thing.") and out.rstrip().endswith("Done.")
+        assert out.startswith("Sure thing.") and "Done." not in out and processor.reply_cut
 
     def test_the_whole_reply_in_one_chunk_gives_the_same_result(self, processor):
         out = self._stream(processor, [self.REPLY])
         assert processor.calls == [("dim", ["Kitchen lamp", "40"]), ("load_toolkit", ["email", "web"])]
-        assert OPEN not in out and out.startswith("Sure thing.") and out.rstrip().endswith("Done.")
+        assert OPEN not in out and out.startswith("Sure thing.") and "Done." not in out and processor.reply_cut
 
     def test_the_probed_reply_a_sentence_a_blank_line_and_the_block(self, processor):
         # What Opus 5.5 streamed in the probe: the sentence first, then the block and nothing after.
