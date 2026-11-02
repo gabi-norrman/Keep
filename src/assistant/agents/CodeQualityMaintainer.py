@@ -1640,7 +1640,10 @@ class CodeQualityMaintainer:
         return RequirementsChecker.sync()
 
     @staticmethod
-    def pull_and_restart() -> str:
+    def pull_and_restart(resumes_conversation: bool = False) -> str:
+        """Pull the target branch, sync the venv and restart. *resumes_conversation* is the
+        `restart_server` command's: the restart was asked for in a chat, and the new process
+        picks that conversation up (`restart`)."""
         failure, output = CodeQualityMaintainer._pull_target()
         if failure:
             return failure
@@ -1656,20 +1659,25 @@ class CodeQualityMaintainer:
             error(f"CodeQualityMaintainer: not restarting — {failure}")
             return f"The server was not restarted: {failure}"
 
-        CodeQualityMaintainer.restart()
-
         changes_msg = "no new changes" if already_up_to_date else f"pulled updates: {output}"
         if installed:
             changes_msg += f"; {installed}"
+        CodeQualityMaintainer.restart(f"update requested, {changes_msg}", resumes_conversation=resumes_conversation)
         return f"Update initiated ({changes_msg}). Server is restarting..."
 
     @staticmethod
-    def restart(reason: str = "", fallback_branch: str = "") -> str:
+    def restart(reason: str = "", fallback_branch: str = "", resumes_conversation: bool = False) -> str:
         """Relaunch the server in place via start.sh (graceful kill + fresh start) WITHOUT
         pulling new code. Used by pull_and_restart() after the pull, and by automatic
         recovery paths (e.g. AudioRecovery) that just need a clean process to clear an
         in-process wedge while running the same code. A PR trial names the branch to fall
-        back to: start.sh then checks it out and relaunches if the new server never comes up."""
+        back to: start.sh then checks it out and relaunches if the new server never comes up.
+        A restart the assistant started from a chat (*resumes_conversation*) leaves the marker
+        the next boot resumes that conversation from; the nightly update and the recovery
+        paths leave none — nobody is waiting on those."""
+        if resumes_conversation:
+            from common.StartupTracker import StartupTracker
+            StartupTracker.write_resume_marker(reason)
         info(f"CodeQualityMaintainer: spawning start.sh as detached process"
              f"{f' ({reason})' if reason else ''} (our pid {os.getpid()}"
              f"{f', fallback {fallback_branch}' if fallback_branch else ''})...")

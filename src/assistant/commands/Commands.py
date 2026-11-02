@@ -1091,7 +1091,7 @@ class Commands:
     def cmd_restart_server(self, parameter_string: str):
         def _run(_params):
             try:
-                result = CodeQualityMaintainer.pull_and_restart()
+                result = CodeQualityMaintainer.pull_and_restart(resumes_conversation=True)
                 info(f"Restart server result: {result}")
                 system_note("server", f"Server restart: {result}")
             except Exception as e:

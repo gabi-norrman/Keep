@@ -173,7 +173,8 @@ class TestStart:
             "fetched into FETCH_HEAD so a second try of the tried PR can move the checked-out branch"
         self.sync.assert_called_once()
         self.restart.assert_called_once()
-        assert self.restart.call_args.kwargs == {"fallback_branch": "release"}
+        assert self.restart.call_args.kwargs == {"fallback_branch": "release", "resumes_conversation": True}, \
+            "the user asked for the trial in a chat and hears there whether its server came up"
         assert "PR #204" in result and "abcdef12" in result and "release" in result
 
     def test_a_refusal_fetches_nothing(self, github):

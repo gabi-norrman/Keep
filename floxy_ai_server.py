@@ -149,17 +149,42 @@ def _open_first_conversation(server: "Server | None" = None):
     if not FirstRun.brief_due():
         info("The first-run brief is retired: the assistant waits to be spoken to.")
         return
+    _open_conversation(server, FirstRun.brief, "the first-run brief")
+
+
+def _resume_conversation(server: "Server | None" = None):
+    """A restart the assistant started from a chat (`restart_server`, `try_pull_request`) left
+    a marker; the conversation it interrupted is resumed with a system turn, so the assistant
+    reports the outcome and keeps what it promised instead of waiting for the next periodic
+    check (issue #113). The announcement went out first, so the turn need not repeat it. A
+    nightly update, a recovery or a manual start leaves no marker and resumes nothing."""
+    from assistant import FirstRun
+    from common.StartupTracker import StartupTracker
+    marker = StartupTracker.take_resume_marker()
+    if marker is None:
+        return
+    if FirstRun.brief_due():
+        info("The restart's conversation is not resumed: the first-run brief opens the conversation instead.")
+        return
+    _open_conversation(server, lambda: StartupTracker.build_resume_turn(marker, Version.label()),
+                       "the conversation the restart interrupted")
+
+
+def _open_conversation(server: "Server | None", query, what: str):
+    """Open the owner's conversation with the system turn *query()* builds. When the console
+    runs, the turn waits until its startup intro has played for the first TUI client, so the
+    assistant starts thinking as the chat appears, not while the intro is on."""
     from interfaces.chat.ChatHub import ChatHub
 
     def send():
-        info("In the FTUE: the assistant opens the conversation with the first-run brief.")
-        ChatHub.get_instance().open_conversation(FirstRun.brief())
+        info(f"The assistant opens the conversation with {what}.")
+        ChatHub.get_instance().open_conversation(query())
 
     console = next((i for i in server.interfaces if i.name == "console"), None) if server else None
     if console is None:
         send()
         return
-    info("In the FTUE: the first-run brief waits for the console's startup intro.")
+    info(f"{what[0].upper()}{what[1:]} waits for the console's startup intro.")
     console.after_intro(send)
 
 
@@ -343,6 +368,7 @@ async def main(server: Server):
     if not server.running_as_testsuite:
         _announce_startup(server)
         _open_first_conversation(server)
+        _resume_conversation(server)
     try:
         await server.http.serve()
     finally:

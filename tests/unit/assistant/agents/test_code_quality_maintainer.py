@@ -1666,6 +1666,38 @@ class TestPullAndRestart:
         with developer_release(True):
             assert CodeQualityMaintainer.target_branch() == "master"
 
+    @patch('common.StartupTracker.StartupTracker.write_resume_marker')
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_a_restart_asked_for_in_a_chat_leaves_the_resume_marker_before_spawning(self, mock_sub, mock_popen, marker):
+        mock_sub.return_value = Mock(stdout="Updating abc123..def456\n1 file changed", stderr="", returncode=0)
+        order = []
+        marker.side_effect = lambda reason: order.append(("marker", reason))
+        mock_popen.side_effect = lambda *a, **k: order.append(("spawn", None))
+        CodeQualityMaintainer.pull_and_restart(resumes_conversation=True)
+        assert [step for step, _ in order] == ["marker", "spawn"]
+        assert "abc123..def456" in order[0][1], "the reason tells the new process what the pull brought"
+
+    @patch('common.StartupTracker.StartupTracker.write_resume_marker')
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_a_restart_nobody_waits_on_leaves_no_marker(self, mock_sub, mock_popen, marker):
+        mock_sub.return_value = Mock(stdout="Already up to date.", stderr="", returncode=0)
+        CodeQualityMaintainer.pull_and_restart()
+        CodeQualityMaintainer.restart("nightly update abc → def")
+        assert mock_popen.call_count == 2
+        marker.assert_not_called()
+
+    @patch('common.StartupTracker.StartupTracker.write_resume_marker')
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_a_failed_pull_leaves_no_stale_marker(self, mock_sub, mock_popen, marker):
+        mock_sub.return_value = Mock(stdout="", stderr="fatal: not a git repository", returncode=128)
+        with developer_release(True):
+            CodeQualityMaintainer.pull_and_restart(resumes_conversation=True)
+        mock_popen.assert_not_called()
+        marker.assert_not_called()
+
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_spawns_start_sh_with_correct_args(self, mock_sub, mock_popen):

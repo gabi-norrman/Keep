@@ -398,6 +398,64 @@ class TestFirstConversation:
 
 
 @pytest.mark.unit
+class TestResumeConversation:
+    """Issue #113: a restart the assistant started from a chat left the conversation hanging
+    until the next periodic check. The marker the restart leaves resumes it with a system turn."""
+
+    class FakeServer:
+        interfaces = [type("Telegram", (), {"name": "telegram"})()]
+
+    def test_the_marker_resumes_the_conversation_with_the_restart_turn(self):
+        import floxy_ai_server
+        marker = {"reason": "update requested, no new changes", "at": 1_700_000_000.0}
+        with patch("common.StartupTracker.StartupTracker.take_resume_marker", return_value=marker), \
+                patch("common.StartupTracker.StartupTracker.build_resume_turn", return_value="the turn") as build, \
+                patch("assistant.FirstRun.brief_due", return_value=False), \
+                patch("interfaces.chat.ChatHub.ChatHub.get_instance") as hub:
+            floxy_ai_server._resume_conversation(self.FakeServer())
+        hub.return_value.open_conversation.assert_called_once_with("the turn")
+        assert build.call_args.args[0] is marker
+
+    def test_a_boot_without_a_marker_opens_nothing(self):
+        import floxy_ai_server
+        with patch("common.StartupTracker.StartupTracker.take_resume_marker", return_value=None), \
+                patch("interfaces.chat.ChatHub.ChatHub.get_instance") as hub:
+            floxy_ai_server._resume_conversation(self.FakeServer())
+        hub.assert_not_called()
+
+    def test_the_first_run_brief_takes_precedence(self):
+        import floxy_ai_server
+        with patch("common.StartupTracker.StartupTracker.take_resume_marker", return_value={"at": 1.0}), \
+                patch("assistant.FirstRun.brief_due", return_value=True), \
+                patch("interfaces.chat.ChatHub.ChatHub.get_instance") as hub:
+            floxy_ai_server._resume_conversation(self.FakeServer())
+        hub.assert_not_called()
+
+    def test_with_the_console_the_turn_waits_for_its_startup_intro(self):
+        import floxy_ai_server
+
+        class FakeConsole:
+            name = "console"
+            waiting = []
+
+            def after_intro(self, fn):
+                self.waiting.append(fn)
+
+        class FakeServer:
+            interfaces = [FakeConsole()]
+
+        with patch("common.StartupTracker.StartupTracker.take_resume_marker", return_value={"at": 1.0}), \
+                patch("common.StartupTracker.StartupTracker.build_resume_turn", return_value="the turn"), \
+                patch("assistant.FirstRun.brief_due", return_value=False), \
+                patch("interfaces.chat.ChatHub.ChatHub.get_instance") as hub:
+            floxy_ai_server._resume_conversation(FakeServer())
+            hub.return_value.open_conversation.assert_not_called()
+            assert len(FakeConsole.waiting) == 1
+            FakeConsole.waiting[0]()
+        hub.return_value.open_conversation.assert_called_once_with("the turn")
+
+
+@pytest.mark.unit
 class TestFirstRunPipeline:
     def test_build_starts_the_pipeline_with_the_history_and_stop_ends_it(self, telegram_only_config, quiet_heavy_startup):
         import floxy_ai_server

@@ -151,7 +151,7 @@ class PullRequestTrial:
             return f"PR #{number} was not tried, the server keeps running {previous}: {failure}"
         head = (PullRequestTrial._git("rev-parse", "--short=8", "HEAD").stdout or "").strip()
         info(f"PullRequestTrial: on {branch} at {head} (was {previous}), restarting with {fallback} as the fallback")
-        CodeQualityMaintainer.restart(f"trying PR #{number}", fallback_branch=fallback)
+        CodeQualityMaintainer.restart(f"trying PR #{number}", fallback_branch=fallback, resumes_conversation=True)
         detail = f" ({installed})" if installed else ""
         return (f"Switched to PR #{number} ({pr.get('title', '')}) at {head}{detail}. Server is restarting on it; "
                 f"restart_server goes back to {fallback}, as the nightly update does by itself.")

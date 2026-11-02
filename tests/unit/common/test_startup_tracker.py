@@ -141,6 +141,43 @@ class TestBuildAnnouncement:
         assert "&lt;commands&gt; block &amp; its tail" in text
 
 
+@pytest.fixture
+def resume_file(tmp_path, monkeypatch):
+    path = tmp_path / "cache" / "resume_after_restart.json"
+    monkeypatch.setattr(startup_tracker_module, "RESUME_FILE", path)
+    return path
+
+
+@pytest.mark.unit
+class TestResumeMarker:
+    def test_is_taken_once(self, resume_file):
+        StartupTracker.write_resume_marker("update requested, no new changes")
+        marker = StartupTracker.take_resume_marker()
+        assert marker["reason"] == "update requested, no new changes"
+        assert not resume_file.exists()
+        assert StartupTracker.take_resume_marker() is None, "a second boot has no conversation to resume"
+
+    def test_a_boot_without_a_marker_resumes_nothing(self, resume_file):
+        assert StartupTracker.take_resume_marker() is None
+
+    def test_a_corrupt_marker_is_dropped(self, resume_file):
+        resume_file.parent.mkdir(parents=True)
+        resume_file.write_text("{not json")
+        assert StartupTracker.take_resume_marker() is None
+        assert not resume_file.exists()
+
+    def test_the_turn_carries_the_reason_the_version_and_the_downtime(self):
+        marker = {"reason": "trying PR #204", "at": 1_700_000_000.0}
+        turn = StartupTracker.build_resume_turn(marker, "Keep v2026.11.3 trial/pr-204", now=1_700_000_009.4)
+        assert "trying PR #204" in turn
+        assert "Keep v2026.11.3 trial/pr-204" in turn
+        assert "9 seconds" in turn
+
+    def test_a_marker_without_a_reason_says_so(self):
+        turn = StartupTracker.build_resume_turn({"at": 1_700_000_000.0}, "Keep v1", now=1_700_000_001.0)
+        assert "no recorded reason" in turn
+
+
 @pytest.mark.unit
 class TestRecordShutdown:
     def test_db_failure_is_swallowed(self):

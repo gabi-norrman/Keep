@@ -2371,7 +2371,7 @@ class TestRestartServerNote:
 
     def test_outcome_lands_as_a_server_system_note(self, commands_instance):
         cqm, note = self._run(commands_instance)
-        cqm.pull_and_restart.assert_called_once_with()
+        cqm.pull_and_restart.assert_called_once_with(resumes_conversation=True)
         note.assert_called_once_with("server", "Server restart: Already up to date. Restarting.")
 
     def test_a_failed_restart_leaves_no_note(self, commands_instance):

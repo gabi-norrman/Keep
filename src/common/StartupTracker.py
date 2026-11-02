@@ -10,6 +10,9 @@ from common.logging import info, error, trace
 from common.Paths import CACHE_DIR
 
 STATE_FILE = CACHE_DIR / "last_startup.json"
+# Written by a restart the assistant started from a chat, taken by the next boot: the
+# conversation it left hanging is resumed with a system turn (issue #113).
+RESUME_FILE = CACHE_DIR / "resume_after_restart.json"
 _MARKUP = re.compile(r"</?[bi]>")   # the only tags the release note's Telegram HTML dialect uses
 
 
@@ -87,6 +90,52 @@ class StartupTracker:
             return ""
         info(f"StartupTracker: first start on {Version.version()}, its what's new goes to the household.")
         return notes
+
+    @staticmethod
+    def write_resume_marker(reason: str):
+        """Called by `CodeQualityMaintainer.restart` right before it spawns start.sh for a restart
+        the assistant started from a chat, so only an actual restart leaves the marker."""
+        try:
+            RESUME_FILE.parent.mkdir(parents=True, exist_ok=True)
+            RESUME_FILE.write_text(json.dumps({"reason": reason, "at": time.time()}))
+            info(f"StartupTracker: resume marker written ({reason}) — the next boot resumes the conversation.")
+        except OSError as e:
+            error(f"StartupTracker: failed to write the resume marker: {e}")
+
+    @staticmethod
+    def take_resume_marker() -> dict | None:
+        """The marker the restart left, taken once: None when there is none (a nightly update, a
+        crash, a manual start) or it cannot be read."""
+        try:
+            data = json.loads(RESUME_FILE.read_text())
+        except FileNotFoundError:
+            trace("StartupTracker: no resume marker, no conversation to resume.")
+            return None
+        except (OSError, ValueError) as e:
+            error(f"StartupTracker: unreadable resume marker ({e}), dropped.")
+            data = None
+        try:
+            RESUME_FILE.unlink()
+        except OSError as e:
+            error(f"StartupTracker: failed to remove the resume marker: {e}")
+        if not isinstance(data, dict) or not isinstance(data.get("at"), (int, float)):
+            return None
+        info(f"StartupTracker: resume marker found ({data.get('reason')!r}), the conversation is resumed.")
+        return data
+
+    @staticmethod
+    def build_resume_turn(marker: dict, version: str, now: float | None = None) -> str:
+        """The system turn that resumes the conversation a restart interrupted. The household
+        already has the startup announcement, in the history too, so the turn carries only
+        the restart itself and the ask: report the outcome, keep the promises."""
+        now = time.time() if now is None else now
+        at = time.strftime("%H:%M", time.localtime(marker["at"]))
+        down = max(0, int(round(now - marker["at"])))
+        reason = marker.get("reason") or "no recorded reason"
+        return (f"You restarted the server at {at} ({reason}). It is up again on {version} after "
+                f"{down} seconds. The household was already sent the startup announcement, which is in "
+                f"the history above. Continue the conversation you were in: report the outcome of the "
+                f"restart and do what you said you would do after it.")
 
     @staticmethod
     def plain(notes: str) -> str:
