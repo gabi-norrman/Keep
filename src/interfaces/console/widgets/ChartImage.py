@@ -1,6 +1,8 @@
 """The Dashboard's chart plots drawn as pixels, for a terminal that shows pictures: columns
 and stacked bars on the panel ground, each shaded from its colour's deep companion up to the
-colour, with rounded anti-aliased tops, dashed rules and a soft glow around the newest column.
+colour, with rounded anti-aliased tops, dashed rules and a soft glow around the newest column;
+and filled line charts (`area`) — a line over a fill fading to the ground, a rolling average
+traced over it and a glowing dot on the newest point.
 
 A plot is `cols` × `rows` cells at `Pictures.CELL_PX` pixels a cell, the size the screen sends
 a picture at, so the PNG goes out unscaled. The value scale runs from the centre of the bottom
@@ -13,10 +15,10 @@ chart shows has changed, at most every `REFRESH_SECONDS` (unless the box changed
 draws at once), and replaces the picture's image in place, so the terminal holds one image
 per chart however long the tab is up."""
 import time
-from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 
 from common.logging import trace
 from interfaces.console import Theme
@@ -31,6 +33,16 @@ SEPARATOR_PX = 2        # the panel ground showing between stacked segments
 GLOW_RADIUS_PX = 7
 GLOW_STRENGTH = 0.5
 BASE_MIX = 0.8          # a colour's bottom shade: its deep companion this far out of the panel ground
+
+SUPERSAMPLE = 4         # an area chart's lines and fill are drawn this many times larger, then reduced
+LINE_PX = 2.5           # the value line's width
+AVERAGE_PX = 2.0        # the rolling average's width, over a halo of the ground
+AVERAGE_HALO_PX = 5.0
+AVERAGE_DASH_PX = 7     # the rolling average's dash, and the gap after it
+FILL_TOP_ALPHA = 0.42   # the fill under the line: this opaque at the peak's height ...
+FILL_BOTTOM_ALPHA = 0.04    # ... fading to this at the base
+DOT_RADIUS_PX = 4       # the newest point
+EDGE_PX = 6             # air left and right of the line, so the dot and its glow fit
 
 Rule = Tuple[float, Color]    # (fraction of full scale, colour) of a dashed line across the plot
 
@@ -64,6 +76,146 @@ def columns(values: Sequence[float], colors: Sequence[Color], max_value: float, 
     return render(bars, cols, rows, rules, shade_top=peak, shade_span=span, glow_bar=newest)
 
 
+def rolling_mean(values: Sequence[Optional[float]], window: int) -> List[Optional[float]]:
+    """The trailing mean of the last `window` values at each point, skipping the missing
+    (None) ones; None where the window holds no value at all."""
+    out: List[Optional[float]] = []
+    for i in range(len(values)):
+        known = [v for v in values[max(0, i - window + 1):i + 1] if v is not None]
+        out.append(sum(known) / len(known) if known else None)
+    return out
+
+
+def area(values: Sequence[Optional[float]], color: Color, max_value: float, cols: int, rows: int,
+         rules: Sequence[Rule] = (), average: Sequence[Optional[float]] = (), average_color: Optional[Color] = None,
+         slots: int = 0) -> Image.Image:
+    """A filled line chart: the values as a line across the plot, oldest at the left, the
+    ground under it filled in `color` fading towards the base, `average` (aligned with
+    `values`) traced over it as a dashed line in `average_color`, and the newest point a dot
+    with a soft glow. The values are spread over `slots` evenly spaced points (at least one per
+    value), the newest at the right edge, so a short history fills the plot from the right.
+    A missing value (None) breaks the line and the fill."""
+    cell_w, cell_h = CELL_PX
+    width, height = cols * cell_w, rows * cell_h
+    inset = cell_h / 2 if rows > 1 else 0.0
+    zero_y = height - inset
+    plot_h = max(1.0, height - 2 * inset)
+    canvas = np.empty((height, width, 3), np.float32)
+    canvas[:] = _rgb(Theme.COLOR_PANEL_BG)
+    _rules(canvas, rules, zero_y, plot_h)
+
+    values, average = list(values), list(average)
+    if len(values) == 1 and slots <= 1:     # one reading: a level across the plot rather than a lone dot
+        values, average = values * 2, average * 2
+    scale = max_value if max_value > 0 else 1.0
+    slots = max(slots, len(values))
+    span = max(1.0, width - 2 * EDGE_PX)
+    step = span / (slots - 1) if slots > 1 else 0.0
+
+    def x_of(i: int) -> float:
+        return EDGE_PX + (slots - len(values) + i) * step if slots > 1 else width - EDGE_PX
+
+    def y_of(value: float) -> float:
+        return zero_y - min(1.0, max(0.0, value / scale)) * plot_h
+
+    runs = _runs([None if v is None else (x_of(i), y_of(v)) for i, v in enumerate(values)])
+    if not runs:
+        return Image.fromarray(np.clip(canvas + 0.5, 0, 255).astype(np.uint8))
+
+    peak_y = min(y for run in runs for _, y in run)
+    fill = _mask(width, height, lambda draw, s: [
+        draw.polygon([(x * s, y * s) for x, y in run] + [(run[-1][0] * s, zero_y * s), (run[0][0] * s, zero_y * s)],
+                     fill=255) for run in runs if len(run) > 1])
+    t = np.clip((zero_y - np.arange(height) - 0.5) / max(1.0, zero_y - peak_y), 0, 1)[:, None]
+    _paint(canvas, color, fill * (FILL_BOTTOM_ALPHA + (FILL_TOP_ALPHA - FILL_BOTTOM_ALPHA) * t))
+
+    # The average under the value line, so where the two meet the values win; it follows the
+    # values' own runs and never bridges a gap in them.
+    trend = _runs([None if v is None or values[i] is None else (x_of(i), y_of(v))
+                   for i, v in enumerate(average[:len(values)])])
+    trend = [run for run in trend if len(run) > 1]
+    if trend:
+        _paint(canvas, Theme.COLOR_PANEL_BG,
+               0.7 * _mask(width, height, lambda draw, s: [_polyline(draw, run, s, AVERAGE_HALO_PX) for run in trend]))
+        _paint(canvas, average_color or Theme.COLOR_BRIGHT,
+               _mask(width, height, lambda draw, s: [_polyline(draw, run, s, AVERAGE_PX, dashed=True) for run in trend]))
+    _paint(canvas, color, _mask(width, height, lambda draw, s: [_polyline(draw, run, s, LINE_PX) for run in runs]))
+
+    if values[-1] is not None:
+        x, y = runs[-1][-1]
+        dot = _mask(width, height, lambda draw, s: draw.ellipse(
+            [(x - DOT_RADIUS_PX) * s, (y - DOT_RADIUS_PX) * s, (x + DOT_RADIUS_PX) * s, (y + DOT_RADIUS_PX) * s], fill=255))
+        halo = np.asarray(Image.fromarray((dot * 255).astype(np.uint8)).filter(
+            ImageFilter.GaussianBlur(GLOW_RADIUS_PX)), np.float32) / 255
+        _paint(canvas, color, np.clip(halo * 2 * GLOW_STRENGTH, 0, 1) * (1 - dot))
+        _paint(canvas, color, dot)
+    return Image.fromarray(np.clip(canvas + 0.5, 0, 255).astype(np.uint8))
+
+
+def _runs(points: Sequence[Optional[Tuple[float, float]]]) -> List[List[Tuple[float, float]]]:
+    """The unbroken stretches of `points` between the missing ones."""
+    runs: List[List[Tuple[float, float]]] = [[]]
+    for point in points:
+        if point is None:
+            if runs[-1]:
+                runs.append([])
+        else:
+            runs[-1].append(point)
+    return [run for run in runs if run]
+
+
+def _polyline(draw: ImageDraw.ImageDraw, run: Sequence[Tuple[float, float]], s: int, width_px: float,
+              dashed: bool = False):
+    """A line through `run` with round joints and ends, solid or dashed along its length."""
+    w = max(1, round(width_px * s))
+    r = w / 2
+    pts = [(x * s, y * s) for x, y in run]
+    if len(pts) == 1:
+        (x, y), = pts
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=255)
+        return
+    if not dashed:
+        draw.line(pts, fill=255, width=w, joint="curve")
+        for x, y in (pts[0], pts[-1]):
+            draw.ellipse([x - r, y - r, x + r, y + r], fill=255)
+        return
+    dash = AVERAGE_DASH_PX * s
+    walked = 0.0
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        length = float(np.hypot(x1 - x0, y1 - y0))
+        at = 0.0
+        while at < length:
+            phase = (walked + at) % (2 * dash)
+            piece = min(length - at, (dash if phase < dash else 2 * dash) - phase)
+            if phase < dash and piece > 0:
+                a, b = at / length, (at + piece) / length
+                draw.line([(x0 + (x1 - x0) * a, y0 + (y1 - y0) * a), (x0 + (x1 - x0) * b, y0 + (y1 - y0) * b)],
+                          fill=255, width=w)
+            at += max(piece, 1e-3)
+        walked += length
+
+
+def _mask(width: int, height: int, paint: Callable[[ImageDraw.ImageDraw, int], Any]) -> np.ndarray:
+    """A coverage mask (0..1) of what `paint(draw, scale)` draws on a canvas `SUPERSAMPLE`
+    times larger, reduced back to `width` × `height` — the anti-aliasing."""
+    big = Image.new("L", (width * SUPERSAMPLE, height * SUPERSAMPLE), 0)
+    paint(ImageDraw.Draw(big), SUPERSAMPLE)
+    return np.asarray(big.reduce(SUPERSAMPLE), np.float32) / 255
+
+
+def _paint(canvas: np.ndarray, color: Color, alpha: np.ndarray):
+    a = alpha[..., None]
+    canvas[:] = canvas * (1 - a) + _rgb(color) * a
+
+
+def _rules(canvas: np.ndarray, rules: Sequence[Rule], zero_y: float, plot_h: float):
+    height, width = canvas.shape[:2]
+    for fraction, color in rules:
+        y = int(min(height - 1, max(0, np.floor(zero_y - fraction * plot_h))))
+        dashes = (np.arange(width) // DASH_PX) % 2 == 0
+        canvas[y, dashes] = _rgb(color)
+
+
 def render(bars: Sequence[Bar], cols: int, rows: int, rules: Sequence[Rule] = (),
            shade_top: float = 1.0, shade_span: float = 1.0, glow_bar: Optional[Bar] = None) -> Image.Image:
     """The plot as an RGB image of `cols` × `rows` cells. A colour shades by height: its base
@@ -75,11 +227,7 @@ def render(bars: Sequence[Bar], cols: int, rows: int, rules: Sequence[Rule] = ()
     plot_h = max(1.0, height - 2 * inset)
     canvas = np.empty((height, width, 3), np.float32)
     canvas[:] = _rgb(Theme.COLOR_PANEL_BG)
-
-    for fraction, color in rules:
-        y = int(min(height - 1, max(0, np.floor(zero_y - fraction * plot_h))))
-        dashes = (np.arange(width) // DASH_PX) % 2 == 0
-        canvas[y, dashes] = _rgb(color)
+    _rules(canvas, rules, zero_y, plot_h)
 
     # The value fraction at each pixel row's centre, top row first.
     row_values = (zero_y - (np.arange(height) + 0.5)) / plot_h

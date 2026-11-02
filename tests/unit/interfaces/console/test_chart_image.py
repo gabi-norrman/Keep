@@ -141,3 +141,43 @@ class TestChartPicture:
         chart.update(2, 2, ("a",), draw)
         chart.update(3, 2, ("a",), draw)
         assert len(draws) == 2
+
+
+@pytest.mark.unit
+class TestRollingMean:
+    def test_each_point_averages_the_window_ending_at_it(self):
+        assert ChartImage.rolling_mean([2.0, 4.0, 6.0, 8.0], 2) == [2.0, 3.0, 5.0, 7.0]
+
+    def test_missing_values_are_skipped_and_an_empty_window_is_missing(self):
+        assert ChartImage.rolling_mean([None, 4.0, None, None, 8.0], 2) == [None, 4.0, 4.0, None, 8.0]
+
+
+@pytest.mark.unit
+class TestArea:
+    COLS = 8
+
+    def column_lit(self, image, x) -> bool:
+        return any(px(image, x, y) != GROUND for y in range(HEIGHT))
+
+    def test_the_ground_under_the_line_is_filled_and_above_it_stays_empty(self):
+        image = ChartImage.area([50.0, 50.0], A, 100.0, self.COLS, ROWS)
+        middle = self.COLS * CELL_W // 2
+        assert px(image, middle, y_at(0.25)) != GROUND
+        assert px(image, middle, y_at(0.85)) == GROUND
+
+    def test_a_short_history_fills_the_plot_from_the_right(self):
+        image = ChartImage.area([50.0, 50.0], A, 100.0, self.COLS, ROWS, slots=4)
+        assert not self.column_lit(image, CELL_W)
+        assert px(image, self.COLS * CELL_W - CELL_W, y_at(0.25)) != GROUND
+
+    def test_a_missing_value_breaks_the_fill(self):
+        image = ChartImage.area([50.0, 50.0, None, None, 50.0, 50.0], A, 100.0, self.COLS, ROWS)
+        middle = self.COLS * CELL_W // 2
+        assert px(image, middle, y_at(0.25)) == GROUND
+
+    def test_the_rolling_average_is_drawn_above_the_fill_in_its_own_colour(self):
+        values = [10.0] * 6
+        average = [80.0] * 6
+        image = ChartImage.area(values, A, 100.0, self.COLS, ROWS, average=average, average_color=B)
+        column = [px(image, x, y_at(0.8)) for x in range(CELL_W, (self.COLS - 1) * CELL_W)]
+        assert min(distance(rgb, B) for rgb in column) < 60

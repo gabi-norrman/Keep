@@ -51,7 +51,9 @@ class DashboardTab(TabView):
     """Tab charting GPU, CPU, temperature, memory, TTFT, prompt-cache hits and API cost over
     time, with a row of status tiles underneath: integration health, last-request timing,
     resource meters and prompt sections. Everything sits in flat tiles — a title strip over a
-    tinted body — on a three-column grid (four for the status row).
+    tinted body — on a three-column grid (four for the status row). Long-term memory, CPU
+    temperature and the per-day cache hit are filled line charts with a dashed rolling
+    average (`_draw_area_chart`); the rest are columns.
 
     On a terminal that shows pictures a chart's plot is a picture (`ChartImage`, one
     `ChartPicture` per chart, redrawn in place as its data moves); the title strip, the axis
@@ -432,10 +434,9 @@ class DashboardTab(TabView):
         peak = max(sizes) if sizes else 0.0
         max_kb = self._nice_ceil(peak) if peak > self.LTM_MIN_MAX_KB else self.LTM_MIN_MAX_KB
 
-        self._draw_bar_chart(screen, x, y, width, chart_h,
-                             sizes, Theme.COLOR_PINK,
-                             "Long Term Memory", latest_str,
-                             max_value=max_kb, y_axis_format=self._format_kb)
+        self._draw_area_chart(screen, x, y, width, chart_h, sizes, Theme.COLOR_PINK,
+                              "Long Term Memory", latest_str, max_value=max_kb, y_axis_format=self._format_kb,
+                              window=self.DAILY_AVERAGE_DAYS, window_label=f"{self.DAILY_AVERAGE_DAYS}d avg")
 
     @staticmethod
     def _format_kb(v: float) -> str:
@@ -454,45 +455,88 @@ class DashboardTab(TabView):
             return Theme.COLOR_YELLOW, Theme.COLOR_YELLOW_DIM, "WARM"
         return Theme.COLOR_GREEN, Theme.COLOR_GREEN_DIM, "OK"
 
+    TEMP_AVERAGE_SAMPLES = 10   # five minutes of the 30-second readings
+
     def _draw_temp_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int):
-        """The bar chart with a colour per temperature zone and dashed guides at the zone thresholds."""
+        """The filled line in the colour of the current temperature zone, with dashed guides
+        at the zone thresholds labelled in their colours and a five-minute rolling average."""
         fg, _, status = self._temp_zone(self.cpu_temp)
         value = "" if self.cpu_temp <= 0 else (f"{self.cpu_temp:.0f}°C" if status == "OK" else f"{self.cpu_temp:.0f}°C {status}")
-        Tile.draw_card(screen, self._cards, x, y, width, chart_h + Tile.CARD_CHROME, "CPU Temp", value, fg)
+        if self.temp_error and not self.temp_history:
+            Tile.draw_card(screen, self._cards, x, y, width, chart_h + Tile.CARD_CHROME, "CPU Temp", value, fg)
+            screen.set_color(Theme.COLOR_DIM)
+            screen.write_at(x + 2, y + Tile.CARD_TOP + 1, self.temp_error[:width - 4])
+            screen.reset_color()
+            return
 
+        max_value = self.TEMP_SCALE_MAX_C
+        warn_guide = Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_YELLOW, 0.45)
+        bad_guide = Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_RED, 0.45)
+        self._draw_area_chart(screen, x, y, width, chart_h, list(self.temp_history), fg, "CPU Temp", value,
+                              max_value=max_value,
+                              window=self.TEMP_AVERAGE_SAMPLES, window_label="5m avg",
+                              ticks=[(0.0, "", Theme.COLOR_GRID),
+                                     (self.TEMP_WARN_C, f"{self.TEMP_WARN_C:.0f}°C", warn_guide),
+                                     (self.TEMP_BAD_C, f"{self.TEMP_BAD_C:.0f}°C", bad_guide)])
+
+    DAILY_AVERAGE_DAYS = 7
+
+    def _draw_area_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int,
+                         values: Sequence[Optional[float]], fg: Color, label: str, value_str: str,
+                         max_value: float = 100.0, y_axis_format=None, slots: int = 0,
+                         window: int = 0, window_label: str = "",
+                         ticks: Optional[Sequence[Tuple[float, str, Color]]] = None):
+        """A chart tile with a filled line chart (`ChartImage.area`): the title strip with the
+        latest value and, with a `window`, a legend for the rolling average of that many points
+        traced over the line; the y-axis labelled at 0, half and full (in `y_axis_format`,
+        percent by default) unless `ticks` — (value, label, colour) — name the rules instead.
+        A missing value (None) breaks the line. With nothing to show the plot is the empty
+        ground with a note."""
+        Tile.draw_card(screen, self._cards, x, y, width, chart_h + Tile.CARD_CHROME, label, value_str, fg)
         chart_y = y + Tile.CARD_TOP
         chart_x = x + 2 + self.Y_AXIS_W
         chart_w = width - 4 - self.Y_AXIS_W
         if chart_w <= 0 or chart_h <= 0:
             return
 
-        if self.temp_error and not self.temp_history:
+        if ticks is None:
+            y_axis_format = y_axis_format or self._format_pct
+            ticks = [(max_value * i / self.Y_TICKS, y_axis_format(max_value * i / self.Y_TICKS), Theme.COLOR_GRID)
+                     for i in range(self.Y_TICKS + 1)]
+            label_color = Theme.COLOR_DIM
+        else:
+            label_color = None
+        rules = [(tick / max_value if max_value > 0 else 0.0, color) for tick, _, color in ticks]
+        for tick, text, color in ticks:
+            if text:
+                row = min(chart_h - 1, int(tick / max_value * (chart_h - 1))) if max_value > 0 else 0
+                screen.set_color(label_color or color)
+                screen.write_at(x + 2, chart_y + chart_h - 1 - row, text.rjust(self.Y_AXIS_W - 1))
+        screen.reset_color()
+
+        values = list(values)
+        if not any(v is not None for v in values):
+            self._draw_columns(screen, chart_x, chart_y, chart_w, chart_h, [], max_value, lambda _: fg,
+                               guides={min(chart_h - 1, int(r * (chart_h - 1))): c for r, c in rules})
+            note = "no samples yet"
             screen.set_color(Theme.COLOR_DIM)
-            screen.write_at(x + 2, chart_y + 1, self.temp_error[:width - 4])
+            screen.set_bg_color(Theme.COLOR_PANEL_BG)
+            screen.write_at(chart_x + max(0, (chart_w - len(note)) // 2), chart_y + chart_h // 2, note[:chart_w])
             screen.reset_color()
             return
 
-        max_value = self.TEMP_SCALE_MAX_C
-        warn_row = min(chart_h - 1, int((self.TEMP_WARN_C / max_value) * chart_h))
-        bad_row = min(chart_h - 1, int((self.TEMP_BAD_C / max_value) * chart_h))
-        warn_guide = Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_YELLOW, 0.45)
-        bad_guide = Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_RED, 0.45)
+        average = ChartImage.rolling_mean(values, window) if window > 1 and len(values) > 1 else []
+        average_color = Theme.mix(fg, Theme.COLOR_BRIGHT, 0.6)
+        image = self._chart_picture(label).update(
+            chart_w, chart_h, (values, fg, max_value, rules, slots, window),
+            lambda: ChartImage.area(values, fg, max_value, chart_w, chart_h, rules, average, average_color, slots))
+        screen.image(chart_x, chart_y, image, chart_w, chart_h)
 
-        # Y-axis: label the warning/bad thresholds in their zone colors
-        for label_val, label_color, label_row in (
-                (self.TEMP_WARN_C, warn_guide, warn_row),
-                (self.TEMP_BAD_C, bad_guide, bad_row)):
-            screen.set_color(label_color)
-            screen.write_at(x + 2, chart_y + chart_h - 1 - label_row,
-                            f"{label_val:.0f}°C".rjust(self.Y_AXIS_W - 1))
-
-        # The bad guide wins the row when both thresholds land on it
-        self._draw_columns(screen, chart_x, chart_y, chart_w, chart_h, self.temp_history, max_value,
-                           lambda v: self._temp_zone(v)[0],
-                           guides={0: Theme.COLOR_GRID, warn_row: warn_guide, bad_row: bad_guide},
-                           rules=[(0.0, Theme.COLOR_GRID), (self.TEMP_WARN_C / max_value, warn_guide),
-                                  (self.TEMP_BAD_C / max_value, bad_guide)],
-                           picture="CPU Temp")
+        if average and window_label:
+            legend_x = x + 2 + display_width(label) + 2
+            legend_w = x + width - 2 - legend_x - (display_width(value_str) + 2 if value_str else 0)
+            if legend_w > 0:
+                Tile.write_segments(screen, legend_x, y, legend_w, [(f"╌ {window_label}", average_color)])
 
     Y_AXIS_W = 5
 
@@ -672,15 +716,16 @@ class DashboardTab(TabView):
             Tile.write_segments(screen, legend_x, y, legend_w, legend)
 
     def _draw_cache_daily_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int):
-        """A column per calendar day: the median prompt-cache hit of the day's requests, from
-        the log scan. A day without a request is an empty column; the value is the latest day
+        """A filled line, a point per calendar day: the median prompt-cache hit of the day's
+        requests, from the log scan, with a seven-day rolling average. A day without a request
+        breaks the line; the value is the latest day
         that had one, so a quiet morning still shows yesterday's figure."""
         series = self.cache_daily
         with_requests = [(day, median) for day, median in series if median is not None]
         value = f"{with_requests[-1][0]:%-d %b} {with_requests[-1][1]:.0f}%" if with_requests else ""
-        self._draw_bar_chart(screen, x, y, width, chart_h, [median or 0.0 for _, median in series],
-                             Theme.COLOR_TEAL, "KV-Cache Hit % per day", value, max_value=100.0,
-                             y_axis_format=self._format_pct)
+        self._draw_area_chart(screen, x, y, width, chart_h, [median for _, median in series],
+                              Theme.COLOR_TEAL, "KV-Cache Hit % per day", value, max_value=100.0,
+                              window=self.DAILY_AVERAGE_DAYS, window_label=f"{self.DAILY_AVERAGE_DAYS}d avg")
         if not series and self.cache_daily_error:
             screen.set_color(Theme.COLOR_DIM)
             screen.set_bg_color(Theme.COLOR_PANEL_BG)
