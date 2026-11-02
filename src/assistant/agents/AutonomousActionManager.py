@@ -758,9 +758,10 @@ class AutonomousActionManager:
             if remaining > 0:
                 time.sleep(remaining)
             self._remove_wakeup(wake_at)
+            # The LLM asked for this minute, like a watch item's due time: Night mode is no
+            # reason to drop it (issue #119).
             if self.prompt_manager.is_night_mode_active():
-                info("Scheduled wakeup skipped — Night mode is active")
-                return
+                info("Scheduled wakeup fires in Night mode — a wake-up fires night or not")
             # Hold the wake-up only while a request is in flight or has just ended, so it
             # does not pile a second reply on top of the user's own — but no longer: the
             # user asked for this moment.
@@ -826,8 +827,8 @@ class AutonomousActionManager:
 
     def _fire_missed_wakeups(self, missed: list[dict]):
         """Run the checks of *missed* one after the other, oldest first, after the startup grace
-        — the same gating as a wake-up that fires on time, and each is removed from the file as
-        its turn comes."""
+        — the same gating as a wake-up that fires on time (Night mode or not), and each is removed
+        from the file as its turn comes."""
         time.sleep(MISSED_WAKEUP_STARTUP_GRACE_SECONDS)
         for wakeup in missed:
             if not self.running:
@@ -835,8 +836,7 @@ class AutonomousActionManager:
             self._remove_wakeup(wakeup["at"])
             late = _describe_duration(time.time() - wakeup["at"])
             if self.prompt_manager.is_night_mode_active():
-                info(f"Missed wakeup ({late} late) skipped — Night mode is active")
-                continue
+                info(f"Missed wakeup ({late} late) fires in Night mode — a wake-up fires night or not")
             while self.running and self.is_user_interaction_active(SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS):
                 info("Missed wakeup deferred — user interaction active or recent. Retrying shortly.")
                 time.sleep(SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS)

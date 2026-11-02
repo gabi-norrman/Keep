@@ -712,7 +712,9 @@ class TestAutonomousActionManager:
         assert self._run_two_iterations_at_four(mgr, curation_pending=True) == (0, 1)
 
     @patch('assistant.agents.AutonomousActionManager.create_llm')
-    def test_scheduled_wakeup_skips_at_night(self, mock_claude):
+    def test_scheduled_wakeup_fires_at_night(self, mock_claude):
+        """Issue #119: a wake-up is a minute the LLM asked for, like a watch item's due time —
+        dropping it under Night mode lost it for good, with no retry in the morning."""
         mock_llm = Mock()
         mock_claude.return_value = mock_llm
         pm = make_mock_prompt_manager(night=True)
@@ -740,7 +742,7 @@ class TestAutonomousActionManager:
             mgr._start_wakeup_thread({"at": time.time() + 0.01, "scheduled_at": time.time()})
             created[0].join(timeout=2.0)
 
-        assert not check_called.is_set(), "activity_check should not be called during Night mode"
+        assert check_called.is_set(), "a scheduled wake-up fires in Night mode too"
 
     @patch('assistant.agents.AutonomousActionManager.create_llm')
     def test_periodic_check_runs_when_live_state_not_night_despite_stale_prompt(self, mock_claude):
@@ -1063,16 +1065,17 @@ class TestWakeupPersistence:
         assert on_disk_when_fired == [(first, True, [second]), (second, True, [])]
 
     @patch('assistant.agents.AutonomousActionManager.MISSED_WAKEUP_STARTUP_GRACE_SECONDS', 0)
-    def test_a_missed_wakeup_is_dropped_at_night_like_one_on_time(self):
+    def test_a_missed_wakeup_fires_at_night_like_one_on_time(self):
         now = time.time()
         wakeup = self.wakeup(now - 600)
         self._save(wakeup)
         mgr, _ = make_manager()
         mgr.running = True
         mgr.prompt_manager.is_night_mode_active.return_value = True
-        with patch.object(mgr, 'activity_check') as check:
+        with patch.object(mgr, 'is_user_interaction_active', return_value=False), \
+             patch.object(mgr, 'activity_check') as check:
             mgr._fire_missed_wakeups([wakeup])
-            check.assert_not_called()
+            check.assert_called_once()
         assert self.read() == []
 
     @patch('assistant.agents.AutonomousActionManager.MISSED_WAKEUP_STARTUP_GRACE_SECONDS', 0)
