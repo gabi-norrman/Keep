@@ -6,7 +6,9 @@ index that turns the names the LLM hands back into entity ids, and the wording o
 change as a feed row. Availability is not an event here: `feed_entry` never words a recovery,
 and the integration holds an outage for UNAVAILABLE_HOLD_S before `outage_row` names it, since
 a hub that drops for half a minute took every entity behind it through unavailable and "back"
-(three covers "closed" without moving, 2026-10-19)."""
+(three covers "closed" without moving, 2026-10-19). `unknown` is the same gap for a state-bearing
+entity — a person whose trackers blip goes `home → unknown → home` — so `feed_entry` never
+words what follows it either; the integration compares it with the last known state."""
 import difflib
 import re
 from dataclasses import dataclass, field
@@ -333,6 +335,18 @@ def is_unavailable(state: Optional[dict]) -> bool:
     return state is not None and str(state.get("state")) == "unavailable"
 
 
+def is_unknown(state: Optional[dict]) -> bool:
+    return state is not None and str(state.get("state")) == "unknown"
+
+
+def bridges_unknown(entity_id: str, index: NameIndex) -> bool:
+    """Whether `unknown` is a gap in what is known about the entity rather than a state of its
+    own, so the state after it is compared with the one before: every entity the dialog
+    follows but the actions — a scene stands at `unknown` until its first activation, and an
+    automation's rows come from `last_triggered`, not its state."""
+    return feeds_changes(entity_id, index) and domain_of(entity_id) not in ACTION_DOMAINS
+
+
 def feeds_changes(entity_id: str, index: NameIndex) -> bool:
     """Whether the dialog wants this entity's state changes at all: a listed domain that is not
     a ticking sensor, and in the snapshot once there is one."""
@@ -356,9 +370,9 @@ def feed_entry(old: Optional[dict], new: Optional[dict], index: NameIndex, user:
                entry: Optional[dict] = None) -> Optional[FeedEntry]:
     """A state change as a history row, or None for one the dialog does not want: attribute-only
     changes, numeric sensors ticking, entities outside the snapshot's lists, an entity
-    appearing or vanishing, a recovery from `unavailable` (the integration words that against
-    the pre-outage state), and `unavailable` itself on a button or a diagnostic entity
-    (`entry`, the registry entry, when the caller has it)."""
+    appearing or vanishing, a recovery from `unavailable` or `unknown` (the integration words
+    that against the state before the gap), and `unavailable` itself on a button or a
+    diagnostic entity (`entry`, the registry entry, when the caller has it)."""
     if old is None or new is None:
         return None
     entity_id = new["entity_id"]
@@ -366,6 +380,8 @@ def feed_entry(old: Optional[dict], new: Optional[dict], index: NameIndex, user:
     if not feeds_changes(entity_id, index):
         return None
     if is_unavailable(old):
+        return None
+    if is_unknown(old) and bridges_unknown(entity_id, index):
         return None
     if is_unavailable(new) and not tracks_availability(entity_id, index, entry):
         return None
