@@ -22,7 +22,8 @@ second copy:
 - the prose of an assistant row that contains the text of a live bubble or Notifier notice
   shown in the last MATCH_WINDOW seconds, or is contained in it. The bubble keeps the
   fallback notice the history leaves out, so it is removed before the test, and
-  containment either way, on tag-stripped text, covers the transport notices;
+  containment either way, on tag- and whitespace-free text (`normalize`), covers the
+  transport notices;
 - assistant rows that land while a console reply is still streaming are held back until
   the reply is over, because the row is written before the last bubble is finalized;
 - a system row with source Console is the brief of a turn the server opened here
@@ -64,10 +65,13 @@ SHOW_OPENING_BRIEFS = False            # show the system turn behind a conversat
 
 
 def normalize(text: str) -> str:
-    """Tag-free, whitespace-collapsed text for comparing what was shown with what was stored.
-    The stream swaps every backtick for a space before a chunk reaches an interface
-    (DialogManager) while the stored row keeps the model's own words, so drop them here too."""
-    return " ".join(strip_tags(text or "").replace("`", " ").split())
+    """Tag-free, whitespace-free text for comparing what was shown with what was stored.
+    The stream drops the backticks the model wrote before a chunk reaches an interface
+    (`DialogManager.strip_backticks`), a space left where some of them stood, while the
+    stored row keeps them: with neither backticks nor spacing in the comparison a bubble
+    reads the same as its row wherever the span was cut (#143: `name`. shown as "name ."
+    kept the row from its bubble, and the reply was drawn twice)."""
+    return "".join(strip_tags(text or "").replace("`", "").split())
 
 
 def entry_key(entry: dict) -> tuple:
@@ -207,6 +211,8 @@ class HistoryFeed(AssistantObserver):
         if stored and self._adopt(since, lambda shown: shown in stored or stored in shown):
             trace(f"HistoryFeed: adopted a live entry as the history row's prose ({len(stored)} chars)")
             prose = ""
+        elif stored:
+            trace(f"HistoryFeed: no live bubble matches the row's prose ({len(stored)} chars), drawing it")
         self._draw(StoredReply(prose, before, after), entry["timestamp"])
 
     def _adopt_echo(self, echo: str, since: float) -> bool:
@@ -238,7 +244,7 @@ class HistoryFeed(AssistantObserver):
     def _draw(self, reply: StoredReply, timestamp: float):
         """An assistant row as its stream showed it: a notice per command, the prose as a bubble."""
         if not (reply.prose or reply.before or reply.after):
-            trace("HistoryFeed: nothing left of an assistant row to show")
+            trace("HistoryFeed: assistant row dropped, the stream already showed all of it")
             return
         for echo in reply.before:
             self._pane.insert(KIND_NOTICE, command_line(echo), timestamp)

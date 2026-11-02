@@ -194,6 +194,24 @@ class TestAdoption:
         feed.turn_finished()
         assert pane.entries == [pane.entries[0], bubble]
 
+    @pytest.mark.parametrize("live", ["The note pool-temp . The text I saved is in it.",   # every backtick a space
+                                      "The note pool-temp. The text I saved is in it."])   # the closing one dropped
+    def test_a_span_ending_at_a_full_stop_adopts_its_bubble(self, history, pane, feed, live):
+        """#143: the stream drops the model's backticks, the row keeps them, and a span cut
+        at a full stop must still find its bubble whatever the stream left where the
+        backtick stood — or the reply is drawn a second time under its own header."""
+        pane.add_user("why twice?")
+        feed.user_submitted("why twice?")
+        feed.turn_started()
+        echo = stream_echoes(pane, 'load_watch("pool-temp")')
+        bubble = pane.add_assistant(live, final=True)
+        now = time.time()
+        land(history, entry("Marcus", "why twice?", now, source="Console"),
+             entry("assistant", 'load_watch("pool-temp")\n\nThe note `pool-temp`. The text I saved is in it.',
+                   now + 0.001))
+        feed.turn_finished()
+        assert pane.entries == [pane.entries[0], echo, bubble]
+
     def test_a_markdown_row_adopts_the_bubble_the_stream_repaired(self, history, pane, feed):
         """ChatSession turns the reply's **bold** into <b> as it streams; the stored row keeps
         the asterisks, so it must still match instead of showing a raw second copy."""
@@ -349,8 +367,8 @@ class TestIncomingRequests:
         assert [k for k, _, _ in shown(pane)] == [KIND_SYSTEM, KIND_USER]
 
 
-def test_normalize_strips_tags_and_collapses_whitespace():
-    assert normalize("  Done,\n<b>kitchen</b>   lamp ") == "Done, kitchen lamp"
+def test_normalize_ignores_tags_backticks_and_spacing():
+    assert normalize("  Done,\n<b>kitchen</b>   lamp ") == normalize("Done, `kitchen` lamp") == "Done,kitchenlamp"
 
 
 class TestWipe:

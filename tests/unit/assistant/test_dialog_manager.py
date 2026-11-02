@@ -777,6 +777,25 @@ def test_process_llm_stream_replaces_backticks(monkeypatch):
 
 
 @pytest.mark.unit
+def test_a_backtick_span_keeps_its_punctuation_however_it_is_chunked(monkeypatch):
+    """#143: `name`. reached the chat as "name ." — the closing backtick is dropped, the
+    opening one only becomes a space where the words would otherwise touch."""
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    monkeypatch.setattr('assistant.DialogManager.time.time', TimeStub([1.0, 1.1]))
+
+    output = list(dm.process_llm_stream(iter(["The note `pool", "-temp`", ". Next is`x`", ": done"]), 1.0, False))
+    assert "".join(output) == "The note pool-temp. Next is x: done"
+
+
+@pytest.mark.unit
+def test_strip_backticks_spaces_only_where_words_would_touch():
+    from assistant.DialogManager import strip_backticks
+    assert strip_backticks("say`hi`, or ```\ncode\n```", "", False) == ("say hi, or \ncode\n", False)
+    assert strip_backticks("`x`", "word", False) == (" x", False)     # the chunk before ended in a word
+    assert strip_backticks("a`", "the `", True) == ("a", False)       # … or inside the span
+
+
+@pytest.mark.unit
 def test_process_llm_stream_preserves_trailing_space_on_first_chunk(monkeypatch):
     """lstrip() on the first chunk should only remove leading whitespace,
     preserving trailing whitespace that acts as a word separator for the next chunk."""
