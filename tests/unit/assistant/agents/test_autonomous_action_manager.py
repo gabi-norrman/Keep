@@ -392,15 +392,16 @@ class TestAutonomousActionManager:
             assert "<thinking>" not in result
             assert "Action taken" in result
 
-    def test_result_cleaning_removes_xml_tags(self):
+    def test_result_cleaning_keeps_markup_that_is_not_thinking(self):
+        """A strip of every `<…>` tag took the call markup of a block format with it (#135)."""
         with patch('assistant.agents.AutonomousActionManager.create_llm') as mock_claude:
             mock_claude.return_value = Mock()
             pm = make_mock_prompt_manager()
             mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
 
-            result = mgr.clean_result_and_potentially_add_to_history("<tag>content</tag>Hello")
-            assert "<tag>" not in result
-            assert "Hello" in result
+            result = mgr.clean_result_and_potentially_add_to_history(
+                "<thinking>hm</thinking><tool_call>{\"name\": \"turn_on\"}</tool_call>Hello")
+            assert result == '<tool_call>{"name": "turn_on"}</tool_call>Hello'
 
     def test_result_adds_to_history_when_not_no(self):
         with patch('assistant.agents.AutonomousActionManager.create_llm') as mock_claude:
@@ -1681,13 +1682,12 @@ class TestSaveAutonomousResultToHistory:
         saved = call_args[0][2]
         assert "Turned on the porch lights." in saved
 
-    def test_strips_xml_tags_from_visible(self):
+    def test_keeps_the_markup_of_the_visible_text(self):
+        """A strip of every `<…>` tag took the call markup of a block format with it (#135)."""
         mgr, _ = make_manager()
-        mgr._save_autonomous_result_to_history("<result>Action taken</result>")
-        call_args = mgr.prompt_manager.update_history.call_args
-        saved = call_args[0][2]
-        assert "<result>" not in saved
-        assert "Action taken" in saved
+        mgr._save_autonomous_result_to_history("<thinking>hm</thinking>\n<tool_call>{\"name\": \"turn_on\"}</tool_call>")
+        saved = mgr.prompt_manager.update_history.call_args[0][2]
+        assert saved == '<thinking>hm</thinking>\n<tool_call>{"name": "turn_on"}</tool_call>'
 
 
 class TestThinkingTagInstruction:
@@ -1764,7 +1764,8 @@ class TestThinkingTagInstruction:
             finally:
                 mgr.test_mode = True
         kwargs = [c.kwargs for c in llm.think_with_messages.call_args_list]
-        assert kwargs == [{"volatile_tail": 1, "follow_up": False}, {"volatile_tail": 0, "follow_up": True}]
+        assert kwargs == [{"thinking": Thinking.MORE, "volatile_tail": 1, "follow_up": False},
+                          {"thinking": Thinking.MORE, "volatile_tail": 0, "follow_up": True}]
 
     def test_a_follow_up_round_after_a_cut_reply_runs_its_commands(self):
         """One processor serves every round of a check. A first reply past the command cap
@@ -1826,6 +1827,41 @@ class TestThinkingTagInstruction:
         assert assistant_turns[0] == "turn_on(hall lamp)"   # then the "NO" the follow-up answered
         stored = [c.args[2] for c in mgr.prompt_manager.update_history.call_args_list]
         assert stored and all("dim(" not in text and "Commands" not in text for text in stored)
+
+    def test_a_rescued_invoke_block_is_stored_and_resent_in_the_active_syntax(self):
+        """Under the keep format the processor rescues a call Opus writes as an `<invoke>` block,
+        but the check stored the reply tag-stripped — the bare parameter values, no command
+        names — and resent the block itself in the follow-up round (#135: a 25-call row of
+        values like `GM-AA` / `newest`). The chat path stores the turn rewritten in the active
+        syntax; the check does the same."""
+        from assistant.commands.CommandProcessor import CommandProcessor
+        mgr, llm = make_manager()
+        invoke = ('<thinking>mail</thinking>\n<invoke name="load_toolkit">\n'
+                  '<parameter name="name">email</parameter>\n</invoke>')   # pure: answers in test mode too
+        llm.think_with_messages.side_effect = [invoke, "NO"]
+        processors = []
+
+        def real_processor(test_mode):
+            processors.append(CommandProcessor(test_suite_mode=True))
+            return processors[-1]
+
+        mgr.test_mode = False
+        try:
+            with patch('assistant.commands.CommandProcessor.CommandProcessor', side_effect=real_processor):
+                mgr.activity_check(prompt="test prompt")
+        finally:
+            mgr.test_mode = True
+            for processor in processors:
+                processor.kill()
+
+        processor = processors[0]
+        assert llm.think_with_messages.call_count == 2   # the rescued call ran and earned a follow-up
+        stored = [c.args[2] for c in mgr.prompt_manager.update_history.call_args_list]
+        follow_up_messages = llm.think_with_messages.call_args_list[1].args[0]
+        resent = [m["content"] for m in follow_up_messages if m["role"] == "assistant"][0]
+        for text in stored + [resent]:
+            assert "<invoke" not in text and "<parameter" not in text
+            assert processor.format.extract_all(text) == [("load_toolkit", ["email"])]
 
     def test_the_refusal_fallback_gets_the_same_volatile_tail(self):
         mgr, llm = make_manager()

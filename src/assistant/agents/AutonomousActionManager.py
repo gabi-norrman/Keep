@@ -511,7 +511,7 @@ class AutonomousActionManager:
             command_processor = CommandProcessor(self.test_mode)
             command_processor.turn_started = started
             stray = self._run_commands(result, command_processor)
-            result = self._kept_of_a_cut_reply(result, command_processor)
+            result = self._stored_form(result, command_processor)
 
             # Wait for queued commands to be picked up and processed
             # (prevents race where we check flags before the worker thread sets them)
@@ -588,7 +588,7 @@ class AutonomousActionManager:
                 # The same processor reads every round of the check: the command cap is per reply.
                 command_processor.start_new_reply()
                 stray = self._run_commands(result, command_processor)
-                result = self._kept_of_a_cut_reply(result, command_processor)
+                result = self._stored_form(result, command_processor)
                 self._save_autonomous_result_to_history(result)
                 follow_up_saved = True
 
@@ -632,18 +632,22 @@ class AutonomousActionManager:
         return stray
 
     @staticmethod
-    def _kept_of_a_cut_reply(result: str, command_processor) -> str:
-        """What the check keeps of a reply the processor stopped reading (its command cap, or
-        a `<function_results>` block the model wrote itself): the calls that ran and nothing
-        after them, as the chat path stores a cut turn. The whole reply went on to the next
-        round and into the history before (2026-10-25: a 16k-token loop of invented results,
-        resent every round), so the model read its own invented results back."""
-        if command_processor.reply_cut is not True:   # `is`: the tests' mock processors
-            return result
-        kept = command_processor.kept_of(result)
-        info(f"Autonomous reply cut after {command_processor.commands_dispatched} command(s) — the next "
-             f"round and the history keep those calls only ({len(result)} → {len(kept)} chars)")
-        return kept
+    def _stored_form(result: str, command_processor) -> str:
+        """The reply as the next round and the history keep it, as the chat path stores a turn
+        (DialogManager): of a reply the processor stopped reading (its command cap, or a
+        `<function_results>` block the model wrote itself) the calls that ran and nothing
+        after them — the whole reply went on before (2026-10-25: a 16k-token loop of invented
+        results, resent every round), so the model read its own invented results back — and
+        every call the rescue read as an `<invoke>` block written in the active syntax, so
+        the model never sees that shape in its own past turns (#135: the stored row held the
+        bare parameter values of 25 rescued calls, tag-stripped, with no command names)."""
+        if command_processor.reply_cut is True:   # `is`: the tests' mock processors
+            kept = command_processor.kept_of(result)
+            info(f"Autonomous reply cut after {command_processor.commands_dispatched} command(s) — the next "
+                 f"round and the history keep those calls only ({len(result)} → {len(kept)} chars)")
+            result = kept
+        rewritten = command_processor.format.rewritten(result)
+        return rewritten if isinstance(rewritten, str) else result   # a Mock's is no text
 
     # The sentinel the check answers with when there is nothing to say and nothing to do. A
     # model is bad at outputting nothing at all, so the instruction asks for this one word
@@ -673,9 +677,9 @@ class AutonomousActionManager:
                     return
 
     def clean_result_and_potentially_add_to_history(self, result: str) -> str:
-        # Filter out XML tags (including content) and square brackets
+        # Only the thinking and the emotion brackets go: a strip of every `<…>` tag took the
+        # `<invoke>` / `<tool_call>` markup of the calls with it and left bare values (#135).
         result_cleaned = re.sub(r'<thinking>.*?</thinking>', '', result, flags=re.DOTALL)
-        result_cleaned = re.sub(r'<[^>]*>', '', result_cleaned)
         result_cleaned = re.sub(r'\[[^\]]*\]', '', result_cleaned).strip()
         if result_cleaned and not self._is_no(result_cleaned):
             self.prompt_manager.update_history(None, None, result_cleaned)
@@ -686,7 +690,6 @@ class AutonomousActionManager:
         thinking_text = thinking_match.group(1).strip() if thinking_match else ""
 
         visible = re.sub(r'<thinking>.*?</thinking>', '', result, flags=re.DOTALL)
-        visible = re.sub(r'<[^>]*>', '', visible)
         visible = re.sub(r'\[[^\]]*\]', '', visible).strip()
 
         parts = []
