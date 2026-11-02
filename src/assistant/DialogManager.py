@@ -26,6 +26,27 @@ if TYPE_CHECKING:
     from interfaces.voice.tts.VoiceSynthesizer import VoiceSynthesizer
 
 
+def strip_backticks(chunk: str, before: str, in_span: bool) -> tuple[str, bool]:
+    """The chunk without the backticks a model wraps a name or a call in: they are not for
+    the user, and the command processor reads the call without them. The one opening a
+    span straight after a letter or digit becomes a space, so the words stay apart; every
+    other one, the closing ones among them, is dropped, so the full stop after a span
+    stays on its word (when every backtick became a space, `name`. reached the chat as
+    "name ." — #143). *before* is the text the chunk continues, *in_span* whether a span
+    was open at its end; both come from the stream so far, so a chunk cut inside a span
+    reads the same as one that holds it whole."""
+    out = []
+    prev = before[-1:]
+    for char in chunk:
+        if char == "`":
+            out.append(" " if not in_span and prev.isalnum() else "")
+            in_span = not in_span
+        else:
+            out.append(char)
+        prev = char
+    return "".join(out), in_span
+
+
 class DialogManager:
     """Runs one LLM round: picks the model and voice, streams the reply and hands commands off.
 
@@ -524,6 +545,7 @@ class DialogManager:
         # the iOS chat overlay. A tag can span chunks, so hold back a trailing unclosed '['.
         stream_text_buffer = ""
         reply_time_shown = False
+        in_span = False   # inside a backtick span of the model's (strip_backticks)
 
         def publish_stream_text(chunk: str, flush: bool = False):
             nonlocal stream_text_buffer
@@ -565,10 +587,9 @@ class DialogManager:
                 if not self.web_request_handler.ctx.text_only:
                     self.web_request_handler.initialize_audio_playback()
 
+            before = self.llm_response_raw[-1:]
             self.llm_response_raw += content
-
-            # remove back ticks, used sometimes by llm to signal commands, they're irrelevant for us.
-            content = content.replace("`", " ")
+            content, in_span = strip_backticks(content, before, in_span)
 
             processed_chunk = self.command_processor.process(content, self)
             # Thinking chunks arrive while the processor swallows the block and yields no
