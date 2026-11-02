@@ -8,8 +8,8 @@ import pytest
 
 from assistant.integration.Feed import FeedEntry
 from integrations.home_assistant.HomeAssistantModel import (
-    NameIndex, Registries, Unresolved, area_of, build, feed_entry, format_value, outage_row, recovery_row,
-    should_expose, tracks_availability)
+    NameIndex, Registries, Unresolved, area_of, bridges_unknown, build, feed_entry, format_value, outage_row,
+    recovery_row, should_expose, tracks_availability)
 from assistant.integration.HomeAutomation import render
 
 DATA = Path(__file__).parents[2] / "data" / "home" / "ha"
@@ -304,6 +304,27 @@ class TestFeedEntry:
         against the pre-outage state instead."""
         assert feed_entry(state("cover.blinds", "unavailable"), state("cover.blinds", "closed"), index) is None
         assert feed_entry(state("light.hall", "unavailable"), state("light.hall", "on"), index) is None
+
+    def test_what_follows_unknown_is_never_worded_as_an_action(self, index):
+        """A person whose trackers blip goes home → unknown → home (issue #140); the model
+        alone cannot tell that from an arrival, so it leaves the state after `unknown` to the
+        integration, which compares it with the last known one. A scene's `unknown` is its
+        state until the first activation, so that one is still a row."""
+        assert feed_entry(state("person.marcus", "unknown"), state("person.marcus", "home"), index) is None
+        assert feed_entry(state("person.marcus", "unknown"), state("person.marcus", "not_home"), index) is None
+        assert feed_entry(state("binary_sensor.front_door", "unknown"),
+                          state("binary_sensor.front_door", "off", device_class="door"), index) is None
+        assert feed_entry(state("scene.movie_night", "unknown"),
+                          state("scene.movie_night", "2026-09-15T20:00:00+00:00"), index).content == "Movie night [scene] activated"
+
+    def test_bridges_unknown_is_every_fed_entity_but_the_actions(self, index):
+        assert bridges_unknown("person.marcus", index) is True
+        assert bridges_unknown("binary_sensor.front_door", index) is True
+        assert bridges_unknown("scene.movie_night", index) is False
+        assert bridges_unknown("automation.sunset_lights", index) is False
+        assert bridges_unknown("sensor.kitchen_temperature", index) is False, "a sensor's changes are never rows"
+        assert bridges_unknown("person.charlotte", index) is False, "not in the snapshot"
+        assert bridges_unknown("person.charlotte", NameIndex()) is True, "everything is fed before the first snapshot"
 
     def test_a_button_or_a_diagnostic_entity_going_unavailable_is_silent(self, index):
         assert feed_entry(state("button.reboot", "unknown"), state("button.reboot", "unavailable"), NameIndex()) is None

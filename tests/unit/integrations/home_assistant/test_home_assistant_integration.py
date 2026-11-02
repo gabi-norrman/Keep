@@ -585,3 +585,119 @@ class TestAvailabilityHold:
         rows = integration.fetch(None, backfill=False, now=T0 + 400).entries
         assert len(rows) == 1 and "None" not in rows[0].content
         assert "Hall light [Hall]" in rows[0].content and "Blinds [Sovrum]" in rows[0].content
+
+
+@pytest.mark.unit
+class TestUnknownGap:
+    """A person entity goes `unknown` while its trackers blip and comes back to the state it
+    had; nobody moved, so there is no row (issue #140: four "arrived home" and "left home"
+    rows per 15 s Wi-Fi outage, 2026-10-30). A real move during the gap is the one row."""
+
+    PEOPLE = {"person.marcus": "home", "person.charlotte": "home", "person.frances": "not_home",
+              "person.ingeborg": "not_home"}
+
+    @pytest.fixture
+    def household(self, integration, fake):
+        """Before the first snapshot every entity is fed and named by its friendly name, so the
+        whole cast is on the feed without touching the fixture's house."""
+        integration.client()
+        return {entity_id: (value, entity_id.split(".")[1].capitalize()) for entity_id, value in self.PEOPLE.items()}
+
+    def _move(self, fake, entity_id, before, after, seconds, name):
+        fake.push("state_changed", {"entity_id": entity_id, "old_state": timed(entity_id, before, 0, friendly_name=name),
+                                    "new_state": timed(entity_id, after, seconds, friendly_name=name)})
+
+    def _blip(self, fake, household, seconds, back=None):
+        for entity_id, (value, name) in household.items():
+            self._move(fake, entity_id, value, "unknown", seconds, name)
+        for entity_id, (value, name) in household.items():
+            self._move(fake, entity_id, "unknown", (back or {}).get(entity_id, value), seconds + 15, name)
+
+    def test_the_whole_household_back_from_unknown_to_where_it_was_is_nothing(self, integration, fake, household):
+        self._blip(fake, household, 0)
+        assert integration.fetch(None, backfill=False, now=T0 + 20).entries == []
+        assert integration._known == {}
+        self._blip(fake, household, 600)
+        assert integration.fetch(None, backfill=False, now=T0 + 700).entries == [], "and the next blip is nothing too"
+
+    def test_a_move_during_the_gap_is_the_one_real_change(self, integration, fake, household):
+        self._blip(fake, household, 0, back={"person.marcus": "not_home", "person.frances": "home"})
+        rows = integration.fetch(None, backfill=False, now=T0 + 20).entries
+        assert sorted(r.content for r in rows) == ["Frances arrived home", "Marcus left home"]
+        assert all(r.timestamp == T0 + 15 for r in rows), "stamped when the state came back, not when it went"
+
+    def test_a_person_known_after_a_gap_that_began_before_the_process_watched_is_no_row(self, integration, fake, household):
+        self._move(fake, "person.ingeborg", "unknown", "not_home", 5, "Ingeborg")
+        self._move(fake, "person.charlotte", "unknown", "home", 5, "Charlotte")
+        assert integration.fetch(None, backfill=False, now=T0 + 10).entries == []
+
+    def test_a_person_in_the_snapshot_is_compared_the_same_way(self, integration, fake):
+        integration.snapshot()
+        self._move(fake, "person.marcus", "home", "unknown", 0, "Marcus")
+        self._move(fake, "person.marcus", "unknown", "home", 15, "Marcus")
+        assert integration.fetch(None, backfill=False, now=T0 + 20).entries == []
+        self._move(fake, "person.marcus", "home", "unknown", 100, "Marcus")
+        self._move(fake, "person.marcus", "unknown", "Work", 115, "Marcus")
+        assert [r.content for r in integration.fetch(None, backfill=False, now=T0 + 120).entries] == ["Marcus is at Work"]
+
+    def test_a_door_sensor_back_from_unknown_is_no_row_either(self, integration, fake):
+        integration.snapshot()
+        self._move(fake, "binary_sensor.front_door", "off", "unknown", 0, "Front door")
+        self._move(fake, "binary_sensor.front_door", "unknown", "off", 15, "Front door")
+        assert integration.fetch(None, backfill=False, now=T0 + 20).entries == []
+        self._move(fake, "binary_sensor.front_door", "off", "unknown", 100, "Front door")
+        self._move(fake, "binary_sensor.front_door", "unknown", "on", 115, "Front door")
+        assert [r.content for r in integration.fetch(None, backfill=False, now=T0 + 120).entries] == ["Front door [Hall] opened"]
+
+    def test_a_scene_activated_out_of_unknown_is_still_a_row(self, integration, fake):
+        integration.snapshot()
+        self._move(fake, "scene.movie_night", "unknown", "2026-09-15T20:00:00+00:00", 10, "Movie night")
+        assert [r.content for r in integration.fetch(None, backfill=False, now=T0 + 20).entries] == ["Movie night [scene] activated"]
+        assert integration._known == {}
+
+    def test_unknown_then_unavailable_is_held_as_the_state_before_both(self, integration, fake):
+        integration.snapshot()
+        self._move(fake, "person.marcus", "home", "unknown", 0, "Marcus")
+        self._move(fake, "person.marcus", "unknown", "unavailable", 5, "Marcus")
+        assert integration._known == {} and integration._outages["person.marcus"].before["state"] == "home"
+        with patch(f"{MODULE}.time") as clock:
+            clock.time.return_value = T0 + 60
+            assert {e.name: e.value for e in integration.snapshot().variables}["Marcus"] == "home"
+        self._move(fake, "person.marcus", "unavailable", "home", 30, "Marcus")
+        assert integration.fetch(None, backfill=False, now=T0 + 40).entries == []
+        self._move(fake, "person.marcus", "home", "unknown", 100, "Marcus")
+        self._move(fake, "person.marcus", "unknown", "unavailable", 105, "Marcus")
+        self._move(fake, "person.marcus", "unavailable", "not_home", 130, "Marcus")
+        assert [r.content for r in integration.fetch(None, backfill=False, now=T0 + 140).entries] == ["Marcus left home"]
+
+    def test_a_person_gone_from_home_assistant_while_unknown_is_forgotten(self, integration, fake):
+        integration.snapshot()
+        self._move(fake, "person.marcus", "home", "unknown", 0, "Marcus")
+        fake.push("state_changed", {"entity_id": "person.marcus", "old_state": timed("person.marcus", "unknown", 0),
+                                    "new_state": None})
+        assert integration._known == {}
+        assert integration.fetch(None, backfill=False, now=T0 + 20).entries == []
+
+    def test_a_reconnect_drops_the_kept_state_the_fresh_table_outdates(self, integration, fake):
+        """The socket dropped while Marcus was unknown and the fresh table shows him away: the
+        kept "home" would turn his next blip into a departure that happened who knows when."""
+        integration.snapshot()
+        self._move(fake, "person.marcus", "home", "unknown", 0, "Marcus")
+        table = {s["entity_id"]: s for s in fake.results["get_states"]}
+        table["person.marcus"] = timed("person.marcus", "not_home", 300)
+        fake.results["get_states"] = list(table.values())
+        fake.start()
+        assert integration._known == {}
+        self._move(fake, "person.marcus", "not_home", "unknown", 400, "Marcus")
+        self._move(fake, "person.marcus", "unknown", "not_home", 415, "Marcus")
+        assert integration.fetch(None, backfill=False, now=T0 + 420).entries == []
+
+    def test_a_reconnect_keeps_the_state_of_an_entity_still_unknown(self, integration, fake):
+        integration.snapshot()
+        self._move(fake, "person.marcus", "home", "unknown", 0, "Marcus")
+        table = {s["entity_id"]: s for s in fake.results["get_states"]}
+        table["person.marcus"] = timed("person.marcus", "unknown", 0)
+        fake.results["get_states"] = list(table.values())
+        fake.start()
+        self._move(fake, "person.marcus", "unknown", "not_home", 415, "Marcus")
+        assert [r.content for r in integration.fetch(None, backfill=False, now=T0 + 420).entries] == ["Marcus left home"]

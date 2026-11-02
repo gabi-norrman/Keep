@@ -8,8 +8,10 @@ health check is a `ping`. The event handler also queues the changes the dialog w
 about (HomeAssistantModel.feed_entry) for `fetch`. An entity going `unavailable` is not queued
 but held (`_Outage`): the snapshot keeps its last available state and `fetch` writes one row
 per device once the hold (UNAVAILABLE_HOLD_S) has run out; a recovery inside the hold is
-silent, worded only as the real change from the pre-outage state. REST is used for one thing
-the websocket does not offer, `GET /api/error_log`."""
+silent, worded only as the real change from the pre-outage state. `unknown` is held the same
+way but without a hold or a row of its own (`_known`, the last known state): a person whose
+trackers blip goes `home → unknown → home`, which is no arrival (issue #140). REST is used for
+one thing the websocket does not offer, `GET /api/error_log`."""
 import queue
 import threading
 import time
@@ -20,8 +22,9 @@ import requests
 
 from .HomeAssistantClient import HAError, HomeAssistantClient, NotConnected
 from .HomeAssistantModel import (
-    ACTION_DOMAINS, ASSISTANT, LIGHT_DOMAINS, UNAVAILABLE_HOLD_S, NameIndex, Registries, Unresolved, build, domain_of,
-    feed_entry, friendly_name, is_unavailable, outage_row, recovery_row, state_time, tracks_availability)
+    ACTION_DOMAINS, ASSISTANT, LIGHT_DOMAINS, UNAVAILABLE_HOLD_S, NameIndex, Registries, Unresolved, bridges_unknown,
+    build, domain_of, feed_entry, friendly_name, is_unavailable, is_unknown, outage_row, recovery_row, state_time,
+    tracks_availability)
 from assistant.integration.HomeAutomation import HomeAutomation, HomeSnapshot
 from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
 from assistant.integration.Integration import Integration
@@ -88,6 +91,7 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         self._users: dict[str, str] = {}
         self._live: "queue.Queue[FeedEntry]" = queue.Queue()
         self._outages: dict[str, _Outage] = {}          # entity_id → its current outage
+        self._known: dict[str, dict] = {}               # entity_id now `unknown` → its last known state
         self._recovered: list[tuple[str, float, Optional[float]]] = []   # (entity_id, when, outage since) awaiting a row
 
     def _on_reset(self):
@@ -155,6 +159,7 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
                 self._dirty = True
                 self._filled = True
                 ended = self._reconcile_outages()
+                self._reconcile_unknown()
             info(f"Home Assistant: {len(states)} states loaded"
                  + (f", {ended} outage{'s' if ended != 1 else ''} ended while the socket was down" if ended else ""))
             self._load_registries()
@@ -177,6 +182,16 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
                 trace(f"Home Assistant: {entity_id} {'gone' if state is None else 'available again'} since the socket "
                       f"dropped, its outage {'reported' if outage.released else 'inside its hold'} — dropped")
         return len(ended)
+
+    def _reconcile_unknown(self):
+        """The last known states kept for entities the fresh table no longer shows `unknown`:
+        whatever followed the gap came while no event could say so, and the next gap must be
+        compared with the state the table shows now, not with one from before the socket
+        dropped. Caller holds _lock."""
+        stale = [entity_id for entity_id in self._known if not is_unknown(self._states.get(entity_id))]
+        for entity_id in stale:
+            self._known.pop(entity_id)
+            trace(f"Home Assistant: {entity_id} known again since the socket dropped — its state before unknown is dropped")
 
     def _load_registries(self):
         """Areas, entities, devices, the Assist exposure list and the users, each kept from the
@@ -223,18 +238,29 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
             if new is None:
                 self._states.pop(entity_id, None)
                 self._outages.pop(entity_id, None)
+                self._known.pop(entity_id, None)
             else:
                 self._states[entity_id] = new
             self._dirty = True
             index = self._index
             registry_entry = self._registries.entities.get(entity_id)
         if old is not None and new is not None and is_unavailable(new) and not is_unavailable(old):
-            self._outage_began(entity_id, old, new, index, registry_entry)
+            self._outage_began(entity_id, self._last_known(entity_id, old), new, index, registry_entry)
             return
         if is_unavailable(old) and new is not None and not is_unavailable(new):
             old = self._outage_ended(entity_id, new)
             if old is None:
                 return
+        if old is not None and new is not None and bridges_unknown(entity_id, index):
+            if is_unknown(new) and not is_unknown(old):
+                with self._lock:
+                    self._known[entity_id] = old
+                trace(f"Home Assistant: {entity_id} unknown — kept as {old.get('state')} until a known state follows")
+                return
+            if is_unknown(old) and not is_unknown(new):
+                old = self._unknown_ended(entity_id, new)
+                if old is None:
+                    return
         user = None
         context = (new or {}).get("context") or {}
         if context.get("user_id"):
@@ -243,6 +269,29 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         if entry is not None:
             trace(f"Home Assistant event: {entry.content}")
             self._live.put(entry)
+
+    def _last_known(self, entity_id: str, old: dict) -> dict:
+        """`old` unless it is the `unknown` a kept state stands behind — then that state, so an
+        entity going unknown and then unavailable is held as what it was before both."""
+        with self._lock:
+            known = self._known.pop(entity_id, None)
+        return known if known is not None and is_unknown(old) else old
+
+    def _unknown_ended(self, entity_id: str, new: dict) -> Optional[dict]:
+        """The state to compare `new` with after a spell of `unknown`: the last known one when
+        this process saw the spell begin, so the same state back is no row and a different one
+        is the real change; None (no row) for a spell that began before it watched."""
+        with self._lock:
+            before = self._known.pop(entity_id, None)
+        after = new.get("state")
+        if before is None:
+            trace(f"Home Assistant: {entity_id} {after} after an unknown that began before this process watched — no row")
+            return None
+        if str(before.get("state")) == str(after):
+            trace(f"Home Assistant: {entity_id} back to {after} after unknown — not a change, no row")
+        else:
+            trace(f"Home Assistant: {entity_id} {before.get('state')} → unknown → {after} — worded as the one real change")
+        return before
 
     def _outage_began(self, entity_id: str, before: dict, new: dict, index: NameIndex, registry_entry: Optional[dict]):
         if not tracks_availability(entity_id, index, registry_entry):
