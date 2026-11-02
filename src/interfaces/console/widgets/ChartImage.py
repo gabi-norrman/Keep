@@ -2,7 +2,7 @@
 and stacked bars on the panel ground, each shaded from its colour's deep companion up to the
 colour, with rounded anti-aliased tops, dashed rules and a soft glow around the newest column;
 and filled line charts (`area`) — a line over a fill fading to the ground, a rolling average
-traced over it and a glowing dot on the newest point.
+traced over it as a smooth glowing curve and a glowing dot on the newest point.
 
 A plot is `cols` × `rows` cells at `Pictures.CELL_PX` pixels a cell, the size the screen sends
 a picture at, so the PNG goes out unscaled. The value scale runs from the centre of the bottom
@@ -36,9 +36,11 @@ BASE_MIX = 0.8          # a colour's bottom shade: its deep companion this far o
 
 SUPERSAMPLE = 4         # an area chart's lines and fill are drawn this many times larger, then reduced
 LINE_PX = 2.5           # the value line's width
-AVERAGE_PX = 2.0        # the rolling average's width, over a halo of the ground
-AVERAGE_HALO_PX = 5.0
-AVERAGE_DASH_PX = 7     # the rolling average's dash, and the gap after it
+AVERAGE_PX = 2.0        # the rolling average's width ...
+AVERAGE_ALPHA = 0.9     # ... its opacity ...
+AVERAGE_GLOW_PX = 3     # ... and the blur of the soft glow around it
+AVERAGE_GLOW = 0.5
+CURVE_STEPS = 12        # points a smoothed segment is drawn through
 FILL_TOP_ALPHA = 0.42   # the fill under the line: this opaque at the peak's height ...
 FILL_BOTTOM_ALPHA = 0.04    # ... fading to this at the base
 DOT_RADIUS_PX = 4       # the newest point
@@ -91,7 +93,7 @@ def area(values: Sequence[Optional[float]], color: Color, max_value: float, cols
          slots: int = 0) -> Image.Image:
     """A filled line chart: the values as a line across the plot, oldest at the left, the
     ground under it filled in `color` fading towards the base, `average` (aligned with
-    `values`) traced over it as a dashed line in `average_color`, and the newest point a dot
+    `values`) traced over it as a smooth curve in `average_color`, and the newest point a dot
     with a soft glow. The values are spread over `slots` evenly spaced points (at least one per
     value), the newest at the right edge, so a short history fills the plot from the right.
     A missing value (None) breaks the line and the fill."""
@@ -133,20 +135,18 @@ def area(values: Sequence[Optional[float]], color: Color, max_value: float, cols
     # values' own runs and never bridges a gap in them.
     trend = _runs([None if v is None or values[i] is None else (x_of(i), y_of(v))
                    for i, v in enumerate(average[:len(values)])])
-    trend = [run for run in trend if len(run) > 1]
+    trend = [_smooth(run) for run in trend if len(run) > 1]
     if trend:
-        _paint(canvas, Theme.COLOR_PANEL_BG,
-               0.7 * _mask(width, height, lambda draw, s: [_polyline(draw, run, s, AVERAGE_HALO_PX) for run in trend]))
-        _paint(canvas, average_color or Theme.COLOR_BRIGHT,
-               _mask(width, height, lambda draw, s: [_polyline(draw, run, s, AVERAGE_PX, dashed=True) for run in trend]))
+        line = _mask(width, height, lambda draw, s: [_polyline(draw, run, s, AVERAGE_PX) for run in trend])
+        _paint(canvas, average_color or Theme.COLOR_BRIGHT, AVERAGE_GLOW * _blur(line, AVERAGE_GLOW_PX))
+        _paint(canvas, average_color or Theme.COLOR_BRIGHT, AVERAGE_ALPHA * line)
     _paint(canvas, color, _mask(width, height, lambda draw, s: [_polyline(draw, run, s, LINE_PX) for run in runs]))
 
     if values[-1] is not None:
         x, y = runs[-1][-1]
         dot = _mask(width, height, lambda draw, s: draw.ellipse(
             [(x - DOT_RADIUS_PX) * s, (y - DOT_RADIUS_PX) * s, (x + DOT_RADIUS_PX) * s, (y + DOT_RADIUS_PX) * s], fill=255))
-        halo = np.asarray(Image.fromarray((dot * 255).astype(np.uint8)).filter(
-            ImageFilter.GaussianBlur(GLOW_RADIUS_PX)), np.float32) / 255
+        halo = _blur(dot, GLOW_RADIUS_PX)
         _paint(canvas, color, np.clip(halo * 2 * GLOW_STRENGTH, 0, 1) * (1 - dot))
         _paint(canvas, color, dot)
     return Image.fromarray(np.clip(canvas + 0.5, 0, 255).astype(np.uint8))
@@ -164,35 +164,39 @@ def _runs(points: Sequence[Optional[Tuple[float, float]]]) -> List[List[Tuple[fl
     return [run for run in runs if run]
 
 
-def _polyline(draw: ImageDraw.ImageDraw, run: Sequence[Tuple[float, float]], s: int, width_px: float,
-              dashed: bool = False):
-    """A line through `run` with round joints and ends, solid or dashed along its length."""
+def _smooth(run: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    """`run` resampled along a monotone cubic (Fritsch–Carlson) through its points: a smooth
+    curve that never swings above or below the points either side of it."""
+    if len(run) < 3:
+        return list(run)
+    xs, ys = np.array([p[0] for p in run]), np.array([p[1] for p in run])
+    h = np.diff(xs)
+    d = np.diff(ys) / h
+    m = np.empty(len(run))
+    m[0], m[-1] = d[0], d[-1]
+    same = d[:-1] * d[1:] > 0
+    m[1:-1] = np.where(same, 2 / (1 / np.where(same, d[:-1], 1) + 1 / np.where(same, d[1:], 1)), 0)
+    t = np.linspace(0, 1, CURVE_STEPS, endpoint=False)[:, None]
+    h00, h10, h01, h11 = 2 * t**3 - 3 * t**2 + 1, t**3 - 2 * t**2 + t, -2 * t**3 + 3 * t**2, t**3 - t**2
+    cx = xs[:-1] + t * h
+    cy = h00 * ys[:-1] + h10 * h * m[:-1] + h01 * ys[1:] + h11 * h * m[1:]
+    return list(zip(cx.T.ravel(), cy.T.ravel())) + [run[-1]]
+
+
+def _polyline(draw: ImageDraw.ImageDraw, run: Sequence[Tuple[float, float]], s: int, width_px: float):
+    """A line through `run` with round joints and ends."""
     w = max(1, round(width_px * s))
     r = w / 2
     pts = [(x * s, y * s) for x, y in run]
-    if len(pts) == 1:
-        (x, y), = pts
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=255)
-        return
-    if not dashed:
+    if len(pts) > 1:
         draw.line(pts, fill=255, width=w, joint="curve")
-        for x, y in (pts[0], pts[-1]):
-            draw.ellipse([x - r, y - r, x + r, y + r], fill=255)
-        return
-    dash = AVERAGE_DASH_PX * s
-    walked = 0.0
-    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-        length = float(np.hypot(x1 - x0, y1 - y0))
-        at = 0.0
-        while at < length:
-            phase = (walked + at) % (2 * dash)
-            piece = min(length - at, (dash if phase < dash else 2 * dash) - phase)
-            if phase < dash and piece > 0:
-                a, b = at / length, (at + piece) / length
-                draw.line([(x0 + (x1 - x0) * a, y0 + (y1 - y0) * a), (x0 + (x1 - x0) * b, y0 + (y1 - y0) * b)],
-                          fill=255, width=w)
-            at += max(piece, 1e-3)
-        walked += length
+    for x, y in {pts[0], pts[-1]}:
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=255)
+
+
+def _blur(mask: np.ndarray, radius: float) -> np.ndarray:
+    return np.asarray(Image.fromarray((mask * 255).astype(np.uint8)).filter(
+        ImageFilter.GaussianBlur(radius)), np.float32) / 255
 
 
 def _mask(width: int, height: int, paint: Callable[[ImageDraw.ImageDraw, int], Any]) -> np.ndarray:

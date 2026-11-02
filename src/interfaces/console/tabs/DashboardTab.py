@@ -52,7 +52,7 @@ class DashboardTab(TabView):
     time, with a row of status tiles underneath: integration health, last-request timing,
     resource meters and prompt sections. Everything sits in flat tiles — a title strip over a
     tinted body — on a three-column grid (four for the status row). Long-term memory, CPU
-    temperature and the per-day cache hit are filled line charts with a dashed rolling
+    temperature and the per-day cache hit are filled line charts with a smooth rolling
     average (`_draw_area_chart`); the rest are columns.
 
     On a terminal that shows pictures a chart's plot is a picture (`ChartImage`, one
@@ -536,7 +536,7 @@ class DashboardTab(TabView):
             legend_x = x + 2 + display_width(label) + 2
             legend_w = x + width - 2 - legend_x - (display_width(value_str) + 2 if value_str else 0)
             if legend_w > 0:
-                Tile.write_segments(screen, legend_x, y, legend_w, [(f"╌ {window_label}", average_color)])
+                Tile.write_segments(screen, legend_x, y, legend_w, [(f"─ {window_label}", average_color)])
 
     Y_AXIS_W = 5
 
