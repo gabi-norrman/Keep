@@ -466,6 +466,8 @@ class TelegramFeedIntegration(Integration, Feed):
         if bot_id is None or getattr(msg, 'sender_id', None) != bot_id:
             return
         chat_id = event.chat_id
+        if chat_id is None or chat_id >= 0:
+            return   # the owner's private chat with the bot: her streamed replies there, not a group's
         bubble = self._bot_bubbles.get(chat_id)
         if bubble is None or bubble[0] != msg.id:
             trace(f"TelegramFeed: [{chat_id}] the bot edited a bubble that is not her latest one — ignored")

@@ -751,6 +751,17 @@ class TestWakeAssistant:
         assert len(rows) == 1
 
     @pytest.mark.asyncio
+    async def test_her_streamed_reply_in_the_owners_private_chat_is_passed_over_silently(self, wake):
+        # The owner's account sees every streaming edit of her reply to the owner; a private chat
+        # is no group, so those edits are none of the group bookkeeping's business — not even a trace.
+        m, say, fake = wake
+        with patch('integrations.telegram_feed.TelegramFeedIntegration.trace') as trace:
+            for n in range(3):
+                m.edit("Dinner is pasta" + "." * n, msg_id=40, chat_id=777)
+        trace.assert_not_called()
+        assert 777 not in m._last_sender and 777 not in m._bot_bubbles
+
+    @pytest.mark.asyncio
     async def test_a_chat_without_a_peer_id_stays_a_context_row(self, wake):
         # A chat Telethon cannot derive a Bot API id for is no group the bot could be in: the
         # message is read like any other, her name or not, and nothing is raised into the feed.
