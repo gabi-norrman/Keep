@@ -1091,6 +1091,20 @@ class TestCmdSelfAnalysis:
                 "prefix tag is what the LLM keys off to recognize the entry"
             mock_aam_instance.prompt_manager.update_history.assert_not_called()
 
+    def test_cost_analysis_is_delivered_like_a_self_analysis(self, commands_instance):
+        """The window the LLM wrote reaches the job bare, and the summary lands in the
+        history as a command row under its own tag, so the LLM can tell the two apart."""
+        with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
+             patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam, \
+             patch.object(commands_instance, "fire_and_forget", side_effect=lambda fn, p: fn(p)):
+            mock_cqm.unavailable_reason.return_value = None
+            mock_cqm.analyze_cost.return_value = "## Where it goes\n- checks $3.10"
+            mock_aam.get_instance.return_value = Mock(prompt_manager=Mock())
+            commands_instance.cmd_cost_analysis('"7d"')
+            mock_cqm.analyze_cost.assert_called_once_with("7d")
+            row = mock_aam.get_instance.return_value.prompt_manager.add_command_result.call_args.args[0]
+        assert row.startswith("[Cost analysis complete]") and "checks $3.10" in row
+
     def test_telegram_delivery_still_happens_alongside_history(self, commands_instance):
         # The fix kept the Telegram delivery — both paths must fire. If a future
         # change drops Telegram by mistake, the user stops getting the message.

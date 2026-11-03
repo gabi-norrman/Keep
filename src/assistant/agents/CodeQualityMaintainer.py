@@ -370,6 +370,12 @@ Do a thorough analysis and provide a report with what you found.
 IMPORTANT: Your entire analysis must be in your final message. Do not ask follow-up questions or offer to implement changes. Keep the report concise — it will be read over a chat on a phone.
 """
 
+COST_ANALYSIS_PROMPT = """
+Run the keep-cost-analysis skill of this repository (the Skill tool) with the arguments: {window}
+
+IMPORTANT: Your entire summary must be in your final message. Do not ask follow-up questions. Keep it concise — it will be read over a chat on a phone.
+"""
+
 TEST_HEALTH_PROMPT = """
 Check the health of the unit test suite: it must be reliable and FAST. Find the flaky tests and the slow
 tests, and fix them.
@@ -1290,6 +1296,20 @@ class CodeQualityMaintainer:
         else:
             info("CodeQualityMaintainer: self-analysis produced no output, skipping email.")
         return result if result else "Self-analysis produced no output."
+
+    @staticmethod
+    def analyze_cost(window: str) -> str:
+        """Where the LLM spend of the last window went — the keep-cost-analysis skill, run by
+        Claude Code on the local log; the summary comes back as the report."""
+        info(f"CodeQualityMaintainer: starting cost analysis ({window or 'last 24 hours'})...")
+        try:
+            result = CodeQualityMaintainer._run_claude(COST_ANALYSIS_PROMPT.format(window=window or "24h"),
+                                                       "cost-analysis")
+        except ClaudeUnavailableError as e:
+            return str(e)
+        if not result:
+            info("CodeQualityMaintainer: cost analysis produced no output.")
+        return result or "Cost analysis produced no output."
 
     @staticmethod
     def _github_unavailable() -> Optional[str]:

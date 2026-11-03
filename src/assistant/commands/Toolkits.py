@@ -240,9 +240,9 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
              "google_login_code", "icloud_login_code", "volvo_login", "volvo_login_code", "spotify_login",
              "spotify_login_code", "hue_pair")),
     Toolkit("developer", "study your own code or the machine you run on (network, disk, updates): analyse a bug or a "
-                         "question, fix or build an integration as a PR, report an issue to the developers; read "
-                         "your own log, restart the server",
-            ("self_analysis", "improve_integration", "report_issue", "try_pull_request", "pr_feedback",
+                         "question, fix or build an integration as a PR, report an issue to the developers; see "
+                         "where your LLM costs went; read your own log, restart the server",
+            ("self_analysis", "cost_analysis", "improve_integration", "report_issue", "try_pull_request", "pr_feedback",
              "server_logs", "restart_server")),
     Toolkit("self_improvement", "change any part of your own code base as a PR — a developer's install only",
             ("self_improvement",), requires="is_developer",

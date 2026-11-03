@@ -25,6 +25,14 @@ be feasible to add W". It can also be about the server machine: "is the home net
 answer", "is the disk filling up" — Claude Code has a shell there (ping, dig, traceroute, curl, df, log show…).
 Pass the symptom on in the user's words, with the time. It takes minutes; say the answer comes back in the chat.
 
+### Cost analysis
+To see where your own LLM spend went — by purpose, by model, and what drives it:
+
+`cost_analysis(window: str = "24h")`
+
+`window` is how far back to look: `24h`, `3d`, `7d`. Claude Code reads your log and prices every call; the
+summary comes back in the chat like a self-analysis report, after some minutes.
+
 ### Improve an integration
 To have one integration fixed or improved, or a new one built, delivered as a pull request:
 

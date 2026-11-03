@@ -910,34 +910,47 @@ class Commands:
         self.background_command(lambda v, d: self._run_car_action(v, "navigate_to", d), (vehicle_id, destination))
 
     def cmd_self_analysis(self, parameter_string: str):
+        return self._deliver_analysis("self_analysis", "Self-analysis",
+                                      CodeQualityMaintainer.analyze_code, parameter_string)
+
+    def cmd_cost_analysis(self, window: str = ""):
+        """`cost_analysis(window)`: where the LLM spend of the window (24h by default) went,
+        the keep-cost-analysis skill run by Claude Code; the summary is delivered like a
+        self-analysis report."""
+        return self._deliver_analysis("cost_analysis", "Cost analysis",
+                                      CodeQualityMaintainer.analyze_cost, window.strip().strip("\"'`"))
+
+    def _deliver_analysis(self, command: str, title: str, job, params: str):
+        """Runs a Claude Code analysis in the background and delivers its report: pushed to
+        the chats, and handed to the LLM whole as a `command` row."""
         reason = CodeQualityMaintainer.unavailable_reason()
         if reason:
-            info(f"self_analysis not started: {reason}")
+            info(f"{command} not started: {reason}")
             return reason
 
         def _run_and_deliver(params):
             try:
-                report = CodeQualityMaintainer.analyze_code(params)
-                trace("Received self-analysis report from Code Quality Maintainer")
+                report = job(params)
+                trace(f"Received {title.lower()} report from Code Quality Maintainer")
                 fine(f"Report: {report}")
                 # The chats get the report in their dialect, the console included; the LLM
                 # gets the markdown whole as a `command` row — never cut at render time, unlike
                 # an assistant row, which keeps 2000 characters of a report the toolkit tells
                 # the LLM to feed into a fix or an issue — and the console's Home tab, which
                 # hides command rows, draws the pushed copy instead.
-                sent = notifier().send_message(f"Self-analysis report:\n\n{notifier().markdown_to_html(report)}")
+                sent = notifier().send_message(f"{title} report:\n\n{notifier().markdown_to_html(report)}")
                 aam = AutonomousActionManager.get_instance()
                 prompt_manager = aam.prompt_manager if aam else None
                 # "[Self-analysis complete]" is the tag the LLM keys off; keep it first.
                 delivery = "" if sent else f" ({NO_NOTIFICATION_CHANNEL})"
                 if prompt_manager is not None:
-                    prompt_manager.add_command_result(f"[Self-analysis complete]{delivery}\n{report}")
+                    prompt_manager.add_command_result(f"[{title} complete]{delivery}\n{report}")
                 else:
-                    info("Self-analysis: no AutonomousActionManager yet, the report is not in the history")
+                    info(f"{title}: no AutonomousActionManager yet, the report is not in the history")
             except Exception as e:
-                error(f"Self-analysis failed: {e}")
+                error(f"{title} failed: {e}")
 
-        self.fire_and_forget(_run_and_deliver, parameter_string)
+        self.fire_and_forget(_run_and_deliver, params)
 
     def cmd_self_improvement(self, parameter_string: str):
         reason = CodeQualityMaintainer.unavailable_reason()
@@ -2194,6 +2207,7 @@ class Commands:
         _vehicle, destination = self._navigation_args(tuple(p.split(",")) if p else ())
         return f"Sending the car's navigation to {destination}" if destination else "Sending the car a navigation destination"
     def describe_self_analysis(self, p):          return "Running self-analysis"
+    def describe_cost_analysis(self, p):          return "Analysing the LLM costs"
     def describe_self_improvement(self, p):       return "Running self-improvement"
     def describe_improve_integration(self, p):    return f"Working on the {self._first_argument(p)} integration"
     def describe_report_issue(self, p):           return "Reporting an issue to the developers"
