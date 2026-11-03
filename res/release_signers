@@ -1,0 +1,5 @@
+# The keys a release tag may be signed with. An install moves to a release only when its tag
+# verifies against this file as the install already has it (common/SignedRelease.py), so a new
+# key is added — or an old one removed — by a release signed with a key listed here now.
+# Format: git's gpg.ssh.allowedSignersFile — <principal> <key type> <public key>.
+2115665+maciekd@users.noreply.github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAj109BVuV9GkEMrwDxZu6i1djvAc3eIFy6nb3tr3J75

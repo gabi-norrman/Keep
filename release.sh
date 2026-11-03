@@ -25,6 +25,11 @@
 # note (common/StartupTracker.py reads it through Version.release_notes()). A missing
 # `claude` or a failed run leaves the tag without a note and never fails the release.
 #
+# The tag is signed (`git tag -s`, the SSH key `user.signingkey` names — the maintainer's, held in
+# 1Password) and verified before the push against res/release_signers as the current release has
+# it: installs move to a release only when its tag verifies against the signers file of the code
+# they already run (common/SignedRelease.py), so a push to `release` without that key reaches no one.
+#
 # The commits listed and summarised reach back to the last release tagged on an earlier day,
 # not merely to the previous release: installs update nightly, so a household that gets the
 # evening release never saw the midday one, and its note has to cover the whole day.
@@ -89,6 +94,27 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
+
+# The signers the installs check this release against: the file of the release they run now,
+# or, for the first signed release, the file the release itself brings.
+SIGNERS=res/release_signers
+signers_now() {  # $1: the commit being released — prints the path of a file with the signers
+  local f
+  f=$(mktemp)
+  git show "origin/release:$SIGNERS" > "$f" 2>/dev/null || git show "$1:$SIGNERS" > "$f" 2>/dev/null \
+    || { rm -f "$f"; return 1; }
+  echo "$f"
+}
+
+if ! $dry_run; then
+  [ "$(git config gpg.format)" = ssh ] && [ -n "$(git config user.signingkey)" ] || {
+    echo "Tag signing is not set up: run, in this checkout," >&2
+    echo "  git config --local gpg.format ssh" >&2
+    echo "  git config --local user.signingkey '<the public key of the release signing key>'" >&2
+    echo "  git config --local gpg.ssh.program /Applications/1Password.app/Contents/MacOS/op-ssh-sign" >&2
+    exit 1
+  }
+fi
 
 git fetch -q origin
 # The first word is the commit to release when it names one; every other word is guidance for the note.
@@ -164,7 +190,15 @@ if [ -t 0 ]; then
   [[ "$answer" =~ ^[Yy] ]] || { echo "Not released."; exit 1; }
 fi
 if [ -z "$existing" ]; then
-  printf 'Release %s\n\n%s\n' "$version" "$note" | git tag -a "$version" -F - "$commit"
+  printf 'Release %s\n\n%s\n' "$version" "$note" | git tag -s "$version" -F - "$commit"
 fi
+signers=$(signers_now "$commit") || { echo "Neither the current release nor $short carries $SIGNERS." >&2; exit 1; }
+if ! git -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$version"; then
+  rm -f "$signers"
+  echo "$version does not verify against $SIGNERS — installs would refuse it, so it is not pushed." >&2
+  echo "Delete the local tag (git tag -d $version) and release again with the right key." >&2
+  exit 1
+fi
+rm -f "$signers"
 git push origin "$commit:refs/heads/release" "refs/tags/$version"
 echo "Done: release is $version — installs pick it up on their next restart_server."

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from .git_sandbox import History, _program, empty_repo, git, git_env, spawn
+from .git_sandbox import History, _program, empty_repo, git, git_env, signing_key, spawn
 
 RELEASE_SH = Path(__file__).resolve().parents[2] / 'release.sh'
 
@@ -33,6 +33,7 @@ class Repos:
     def __init__(self, tmp_path: Path):
         self.origin = empty_repo(tmp_path / 'origin.git', bare=True)
         self.dev = empty_repo(tmp_path / 'dev', origin=self.origin)
+        self.sign_with('maintainer')
         shutil.copy(RELEASE_SH, self.dev / 'release.sh')
         self.history = History()
         bin_dir = tmp_path / 'bin'
@@ -42,6 +43,15 @@ class Repos:
         self.env = {**env, 'PATH': str(bin_dir) + os.pathsep + env['PATH']}
         git_dir = str(Path(_program('git')).parent)
         self.no_claude_path = os.pathsep.join((git_dir, '/usr/bin', '/bin'))
+
+    def sign_with(self, key: str | None):
+        """The clone's tag signing as the maintainer sets it up (`git config --local`), with the
+        throwaway key of that name; None leaves signing unconfigured."""
+        config = self.dev / '.git' / 'config'
+        text = config.read_text().split('[gpg]')[0]
+        if key is not None:
+            text += f'[gpg]\n\tformat = ssh\n[user]\n\tsigningkey = {signing_key(key)[0]}\n'
+        config.write_text(text)
 
     def commits(self, *months: str):
         """One more commit on master per month (YYYY.MM) given, each dated in its month."""
@@ -130,6 +140,30 @@ class TestRefusals:
         release, tags = repos.origin_state()
         assert release is None
         assert tip not in tags.values()
+
+
+class TestSigning:
+    """Installs move only to a release whose tag verifies against res/release_signers, so the
+    script refuses to make a tag it cannot sign and to push one the installs would refuse."""
+
+    def test_a_release_without_tag_signing_set_up_is_refused_before_anything_moves(self, repos):
+        repos.sign_with(None)
+        repos.commits('2026.09')
+        repos.push()
+        result = repos.release(note=False)
+        assert result.returncode != 0
+        assert 'gpg.format' in result.stderr
+        assert repos.origin_state() == (None, {})
+
+    def test_a_tag_signed_with_a_key_the_signers_file_does_not_list_is_not_pushed(self, repos):
+        repos.sign_with('stranger')
+        repos.history.commit(datetime(2026, 9, 1, 12, tzinfo=timezone.utc), 'feat: signers',
+                             {'res/release_signers': signing_key('maintainer')[1]})
+        repos.push()
+        result = repos.release(note=False)
+        assert result.returncode != 0
+        assert 'v2026.09.1' in result.stderr
+        assert repos.origin_state() == (None, {})
 
 
 class TestRepeatedRelease:

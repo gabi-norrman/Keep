@@ -26,7 +26,12 @@ send the stream back to the client for playback.
 
 Development happens on `master`; installs track the `release` branch. `./release.sh` fast-forwards
 `origin/release` to `origin/master` and tags the commit with its version (`vYYYY.MM.N`, see
-`src/common/Version.py`) — that is the whole release. The readme's install command fetches
+`src/common/Version.py`) — that is the whole release. The tag is signed (`git tag -s`, an SSH key
+in the maintainer's 1Password, set with `git config --local` in the development checkout) and an
+install moves to a release only when the tag on the tip of `release` verifies against
+`res/release_signers` as the running code has it (`common/SignedRelease.py`; every pull of
+`release` goes through it) — a push to `release` without the key reaches no install, and a new
+signing key is added by a release signed with the old one. The readme's install command fetches
 `install.sh` from `release` and the installer clones it. `restart_server` checks out the branch the
 `developer_release` config key names (false → `release`, true → `master`; the assistant may flip it with
 `config_set`) and pulls it, so an install picks a release up on its next restart and a machine switches

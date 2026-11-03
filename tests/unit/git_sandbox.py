@@ -89,6 +89,32 @@ def _store(repo: Path, kind: str, body: bytes) -> str:
     return name
 
 
+def _tree(repo: Path, files: dict[str, str]) -> str:
+    """The tree of `files` (paths with `/` become subtrees), entries in git's order: a
+    directory sorts as its name with a trailing slash."""
+    blobs = {name: text for name, text in files.items() if '/' not in name}
+    dirs: dict[str, dict[str, str]] = {}
+    for name, text in files.items():
+        if '/' in name:
+            head, rest = name.split('/', 1)
+            dirs.setdefault(head, {})[rest] = text
+    entries = [(name, f'100644 {name}', _store(repo, 'blob', text.encode())) for name, text in blobs.items()]
+    entries += [(name + '/', f'40000 {name}', _tree(repo, sub)) for name, sub in dirs.items()]
+    return _store(repo, 'tree', b''.join(f'{mode}\0'.encode() + bytes.fromhex(sha)
+                                         for _, mode, sha in sorted(entries)))
+
+
+@functools.cache
+def signing_key(name: str) -> tuple[Path, str]:
+    """A throwaway ed25519 key that signs tags the way the maintainer's does (`gpg.format ssh`,
+    `user.signingkey` the private key file), made once per worker: its file and the line
+    `res/release_signers` lists it with."""
+    import tempfile
+    path = Path(tempfile.mkdtemp(prefix='keep-signing-')) / name
+    spawn(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', name, '-f', str(path)], check=True)
+    return path, f"{EMAIL} {Path(f'{path}.pub').read_text().strip()}\n"
+
+
 class History:
     """A line of commits on `master`, each holding just the files it is given, plus branches
     and annotated tags on them. `write` stores all of it in a repository and returns the
@@ -124,9 +150,7 @@ class History:
         hashes: list[str] = []
         who = ''
         for when, message, files in self._commits:
-            tree = _store(repo, 'tree', b''.join(
-                f'100644 {name}\0'.encode() + bytes.fromhex(_store(repo, 'blob', text.encode()))
-                for name, text in sorted(files.items())))
+            tree = _tree(repo, files)
             parent = f'parent {hashes[-1]}\n' if hashes else ''
             who = f'{NAME} <{EMAIL}> {int(when.timestamp())} +0000'
             hashes.append(_store(repo, 'commit',

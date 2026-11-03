@@ -46,6 +46,17 @@ def no_real_processes():
         yield
 
 
+@pytest.fixture(autouse=True)
+def signed_release():
+    """Every pull of `release` goes through SignedRelease, which fetches and verifies for real —
+    on this repository, from its origin. Here it is a mock that finds the release current; a
+    test that is about it sets its return value. (SignedRelease's own tests run it on throwaway
+    repositories.)"""
+    with patch("assistant.agents.CodeQualityMaintainer.SignedRelease.update",
+               return_value=("", "Already up to date.")) as update:
+        yield update
+
+
 @pytest.fixture
 def maintainer():
     return CodeQualityMaintainer()
@@ -706,13 +717,27 @@ class TestImproveCode:
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_run_claude', return_value="done")
-    def test_git_pull_then_claude_then_checkout_of_the_starting_branch(self, mock_claude, mock_sub):
-        mock_sub.return_value = Mock(stdout="release\n", returncode=0)
+    def test_on_release_the_signed_update_then_claude_then_checkout_of_the_starting_branch(
+            self, mock_claude, mock_sub, signed_release):
+        """An install's checkout is never pulled plainly: an unsigned push to `release` would land
+        on disk before the run and be the code of the next restart."""
+        order = []
+        mock_sub.side_effect = lambda cmd, *a: (order.append(cmd), Mock(stdout="release\n", returncode=0))[1]
+        signed_release.side_effect = lambda branch: (order.append(["signed update", branch]), ("", ""))[1]
+        mock_claude.side_effect = lambda *a: (order.append(["claude"]), "done")[1]
         CodeQualityMaintainer.improve_code("bug")
-        commands = [c.args[0] for c in mock_sub.call_args_list]
-        assert [c for c in commands if c[0] == "git"] == [
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"], ["git", "pull"],
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"], ["git", "checkout", "release"]]
+        steps = [c for c in order if c[0] != "gh" and c[:2] != ["git", "rev-parse"]]
+        assert steps == [["signed update", "release"], ["claude"], ["git", "checkout", "release"]]
+
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="done")
+    def test_on_master_git_pull_then_claude_then_checkout_of_the_starting_branch(
+            self, mock_claude, mock_sub, signed_release):
+        mock_sub.return_value = Mock(stdout="master\n", returncode=0)
+        CodeQualityMaintainer.improve_code("bug")
+        commands = [c.args[0] for c in mock_sub.call_args_list if c.args[0][:2] != ["git", "rev-parse"]]
+        assert [c for c in commands if c[0] == "git"] == [["git", "pull"], ["git", "checkout", "master"]]
+        signed_release.assert_not_called()
         # The open PRs are listed before and after the run — what was open before is never the job's.
         listings = [i for i, c in enumerate(commands) if c[:3] == ["gh", "pr", "list"]]
         assert len(listings) == 2 and listings[0] < commands.index(["git", "pull"]) < listings[1]
@@ -1578,12 +1603,25 @@ class TestExecuteNightlyRun:
         self.merge.assert_not_called()
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
+    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="master")
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_pulls_before_checking_commits(self, mock_sub, mock_commits, maintainer):
+    def test_pulls_before_checking_commits(self, mock_sub, mock_branch, mock_commits, maintainer):
         with patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value=""):
             with patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value=""):
                 maintainer._execute_nightly_run()
                 mock_sub.assert_called_once_with(["git", "pull"], "git pull", GIT_TIMEOUT)
+
+    @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
+    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="release")
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_on_release_the_night_starts_from_the_signed_release_not_a_plain_pull(
+            self, mock_sub, mock_branch, mock_commits, maintainer, signed_release):
+        signed_release.return_value = ("The newest release carries no tag signed by a key in release_signers", "")
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value=""):
+            with patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value=""):
+                maintainer._execute_nightly_run()
+        signed_release.assert_called_once_with("release")
+        assert ["git", "pull"] not in [c.args[0] for c in mock_sub.call_args_list]
 
 
 def developer_release(value: bool):
@@ -1609,7 +1647,8 @@ class TestPullAndRestart:
         order = []
         self.sync.side_effect = lambda: (order.append("pip"), ("", "installed 1 package: pkg-a (missing)"))[1]
         mock_popen.side_effect = lambda *a, **k: order.append("restart")
-        result = CodeQualityMaintainer.pull_and_restart()
+        with developer_release(True):
+            result = CodeQualityMaintainer.pull_and_restart()
         assert order == ["pip", "restart"]
         assert "pkg-a" in result
 
@@ -1618,7 +1657,8 @@ class TestPullAndRestart:
     def test_a_failed_install_does_not_restart_and_says_why(self, mock_sub, mock_popen):
         mock_sub.return_value = Mock(stdout="Updating abc123..def456\n1 file changed", stderr="", returncode=0)
         self.sync.return_value = ("pip exited 1 (no matching distribution)", "")
-        result = CodeQualityMaintainer.pull_and_restart()
+        with developer_release(True):
+            result = CodeQualityMaintainer.pull_and_restart()
         assert "not restarted" in result and "no matching distribution" in result
         mock_popen.assert_not_called()
 
@@ -1635,7 +1675,8 @@ class TestPullAndRestart:
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_success_with_changes(self, mock_sub, mock_popen):
         mock_sub.return_value = Mock(stdout="Updating abc123..def456\n1 file changed", stderr="", returncode=0)
-        result = CodeQualityMaintainer.pull_and_restart()
+        with developer_release(True):
+            result = CodeQualityMaintainer.pull_and_restart()
         assert "Update initiated" in result
         assert "pulled updates" in result
         mock_popen.assert_called_once()
@@ -1647,28 +1688,55 @@ class TestPullAndRestart:
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_already_up_to_date(self, mock_sub, mock_popen):
         mock_sub.return_value = Mock(stdout="Already up to date.", stderr="", returncode=0)
-        result = CodeQualityMaintainer.pull_and_restart()
+        with developer_release(True):
+            result = CodeQualityMaintainer.pull_and_restart()
         assert "no new changes" in result
         mock_popen.assert_called_once()
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="release")
+    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="master")
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_git_pull_failure_does_not_restart(self, mock_sub, mock_branch, mock_popen):
         mock_sub.return_value = Mock(stdout="", stderr="fatal: not a git repository", returncode=128)
-        with developer_release(False):
+        with developer_release(True):
             result = CodeQualityMaintainer.pull_and_restart()
-        assert "Git pull failed" in result
+        assert "not a git repository" in result
         mock_popen.assert_not_called()
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     @patch.object(CodeQualityMaintainer, '_current_branch', return_value="release")
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_pulls_in_place_when_already_on_the_target_branch(self, mock_sub, mock_branch, mock_popen):
-        mock_sub.return_value = Mock(stdout="Already up to date.", stderr="", returncode=0)
+    def test_a_release_that_fails_verification_does_not_restart(self, mock_sub, mock_branch, mock_popen,
+                                                                 signed_release):
+        refusal = "The newest release (1b6c9ce7) carries no tag signed by a key in release_signers"
+        signed_release.return_value = (refusal, "")
+        with developer_release(False):
+            result = CodeQualityMaintainer.pull_and_restart()
+        assert "1b6c9ce7" in result
+        self.sync.assert_not_called()
+        mock_popen.assert_not_called()
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="release")
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_release_is_updated_only_through_the_signed_release(self, mock_sub, mock_branch, mock_popen,
+                                                                 signed_release):
         with developer_release(False):
             CodeQualityMaintainer.pull_and_restart()
+        signed_release.assert_called_once_with("release")
+        mock_sub.assert_not_called()
+        mock_popen.assert_called_once()
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="master")
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_pulls_in_place_when_already_on_the_target_branch(self, mock_sub, mock_branch, mock_popen,
+                                                              signed_release):
+        mock_sub.return_value = Mock(stdout="Already up to date.", stderr="", returncode=0)
+        with developer_release(True):
+            CodeQualityMaintainer.pull_and_restart()
         assert [c[0][0] for c in mock_sub.call_args_list] == [["git", "pull"]]
+        signed_release.assert_not_called()
         mock_popen.assert_called_once()
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
@@ -1683,7 +1751,7 @@ class TestPullAndRestart:
         mock_popen.assert_called_once()
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="master")
+    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="release")
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_failed_switch_leaves_the_branch_and_does_not_restart(self, mock_sub, mock_branch, mock_popen):
         def git(cmd, label, timeout):
@@ -1691,9 +1759,9 @@ class TestPullAndRestart:
                 return Mock(stdout="", stderr="error: your local changes would be overwritten", returncode=1)
             return Mock(stdout="", stderr="", returncode=0)
         mock_sub.side_effect = git
-        with developer_release(False):
+        with developer_release(True):
             result = CodeQualityMaintainer.pull_and_restart()
-        assert "Could not switch to release" in result and "still on master" in result
+        assert "master" in result and "still on release" in result
         assert ["git", "pull"] not in [c[0][0] for c in mock_sub.call_args_list]
         mock_popen.assert_not_called()
 
@@ -1711,7 +1779,8 @@ class TestPullAndRestart:
         order = []
         marker.side_effect = lambda reason: order.append(("marker", reason))
         mock_popen.side_effect = lambda *a, **k: order.append(("spawn", None))
-        CodeQualityMaintainer.pull_and_restart(resumes_conversation=True)
+        with developer_release(True):
+            CodeQualityMaintainer.pull_and_restart(resumes_conversation=True)
         assert [step for step, _ in order] == ["marker", "spawn"]
         assert "abc123..def456" in order[0][1], "the reason tells the new process what the pull brought"
 
@@ -1979,7 +2048,7 @@ class TestJobPullRequest:
     def test_the_pr_job_hands_the_pr_the_run_left_the_tree_on_back(self):
         after = _prs((133, "tesla-trunk"))
         with patch.object(CodeQualityMaintainer, "_run_subprocess", return_value=Mock(returncode=0, stdout="")), \
-                patch.object(CodeQualityMaintainer, "_current_branch", side_effect=["release", "tesla-trunk"]), \
+                patch.object(CodeQualityMaintainer, "_current_branch", side_effect=["release", "release", "tesla-trunk"]), \
                 patch.object(CodeQualityMaintainer, "_open_pull_requests", side_effect=[{}, after]), \
                 patch.object(CodeQualityMaintainer, "_run_claude", return_value="Opened the PR."), \
                 patch("assistant.agents.PullRequestTrial.PullRequestTrial.current", return_value=None):

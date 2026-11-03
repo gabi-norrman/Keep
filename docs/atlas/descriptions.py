@@ -198,7 +198,7 @@ CLASSES = {
 SCRIPTS = {
     'floxy_ai_server.py': 'The launcher: loads config, builds the Assistant and starts every enabled interface, then serves.',
     'tui.py': 'The terminal client that connects to the running server’s console over TCP.',
-    'release.sh': 'Fast-forwards the release branch to master and tags the version, which is the whole release.',
+    'release.sh': 'Fast-forwards the release branch to master and signs the version tag the installs verify before updating.',
     'install.sh': 'Installs the server on a new machine from the release branch.',
 }
 

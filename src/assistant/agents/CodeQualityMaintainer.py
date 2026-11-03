@@ -19,6 +19,7 @@ from ..llm.ClaudeLLM import WORKSPACE_HEADER, claude_workspace_id
 from common.ConfigManager import ConfigManager
 from common.Paths import REPO_DIR, AISERVER_DIR as _AISERVER_PATH
 from common.RequirementsChecker import RequirementsChecker
+from common.SignedRelease import SignedRelease, RELEASE_BRANCH
 
 WORKING_DIR = str(REPO_DIR)
 AISERVER_DIR = str(_AISERVER_PATH)
@@ -87,7 +88,6 @@ DISABLED_MESSAGE = (
 NIGHTLY_RUNS_KEY = "self_improvement.nightly_runs"
 DEVELOPER_RELEASE_KEY = "developer_release"
 NIGHTLY_UPDATE_KEY = "nightly_update"
-RELEASE_BRANCH = "release"
 DEVELOPER_BRANCH = "master"
 NIGHTLY_OFF_MESSAGE = f"{NIGHTLY_RUNS_KEY} is off"
 NIGHTLY_STEPS = ("tests", "bugs", "logs", "fix", "health", "merge", "pins")   # what //nightly takes to run one step alone
@@ -673,7 +673,7 @@ class CodeQualityMaintainer:
 
     def _nightly_run(self, only):
         note(f"CodeQualityMaintainer: starting nightly run{f' ({only} only)' if only else ''}...")
-        self._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
+        self._pull_current()
         reports = {}
         steps = dict(zip(NIGHTLY_STEPS, [self._step_generate_tests,
                                          self._step_bug_analysis,
@@ -1417,7 +1417,7 @@ class CodeQualityMaintainer:
         open_before = CodeQualityMaintainer._open_pull_requests()
         try:
             info(f"CodeQualityMaintainer: starting {label}...")
-            CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
+            CodeQualityMaintainer._pull_current()
             trace(f"prompt: {prompt}")
             result = CodeQualityMaintainer._run_claude(prompt, label)
             left_on = CodeQualityMaintainer._current_branch()
@@ -1649,10 +1649,15 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def _pull_target() -> tuple[str, str]:
-        """Check out the target branch if the checkout is on another one, then pull it. Returns
-        (failure, pull output): *failure* says what went wrong and is "" when the pull went through."""
+        """Check out the target branch if the checkout is on another one, then pull it — the
+        release only as far as a tag signed by a key in res/release_signers (`SignedRelease`).
+        Returns (failure, pull output): *failure* says what went wrong and is "" when the pull
+        went through."""
         target = CodeQualityMaintainer.target_branch()
         current = CodeQualityMaintainer._current_branch()
+        if target == RELEASE_BRANCH:
+            info(f"CodeQualityMaintainer: updating {target} to its newest signed release...")
+            return SignedRelease.update(current)
         if current != target:
             info(f"CodeQualityMaintainer: on {current}, {DEVELOPER_RELEASE_KEY} asks for {target} — switching before the pull")
             for cmd, label in ((["git", "fetch", "origin", target], "git fetch"),
@@ -1668,6 +1673,19 @@ class CodeQualityMaintainer:
             error(f"CodeQualityMaintainer: git pull failed: {result.stderr}")
             return f"Git pull failed: {result.stderr}", ""
         return "", (result.stdout or "").strip()
+
+    @staticmethod
+    def _pull_current() -> None:
+        """Bring the current branch up to date before a Claude Code run: `release` only to its
+        newest signed release, any other branch by a plain pull. A failure is logged and the run
+        goes on with the code it has."""
+        branch = CodeQualityMaintainer._current_branch()
+        if branch == RELEASE_BRANCH:
+            failure, _ = SignedRelease.update(branch)
+            if failure:
+                error(f"CodeQualityMaintainer: {failure}")
+            return
+        CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
 
     @staticmethod
     def _sync_requirements() -> tuple[str, str]:
