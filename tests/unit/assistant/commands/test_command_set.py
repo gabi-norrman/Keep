@@ -174,6 +174,6 @@ def test_every_command_module_of_this_repository_is_discovered():
 def test_a_flag_names_only_a_command_its_owner_implements(owner):
     # The flags are asked of the command's owner, so one left behind when a command moves
     # to another owner is never read: a sensitive command would run without approval.
-    flagged = (owner.MULTI_PARAM_COMMANDS | owner.SENSITIVE_COMMANDS | owner.PURE_COMMANDS
+    flagged = (owner.MULTI_PARAM_COMMANDS | owner.SENSITIVE_COMMANDS | owner.GUARDED_COMMANDS | owner.PURE_COMMANDS
                | owner.SELF_EVIDENT_COMMANDS | set(owner.APPROVAL_NOTES))
     assert flagged - set(command_set_module.command_names(owner)) == set()

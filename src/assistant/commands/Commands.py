@@ -108,10 +108,16 @@ class Commands:
     `describe` and the flags (sensitive, pure, multi-param, approval note) ask the command's
     owner — this object for a core command. The command name list handed to the parser is
     derived from the `cmd_` method names of all of them; SENSITIVE_COMMANDS go through the
-    notifier's approval gate before running.
+    notifier's approval gate before running, GUARDED_COMMANDS only while the root config key
+    `approve_guarded_commands` is true.
     """
     SENSITIVE_COMMANDS = frozenset({"send_email", "restart_server", "try_pull_request",
                                     "report_issue", "pr_feedback"})
+    # The browser actions that can submit a form or run a script on a site. Off by default
+    # because a card per click would make a multi-step browsing task unusable and the
+    # autonomous check, which has no approval channel, could not browse at all (PR #148).
+    GUARDED_COMMANDS = frozenset({"browse_act", "browse_key", "browse_eval", "browse_click_at"})
+    APPROVE_GUARDED_KEY = "approve_guarded_commands"
     # What the approval prompt shows under the title when the command has no parameters
     # to preview — the user should know what saying yes does before the screen goes blank.
     APPROVAL_NOTES = {
@@ -1967,7 +1973,15 @@ class Commands:
         return sorted(core + list(self._owners))
 
     def is_sensitive(self, command_name: str) -> bool:
-        return command_name in self._owner(command_name).SENSITIVE_COMMANDS
+        """Whether the command goes through the approval gate: always for a sensitive one,
+        for a guarded one while the config key says so — read per call, so config_set
+        switches the gate without a restart."""
+        owner = self._owner(command_name)
+        if command_name in owner.SENSITIVE_COMMANDS:
+            return True
+        if command_name in owner.GUARDED_COMMANDS:
+            return bool(ConfigManager.get_instance().get(self.APPROVE_GUARDED_KEY, False))
+        return False
 
     def approval_note(self, command_name: str) -> str:
         return self._owner(command_name).APPROVAL_NOTES.get(command_name, "")

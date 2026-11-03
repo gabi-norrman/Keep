@@ -273,6 +273,14 @@ nightly_update: true
 # be switched off. It tells nobody that the server died (issue #127 has the external heartbeat).
 watchdog: false
 
+# Ask before the assistant acts in its browser. true: a browser click, key press or script
+# (browse_act, browse_key, browse_eval, browse_click_at) raises the same Approve/Deny card as
+# sending an email, since it can submit a form on a site — one card per action, so a booking or a
+# sign-up becomes a series of taps, and the autonomous check, which has nobody to ask, cannot act
+# in the browser at all. false: the browser commands run like the read-only ones. Read at each
+# command, no restart needed; the assistant may set it itself (config_set).
+approve_guarded_commands: false
+
 # Beta usage telemetry (assistant/Telemetry.py). An install is known by `id` alone, a random
 # value the server writes here on its first start; the events are one per user turn, one per
 # assistant turn (with the names of the commands it ran, never their arguments), one per

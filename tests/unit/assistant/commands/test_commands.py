@@ -1204,6 +1204,39 @@ class TestCmdSendEmail:
     def test_send_email_is_sensitive(self, commands_instance):
         assert commands_instance.is_sensitive("send_email")
 
+
+class TestGuardedCommands:
+    """The browser actions that can submit a form are gated only while the install asks for it:
+    `approve_guarded_commands` is a contract with config.yaml."""
+    ACTIONS = ("browse_act", "browse_key", "browse_eval", "browse_click_at")
+    READS = ("browse_open", "browse_inspect", "browse_snapshot", "browse_extract")
+
+    @staticmethod
+    def _config(value):
+        import common.ConfigManager as config_module
+        real_get = config_module.config.get
+
+        def get(key, *args, **kwargs):
+            return value if key == "approve_guarded_commands" else real_get(key, *args, **kwargs)
+        return patch.object(config_module.config, "get", get)
+
+    def test_browser_actions_are_not_sensitive_by_default(self, commands_instance):
+        with self._config(None):
+            assert not any(commands_instance.is_sensitive(c) for c in self.ACTIONS)
+
+    def test_the_key_gates_the_browser_actions_and_nothing_read_only(self, commands_instance):
+        with self._config(True):
+            assert all(commands_instance.is_sensitive(c) for c in self.ACTIONS)
+            assert not any(commands_instance.is_sensitive(c) for c in self.READS)
+            assert commands_instance.is_sensitive("send_email")
+
+    def test_the_key_is_read_at_each_call(self, commands_instance):
+        # config_set flips it live; a value cached at construction would need a restart.
+        with self._config(False):
+            assert not commands_instance.is_sensitive("browse_eval")
+        with self._config(True):
+            assert commands_instance.is_sensitive("browse_eval")
+
 # ---------------------------------------------------------------------------
 # TestCmdExecute
 # ---------------------------------------------------------------------------

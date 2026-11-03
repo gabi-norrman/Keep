@@ -32,6 +32,10 @@ class CommandSet:
     # Each names commands of this set only; see the same-named sets on Commands.
     MULTI_PARAM_COMMANDS: frozenset = frozenset()
     SENSITIVE_COMMANDS: frozenset = frozenset()
+    # Commands that can change something outside the house (a form submitted in the browser)
+    # without being consequential enough for the gate by default: they need approval only
+    # while the config key Commands.APPROVE_GUARDED_KEY is true.
+    GUARDED_COMMANDS: frozenset = frozenset()
     PURE_COMMANDS: frozenset = frozenset()
     SELF_EVIDENT_COMMANDS: frozenset = frozenset()
     APPROVAL_NOTES: dict = {}

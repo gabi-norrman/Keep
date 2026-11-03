@@ -1785,6 +1785,34 @@ class TestCommandProcessorSensitiveGate:
         fake_bot.request_approval.assert_not_called()
         processor.kill()
 
+    @staticmethod
+    def _guarded_approval(value):
+        import common.ConfigManager as config_module
+        real_get = config_module.config.get
+
+        def get(key, *args, **kwargs):
+            return value if key == "approve_guarded_commands" else real_get(key, *args, **kwargs)
+        return patch.object(config_module.config, "get", get)
+
+    def test_a_browser_action_runs_without_a_card_unless_the_install_asked_for_one(self, monkeypatch):
+        # A card per click would make a booking a series of taps, so the browser actions
+        # are gated only where approve_guarded_commands says so (PR #148).
+        with self._guarded_approval(False):
+            processor, run_calls, approval_calls, _ = self._run_with_decision(
+                "deny", monkeypatch, params=["3=query\n"], command="browse_act")
+        assert approval_calls == []
+        assert run_calls == [("browse_act", ["3=query\n"])]
+        processor.kill()
+
+    def test_a_browser_action_is_approved_before_execution_when_the_install_asked_for_it(self, monkeypatch):
+        with self._guarded_approval(True):
+            processor, run_calls, approval_calls, _ = self._run_with_decision(
+                "deny", monkeypatch, params=["3=query\n"], command="browse_act")
+        assert len(approval_calls) == 1
+        assert approval_calls[0]["details"] == "3=query\n"
+        assert run_calls == []
+        processor.kill()
+
 
 @pytest.mark.unit
 class TestProfileForDialogManager:
