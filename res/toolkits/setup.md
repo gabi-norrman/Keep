@@ -21,9 +21,10 @@ list of sections, `icloud.devices[0].display_name`, or one value of a list of pl
 with the "[Sent with the help of AI 🤖]" footer; `config_set("ai_message_footer", "false")` turns it off at once.
 
 The interfaces the server starts — `interfaces.voice.enabled`, `interfaces.telegram.enabled`,
-`interfaces.console.enabled` (`config_help("interfaces")`) — are set the same way, e.g.
-`config_set("interfaces.voice.enabled", "true")`. Telegram and the console are on by default, voice off. They are read
-at startup only: after flipping one offer `restart_server` (developer toolkit; the user approves it in the chat).
+`interfaces.console.enabled` (`config_help("interfaces")`) — are set the same way. Telegram and the console are on
+by default, voice off. They are read at startup only: after flipping one offer `restart_server` (developer toolkit;
+the user approves it in the chat). `interfaces.lan_access` (false: the server answers this Mac only) is what the
+phone app needs. Warn before turning it on: no password, anyone on the Wi-Fi is then the owner.
 The server's microphones are on with it (`local_outposts.enabled`; a phone-only install
 sets it false); `local_outposts.location` names their room, the destination the speakers answer to in `post_message`
 (read at voice start; set it and restart). The voice speaks through the
@@ -32,8 +33,7 @@ Swedish prefers "Gemini TTS" (`enable_integration("Gemini TTS")`, needs `google_
 Audio, Grok, Supertonic and Chirp 3 HD are opt-in: enable one and disable ElevenLabs TTS. Without an engine that can
 speak, voice requests are answered as text.
 
-`restart_integration(name: str)` — rebuilds an integration with the current config and reports its state, e.g.
-`restart_integration("IMAP Mail")`.
+`restart_integration(name: str)` — rebuilds an integration with the current config and reports its state.
 
 The Telegram bot the user chats through is listed as "Telegram" — not configured until `telegram_bot.bot_token` is set:
 `config_request("telegram_bot.bot_token")`, then `restart_integration("Telegram")`; the bot starts at once, no server
@@ -50,8 +50,8 @@ close; the server and Telegram keep running). The grant reaches a new process on
 (developer toolkit) comes next, from Telegram.
 
 `enable_integration(name: str)` / `disable_integration(name: str)` — switches an integration on or off by the name
-`list_integrations` shows, restarts it and reports its state, e.g. `enable_integration("IMAP Mail")`. Enabling one not
-yet configured comes back "not configured" naming the keys it needs.
+`list_integrations` shows, restarts it and reports its state. Enabling one not yet configured comes back
+"not configured" naming the keys it needs.
 
 `telegram_login(phone: str)` — signs the Telegram Feed (the user's own account) in, e.g. `telegram_login("+46701234567")`.
 Only from the console chat: Telegram invalidates a login code sent as a Telegram message, so it cannot go through the

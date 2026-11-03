@@ -184,6 +184,10 @@ feeds:
 # startup check (RequirementsChecker) still verifies requirements-voice.txt, so the assistant
 # can enable voice from the chat (config_set) and the next restart just works. Read at startup only.
 interfaces:
+  # false: the HTTP server and the TUI console answer only on this Mac. true: they answer the whole
+  # network, which phones (the Keep app) and a TUI on another machine need — and so does anyone on the
+  # Wi-Fi: there is no password, whoever reaches the address is the owner. Only on a network you trust.
+  lan_access: false
   http:     { enabled: true }               # always on (the others register routes on it); port from argv
   voice:    { enabled: false }              # VoiceToVoice, off unless set to true; needs mics and speakers on the server, an ElevenLabs API key and api_keys.gemini (the ai.fast tier).
   telegram: { enabled: true }               # the bot + Notifier; also needs telegram_bot.bot_token

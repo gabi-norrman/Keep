@@ -9,10 +9,11 @@ import threading
 
 from assistant.commands.formats.CommandFormats import CommandFormats
 from common import Version
+from common.ConfigManager import config
 from common.logging import info, note, trace
 from interfaces.http import CrossSiteGuard
 from interfaces.http.routes import HttpDeps, register as register_stream_route
-from interfaces.Interface import Interface
+from interfaces.Interface import Interface, bind_host
 
 # Seconds after serve() starts before freezing the startup heap: late enough that the
 # boot-time model loads (Whisper warm-up, SpeechBrain, Supertonic — all resident within
@@ -82,12 +83,13 @@ class HttpInterface(Interface):
         trace(f"GC freeze scheduled in {GC_FREEZE_DELAY:.0f}s (after model loads settle).")
 
         hypercorn_config = Config()
-        hypercorn_config.bind = [f"0.0.0.0:{self.port}"]
+        host = bind_host(config, "The HTTP server")
+        hypercorn_config.bind = [f"{host}:{self.port}"]
         hypercorn_config.debug = False
         self._shutdown_event = asyncio.Event()
         self._install_signal_handlers()
 
-        info(f"Web server listening on port {self.port}...")
+        info(f"Web server listening on {host}:{self.port}...")
         note("Ready to handle requests now.")
         trace("(various subsystems now starting in background)")
         await serve(self.app, hypercorn_config, shutdown_trigger=self._shutdown_event.wait)

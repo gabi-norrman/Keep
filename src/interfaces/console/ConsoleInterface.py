@@ -6,7 +6,7 @@ dialog history. Starts before voice so early log lines show; `attach_voice()` fi
 Developer ▸ Voice tab and outpost shortcuts in once the voice interface is up."""
 from common.ConfigManager import config
 from common.logging import info
-from interfaces.Interface import Interface
+from interfaces.Interface import Interface, bind_host
 
 DEFAULT_TUI_PORT = 5151
 
@@ -48,7 +48,8 @@ class ConsoleInterface(Interface):
         self.transport.start(self.hub)
 
         port = int(config.get('interfaces.console.port', DEFAULT_TUI_PORT))
-        self.server = TUIServer(self.console.draw_screen, input_callback=self.console.input_callback, port=port)
+        self.server = TUIServer(self.console.draw_screen, input_callback=self.console.input_callback,
+                                host=bind_host(config, "The TUI console"), port=port)
         self.transport.has_clients = lambda: bool(self.server.clients)
         self.server.start()
         info(f"Console interface started (TUI server on port {port}, chat transport on the hub).")

@@ -7,6 +7,26 @@ Start order (see floxy_ai_server.build): http first (it owns the Quart app the o
 register routes on), then console, voice, telegram. `stop()` runs in reverse."""
 from abc import ABC, abstractmethod
 
+from common.logging import info, note
+
+# Whether the sockets answer the network or only this Mac: an install starts loopback-only and
+# the assistant may open it (`config_set`), read at startup like the enabled flags.
+LAN_ACCESS_KEY = "interfaces.lan_access"
+LOOPBACK = "127.0.0.1"
+ALL_INTERFACES = "0.0.0.0"
+
+
+def bind_host(config, what: str) -> str:
+    """The address `what` (a socket's name, for the log) binds: every interface of the machine
+    when `interfaces.lan_access` is on, else the loopback — a server nobody but this Mac reaches."""
+    if bool(config.get(LAN_ACCESS_KEY, False)):
+        note(f"{what} answers the whole network ({LAN_ACCESS_KEY} is on): anyone who reaches "
+             f"this Mac's address can use the assistant as the owner.")
+        return ALL_INTERFACES
+    info(f"{what} answers this Mac only ({LAN_ACCESS_KEY} is off); phones and a TUI on another "
+         f"machine need the key on.")
+    return LOOPBACK
+
 
 class Interface(ABC):
     """One way for people to reach the assistant, started by the launcher only when enabled."""
