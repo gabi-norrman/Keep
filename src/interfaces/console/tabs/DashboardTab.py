@@ -476,6 +476,7 @@ class DashboardTab(TabView):
         self._draw_area_chart(screen, x, y, width, chart_h, list(self.temp_history), fg, "CPU Temp", value,
                               max_value=max_value,
                               window=self.TEMP_AVERAGE_SAMPLES, window_label="5m avg",
+                              window_format=lambda v: f"{v:.0f}°C",
                               ticks=[(0.0, "", Theme.COLOR_GRID),
                                      (self.TEMP_WARN_C, f"{self.TEMP_WARN_C:.0f}°C", warn_guide),
                                      (self.TEMP_BAD_C, f"{self.TEMP_BAD_C:.0f}°C", bad_guide)],
@@ -486,12 +487,13 @@ class DashboardTab(TabView):
     def _draw_area_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int,
                          values: Sequence[Optional[float]], fg: Color, label: str, value_str: str,
                          max_value: float = 100.0, y_axis_format=None, slots: int = 0,
-                         window: int = 0, window_label: str = "",
+                         window: int = 0, window_label: str = "", window_format=None,
                          ticks: Optional[Sequence[Tuple[float, str, Color]]] = None,
                          color_for: Optional[Callable[[float], Color]] = None):
         """A chart tile with a filled line chart (`ChartImage.area`): the title strip with the
         latest value and, with a `window`, a legend for the rolling average of that many points
-        traced over the line; the y-axis labelled at 0, half and full (in `y_axis_format`,
+        traced over the line, its latest figure in parentheses (in `window_format`, the y-axis
+        format by default); the y-axis labelled at 0, half and full (in `y_axis_format`,
         percent by default) unless `ticks` — (value, label, colour) — name the rules instead.
         A missing value (None) breaks the line. With nothing to show the plot is the empty
         ground with a note.
@@ -500,6 +502,8 @@ class DashboardTab(TabView):
         empty column, each in `fg` or the colour `color_for(value)` gives it) with no average
         and no legend."""
         Tile.draw_card(screen, self._cards, x, y, width, chart_h + Tile.CARD_CHROME, label, value_str, fg)
+        y_axis_format = y_axis_format or self._format_pct
+        window_format = window_format or y_axis_format
         chart_y = y + Tile.CARD_TOP
         chart_x = x + 2 + self.Y_AXIS_W
         chart_w = width - 4 - self.Y_AXIS_W
@@ -507,7 +511,6 @@ class DashboardTab(TabView):
             return
 
         if ticks is None:
-            y_axis_format = y_axis_format or self._format_pct
             ticks = [(max_value * i / self.Y_TICKS, y_axis_format(max_value * i / self.Y_TICKS), Theme.COLOR_GRID)
                      for i in range(self.Y_TICKS + 1)]
             label_color = Theme.COLOR_DIM
@@ -545,10 +548,12 @@ class DashboardTab(TabView):
         screen.image(chart_x, chart_y, image, chart_w, chart_h)
 
         if average and window_label:
+            latest = next((a for a in reversed(average) if a is not None), None)
+            legend = f"─ {window_label}" + (f" ({window_format(latest)})" if latest is not None else "")
             legend_x = x + 2 + display_width(label) + 2
             legend_w = x + width - 2 - legend_x - (display_width(value_str) + 2 if value_str else 0)
             if legend_w > 0:
-                Tile.write_segments(screen, legend_x, y, legend_w, [(f"─ {window_label}", average_color)])
+                Tile.write_segments(screen, legend_x, y, legend_w, [(legend, average_color)])
 
     Y_AXIS_W = 5
 

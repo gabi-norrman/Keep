@@ -659,6 +659,14 @@ class TestLineChartFallback:
         assert placement[:4] == (self.PLOT_X, self.PLOT_Y, self.PLOT_W, CHART_H)
         assert "3d avg" in self.title_strip(screen)
 
+    def test_the_legend_carries_the_latest_average_in_the_window_format(self):
+        screen = self.draw([10.0, 50.0, 90.0, None], graphics=True, window_format=lambda v: f"{v:.0f}KB")
+        assert "3d avg (70KB)" in self.title_strip(screen), "the mean of the last three known values"
+
+    def test_the_legend_figure_defaults_to_the_y_axis_format(self):
+        screen = self.draw([10.0, 50.0, 90.0], graphics=True)
+        assert "3d avg (50%)" in self.title_strip(screen)
+
     def test_without_graphics_the_values_are_block_columns_and_the_legend_is_left_out(self):
         screen = self.draw([10.0, None, 100.0], graphics=False)
         assert screen._placements == {}
