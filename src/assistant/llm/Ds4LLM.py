@@ -27,7 +27,7 @@ as written, for the processor — which reads it under a `command_format: dsml` 
 server hand back parsed `tool_calls` all the same, they are written back as call text in the
 active format and yielded.
 
-No tool, on purpose (2026-10-22, replacing step 5b of docs/plans/COMMAND_FORMATS_PLAN.md). One
+No tool, on purpose (2026-10-22). One
 declared tool — Ollama's static `load_toolkit`, which Ollama needs to parse calls at all —
 switched ds4 to its tool rendering, which keeps a past call only as a `tool_calls` entry by the
 id ds4 assigned; Keep's history holds the call as text, so a command round never extended the

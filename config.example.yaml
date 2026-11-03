@@ -355,7 +355,7 @@ local_backend: none
 # cache keeps the prompt prefixes across tiers, the autonomous check and restarts: without it every
 # switch between two prompts prefills the whole prompt again, ~12 s for 16k tokens instead of 0.2 s
 # (the Ds4LLM docstring has the measurements). The assistant then writes its commands in DeepSeek's DSML call syntax
-# (the server parses them; see docs/plans/COMMAND_FORMATS_PLAN.md). Optional — defaults to the
+# (the server parses them). Optional — defaults to the
 # server's default address and DeepSeek V4.1 Flash. No API key.
 #ds4:
 #  base_url: http://127.0.0.1:8000/v1

@@ -1,6 +1,6 @@
 # Format-neutral texts — the prose of the prompt and the toolkits stops assuming Keep's syntax
 
-Follows `COMMAND_FORMATS_PLAN.md`. That plan made the *calls* in the texts render in the active
+Follows the command formats work (the `formats/` package), which made the *calls* in the texts render in the active
 format (the rewriter). This one makes the *prose around them* true in every format, closes the
 rendering defects the rewriter still has, and routes the two texts that bypass it through it.
 
@@ -232,7 +232,7 @@ Status: DONE 2026-10-21, not committed. `_action_prompt(llm, prompt_manager=None
 
 - `CLAUDE.md` → the `commands/` bullet: one sentence on the convention (a mention is the bare
   name, `name()` only declares a parameterless command, Keep-only prose in `<!-- keep -->`).
-- `COMMAND_FORMATS_PLAN.md` → Open points: the text-pass item closed, pointing here.
+- The command formats plan (since removed) → its text-pass open point closed, pointing here.
 - If the private suites are linked: `testsuite_prompt.md` rebuilt, `tests/prompt` run once (the
   wording changed for Claude too — only prose, the examples still carry Keep's syntax, but the
   suite is the check). If the local hosts are reachable (`reference_local_models_test_host`):
@@ -241,4 +241,4 @@ Status: DONE 2026-10-21, not committed. `_action_prompt(llm, prompt_manager=None
 - The prompt cache of every tier invalidates once on deploy; nothing to do, worth knowing when
   reading the cache numbers that day.
 
-Status: DONE 2026-10-21 but for the LLM runs, not committed. `CLAUDE.md` carries the convention, `COMMAND_FORMATS_PLAN.md` lists the closed point. Unit suite: 10331 passed; the 10 failures left are not this plan's — 8 in `test_first_run.py::TestCurating` from the NOCOMMIT `return False` in `FirstRun.Pipeline` (the ds4 prefill experiment), 2 in `tests/unit/private/test_prompt_test_runner.py` where the private tree's `run.py` and that test are mid-edit by another session. Not run: `tests/prompt` (billed, slow) and the one-query check on the Qwen / ds4 hosts — the user's call.
+Status: DONE 2026-10-21 but for the LLM runs, not committed. `CLAUDE.md` carries the convention. Unit suite: 10331 passed; the 10 failures left are not this plan's — 8 in `test_first_run.py::TestCurating` from the NOCOMMIT `return False` in `FirstRun.Pipeline` (the ds4 prefill experiment), 2 in `tests/unit/private/test_prompt_test_runner.py` where the private tree's `run.py` and that test are mid-edit by another session. Not run: `tests/prompt` (billed, slow) and the one-query check on the Qwen / ds4 hosts — the user's call.

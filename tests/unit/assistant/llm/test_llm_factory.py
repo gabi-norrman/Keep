@@ -183,7 +183,7 @@ class TestCreateLLM:
 # ===========================================================================
 # command_format — a tier's `ai.<tier>.command_format` key overrides the syntax the
 # LLM class would write commands in; the plan's check is an Ollama tier pointed at
-# `keep` and back (docs/plans/COMMAND_FORMATS_PLAN.md, step 6).
+# `keep` and back.
 # ===========================================================================
 
 class TestCommandFormatOverride:

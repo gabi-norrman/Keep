@@ -1,4 +1,4 @@
-"""The rewriter and the render side of the command formats (docs/plans/COMMAND_FORMATS_PLAN.md, step 3).
+"""The rewriter and the render side of the command formats.
 
 A visible fake format shows what the rewriter finds and how it pairs an example's values with
 the declared names; the Keep format over the real template, every toolkit and its own

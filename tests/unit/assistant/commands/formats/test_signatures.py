@@ -1,4 +1,4 @@
-"""The signature readers and the signature table (docs/plans/COMMAND_FORMATS_PLAN.md, step 2).
+"""The signature readers and the signature table.
 
 Two kinds of test: the readers on sample texts, and the real texts — res/prompt.md and every
 toolkit — held to the canon: every documented command declares its parameters by name, every
