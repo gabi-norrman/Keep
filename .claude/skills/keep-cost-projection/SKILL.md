@@ -1,5 +1,5 @@
 ---
-name: llm-cost
+name: keep-cost-projection
 description: Estimate the monthly Claude API cost of this server under the five model setups (Opus or Fable on chat, Opus or Fable on memory curation, and the prepended user query on Opus or on Fable) from the last days of the local log, and present it as one comparison table. Use when the user asks what the assistant costs to run, what switching a tier between Opus and Fable would save or add, or for a cost table or cost report.
 disable-model-invocation: false
 allowed-tools: Bash(grep *), Bash(awk *), Bash(perl *), Bash(python3 *), Bash(ls *), Bash(wc *), Bash(head *), Bash(tail *), Read, Write
