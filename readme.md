@@ -210,18 +210,17 @@ Gaggenau service was booked while the house stood empty. I sorted the two time w
 Every integration is off until you turn it on, and Keep walks you through the setup of each one.
 
 <table>
-<tr><td width="190">🍎&nbsp;<b>Apple</b></td><td><img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">iCloud (Find My for the family's phones), Photos library, iMessage, Reminders, and the iCloud mail and calendars through the two below</td></tr>
-<tr><td>✉️&nbsp;<b>Email</b></td><td>Any IMAP mailbox — iCloud and Gmail with an app password — plus Gmail and Microsoft 365 (Outlook.com, work accounts) signed in once with Google or Microsoft; as many accounts as the household has, listed side by side; Keep also uses your inbox to handle 2FA codes on its own</td></tr>
-<tr><td>📅&nbsp;<b>Calendars</b></td><td>CalDAV calendars — iCloud, Fastmail, Nextcloud — plus Google and Microsoft 365 calendars, from several accounts in one week view; Keep adds, moves and deletes events in the calendar you name</td></tr>
-<tr><td>🏠&nbsp;<b>Home</b></td><td>Home Assistant, Indigo, Philips Hue and Plejd for lights, switches, locks, sensors and scenes</td></tr>
-<tr><td>🏡&nbsp;<b>HomeKit</b></td><td>Through the HomeClaw app on the server's Mac: temperature, humidity and soil sensors, motion, the thermostat, covers, the garage door, irrigation, other lights and scenes — whatever Hue and Plejd do not already bring</td></tr>
+<tr><td width="190">🍎&nbsp;<b>Apple</b></td><td><img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">iCloud Find My for the family's phones, Photos, iMessage, Reminders, and iCloud mail and calendars</td></tr>
+<tr><td>✉️&nbsp;<b>Email</b></td><td>Any IMAP mailbox plus Gmail and Microsoft 365, many accounts side by side; Keep reads 2FA codes itself</td></tr>
+<tr><td>📅&nbsp;<b>Calendars</b></td><td>CalDAV (iCloud, Fastmail, Nextcloud), Google and Microsoft 365 in one week view; Keep adds, moves and deletes events</td></tr>
+<tr><td>🏠&nbsp;<b>Home</b></td><td>Home Assistant, Indigo, Philips Hue, Plejd and HomeKit (via HomeClaw) for lights, switches, locks, sensors, thermostats, covers and scenes</td></tr>
 <tr><td>📹&nbsp;<b>Cameras</b></td><td>Arlo, Ring and UniFi Protect</td></tr>
 <tr><td>🚗&nbsp;<b>Cars</b></td><td>Tesla, Volvo, Hyundai, Kia and Genesis; the whole family's cars as one fleet</td></tr>
 <tr><td>🏊&nbsp;<b>Pool</b></td><td>Aseko pool units, through aseko.cloud</td></tr>
 <tr><td>🎵&nbsp;<b>Music</b></td><td>Sonos and Spotify</td></tr>
 <tr><td>🌦️&nbsp;<b>Weather</b></td><td>YR forecasts and rain radar</td></tr>
 <tr><td>🌐&nbsp;<b>Web</b></td><td>Search, page reading, a real headless browser for sites that need clicking, and X</td></tr>
-<tr><td>💬&nbsp;<b>Chat</b></td><td>Telegram and WhatsApp, with a feed of the family's group chats; Keep reads along and can send on your behalf</td></tr>
+<tr><td>💬&nbsp;<b>Chat</b></td><td>Telegram and WhatsApp; Keep follows the family's group chats and can send on your behalf</td></tr>
 <tr><td>🎙️&nbsp;<b>Voice</b></td><td>Fusion of local Whisper transcription and ElevenLabs, for <i>low latency</i> combined with <i>high accuracy</i></td></tr>
 <tr><td>🛠️&nbsp;<b>Self&nbsp;Improvement</b></td><td>Keep reads its own logs and code through Claude Code, finds bugs and sends you the pull request</td></tr>
 </table>
