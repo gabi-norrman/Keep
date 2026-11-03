@@ -1,0 +1,68 @@
+name: Bug report
+description: Something in Keep is broken. For questions and ideas, use Discussions.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues are public. **Remove anything private before posting** — names, addresses, phone numbers,
+        mail and message contents, API keys, tokens and hostnames.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what Keep did, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to reproduce
+      description: The steps or the exact request that makes it happen, if you know them.
+  - type: input
+    id: version
+    attributes:
+      label: Keep version
+      description: Shown at the top of the console (e.g. `Keep v2026.11.4120`), or run `git describe --tags` in the Keep folder.
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: e.g. 26.1
+    validations:
+      required: true
+  - type: dropdown
+    id: llm
+    attributes:
+      label: LLM backend
+      options:
+        - Claude
+        - GPT
+        - Gemini
+        - Ollama
+        - ds4-server
+        - Other / don't know
+    validations:
+      required: true
+  - type: input
+    id: integrations
+    attributes:
+      label: Integrations involved
+      description: The folder names under src/integrations, if the bug is about one (e.g. `tesla`, `imap`).
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: The lines of `log/floxy.out` around the problem (crashes are in `log/raw-floxy.log`). Redact private data first.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before posting
+      options:
+        - label: I searched the open issues and this is not already reported.
+          required: true
+        - label: I removed private data from everything above.
+          required: true
