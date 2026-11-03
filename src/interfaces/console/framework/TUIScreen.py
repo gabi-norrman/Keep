@@ -396,8 +396,6 @@ class TUIScreen:
             png, png_size = picture.png(cols, rows)
             if sent != held(picture, placement):
                 after.append(Pictures.transmit(image_id, png))
-                if sent is None or sent[:2] != (cols, rows):   # a redrawn chart is re-sent every refresh: not worth a line
-                    trace(f"TUIScreen: sending picture {image_id} ({len(png) // 1024} kB) for a {cols}x{rows} box")
             self._transmitted.pop(image_id, None)
             self._transmitted[image_id] = held(picture, placement)
             after.append(f"{self.CSI}{y};{x}H" + Pictures.place(image_id, cols, rows, png_size, first_row, visible))
