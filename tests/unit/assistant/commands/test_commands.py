@@ -2559,7 +2559,8 @@ class TestCmdReportIssue:
     def test_a_filed_issue_sends_the_user_its_link(self, commands_instance):
         url = "https://github.com/example/keep/issues/7"
         sent, row = self._run(commands_instance, f"{url}\nThe lights stay on after the scene ends.")
-        assert sent == f"Your issue is now live here: {url}"
+        assert sent.startswith(f"Your issue is now live here: {url}")
+        assert "edit it by hand on GitHub" in sent
         assert row.startswith("[Issue reported]") and "#7" in row and url in row
 
     def test_a_comment_on_an_open_issue_counts_as_filed(self, commands_instance):

@@ -1073,7 +1073,9 @@ class Commands:
                 fine(f"Report: {report}")
                 number, url = CodeQualityMaintainer.issue_in(report)
                 if url:
-                    message = f"Your issue is now live here: {url}"
+                    message = (f"Your issue is now live here: {url}\n\nPlease check it: if you find anything "
+                               f"sensitive in it, edit it by hand on GitHub (the old revision can be dropped "
+                               f"from the edit history).")
                 else:
                     message = f"Issue report:\n\n{notifier().markdown_to_html(report)}"
                 sent = notifier().send_message(message)

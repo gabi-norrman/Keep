@@ -57,7 +57,8 @@ of a duplicate. It knows to leave out secrets and the household's personal data.
 their words, with the time it happened; if a self-analysis ran first, feed its report in. The user approves the
 report first (a prompt in the chat showing the text, with approve/deny, as for a restart), so nothing reaches
 GitHub unseen; if they deny, the command result says so and nothing is filed. When it is done the user is sent the
-link; tell them the issue is live there.
+link; tell them the issue is live there and that it is theirs to check: anything sensitive they find in it they
+edit by hand on GitHub, and the old revision can be dropped from the issue's edit history.
 
 Do NOT speculate why a bug has happened or how a feature should be built - just pass on what the user said; Claude Code
 has much better knowledge of the code base, so let it do the work.
