@@ -255,3 +255,10 @@ The end game is 100% local. Keep already runs on local models and once the local
 > While you are setting Keep up, the events also carry your queries and Keep's replies, so we can see where the first 
 > steps trip people up; once setup is done, that part is switched off for good. Vault secrets are placeholders in the 
 > transcript too. `telemetry.enabled: false` in `config.yaml` turns it all off.
+<br>
+
+## License
+
+Keep is free software under the [GNU Affero General Public License v3.0](https://github.com/maciekd/Keep/blob/master/LICENSE). You may run, study, change and
+share it; if you distribute a modified Keep, or let others use one over a network, you must share your changes
+under the same license. Copyright © 2024–2026 Maciek Drejak.
