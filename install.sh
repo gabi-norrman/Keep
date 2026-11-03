@@ -553,26 +553,30 @@ pip_status() {
 
 KEYS_URL="https://platform.claude.com/settings/keys"
 WORKSPACES_URL="https://platform.claude.com/settings/workspaces"
+BILLING_URL="https://platform.claude.com/settings/billing"
 
 verify_api_key() {
   # Leaves in VERIFY_CODE what Anthropic made of the key: an HTTP status, or "workspace" when
   # the key is not tied to one workspace and Anthropic wants to be told which to use, or
-  # "bad-workspace" when the id given for it is not one the key can act in; Anthropic's own
-  # words in ANTHROPIC_SAID. A free count_tokens call: it takes the same path as a real
-  # message, so it fails the way the server would.
+  # "bad-workspace" when the id given for it is not one the key can act in, or "credit" when
+  # the key is good but its organization has no credit; Anthropic's own words in ANTHROPIC_SAID.
+  # A real one-token message on Haiku, a fraction of a cent: the free count_tokens endpoint
+  # is not documented to check the balance, and an unfunded key that passes here leaves the
+  # first chat silent.
   local body="$LOG.verify" code
   local -a workspace_header=()
   [ -z "$WORKSPACE_ID" ] || workspace_header=(-H "anthropic-workspace-id: $WORKSPACE_ID")
   code=$(curl -sS -o "$body" --max-time 20 -w '%{http_code}' \
     -H "x-api-key: $API_KEY" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
     ${workspace_header[@]+"${workspace_header[@]}"} \
-    -d '{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}]}' \
-    https://api.anthropic.com/v1/messages/count_tokens 2>>"$LOG" || true)
+    -d '{"model":"claude-haiku-5-5","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+    https://api.anthropic.com/v1/messages 2>>"$LOG" || true)
   ANTHROPIC_SAID=$(sed -n 's/.*"message":"\([^"]*\)".*/\1/p' "$body" 2>/dev/null | head -n 1 || true)
   log "key check: HTTP ${code:-none} ${ANTHROPIC_SAID:+- $ANTHROPIC_SAID}"
   case "$code" in
     400) case "$ANTHROPIC_SAID" in
            *anthropic-workspace-id*required*) code=workspace ;;
+           *[Cc]redit\ balance*) code=credit ;;
            *workspace*) [ -z "$WORKSPACE_ID" ] || code=bad-workspace ;;
          esac ;;
     404) case "$ANTHROPIC_SAID" in *[Ww]orkspace*) [ -z "$WORKSPACE_ID" ] || code=bad-workspace ;; esac ;;
@@ -589,6 +593,34 @@ explain_workspace() {
   printf '\n'
 }
 
+explain_credit() {
+  note "Keep uses your organization's API credit. On a Claude Max, Ultra or Team plan you get"
+  note "\$100–500 of it a month for free: claim it at claude.ai → Settings → Billing → API credits"
+  note "(link the Console organization you create this key in). Otherwise add credits at"
+  note "${C_BOLD}$BILLING_URL${C_RESET}."
+}
+
+# The key is good but its organization has no credit: wait while the user claims or buys some,
+# then check again. Returns 0 to check again, 1 to go on without credit.
+wait_for_credit() {
+  warn "The key works, but its organization has no API credit yet."
+  note "On a Claude Max, Ultra or Team plan, claim the plan's monthly credit at claude.ai → Settings →"
+  note "Billing → API credits and link this key's Console organization (a new subscription can claim"
+  note "it after 7 days on the plan). Otherwise add credits at ${C_BOLD}$BILLING_URL${C_RESET}."
+  printf '\n'
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    warn "Keeping ANTHROPIC_API_KEY from the environment. Keep cannot answer until the organization has credit."
+    return 1
+  fi
+  local answer=""
+  ask "Press Enter to check again, or type skip to finish without credit:" answer
+  case "$(printf '%s' "$answer" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+    skip) warn "Keeping the key. Keep cannot answer until the organization has credit."; return 1 ;;
+  esac
+  dim "Checking again..."
+  return 0
+}
+
 obtain_api_key() {
   API_KEY="${ANTHROPIC_API_KEY:-}"
   WORKSPACE_ID="${ANTHROPIC_WORKSPACE_ID:-}"
@@ -600,6 +632,8 @@ obtain_api_key() {
     note "  Expires: Never"
     note "  Scope:   Default workspace"
     note "The key is stored only in $KEEP_DIR/config.yaml. Typing is hidden."
+    printf '\n'
+    explain_credit
     printf '\n'
   fi
   local attempt=0 workspace_attempt=0
@@ -619,6 +653,7 @@ obtain_api_key() {
     verify_api_key
     case "$VERIFY_CODE" in
       200) ok "Key verified with the Anthropic API${WORKSPACE_ID:+ (workspace $WORKSPACE_ID)}"; return ;;
+      credit) if wait_for_credit; then continue; fi; return ;;
       401|403) warn "Anthropic rejected that key (HTTP $VERIFY_CODE). Check for a typo or create a new one."; API_KEY="" ;;
       workspace|bad-workspace)
         if [ "$VERIFY_CODE" = workspace ]; then explain_workspace

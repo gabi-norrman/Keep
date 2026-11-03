@@ -26,6 +26,10 @@ WORKSPACE_REQUIRED_BODY = (
     '{"type":"error","error":{"type":"invalid_request_error","message":"anthropic-workspace-id is required '
     'when authenticating with an identity-linked API key; send the id of the workspace this request acts in."},'
     '"request_id":"req_test_0000000000000000"}')
+CREDIT_TOO_LOW_BODY = (
+    '{"type":"error","error":{"type":"invalid_request_error",'
+    '"message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing '
+    'to upgrade or purchase credits."}}')
 BAR_RE = re.compile(r'^\[(.*)\] (.*)$')
 
 
@@ -189,8 +193,8 @@ class TestObtainApiKey:
 
     def test_key_without_a_workspace_asks_for_the_id_and_sends_it_from_then_on(self, harness):
         """The 2026-10 beta tester: the Console's Create key dialog left unscoped makes a key
-        Anthropic refuses without an anthropic-workspace-id header. The check is a
-        count_tokens call so this 400 shows at install, not at the first message."""
+        Anthropic refuses without an anthropic-workspace-id header. The check is a real
+        message so this 400 shows at install, not at the first chat."""
         harness.set_curl(('400', WORKSPACE_REQUIRED_BODY), ('200', ''))
         harness.set_answers('sk-ant-typed-47L', 'wrkspc_01TEST')
         result = harness.run('obtain_api_key; printf "%s %s" "$API_KEY" "$WORKSPACE_ID"')
@@ -201,7 +205,6 @@ class TestObtainApiKey:
         assert 'platform.claude.com/settings/workspaces' in result.stdout
         assert len(harness.prompts) == 2 and 'Workspace id' in harness.prompts[1]
         first, second = harness.curl_calls.read_text().splitlines()
-        assert 'count_tokens' in first
         assert 'anthropic-workspace-id' not in first
         assert 'anthropic-workspace-id: wrkspc_01TEST' in second
 
@@ -249,15 +252,50 @@ class TestObtainApiKey:
         assert 'ANTHROPIC_WORKSPACE_ID' in result.stdout
 
     def test_other_400_keeps_the_key_and_repeats_what_anthropic_said(self, harness):
-        billing = ('{"type":"error","error":{"type":"invalid_request_error",'
-                   '"message":"Your credit balance is too low to access the Anthropic API."}}')
-        harness.set_curl(('400', billing))
+        other = ('{"type":"error","error":{"type":"invalid_request_error",'
+                 '"message":"This organization has been disabled."}}')
+        harness.set_curl(('400', other))
         harness.set_answers('sk-ant-typed-47L')
         result = harness.run('obtain_api_key; printf "%s" "$API_KEY"')
         assert result.returncode == 0, result.stdout
         assert result.stdout.endswith('sk-ant-typed-47L')
         assert 'Could not verify the key right now' in result.stdout
-        assert 'credit balance is too low' in result.stdout
+        assert 'organization has been disabled' in result.stdout
+
+    def test_check_is_a_message_so_an_unfunded_organization_shows_at_install(self, harness):
+        """The free count_tokens endpoint is not documented to check the balance: a key whose
+        organization has no credit could pass it and leave the first chat silent."""
+        harness.set_answers('sk-ant-typed-47L')
+        harness.run('obtain_api_key')
+        assert harness.curl_calls.read_text().split()[-1] == 'https://api.anthropic.com/v1/messages'
+
+    def test_unfunded_organization_waits_for_credit_and_checks_the_same_key_again(self, harness):
+        harness.set_curl(('400', CREDIT_TOO_LOW_BODY), ('200', ''))
+        harness.set_answers('sk-ant-typed-47L', '')
+        result = harness.run('obtain_api_key; printf "%s" "$API_KEY"')
+        assert result.returncode == 0, result.stdout
+        assert result.stdout.endswith('sk-ant-typed-47L')
+        assert 'Key verified' in result.stdout
+        assert 'platform.claude.com/settings/billing' in result.stdout
+        assert len(harness.prompts) == 2 and 'API key' not in harness.prompts[1]
+        assert harness.curl_calls.read_text().count('x-api-key: sk-ant-typed-47L') == 2
+
+    def test_skip_keeps_a_key_whose_organization_has_no_credit(self, harness):
+        # A new Max subscriber waits 7 days for the plan's credit: the install must still finish.
+        harness.set_curl(('400', CREDIT_TOO_LOW_BODY))
+        harness.set_answers('sk-ant-typed-47L', ' SKIP ')
+        result = harness.run('obtain_api_key; printf "%s" "$API_KEY"')
+        assert result.returncode == 0, result.stdout
+        assert result.stdout.endswith('sk-ant-typed-47L')
+        assert harness.curl_calls.read_text().count('x-api-key:') == 1
+
+    def test_environment_key_without_credit_is_kept_without_a_prompt(self, harness):
+        harness.set_curl(('400', CREDIT_TOO_LOW_BODY))
+        harness.set_answers()
+        result = harness.run('obtain_api_key; printf "%s" "$API_KEY"', ANTHROPIC_API_KEY='sk-ant-env-47L')
+        assert result.returncode == 0, result.stdout
+        assert result.stdout.endswith('sk-ant-env-47L')
+        assert harness.prompts == []
 
     def test_no_terminal_and_no_environment_key_fails_with_the_workaround(self, harness):
         # curl | bash with no /dev/tty: `read` must not wait on the pipe the script came from.
