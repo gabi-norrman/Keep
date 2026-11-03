@@ -57,8 +57,9 @@ class DashboardTab(TabView):
 
     On a terminal that shows pictures a chart's plot is a picture (`ChartImage`, one
     `ChartPicture` per chart, redrawn in place as its data moves); the title strip, the axis
-    labels and the legend stay text. Elsewhere, and while a chart has nothing to show, the
-    plot is drawn in block characters.
+    labels and the legend stay text. Elsewhere (Terminal.app), and while a chart has nothing
+    to show, the plot is drawn in block characters — a line chart as the columns it was
+    before, since a line as half-block pixels is a jagged staircase.
 
     The samplers behind the charts run only while the tab shows (`on_activate` / `on_deactivate`);
     the log scan behind the per-day cache chart is the exception — a startup-and-daily job
@@ -477,7 +478,8 @@ class DashboardTab(TabView):
                               window=self.TEMP_AVERAGE_SAMPLES, window_label="5m avg",
                               ticks=[(0.0, "", Theme.COLOR_GRID),
                                      (self.TEMP_WARN_C, f"{self.TEMP_WARN_C:.0f}°C", warn_guide),
-                                     (self.TEMP_BAD_C, f"{self.TEMP_BAD_C:.0f}°C", bad_guide)])
+                                     (self.TEMP_BAD_C, f"{self.TEMP_BAD_C:.0f}°C", bad_guide)],
+                              color_for=lambda v: self._temp_zone(v)[0])
 
     DAILY_AVERAGE_DAYS = 7
 
@@ -485,13 +487,18 @@ class DashboardTab(TabView):
                          values: Sequence[Optional[float]], fg: Color, label: str, value_str: str,
                          max_value: float = 100.0, y_axis_format=None, slots: int = 0,
                          window: int = 0, window_label: str = "",
-                         ticks: Optional[Sequence[Tuple[float, str, Color]]] = None):
+                         ticks: Optional[Sequence[Tuple[float, str, Color]]] = None,
+                         color_for: Optional[Callable[[float], Color]] = None):
         """A chart tile with a filled line chart (`ChartImage.area`): the title strip with the
         latest value and, with a `window`, a legend for the rolling average of that many points
         traced over the line; the y-axis labelled at 0, half and full (in `y_axis_format`,
         percent by default) unless `ticks` — (value, label, colour) — name the rules instead.
         A missing value (None) breaks the line. With nothing to show the plot is the empty
-        ground with a note."""
+        ground with a note.
+        On a screen without pictures the line would be coarse half-block pixels, so the plot
+        is the values as block-character columns instead (`_draw_columns`, a missing value an
+        empty column, each in `fg` or the colour `color_for(value)` gives it) with no average
+        and no legend."""
         Tile.draw_card(screen, self._cards, x, y, width, chart_h + Tile.CARD_CHROME, label, value_str, fg)
         chart_y = y + Tile.CARD_TOP
         chart_x = x + 2 + self.Y_AXIS_W
@@ -515,14 +522,19 @@ class DashboardTab(TabView):
         screen.reset_color()
 
         values = list(values)
+        guides = {min(chart_h - 1, int(r * (chart_h - 1))): c for r, c in rules}
         if not any(v is not None for v in values):
-            self._draw_columns(screen, chart_x, chart_y, chart_w, chart_h, [], max_value, lambda _: fg,
-                               guides={min(chart_h - 1, int(r * (chart_h - 1))): c for r, c in rules})
+            self._draw_columns(screen, chart_x, chart_y, chart_w, chart_h, [], max_value, lambda _: fg, guides=guides)
             note = "no samples yet"
             screen.set_color(Theme.COLOR_DIM)
             screen.set_bg_color(Theme.COLOR_PANEL_BG)
             screen.write_at(chart_x + max(0, (chart_w - len(note)) // 2), chart_y + chart_h // 2, note[:chart_w])
             screen.reset_color()
+            return
+
+        if not screen.graphics:
+            self._draw_columns(screen, chart_x, chart_y, chart_w, chart_h, [v or 0.0 for v in values], max_value,
+                               color_for or (lambda _: fg), guides=guides)
             return
 
         average = ChartImage.rolling_mean(values, window) if window > 1 and len(values) > 1 else []

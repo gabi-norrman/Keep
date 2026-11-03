@@ -626,3 +626,49 @@ class TestCostBars:
         costs = {"d1": {"a": 1.0}, "d3": {"a": 1.0}, "d4": {"a": 1.0}}
         bars = tab._cost_bars(["d1", "d2", "d3", "d4"], ["a"], costs, 10.0, bar_w=1, gap=1, chart_w=5)
         assert [bar.x0 for bar in bars] == [0, 4]
+
+
+@pytest.mark.unit
+class TestLineChartFallback:
+    """A line chart (`_draw_area_chart`) is a picture only where the terminal shows pictures;
+    elsewhere a line as half-block pixels is a jagged staircase, so the plot is the block
+    columns the chart was drawn as before, without the average's legend."""
+
+    X, Y, WIDTH = 1, 1, 40    # screen coordinates are 1-based; the width fits the title and the legend
+    PLOT_X, PLOT_Y, PLOT_W = X + 2 + DashboardTab.Y_AXIS_W, Y + Tile.CARD_TOP, WIDTH - 4 - DashboardTab.Y_AXIS_W
+
+    def draw(self, values, graphics, **kwargs):
+        screen = TUIScreen(60, 12)
+        screen.graphics = graphics
+        make_tab()._draw_area_chart(screen, self.X, self.Y, self.WIDTH, CHART_H, values, C, "Long Term Memory", "",
+                                    window=3, window_label="3d avg", **kwargs)
+        return screen
+
+    def plot_cell(self, screen, i, row):
+        return screen.next_frame[self.PLOT_Y - 1 + row][self.PLOT_X - 1 + i]
+
+    def plot_column(self, screen, i):
+        return "".join(self.plot_cell(screen, i, row).char for row in range(CHART_H))
+
+    def title_strip(self, screen):
+        return "".join(screen.next_frame[self.Y - 1][self.X - 1 + x].char for x in range(self.WIDTH))
+
+    def test_on_a_graphics_terminal_the_line_is_a_picture_with_the_average_in_the_legend(self):
+        screen = self.draw([10.0, 50.0, 100.0], graphics=True)
+        [(_, placement)] = screen._placements.values()
+        assert placement[:4] == (self.PLOT_X, self.PLOT_Y, self.PLOT_W, CHART_H)
+        assert "3d avg" in self.title_strip(screen)
+
+    def test_without_graphics_the_values_are_block_columns_and_the_legend_is_left_out(self):
+        screen = self.draw([10.0, None, 100.0], graphics=False)
+        assert screen._placements == {}
+        assert self.plot_column(screen, self.PLOT_W - 1) == "▄" * CHART_H, "the newest value, full scale, at the right"
+        assert "▄" not in self.plot_column(screen, self.PLOT_W - 2), "a missing value is an empty column (bar the rules)"
+        assert "3d avg" not in self.title_strip(screen)
+
+    def test_the_fallback_columns_take_the_colour_the_chart_names_for_a_value(self):
+        hot, cool = Color(255, 0, 0), Color(0, 255, 0)
+        screen = self.draw([20.0, 90.0], graphics=False, color_for=lambda v: hot if v > 50 else cool)
+        newest = self.plot_cell(screen, self.PLOT_W - 1, CHART_H - 1).style.fg
+        older = self.plot_cell(screen, self.PLOT_W - 2, CHART_H - 1).style.fg
+        assert newest.r > newest.g and older.g > older.r
