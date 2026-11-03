@@ -1030,6 +1030,13 @@ class TestSendOrEdit:
         await t._send_or_edit_async(123, None, "<div><b>x</b></div>")
         assert t._application.bot.send_message.call_args.kwargs["text"] == "<b>x</b>"
 
+    @pytest.mark.asyncio
+    async def test_a_pipe_table_in_a_reply_is_sent_as_an_aligned_pre_block(self, t):
+        await t._send_or_edit_async(123, None, "| Time | Event |\n|---|---|\n| 13:00 | Start |")
+        sent = t._application.bot.send_message.call_args.kwargs["text"]
+        assert sent.startswith("<pre>") and sent.endswith("</pre>")
+        assert "|" not in sent and "---" not in sent
+
 
 @pytest.mark.unit
 class TestCommandLine:
@@ -1282,6 +1289,13 @@ class TestOneShotSends:
             assert transport.send_text(111, "  \n") is False
         t = _make_transport(running=False)
         assert t.send_text(111, "Hello") is False
+
+    @pytest.mark.asyncio
+    async def test_a_pushed_report_table_is_sent_as_an_aligned_pre_block(self, transport):
+        await transport._send_text_async(111, "Report:\n| Purpose | $ |\n|---|---|\n| Chat | 4.57 |")
+        sent = transport._application.bot.send_message.call_args.kwargs["text"]
+        assert sent.startswith("Report:\n<pre>") and sent.endswith("</pre>")
+        assert "|" not in sent and "---" not in sent
 
     @pytest.mark.asyncio
     async def test_send_text_async_html_flags_and_fallback(self, transport):

@@ -1,6 +1,7 @@
 import threading
 
 import pytest
+from html import unescape
 
 from interfaces.chat import RichText
 from interfaces.chat.RichText import markdown_to_html, safe_prefix_end, sanitize, split, strip_tags
@@ -117,6 +118,44 @@ class TestMarkdownToHtml:
         result = markdown_to_html("a < b & c > d")
         assert "&lt;" in result and "&amp;" in result and "&gt;" in result
         assert "&lt;" in markdown_to_html("```\nif a < b:\n```")
+
+@pytest.mark.unit
+class TestTablesAsPre:
+    TABLE = "| Purpose | Calls | Share |\n|---|---|---|\n| Chat (27 requests) | 74 | 41% |\n| Memory | 1 | 13% |"
+
+    def test_a_table_becomes_one_pre_block_with_aligned_columns_and_no_separator(self):
+        result = RichText.tables_as_pre(f"Where it goes\n\n{self.TABLE}\n\nUnpriced: 121 calls")
+        lines = result.split("\n")
+        assert lines[0] == "Where it goes" and lines[-1] == "Unpriced: 121 calls"
+        assert lines[2].startswith("<pre>") and lines[4].endswith("</pre>")
+        assert "---" not in result
+        block = [l.removeprefix("<pre>").removesuffix("</pre>") for l in lines[2:5]]
+        assert block[1].index("41%") == block[2].index("13%") == len(block[0]) - 3
+
+    def test_numbers_right_align_and_text_left_aligns(self):
+        block = RichText.tables_as_pre("| Name | $ |\n|---|---|\n| Chat | 4.57 |\n| Photos | 10.1 |")
+        rows = block.removeprefix("<pre>").removesuffix("</pre>").split("\n")
+        assert rows[1].startswith("Chat  ") and rows[2].startswith("Photos")
+        assert rows[1].endswith(" 4.57") and rows[2].endswith("10.1")
+        assert len(rows[1]) == len(rows[2])
+
+    def test_tags_in_cells_are_stripped_since_telegram_allows_none_inside_pre(self):
+        block = RichText.tables_as_pre("| <b>Model</b> | <code>x</code> |\n| a | b |")
+        assert "<b>" not in block and "<code>" not in block and "Model" in block
+
+    def test_entities_count_as_one_character_for_the_padding(self):
+        block = RichText.tables_as_pre("| a &amp; b | 1 |\n| ccccc | 2 |")
+        rows = block.removeprefix("<pre>").removesuffix("</pre>").split("\n")
+        assert unescape(rows[0]).index("1") == unescape(rows[1]).index("2")
+
+    def test_pipes_inside_a_pre_block_and_mid_line_are_not_a_table(self):
+        text = "a | b in prose\n<pre>| raw |\n| code |</pre>"
+        assert RichText.tables_as_pre(text) == text
+
+    def test_an_escaped_pipe_stays_in_its_cell(self):
+        block = RichText.tables_as_pre("| a \\| b | c |")
+        assert "a | b" in block
+
 
 class TestCommandLine:
     def test_escapes_and_appends_the_detail_in_its_own_italics(self):

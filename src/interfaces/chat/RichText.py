@@ -7,11 +7,16 @@ how to sanitize LLM output down to them, where a streaming prefix can be cut wit
 a tag open, how to split long messages, and how to render markdown into it.
 """
 import re
-from html import escape
+from html import escape, unescape
+
+from common.logging import trace
 
 ALLOWED_TAGS = {'b', 'i', 'u', 's', 'a', 'code', 'pre', 'strong', 'em', 'del', 'strike',
                 'tg-spoiler', 'blockquote', 'tg-emoji'}
 _TAG_RE = re.compile(r'<(/?)([\w-]+)([^>]*)>')
+_PRE_TAG_RE = re.compile(r'<(/?)pre\b', re.IGNORECASE)
+_TABLE_SEPARATOR_RE = re.compile(r'^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$')
+_NUMERIC_CELL_RE = re.compile(r'^[\d.,%$+\-–]+$')
 
 
 def command_line(text: str, detail: str = "") -> str:
@@ -156,6 +161,61 @@ def markdown_to_html(md: str) -> str:
         result.append("</code></pre>")
 
     return "\n".join(result)
+
+
+def tables_as_pre(text: str) -> str:
+    """The pipe tables of a reply as `<pre>` blocks, for a platform that cannot draw a table:
+    a run of consecutive lines starting with `|` becomes one block whose cells are padded to
+    their column (numbers right-aligned), the separator row dropped. Tags inside a cell are
+    stripped, since Telegram allows none inside `<pre>`; a line inside an existing `<pre>`
+    block is left alone, as `widgets/ChatTable.py` leaves it."""
+    out: list[str] = []
+    rows: list[str] = []
+    tables = 0
+
+    def flush():
+        nonlocal tables
+        if rows:
+            out.append(_aligned_pre(rows))
+            tables += 1
+            rows.clear()
+
+    pre_depth = 0
+    for line in text.split("\n"):
+        if pre_depth == 0 and line.lstrip().startswith("|"):
+            rows.append(line)
+        else:
+            flush()
+            out.append(line)
+        for tag in _PRE_TAG_RE.finditer(line):
+            pre_depth = max(0, pre_depth + (-1 if tag.group(1) else 1))
+    flush()
+    if tables:
+        trace(f"RichText: {tables} pipe table(s) rendered as <pre> blocks")
+    return "\n".join(out)
+
+
+def _aligned_pre(lines: list[str]) -> str:
+    rows = [_table_cells(line) for line in lines if not _TABLE_SEPARATOR_RE.match(line.strip())]
+    if not rows:
+        return "\n".join(lines)
+    columns = max(len(row) for row in rows)
+    widths = [max(len(unescape(row[i])) if i < len(row) else 0 for row in rows) for i in range(columns)]
+    padded = []
+    for row in rows:
+        cells = []
+        for i, cell in enumerate(row):
+            fill = widths[i] - len(unescape(cell))
+            cells.append(" " * fill + cell if _NUMERIC_CELL_RE.match(cell) else cell + " " * fill)
+        padded.append("  ".join(cells).rstrip())
+    return "<pre>" + "\n".join(padded) + "</pre>"
+
+
+def _table_cells(line: str) -> list[str]:
+    inner = strip_tags(line.strip()).replace("\\|", "\x00")
+    inner = inner[1:] if inner.startswith("|") else inner
+    inner = inner[:-1] if inner.endswith("|") else inner
+    return [c.strip().replace("\x00", "|") for c in inner.split("|")]
 
 
 def _inline_markdown(text: str) -> str:

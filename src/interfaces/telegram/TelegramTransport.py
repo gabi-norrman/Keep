@@ -1085,7 +1085,7 @@ class TelegramTransport(Integration, ChatTransport):
             if ban_left > 0:
                 trace(f"Telegram [{chat_id}]: flood cooldown ({ban_left:.0f}s left), dropping intermediate update")
                 return message_id, False
-        sanitized = RichText.sanitize(text)
+        sanitized = RichText.sanitize(RichText.tables_as_pre(text))
         if message_id is None:
             try:
                 msg = await self._send_new(chat_id, sanitized)
@@ -1196,7 +1196,7 @@ class TelegramTransport(Integration, ChatTransport):
         return self._schedule(self._send_text_async(conversation, html, silent, preview), "send")
 
     async def _send_text_async(self, chat_id: int, text: str, silent: bool = False, preview: bool = True):
-        text = RichText.sanitize(text)
+        text = RichText.sanitize(RichText.tables_as_pre(text))
         kwargs = dict(chat_id=chat_id, disable_notification=silent)
         if not preview:
             # Only ever force previews off: passing False would override the bot-wide default.
