@@ -514,7 +514,9 @@ class TestCostSummary:
     """The Anthropic cost card's title strip (acc3490, ea11b79): the month total, then yesterday's
     cost per workspace, each workspace figure in its bar colour so the reader needs no legend.
     The total is no workspace's and must not wear a workspace colour: drawn in the first
-    workspace's cyan it read as that workspace's figure."""
+    workspace's cyan it read as that workspace's figure. The colour is the middle of the bars'
+    shading, not the accent: the accent shows only at the top of the scale, so the figures
+    looked a different colour from the bars."""
 
     WIDTH = 70
 
@@ -540,11 +542,13 @@ class TestCostSummary:
         figures = [piece for piece in text.split() if piece.startswith("$")]
         assert figures == ["$322", "$12", "$3"], "rounded; yesterday's figures, not today's"
 
-    def test_each_workspace_figure_wears_its_bar_colour_and_the_total_wears_none(self):
+    def test_each_workspace_figure_wears_the_middle_shade_of_its_bars_and_the_total_wears_none(self):
+        tab = self.tab()
         text, row = self.strip()
         total, alpha, beta = [row[m.start()].style.fg for m in re.finditer(r"\$\d+", text)]
-        assert (alpha, beta) == tuple(DashboardTab.WORKSPACE_COLORS[:2])
-        assert total not in DashboardTab.WORKSPACE_COLORS
+        assert (alpha, beta) == (tab._workspace_shade(0, 0.5), tab._workspace_shade(1, 0.5))
+        assert alpha not in (tab._workspace_shade(0, 0.0), tab._workspace_shade(0, 1.0))
+        assert total not in (alpha, beta)
 
     def test_the_strip_ends_two_cells_before_the_cards_right_edge(self):
         text, _ = self.strip()
@@ -563,15 +567,14 @@ class TestCostLegendNames:
 
     @staticmethod
     def legend_width(names):
-        return (sum(DashboardTab.LEGEND_KEY_W + len(n) for n in names)
-                + DashboardTab.LEGEND_GAP * (len(names) - 1))
+        return sum(len(n) for n in names) + DashboardTab.LEGEND_GAP * (len(names) - 1)
 
     def test_names_that_fit_are_left_whole(self):
         assert DashboardTab._legend_names(self.WORKSPACES, 200) == self.WORKSPACES
 
     def test_every_entry_fits_and_the_longest_names_are_cut_first(self):
-        names = DashboardTab._legend_names(self.WORKSPACES, 60)
-        assert self.legend_width(names) <= 60
+        names = DashboardTab._legend_names(self.WORKSPACES, 50)
+        assert self.legend_width(names) <= 50
         assert names[0] == "Default" and names[2] == "Bob", "short names keep their length"
         assert names[1].endswith("…") and names[1].startswith("Alice")
 

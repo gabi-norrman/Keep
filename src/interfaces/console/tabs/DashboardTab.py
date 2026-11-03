@@ -1127,22 +1127,21 @@ class DashboardTab(TabView):
             screen.write_at(lx, label_y, label)
         screen.reset_color()
 
-        # Legend row — centered under the chart area, or across the whole card when wider
+        # Legend row — each name in its bars' colour, centered under the chart area, or
+        # across the whole card when wider
         legend_y = chart_y + chart_h + 1
         names = self._legend_names(workspaces, box_w - 4)
-        total_legend_w = sum(self.LEGEND_KEY_W + display_width(n) for n in names) + self.LEGEND_GAP * (len(names) - 1)
+        total_legend_w = sum(display_width(n) for n in names) + self.LEGEND_GAP * (len(names) - 1)
         if total_legend_w <= chart_w:
             lx = chart_x + (chart_w - total_legend_w) // 2
         else:
             lx = x + 2 + max(0, (box_w - 4 - total_legend_w) // 2)
         for mi, name in enumerate(names):
-            entry_w = self.LEGEND_KEY_W + display_width(name)
+            entry_w = display_width(name)
             if lx + entry_w > x + box_w - 2:
                 break
-            screen.set_color(self.WORKSPACE_COLORS[mi % len(self.WORKSPACE_COLORS)])
-            screen.write_at(lx, legend_y, "\u2501\u2501")
-            screen.set_color(Theme.COLOR_LABEL)
-            screen.write_at(lx + 2, legend_y, f" {name}")
+            screen.set_color(self._workspace_color(mi))
+            screen.write_at(lx, legend_y, name)
             lx += entry_w + self.LEGEND_GAP
         screen.reset_color()
 
@@ -1167,7 +1166,6 @@ class DashboardTab(TabView):
                 bars.append(Bar(x0, x0 + bar_w, segments))
         return bars
 
-    LEGEND_KEY_W = 3            # "━━ " before each name
     LEGEND_GAP = 3
     LEGEND_MIN_NAME = 4
 
@@ -1177,7 +1175,7 @@ class DashboardTab(TabView):
         at a time, ending in an ellipsis, until every entry fits (or none is longer than
         `LEGEND_MIN_NAME`)."""
         widths = [display_width(w) for w in workspaces]
-        over = sum(widths) + cls.LEGEND_KEY_W * len(widths) + cls.LEGEND_GAP * (len(widths) - 1) - width
+        over = sum(widths) + cls.LEGEND_GAP * (len(widths) - 1) - width
         while over > 0 and widths and max(widths) > cls.LEGEND_MIN_NAME:
             widths[widths.index(max(widths))] -= 1
             over -= 1
@@ -1194,7 +1192,7 @@ class DashboardTab(TabView):
         for mi, w in enumerate(self.cost_workspaces):
             if mi:
                 pieces.append((" ", Theme.COLOR_FAINT))
-            pieces.append((f"${yesterday.get(w, 0):.0f}", self.WORKSPACE_COLORS[mi % len(self.WORKSPACE_COLORS)]))
+            pieces.append((f"${yesterday.get(w, 0):.0f}", self._workspace_color(mi)))
         total_w = sum(display_width(text) for text, _ in pieces)
         if display_width("Anthropic API Cost") + total_w + 6 > width:
             return
@@ -1205,6 +1203,12 @@ class DashboardTab(TabView):
             screen.write_at(px, y, text)
             px += display_width(text)
         screen.reset_color()
+
+    def _workspace_color(self, workspace_index: int) -> Color:
+        """A workspace's colour as text names it (the legend, the title strip's figures): the
+        middle of its bars' shading, since the accent itself shows only at the top of the scale
+        and reads as a different colour from the bars."""
+        return self._workspace_shade(workspace_index, 0.5)
 
     def _workspace_shade(self, workspace_index: int, t: float) -> Color:
         """A workspace's colour at height `t` (0..1) of the cost chart: the same deep-to-bright
