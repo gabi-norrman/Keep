@@ -80,7 +80,10 @@ class MessageHistory:
     # The collapse is sticky like the cutoff (_collapsed): a row collapsed once stays
     # collapsed while it is in the window, so the bytes hold still between trims. The fresh
     # rule applies to it as to the drop: under the ceiling a row younger than
-    # TRIM_FRESH_SECONDS is the task's and stays whole.
+    # TRIM_FRESH_SECONDS is the task's and stays whole. And like the drop it is all or
+    # nothing: when the rows it may collapse leave the window over HIGH and the drop must
+    # wait for its rows to age, nothing changes — collapsing the one row that had just aged
+    # on every turn rewrote the window every turn (prod 2026-11-02, 44–48KB, one row a turn).
     TRIM_COLLAPSE_BYTES = 2 * 1024
     # A trim that evicts toolkit reference rows leaves one transient `system` stub naming the
     # evicted toolkits, at the newest evicted row's timestamp and exempt from the cutoff, so
@@ -132,7 +135,6 @@ class MessageHistory:
         # was last deferred, the size the collapse pass last looked at, the preloaded names
         # a trim last evicted.
         self._deferred_trim_at = 0
-        self._collapse_checked_at = 0
         self._preloaded_evicted: set[str] = set()
         # Section keys whose prompt-delta notes a trim evicted. The notes are the only
         # thing telling the LLM the section moved on from the system prompt's baseline, so
@@ -370,6 +372,9 @@ class MessageHistory:
 
         Over the high watermark the bulky command rows are collapsed first (see
         TRIM_COLLAPSE_BYTES); rows are dropped only when that leaves the window over high.
+        The window changes all at once or not at all: a collapse that leaves it over high
+        is committed only together with the drop, and when the drop waits for its rows to
+        age, so does the collapse — every change rewrites the cached window behind it.
         """
         stub = next((entry for entry, _, _ in rendered if self._is_eviction_stub(entry)), None)
         rendered = [item for item in rendered if not self._is_eviction_stub(item[0])]
@@ -378,37 +383,42 @@ class MessageHistory:
         if total <= self.trim_high_bytes:
             return self._with_eviction_stub(stub, kept, dropped=[])
 
-        kept, total = self._collapse_bulky_rows(kept, total)
-        if total <= self.trim_high_bytes:
-            return self._with_eviction_stub(stub, kept, dropped=[])
+        collapsed, collapsed_total, planned = self._collapse_plan(kept, total)
+        if collapsed_total <= self.trim_high_bytes:
+            self._commit_collapse(planned, collapsed_total)
+            return self._with_eviction_stub(stub, collapsed, dropped=[])
 
-        # Over the high watermark: walk newest→oldest to find the low-watermark cut.
-        keep_from = len(kept)
+        # Over the high watermark even collapsed: walk newest→oldest to find the low-watermark cut.
+        keep_from = len(collapsed)
         kept_bytes = 0
-        for i in range(len(kept) - 1, -1, -1):
-            size = len(kept[i][2].encode("utf-8"))
+        for i in range(len(collapsed) - 1, -1, -1):
+            size = len(collapsed[i][2].encode("utf-8"))
             if kept_bytes + size > self.trim_low_bytes:
                 break
             kept_bytes += size
             keep_from = i
-        keep_from = self._snap_to_boundary(kept, keep_from, self.trim_high_bytes)
+        keep_from = self._snap_to_boundary(collapsed, keep_from, self.trim_high_bytes)
         if keep_from == 0:
             trace("MessageHistory: window over high watermark but nothing trimmable — leaving it")
-            return self._with_eviction_stub(stub, kept, dropped=[])
-        newest_dropped_age = time.time() - kept[keep_from - 1][0]["timestamp"]
+            self._commit_collapse(planned, collapsed_total)
+            return self._with_eviction_stub(stub, collapsed, dropped=[])
+        newest_dropped_age = time.time() - collapsed[keep_from - 1][0]["timestamp"]
         fresh = newest_dropped_age < self.trim_fresh_seconds
         if fresh and total <= self.trim_ceiling_bytes:
             if total != self._deferred_trim_at:   # the TUI renders the window many times a second
                 self._deferred_trim_at = total
                 trace(f"MessageHistory: window at {total / 1024:.1f}KB (high {self.trim_high_bytes // 1024}KB) but "
+                      f"collapsing {len(planned)} bulky row(s) would leave it at {collapsed_total / 1024:.1f}KB and "
                       f"the newest row a trim would drop is {newest_dropped_age / 60:.1f}m old — waiting for it to "
                       f"age past {self.trim_fresh_seconds // 60}m or the window to hit the "
                       f"{self.trim_ceiling_bytes // 1024}KB ceiling")
             return self._with_eviction_stub(stub, kept, dropped=[])
-        kept_bytes = sum(len(content.encode("utf-8")) for _, _, content in kept[keep_from:])
+        self._commit_collapse(planned, collapsed_total)
+        total = collapsed_total
+        kept_bytes = sum(len(content.encode("utf-8")) for _, _, content in collapsed[keep_from:])
 
-        dropped = kept[:keep_from]
-        kept = kept[keep_from:]
+        dropped = collapsed[:keep_from]
+        kept = collapsed[keep_from:]
         self._trim_cutoff = kept[0][0]["timestamp"]
         self._prune_transient_entries_before_cutoff()
         why = (f"ceiling {self.trim_ceiling_bytes // 1024}KB, newest dropped row only {newest_dropped_age / 60:.1f}m old"
@@ -434,14 +444,15 @@ class MessageHistory:
             return row
         return (entry, row[1], self._collapsed_text(entry))
 
-    def _collapse_bulky_rows(self, kept: list[tuple[dict, str, str]], total: int) -> tuple[list, int]:
+    def _collapse_plan(self, kept: list[tuple[dict, str, str]], total: int) -> tuple[list, int, list[tuple[dict, int]]]:
         """The window with its bulky command rows collapsed, oldest first, until it is back at
-        the low watermark, and its size. A row younger than trim_fresh_seconds stays whole
-        while the window is under the ceiling. The collapse is remembered (_collapsed)."""
+        the low watermark, its size, and the rows collapsed with their sizes. Under the ceiling
+        a row younger than trim_fresh_seconds stays whole. A plan only: _commit_collapse
+        remembers it once the trim decides the window changes."""
         now = time.time()
-        report = total != self._collapse_checked_at
-        self._collapse_checked_at = total
-        collapsed, whole = [], []
+        over_ceiling = total > self.trim_ceiling_bytes
+        kept = list(kept)
+        planned = []
         for i, (entry, role, content) in enumerate(kept):
             if total <= self.trim_low_bytes:
                 break
@@ -450,25 +461,23 @@ class MessageHistory:
             size = len(content.encode("utf-8"))
             if size < self.trim_collapse_bytes:
                 continue
-            age = now - entry["timestamp"]
-            if age < self.trim_fresh_seconds and total <= self.trim_ceiling_bytes:
-                whole.append(f"{size / 1024:.1f}KB of {age / 60:.1f}m")
+            if now - entry["timestamp"] < self.trim_fresh_seconds and not over_ceiling:
                 continue
-            self._collapsed.add(entry["timestamp"])
             stub_text = self._collapsed_text(entry)
             kept[i] = (entry, role, stub_text)
             total -= size - len(stub_text.encode("utf-8"))
-            collapsed.append(f"{datetime.fromtimestamp(entry['timestamp']).strftime('%H:%M:%S')} ({size / 1024:.1f}KB)")
-        if collapsed:
-            info(f"MessageHistory: window over {self.trim_high_bytes // 1024}KB — collapsed {len(collapsed)} bulky "
-                 f"command row(s) to a stub before dropping anything: {', '.join(collapsed)}; "
-                 f"window now {total / 1024:.1f}KB")
-        elif report and whole:
-            trace(f"MessageHistory: {len(whole)} bulky command row(s) stay whole ahead of the trim — younger "
-                  f"than {self.trim_fresh_seconds // 60}m and the window is under the ceiling: {', '.join(whole)}")
-        elif report:
-            trace("MessageHistory: no bulky command row to collapse ahead of the trim")
-        return kept, total
+            planned.append((entry, size))
+        return kept, total, planned
+
+    def _commit_collapse(self, planned: list[tuple[dict, int]], total: int) -> None:
+        """Remember the rows a plan collapsed (_collapsed), so they stay collapsed while in the window."""
+        if not planned:
+            return
+        self._collapsed.update(entry["timestamp"] for entry, _ in planned)
+        rows = ", ".join(f"{datetime.fromtimestamp(entry['timestamp']).strftime('%H:%M:%S')} ({size / 1024:.1f}KB)"
+                         for entry, size in planned)
+        info(f"MessageHistory: window over {self.trim_high_bytes // 1024}KB — collapsed {len(planned)} bulky "
+             f"command row(s) to a stub before dropping anything: {rows}; window now {total / 1024:.1f}KB")
 
     @staticmethod
     def _collapsed_text(entry: dict) -> str:
@@ -509,19 +518,19 @@ class MessageHistory:
                             dropped: list[tuple[dict, str, str]]) -> list[tuple[dict, str, str]]:
         """The window with its one toolkit-eviction stub in front. The stub holds still between
         trims: it is the window's first row, and a byte of it changing (a name leaving when its
-        toolkit was loaded again, as it used to) is a cache miss on the whole window — so the
-        text points at the reload rows below instead. A trim (`dropped` non-empty) retires the
-        earlier trim's stub whole — a toolkit not reloaded within one window's worth of
-        conversation is not in use — and leaves a fresh one naming every toolkit row it evicted.
-        A reference the trim collapsed (_collapsed) is evicted the same way: the row is in the
-        window but its text is gone."""
+        toolkit was loaded again, as it used to; a name or the timestamp of a reference a
+        collapse had just emptied, as it did for a day) is a cache miss on the whole window —
+        so the text points at the reload rows below instead, and a collapsed reference is not
+        the stub's business: its own one-line stub says the text is gone. A trim (`dropped`
+        non-empty) retires the earlier trim's stub whole — a toolkit not reloaded within one
+        window's worth of conversation is not in use — and leaves a fresh one naming every
+        toolkit row it evicted."""
         in_window = {name for entry, _, content in kept for name in self._toolkit_names(entry, content)}
         names = [] if dropped or stub is None else list(stub["toolkits"])
 
         evicted: dict[str, float] = {}
         preloaded = set()
-        gone = dropped + [row for row in kept if row[0]["timestamp"] in self._collapsed]
-        for entry, _, _ in gone:
+        for entry, _, _ in dropped:
             for name in self._toolkit_names(entry):
                 if name in in_window:
                     continue

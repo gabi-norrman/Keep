@@ -700,10 +700,12 @@ class TestBulkyRowsCollapseBeforeTheTrim:
         assert "zzzz" not in second[0]["content"]
         assert second[0]["content"].startswith(first[0]["content"]), "the earlier window is a byte prefix"
 
-    def test_a_collapsed_toolkit_reference_is_evicted_not_loaded(self):
-        """The row is in the window but its text is gone: the eviction stub names the
-        toolkit, loaded_toolkits leaves it out (the preloader sends it again), and a delta
-        note of its carried section is not rendered against data the LLM no longer holds."""
+    def test_a_collapsed_toolkit_reference_is_not_loaded_and_gets_no_eviction_stub(self):
+        """The row is in the window but its text is gone: loaded_toolkits leaves it out (the
+        preloader sends it again), a delta note of its carried section is not rendered
+        against data the LLM no longer holds, and the row's own stub is the whole notice —
+        the eviction stub at the head stays as it was, since a byte of it changing rewrites
+        the cached window."""
         section = self._section()
         reference = self._command_row("# Toolkit: home", age=2_010, size=4_000)
         section.history = self._turns(10, age_of_newest=2_000) + [reference]
@@ -711,9 +713,39 @@ class TestBulkyRowsCollapseBeforeTheTrim:
         msgs = section.get_history_messages()
         joined = "\n".join(m["content"] for m in msgs)
         assert "# Toolkit: home\nzzz" not in joined and "zzzz" not in joined
-        assert msgs[0]["content"].startswith("System (") and "home" in msgs[0]["content"].split("\n")[0]
+        assert not msgs[0]["content"].startswith("System (")
+        assert not [e for e in section.transient_entries if e["source"] == section.SOURCE_TOOLKIT_EVICTED]
         assert section.loaded_toolkits() == {}
         assert "home moved on" not in joined
+
+    def test_a_collapse_that_leaves_the_window_over_high_waits_with_the_trim(self):
+        """Stale bulky rows whose collapse alone does not bring the window under high, and a
+        fresh exchange the drop must wait for: nothing changes until the drop may go — a
+        collapse a turn, as each row aged, rewrote the cached window every turn."""
+        section = self._section(high=4_000, low=1_000, ceiling=9_000)
+        section.history = ([self._command_row("# Procedure: a", age=2_000, size=1_500)]
+                           + self._turns(4, age_of_newest=1_990)
+                           + [self._command_row("# Procedure: b", age=1_900, size=1_500)]
+                           + self._turns(60, age_of_newest=30, prefix="f"))
+        before = section.get_history_messages()
+        joined = "\n".join(m["content"] for m in before)
+        assert "# Procedure: a\nzzz" in joined and "# Procedure: b\nzzz" in joined, "neither row collapsed"
+        assert section._collapsed == set() and section._trim_cutoff == 0.0
+        assert section.get_history_messages() == before, "and the window holds still"
+        for row in section.history:
+            row["timestamp"] -= 1_000
+        after = "\n".join(m["content"] for m in section.get_history_messages())
+        assert section._trim_cutoff > 0.0, "once the exchange has aged the trim goes"
+        assert "zzzz" not in after, "and the bulky rows go first, in the same change"
+
+    def test_a_collapse_that_brings_the_window_under_high_goes_at_once(self):
+        section = self._section(high=4_000, low=1_000, ceiling=9_000)
+        section.history = ([self._command_row("# Procedure: a", age=2_000, size=3_000)]
+                           + self._turns(4, age_of_newest=1_990)
+                           + self._turns(20, age_of_newest=30, prefix="f"))
+        joined = self._joined(section)
+        assert "# Procedure: a\nzzz" not in joined and section._trim_cutoff == 0.0
+        assert all(f"f{i:03d}" in joined for i in range(20))
 
     def test_a_small_command_row_is_never_collapsed(self):
         section = self._section()
@@ -1313,6 +1345,22 @@ class TestToolkitEvictionStubs:
         assert "# Toolkit: browser" in self._joined(msgs)
         assert self._stubs(section) == [stub] and self._stubs(section)[0] is stub
         assert section.loaded_toolkits() == {"browser": 2000.0}
+
+    def test_the_stub_holds_still_when_a_reloaded_reference_is_collapsed(self):
+        """A reference loaded again after the eviction and later collapsed by the trim has its
+        own stub in place; the eviction stub at the head keeps its names and its clock."""
+        section, before = self._section_after_eviction()
+        stub = self._stubs(section)[0]
+        section.trim_collapse_bytes = 500
+        section.trim_ceiling_bytes = 3_000
+        section.history.append(self._toolkit_row("browser", 2000.0, size=1_500))
+        msgs = section.get_history_messages()
+        joined = self._joined(msgs)
+        assert "# Toolkit: browser\nzzz" not in joined and "command result was trimmed" in joined, "collapsed"
+        assert msgs[0]["content"].startswith(before[0]["content"]), "the earlier window is a byte prefix of the new"
+        assert msgs[0]["content"].split("\n")[0] == before[0]["content"].split("\n")[0], "the head is byte-stable"
+        assert self._stubs(section) == [stub] and self._stubs(section)[0] is stub
+        assert section.loaded_toolkits() == {}
 
     def test_the_stub_retires_at_the_next_trim(self):
         section, _ = self._section_after_eviction()
