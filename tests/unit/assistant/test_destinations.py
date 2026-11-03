@@ -28,9 +28,9 @@ def recording(name, kind, aliases=(), accept=True):
 @pytest.mark.unit
 class TestLookup:
     def test_a_group_is_found_by_its_title_or_its_chat_id_whatever_the_case(self):
-        sent = recording("Marcus & Alice - board", KIND_GROUP, aliases=("-5342761890",))
+        sent = recording("Marcus & Alice - board", KIND_GROUP, aliases=("-4700174060",))
         assert Destinations.send("marcus & alice - BOARD", "hi") == ""
-        assert Destinations.send("-5342761890", "again") == ""
+        assert Destinations.send("-4700174060", "again") == ""
         assert sent == ["hi", "again"]
 
     def test_the_sender_reaches_a_sender_aware_destination_only(self):

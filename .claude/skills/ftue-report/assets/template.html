@@ -91,7 +91,7 @@ details.prompt summary{cursor:pointer;color:var(--accent);font-size:13px}
 <div class="card"><h3 style="margin-top:0">Server starts and heartbeats</h3><table><tr><th>Time</th><th>Kind</th><th>Version</th><th>Integrations on</th></tr>{{HB_TABLE}}</table></div>
 {{MEMORY_TABLE}}
 <div class="card"><h3 style="margin-top:0">Hourly status events</h3><p style="color:var(--muted);font-size:13.5px;margin-top:0">Prompt size in KB per section. The feeds column shows what each running feed holds; an empty map means no feed reported a count.</p><table><tr><th>Time</th><th>Integrations</th><th>Feeds</th><th>Prompt KB</th><th>History KB</th><th>Memory KB</th></tr>{{STATUS_TABLE}}</table></div>
-<div class="card"><h3 style="margin-top:0">Method</h3><p style="margin:0">Source: PostHog EU project 294736, HogQL <code>select … from events where distinct_id = '{{DISTINCT_ID}}'</code>. Transcript text is what Keep's telemetry sends during the first seven days of an install, after vault redaction. Times converted from UTC to Europe/Stockholm.</p></div>
+<div class="card"><h3 style="margin-top:0">Method</h3><p style="margin:0">Source: PostHog EU, HogQL <code>select … from events where distinct_id = '{{DISTINCT_ID}}'</code>. Transcript text is what Keep's telemetry sends during the first seven days of an install, after vault redaction. Times converted from UTC to Europe/Stockholm.</p></div>
 </div>
 </body>
 </html>

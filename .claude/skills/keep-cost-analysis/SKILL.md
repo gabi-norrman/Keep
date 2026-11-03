@@ -10,7 +10,7 @@ Analyse the cost of running this server over a window of the log and answer thre
 where is the cost going, how is it distributed, and is there anything obvious driving a lot of
 cost that could be optimised. Argument: $ARGUMENTS — a window (`24h`, `3d`, `7d`; default the
 last 24 hours) and optionally `prod`, which reads the production server's log over ssh
-(`ssh 100.102.159.99`, same checkout path there) instead of the local `log/floxy.out`.
+(`ssh keep-prod`, an alias of `~/.ssh/config`, same checkout path there) instead of the local `log/floxy.out`.
 
 ## What the log gives you
 

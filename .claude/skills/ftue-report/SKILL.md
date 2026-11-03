@@ -26,7 +26,8 @@ restarts, versions, integration switches, whether memory was ever curated, last 
 message). Read the whole digest; it is usually 300–600 lines and *is* the story.
 
 If the keychain item `posthog-personal2` is missing the script says so; ask the user to add a
-read-capable PostHog personal API key under that name. Never print the key. Project, host and
+read-capable PostHog personal API key under that name. Never print the key. The project id comes from
+the environment variable `POSTHOG_PROJECT_ID`. Project, host and
 event semantics are in `references/event-model.md` — read it the first time, and whenever a
 property looks odd.
 
@@ -102,7 +103,7 @@ that matter most, in plain words.
 
 ## Files
 
-- `scripts/phq.py` — one HogQL query against project 294736 (key from keychain `posthog-personal2`)
+- `scripts/phq.py` — one HogQL query against the project `POSTHOG_PROJECT_ID` names (key from keychain `posthog-personal2`)
 - `scripts/fetch_events.py` — all events of a distinct_id → `events.json` + digest
 - `scripts/build_report.py` — analysis fragment + events → final HTML
 - `assets/template.html` — page shell and CSS (light/dark)

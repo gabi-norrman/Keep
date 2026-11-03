@@ -882,7 +882,7 @@ class TestCmdPostMessage:
         self.sent = []
         Destinations.register(Destinations.Destination(
             "Marcus & Alice - board", Destinations.KIND_GROUP, lambda text: self.sent.append(text) or True,
-            aliases=("-5342761890",)))
+            aliases=("-4700174060",)))
         yield
         Destinations.clear()
 
@@ -893,7 +893,7 @@ class TestCmdPostMessage:
         assert self.sent == ["Apotea moved the button, retry once"]
 
     def test_the_destination_may_come_quoted_and_by_alias(self, commands_instance):
-        commands_instance.cmd_post_message('"-5342761890"', "hi")
+        commands_instance.cmd_post_message('"-4700174060"', "hi")
         assert self.sent == ["hi"]
 
     def test_an_unknown_destination_comes_back_as_the_error_naming_the_known_ones(self, commands_instance):

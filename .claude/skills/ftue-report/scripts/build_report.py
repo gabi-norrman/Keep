@@ -3,7 +3,7 @@
 from the events.
 
 usage: python3 -I build_report.py --events <dir>/events.json --analysis analysis.html \
-           --tester "Erik Cardell" --out ~/Desktop/Erik_Cardell_FTUE_report.html [--assistant Michelle] [--user Eric]
+           --tester "Alice Carter" --out ~/Desktop/Alice_Carter_FTUE_report.html [--assistant Michelle] [--user Alice]
 
 --analysis is an HTML fragment you wrote (summary, timeline, findings; see SKILL.md for the
 sections). --user is the name the tester gave the assistant (defaults to the tester's first

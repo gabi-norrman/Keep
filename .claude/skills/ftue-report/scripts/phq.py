@@ -2,17 +2,25 @@
 """Run one HogQL query against Keep's PostHog project and print or save the result.
 
 usage: python3 -I phq.py [out.json] < query.sql
-The personal API key is read from the macOS keychain item `posthog-personal2`; it is never printed.
+The project id is the environment variable POSTHOG_PROJECT_ID; the personal API key is read from the
+macOS keychain item `posthog-personal2` and is never printed.
 """
 import json
+import os
 import subprocess
 import sys
 import urllib.error
 import urllib.request
 
 HOST = "https://eu.posthog.com"
-PROJECT = 294736
 KEYCHAIN_ITEM = "posthog-personal2"
+
+
+def project() -> str:
+    pid = os.environ.get("POSTHOG_PROJECT_ID")
+    if not pid:
+        sys.exit("POSTHOG_PROJECT_ID is not set: export the PostHog project id this install's telemetry goes to.")
+    return pid
 
 
 def key() -> str:
@@ -25,7 +33,7 @@ def key() -> str:
 
 def query(hogql: str) -> dict:
     req = urllib.request.Request(
-        f"{HOST}/api/projects/{PROJECT}/query/",
+        f"{HOST}/api/projects/{project()}/query/",
         data=json.dumps({"query": {"kind": "HogQLQuery", "query": hogql}}).encode(),
         headers={"Authorization": f"Bearer {key()}", "Content-Type": "application/json"})
     try:
