@@ -15,7 +15,7 @@ says when the user has never written with that number; WhatsApp restricts accoun
 only send to an unknown number when the user clearly asked for it.
 
 The message ends with a "[Sent with the help of AI 🤖]" footer unless the setting `ai_message_footer` is false;
-`config_set("ai_message_footer", "false")` (setup toolkit) turns it off for every channel, read at each send.
+`config_set("ai_message_footer", "false")` (setup toolkit) turns it off for every chat channel, read at each send.
 
 `whatsapp_login(phone: str)` — links the server to the user's WhatsApp account as a companion device, e.g.
 `whatsapp_login("+46701234567")`, from any chat. Run it when the integration is enabled and reports "needs 2FA" (or

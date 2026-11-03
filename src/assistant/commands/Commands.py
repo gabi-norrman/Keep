@@ -145,7 +145,8 @@ class Commands:
     # false_positive is the wake-word misfire, which must never be answered aloud.
     SELF_EVIDENT_COMMANDS = frozenset({"turn_on", "turn_off", "stop", "dim", "restart_server", "false_positive"})
     AI_MESSAGE_SUFFIX = "[Sent with the help of AI 🤖]"
-    # The footer is on unless config.yaml says ai_message_footer: false — read at each send.
+    # The footer is on unless config.yaml says ai_message_footer: false — read at each send. Only the
+    # chat channels (iMessage, WhatsApp, Telegram) add it; send_email never does, by design.
     AI_FOOTER_KEY = "ai_message_footer"
 
     # Integrations are looked up per call: get_instance() is the cache, so a restarted

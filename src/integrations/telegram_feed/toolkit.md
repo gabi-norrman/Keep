@@ -15,4 +15,4 @@ options), a group's title, a `@username`, or a phone number with country code (c
 The approval card shows the chat it resolved to.
 
 The message ends with a "[Sent with the help of AI 🤖]" footer unless the setting `ai_message_footer` is false;
-`config_set("ai_message_footer", "false")` (setup toolkit) turns it off for every channel, read at each send.
+`config_set("ai_message_footer", "false")` (setup toolkit) turns it off for every chat channel, read at each send.

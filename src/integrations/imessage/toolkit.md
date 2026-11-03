@@ -15,4 +15,4 @@ exactly those members, and the reply to a miss names the groups that contain the
 `send_imessage("Alex", "Running 10 min late, see you soon")`, `send_imessage("Alex, Sam", "Dinner at 7?")`).
 
 The message ends with a "[Sent with the help of AI 🤖]" footer unless the setting `ai_message_footer` is false;
-`config_set("ai_message_footer", "false")` (setup toolkit) turns it off for every channel, read at each send.
+`config_set("ai_message_footer", "false")` (setup toolkit) turns it off for every chat channel, read at each send.
