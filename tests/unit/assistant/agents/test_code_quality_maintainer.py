@@ -2328,7 +2328,17 @@ class TestReportIssue:
         assert "gh issue create" not in prompt and str(tmp_path) in prompt
         assert "api.github.com/search/issues?q=repo:marcus/keep" in prompt
         assert report == "Drafted: the hallway lights."
-        assert draft == IssueDraft("marcus/keep", "Hallway lights stay on", "The scene ended.")
+        assert draft == IssueDraft("marcus/keep", "Hallway lights stay on", "The scene ended.",
+                                   why="the GitHub CLI is not installed on this machine")
+
+    def test_the_draft_says_why_gh_could_not_file_it(self, tmp_path):
+        """Three refusals, three wordings: the user hears the one that applies, not "no login"
+        when gh is logged in but the repository cannot be read."""
+        for reason, words in ((GH_NOT_LOGGED_IN_MESSAGE, "no GitHub login"),
+                              ("The GitHub CLI is logged in, but the repository cannot be read through it: boom",
+                               "cannot read the repository")):
+            _, (_, draft) = self._report(None, reason, write_draft="Title: Lights\n\nBody.", tmp_path=tmp_path)
+            assert words in draft.why, reason
 
     def test_a_run_that_drafted_nothing_returns_no_draft(self, tmp_path):
         _, (report, draft) = self._report(None, GH_NOT_INSTALLED_MESSAGE, tmp_path=tmp_path)

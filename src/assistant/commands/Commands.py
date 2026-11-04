@@ -46,6 +46,9 @@ def normalize_llm_escapes(text: str) -> str:
 # noinspection PyMethodMayBeStatic
 # Returned to the LLM when a photo/report had nowhere to go (NullNotifier installed).
 NO_NOTIFICATION_CHANNEL = "failed: no notification channel configured (no chat interface running), nothing was delivered to the user."
+# A drafted issue goes out in <pre> blocks of at most this many characters: under Telegram's 4096 with
+# the title line and the tags to spare, so no chat ever has to split a block itself.
+DRAFT_BLOCK_LIMIT = 3800
 
 # What server_logs() hands the LLM: a window of the main log (cwd-relative, the server runs from the root) —
 # the last SERVER_LOG_TAIL_LINES lines at info() and above, or the first that many from a given time.
@@ -1102,39 +1105,62 @@ class Commands:
 
     @staticmethod
     def _issue_draft_messages(draft: IssueDraft) -> list[str]:
-        """The two messages a drafted issue reaches the user in: what to do, with the link, and
-        the draft itself in a block the chat copies whole — two, so a long draft split into
-        chunks never cuts the link."""
+        """The messages a drafted issue reaches the user in: what to do, with the link, then the
+        draft in `<pre>` blocks of at most DRAFT_BLOCK_LIMIT characters, each a message of its
+        own. Separate messages, so a long draft never cuts the link — and blocks the chat need
+        not split: a chat splits a long message at newlines with no eye for tags, and a `<pre>`
+        cut in two is refused by Telegram and shown as plain text with its escaped `<name>`
+        placeholders literal."""
         link, prefilled = draft.link()
         anchor = lambda text: f'<a href="{html_escape(link, quote=True)}">{text}</a>'
+        why = draft.why[0].upper() + draft.why[1:]
         if draft.comment_on is not None:
-            intro = (f"There is no GitHub login on this machine, so I could not post this myself. Issue "
+            intro = (f"{why}, so I could not post this myself. Issue "
                      f"#{draft.comment_on} is already about the same thing, so it is drafted as a comment there: "
                      f"read it below, then {anchor(f'open issue #{draft.comment_on}')} and paste it as a comment.")
         elif prefilled:
-            intro = (f"There is no GitHub login on this machine, so I could not file this myself. Read the draft "
+            intro = (f"{why}, so I could not file this myself. Read the draft "
                      f"below, then {anchor('open it on GitHub')} — the title and the description are filled in, "
                      f"you only submit it.")
         else:
-            intro = (f"There is no GitHub login on this machine, so I could not file this myself. Read the draft "
+            intro = (f"{why}, so I could not file this myself. Read the draft "
                      f"below, then {anchor('open a new issue on GitHub')} — the title is filled in; copy the "
                      f"description from the block below into it.")
         intro += " Anything private you spot in it, take out before it goes up: the issue is public."
         title = "" if draft.comment_on is not None else f"<b>{html_escape(draft.title)}</b>\n"
-        return [intro, f"{title}<pre>{html_escape(draft.body)}</pre>"]
+        blocks = Commands._draft_blocks(html_escape(draft.body))
+        if len(blocks) > 1:
+            info(f"report_issue: the draft ({len(draft.body)} characters) goes out in {len(blocks)} blocks")
+        return [intro, f"{title}<pre>{blocks[0]}</pre>", *(f"<pre>{block}</pre>" for block in blocks[1:])]
+
+    @staticmethod
+    def _draft_blocks(text: str, limit: int = DRAFT_BLOCK_LIMIT) -> list[str]:
+        """*text* in pieces of at most *limit* characters, cut at a newline (then a space, then
+        hard) so a line stays whole where it can."""
+        blocks = []
+        while len(text) > limit:
+            cut = text.rfind("\n", 0, limit)
+            if cut < 1:
+                cut = text.rfind(" ", 0, limit)
+            if cut < 1:
+                cut = limit
+            blocks.append(text[:cut])
+            text = text[cut:].lstrip("\n")
+        return blocks + [text]
 
     @staticmethod
     def _draft_outcome(report: str, draft: IssueDraft, sent: bool) -> str:
         """The system row a report_issue job that drafted its issue leaves: that nothing is on
         GitHub yet — the user files the draft — so the LLM never calls it live. "[Issue
         drafted]" is the tag the LLM keys off; keep it first."""
-        delivery = "" if sent else f" ({NO_NOTIFICATION_CHANNEL})"
         what = f"a comment on issue #{draft.comment_on}" if draft.comment_on is not None else f"the issue '{draft.title}'"
-        text = (f"[Issue drafted]{delivery} no GitHub login on this machine, so nothing was filed: the user was sent "
-                f"{what} as a draft, with the link to post it themselves.")
-        if not sent:
-            text += f"\n\nDraft:\n{draft.title}\n{draft.body}\n\nReport:\n{report}"
-        return text
+        if sent:
+            return (f"[Issue drafted] {draft.why}, so nothing was filed: the user was sent {what} as a draft, "
+                    f"with the link to post it themselves.")
+        link, _ = draft.link()
+        return (f"[Issue drafted] ({NO_NOTIFICATION_CHANNEL}) {draft.why}, so nothing was filed: {what} is "
+                f"drafted below for the user to post themselves at {link}"
+                f"\n\nDraft:\n{draft.title}\n{draft.body}\n\nReport:\n{report}")
 
     @staticmethod
     def _issue_outcome(report: str, number, url, sent: bool) -> str:

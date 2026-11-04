@@ -1,3 +1,4 @@
+import re
 import threading
 import time
 from collections import deque
@@ -2578,11 +2579,34 @@ class TestCmdReportIssue:
         assert "Seen again at 23:10." in messages[1]
         assert row.startswith("[Issue drafted]") and "#7" in row
 
-    def test_a_drafted_issue_without_a_chat_rides_in_the_row(self, commands_instance):
+    def test_a_drafted_issue_without_a_chat_rides_in_the_row_with_its_link(self, commands_instance):
         _, row = self._run(commands_instance, "Drafted: the hallway lights.", draft=self.DRAFT, delivered=False)
         assert row.startswith("[Issue drafted]") and self.DRAFT.body in row
+        assert self.DRAFT.link()[0] in row, "with no chat, the LLM is the only way the link reaches the user"
+        assert "was sent" not in row
         _, delivered_row = self._run(commands_instance, "Drafted: the hallway lights.", draft=self.DRAFT)
-        assert self.DRAFT.body not in delivered_row
+        assert self.DRAFT.body not in delivered_row and "was sent" in delivered_row
+
+    def test_a_long_draft_goes_out_in_pre_blocks_a_chat_never_has_to_split(self, commands_instance):
+        """A chat splits a long message at newlines with no eye for tags; a <pre> cut in two is
+        refused by Telegram and falls back to plain text with the escaped placeholders literal."""
+        body = "\n".join(f"- {i}: the outpost said <name> called at <phone> & hung up" for i in range(200))
+        draft = IssueDraft("marcus/keep", "Reply lost after wake", body)
+        messages, _ = self._run(commands_instance, "Drafted.", draft=draft, all_sent=True)
+        blocks = messages[1:]
+        assert len(blocks) > 1 and all(len(m) <= 4096 for m in blocks)
+        assert all(m.count("<pre>") == 1 and m.endswith("</pre>") for m in blocks)
+        assert "<b>Reply lost after wake</b>" in blocks[0] and "<b>" not in blocks[1]
+        from html import unescape
+        rejoined = "\n".join(unescape(re.sub(r"</?(pre|b)>", "", m)) for m in blocks)
+        assert rejoined == f"Reply lost after wake\n{body}", "every line, once, in order"
+
+    def test_the_draft_names_the_reason_gh_could_not_file(self, commands_instance):
+        draft = IssueDraft("marcus/keep", "Hallway lights", "Seen at 23:10.",
+                           why="the GitHub CLI is not installed on this machine")
+        messages, row = self._run(commands_instance, "Drafted.", draft=draft, all_sent=True)
+        assert messages[0].startswith("The GitHub CLI is not installed on this machine, so I could not file")
+        assert "not installed" in row and "no GitHub login" not in row
 
     def test_the_outcome_is_a_system_row_of_its_own_outside_the_calling_turn(self):
         """#137: stored as an assistant row, the outcome rendered glued onto the reply that

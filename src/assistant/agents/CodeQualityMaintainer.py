@@ -175,6 +175,7 @@ class IssueDraft:
     title: str
     body: str
     comment_on: Optional[int] = None
+    why: str = "there is no GitHub login on this machine"
 
     def link(self) -> tuple[str, bool]:
         """Where the user files it, and whether the link carries the description too. A comment
@@ -1755,7 +1756,8 @@ class CodeQualityMaintainer:
                 return reason, None
             ISSUE_DRAFT_DIR.mkdir(parents=True, exist_ok=True)
             draft_path = ISSUE_DRAFT_DIR / f"{datetime.now():%Y%m%d-%H%M%S}.md"
-            info(f"CodeQualityMaintainer: gh cannot file the issue ({reason.split(',')[0]}), drafting it to {draft_path}")
+            why = CodeQualityMaintainer._not_filed_because(reason)
+            info(f"CodeQualityMaintainer: gh cannot file the issue ({why}), drafting it to {draft_path}")
             label = ""
             parts = {k: v.format(repo=repo, path=draft_path) for k, v in ISSUE_DRAFTED.items()}
         info("CodeQualityMaintainer: starting the issue report...")
@@ -1771,12 +1773,23 @@ class CodeQualityMaintainer:
         report = result if result else "The issue report produced no output."
         if draft_path is None:
             return report, None
-        return report, CodeQualityMaintainer.read_issue_draft(draft_path, repo)
+        return report, CodeQualityMaintainer.read_issue_draft(draft_path, repo, why)
 
     @staticmethod
-    def read_issue_draft(path, repo: str) -> Optional[IssueDraft]:
+    def _not_filed_because(reason: str) -> str:
+        """The clause the user hears for a `_github_access` refusal: the three ways gh cannot
+        file from this machine, in the words of the chat message the draft comes with."""
+        if reason == GH_NOT_INSTALLED_MESSAGE:
+            return "the GitHub CLI is not installed on this machine"
+        if reason == GH_NOT_LOGGED_IN_MESSAGE:
+            return "there is no GitHub login on this machine"
+        return "the GitHub CLI on this machine cannot read the repository"
+
+    @staticmethod
+    def read_issue_draft(path, repo: str, why: str = IssueDraft.why) -> Optional[IssueDraft]:
         """The draft a report_issue run wrote to *path* (`Title: …` or `Comment on: #N`, an
-        empty line, the body); None when it wrote none or one that does not read."""
+        empty line, the body), *why* being the reason it was not filed; None when it wrote
+        none or one that does not read."""
         try:
             text = path.read_text(encoding="utf-8").strip()
         except FileNotFoundError:
@@ -1793,7 +1806,7 @@ class CodeQualityMaintainer:
             return None
         number = match.group("number")
         draft = IssueDraft(repo=repo, title=(match.group("title") or "").strip(), body=body.strip(),
-                           comment_on=int(number) if number else None)
+                           comment_on=int(number) if number else None, why=why)
         info(f"CodeQualityMaintainer: issue drafted, "
              f"{f'a comment on #{draft.comment_on}' if number else repr(draft.title)} ({len(draft.body)} characters)")
         return draft
