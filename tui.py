@@ -25,7 +25,7 @@ RESET = f"{CSI}0m"
 SET_TITLE = f"\x1b]0;Keep - {HOST}\x07"   # the terminal tab's title while the TUI runs
 CLEAR_TITLE = "\x1b]0;\x07"                # an empty title hands the tab back to the shell's own naming
 PORT = 5151
-BYE = "\nDisconnected from the server — the server keeps running, only the TUI closed. Run ./console.sh to reconnect. Run stop.sh to stop server."
+BYE = "\nDisconnected from the server — the server keeps running, only the TUI closed. Run ./keep.sh to reconnect. Run ./stop.sh to stop the server."
 
 # Only sleep if running in Terminus terminal
 if os.environ.get("TERM_PROGRAM") == "Terminus":
