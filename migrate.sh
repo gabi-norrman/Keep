@@ -63,8 +63,8 @@ pack() {
   cat <<EOF
   On the new Mac:
     1. install Keep without starting it:
-         gh auth login && gh api -H "Accept: application/vnd.github.raw" \\
-           "repos/maciekd/Keep/contents/install.sh?ref=release" | KEEP_NO_START=1 bash
+         curl -fsSL https://raw.githubusercontent.com/maciekd/Keep/release/install.sh \\
+           | KEEP_NO_START=1 bash
     2. copy the zip over and unpack it into the new checkout:
          ~/Keep/migrate.sh unpack ~/$(basename "$out")
     3. ./start.sh

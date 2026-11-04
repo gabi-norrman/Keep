@@ -38,11 +38,11 @@ Everything else — email, smart home, cameras, cars — is optional, and Keep w
 ## Try it out!
 You can have Keep running in minutes:
 ```bash
-gh auth login && gh api -H "Accept: application/vnd.github.raw" "repos/maciekd/Keep/contents/install.sh?ref=release" | bash
+curl -fsSL https://raw.githubusercontent.com/maciekd/Keep/release/install.sh | bash
 ```
 
 > [!NOTE]
-> Keep is in closed beta: the install only works for GitHub accounts invited as collaborators. `brew install gh` if you do not have `gh`. The installer is self-contained, it won't touch anything else on your Mac.
+> The installer is self-contained, it won't touch anything else on your Mac.
 
 <br>
 
