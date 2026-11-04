@@ -5,6 +5,8 @@ toolkit — held to the canon: every documented command declares its parameters 
 example is a plain call with strings in double quotes, and no example passes more values than
 the declaration names.
 """
+from types import SimpleNamespace
+
 import pytest
 
 from assistant.commands import Toolkits
@@ -116,6 +118,17 @@ class TestRealTexts:
 
     def test_no_command_is_declared_twice_with_different_parameters(self):
         assert Signatures.conflicts(Signatures.texts(), Commands.command_names()) == []
+
+    def test_a_toolkit_outside_the_checkout_is_read_under_its_full_path(self, tmp_path, monkeypatch):
+        """A local integration's toolkit (extra_integration_dirs) is not under the repository, so
+        its label cannot be relative to it (#157 — the boot died on the first prompt)."""
+        path = tmp_path / "demo" / "toolkit.md"
+        local = SimpleNamespace(path=path, text=lambda: "`dim(light_name: str, dim_percentage: int)`")
+        monkeypatch.setattr(Toolkits, "TOOLKITS", [*Toolkits.TOOLKITS, local])
+
+        texts = Signatures.texts()
+        assert texts[str(path)] == local.text()
+        assert "res/prompt.md" in texts
 
     def test_every_example_parses_is_canonical_and_fits_its_declaration(self):
         names = Commands.command_names()

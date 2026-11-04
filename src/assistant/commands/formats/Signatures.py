@@ -244,11 +244,14 @@ def scan(text: str, names: Iterable[str]) -> Scan:
 
 def texts() -> dict[str, str]:
     """The texts the LLM reads commands from — the prompt template and every toolkit — by
-    their path in the repository."""
+    their path in the repository; a toolkit of a local integration (`extra_integration_dirs`,
+    outside the checkout) under its full path."""
     from assistant.commands.Toolkits import TOOLKITS
     found = {str(PROMPT_FILE.relative_to(REPO_DIR)): PROMPT_FILE.read_text(encoding="utf-8")}
     for toolkit in TOOLKITS:
-        found[str(toolkit.path.relative_to(REPO_DIR))] = toolkit.text()
+        path = toolkit.path
+        label = str(path.relative_to(REPO_DIR) if path.is_relative_to(REPO_DIR) else path)
+        found[label] = toolkit.text()
     return found
 
 
