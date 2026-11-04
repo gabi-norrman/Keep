@@ -13,11 +13,13 @@
 # tab). The tokens are kept in cache/oauth/. `name` is what the assistant calls the account, what
 # mail.send_from and the account argument of send_email name, where the id prefix of its mails in a
 # listing (PE-AB) comes from, and what `Account/Calendar` names in load_calendar and create_event; names
-# must be unique. Add a second account as google.accounts[1].name. An account that lists `docs` also
-# needs the Google Drive API enabled in the same Cloud project and the "Google Docs" integration on: each
-# editing session of a listed document lands in the history as a diff (the feed `google_docs`). The
-# sign-in asks for the Drive read-only scope only when docs are listed, so an account signed in before
-# its docs were added signs in again with google_login to grant it.
+# must be unique. Add a second account as google.accounts[1].name. Every sign-in also asks for Google Drive
+# read-only: the assistant searches the account's Drive and reads its Google Docs and Slides page by page
+# (the google_drive toolkit), which needs the Google Drive API enabled in the same Cloud project, and the
+# Google Slides API too for a deck to come slide by slide (without it a deck is read as one text). An
+# account signed in before Drive was asked for signs in again with google_login to grant it. An account
+# that lists `docs` also needs the "Google Docs" integration on: each editing session of a listed document
+# lands in the history as a diff (the feed `google_docs`).
 google:
   oauth:
     client_id: YOUR_CLIENT_ID.apps.googleusercontent.com

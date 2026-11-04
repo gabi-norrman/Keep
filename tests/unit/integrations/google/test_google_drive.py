@@ -10,7 +10,8 @@ from unittest.mock import patch
 import pytest
 
 from integrations.google.GoogleAuth import NotSignedIn
-from integrations.google.GoogleDrive import BASE_URL, GoogleDrive, GoogleDriveError, Revision, rfc3339_ts
+from integrations.google.GoogleDrive import (BASE_URL, SLIDES_URL, ApiDisabled, DriveFile, GoogleDrive, GoogleDriveError,
+                                             Revision, file_id_of, kind_of, rfc3339_ts)
 
 from .google_fakes import Call, FakeGoogle, FakeResponse, StubAuth
 
@@ -159,6 +160,79 @@ class TestExport:
         assert text == "the document now"
         call, = api.calls
         assert call.path == f"/files/{FILE}/export" and call.params["mimeType"] == "text/plain"
+
+
+@pytest.mark.unit
+class TestSearch:
+    def test_the_words_go_into_a_full_text_query_quotes_escaped_and_the_files_come_back_with_their_owner(self, api, drive):
+        api.route("GET", "/files", {"files": [
+            {"id": "1AbCdEfGhIjKlMnOpQrStUvWxYz", "name": "Family plan", "mimeType": "application/vnd.google-apps.document",
+             "modifiedTime": "2026-10-02T10:00:00.000Z", "owners": [{"displayName": "Marcus"}]},
+            {"id": "1ZyXwVuTsRqPoNmLkJiHgFeDcBa", "name": "Lease.pdf", "mimeType": "application/pdf",
+             "modifiedTime": "2026-09-02T10:00:00.000Z"}], "nextPageToken": "more"})
+        files, more = drive.search("marcus's budget")
+        assert [(f.id, f.name, f.kind, f.owner, f.readable) for f in files] == [
+            ("1AbCdEfGhIjKlMnOpQrStUvWxYz", "Family plan", "Google Doc", "Marcus", True),
+            ("1ZyXwVuTsRqPoNmLkJiHgFeDcBa", "Lease.pdf", "PDF", "", False)]
+        assert more
+        call, = api.sent("GET", "/files")
+        assert call.params["q"] == "fullText contains 'marcus\\'s budget' and trashed = false"
+        assert "owners" in call.params["fields"] and call.params["pageSize"] == 20
+
+    def test_no_match_is_an_empty_list_without_more(self, api, drive):
+        api.route("GET", "/files", {"files": []})
+        assert drive.search("nothing") == ([], False)
+
+
+@pytest.mark.unit
+class TestFileId:
+    @pytest.mark.parametrize("ref", [
+        "https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/edit#heading=h.2",
+        "https://docs.google.com/presentation/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/edit?usp=sharing",
+        "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/view",
+        "https://drive.google.com/open?id=1AbCdEfGhIjKlMnOpQrStUvWxYz",
+        " <1AbCdEfGhIjKlMnOpQrStUvWxYz> ",
+    ])
+    def test_every_link_shape_and_a_bare_id_give_the_id(self, ref):
+        assert file_id_of(ref) == "1AbCdEfGhIjKlMnOpQrStUvWxYz"
+
+    def test_a_name_or_a_short_token_is_no_id(self):
+        assert file_id_of("Family plan") == "" and file_id_of("https://example.com/d/short/edit") == ""
+
+    def test_a_kind_is_known_by_its_mime_type_and_an_unknown_one_by_its_tail(self):
+        assert kind_of("application/vnd.google-apps.presentation") == "Google Slides"
+        assert kind_of("image/png") == "png" and kind_of("") == "file"
+
+
+@pytest.mark.unit
+class TestSlides:
+    DECK = {"slides": [
+        {"pageElements": [{"shape": {"text": {"textElements": [{"textRun": {"content": "Drones as\x0bfirst responders\n"}}]}}},
+                          {"elementGroup": {"children": [{"shape": {"text": {"textElements": [{"textRun": {"content": "Grouped\n"}}]}}}]}},
+                          {"table": {"tableRows": [{"tableCells": [{"text": {"textElements": [{"textRun": {"content": "Cell A"}}]}}]}]}}],
+         "slideProperties": {"notesPage": {"pageElements": [{"shape": {"shapeType": "TEXT_BOX", "text": {"textElements": [
+             {"textRun": {"content": "Say hello first.\n"}}]}}}]}}},
+        {"pageElements": [{"shape": {"text": {"textElements": [{"textRun": {"content": "The end\n"}}]}}}]},
+    ]}
+
+    def test_each_slide_stands_under_its_marker_with_its_shapes_groups_tables_and_notes(self, api, drive):
+        api.route("GET", f"{SLIDES_URL}/presentations/{FILE}", self.DECK)
+        text = drive.slides_text(FILE)
+        assert text.splitlines() == ["[slide 1]", "Drones as", "first responders", "Grouped", "Cell A", "Notes: Say hello first.",
+                                     "", "[slide 2]", "The end"]
+        call, = api.calls
+        assert call.params["fields"].startswith("slides(")
+
+    def test_a_project_without_the_slides_api_is_api_disabled_in_either_error_shape(self, api, drive):
+        api.route("GET", f"{SLIDES_URL}/presentations/{FILE}",
+                  _error(403, "Google Slides API has not been used in project 1 before or it is disabled", reason="accessNotConfigured"))
+        with pytest.raises(ApiDisabled):
+            drive.slides_text(FILE)
+        api.route("GET", f"{SLIDES_URL}/presentations/{FILE}",
+                  FakeResponse(403, {"error": {"code": 403, "message": "disabled", "details": [
+                      {"@type": "type.googleapis.com/google.rpc.Help"}, {"@type": "ErrorInfo", "reason": "SERVICE_DISABLED"}]}}))
+        with pytest.raises(ApiDisabled):
+            drive.slides_text(FILE)
 
 
 def test_rfc3339_ts_reads_googles_utc_stamps_with_milliseconds():

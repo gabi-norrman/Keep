@@ -66,10 +66,12 @@ class TestAccounts:
             assert (own.shown_calendars, own.default_calendar) == ([], "primary")
             assert (club.shown_calendars, club.default_calendar) == (["Matches"], "Matches")
 
-    def test_an_account_with_neither_mail_nor_calendar_and_a_repeated_name_are_skipped(self, fresh):
+    def test_an_account_with_neither_mail_nor_calendar_is_kept_for_its_drive_and_a_repeated_name_skipped(self, fresh):
         entries = [{"name": "Personal", "mail": False, "calendar": False}, {"name": "Family"}, {"name": "family", "mail": True}]
         with _config(entries):
-            assert [a.name for a in GoogleIntegration().accounts()] == ["Family"]
+            personal, family = GoogleIntegration().accounts()
+            assert (personal.name, family.name) == ("Personal", "Family")
+            assert personal.mail is None and personal.calendar is None and personal.drive is not None
 
     def test_the_mail_account_logs_in_with_the_sign_ins_token_and_the_check_reads_one_calendar_entry(self, fresh):
         _signed_in(fresh, "Personal", "marcus@example.com", access_token="ya29.live", expires_in=3000)

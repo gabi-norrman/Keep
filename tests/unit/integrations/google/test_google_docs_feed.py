@@ -131,10 +131,10 @@ class TestDocDiff:
 
 @pytest.mark.unit
 class TestScopes:
-    def test_the_drive_scope_is_asked_for_only_when_docs_are_listed_a_contract_with_google_oauth(self):
-        assert SCOPE_DRIVE_READONLY not in account_scopes({"name": "Personal"})
+    def test_the_drive_scope_is_asked_for_whatever_the_flags_a_contract_with_google_oauth(self):
+        assert account_scopes({"name": "Personal"}) == [SCOPE_MAIL, SCOPE_CALENDAR, SCOPE_DRIVE_READONLY]
         assert account_scopes({"name": "Personal", "mail": False, "calendar": "off", "docs": [{"id": DOC_ID}]}) == [SCOPE_DRIVE_READONLY]
-        assert account_scopes({"name": "Personal", "docs": [{"name": "no id"}]}) == [SCOPE_MAIL, SCOPE_CALENDAR]
+        assert account_scopes({"name": "Personal", "mail": False, "calendar": False}) == [SCOPE_DRIVE_READONLY]
 
     def test_an_account_with_docs_alone_is_kept_by_the_google_integration_for_its_sign_in(self, fresh):
         GoogleIntegration.reset_instance()

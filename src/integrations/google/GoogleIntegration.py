@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Callable, List, Optional
 
 from assistant.integration.Accounts import AccountHealth, STATE_ERROR, id_prefixes, named_entries
@@ -13,6 +14,8 @@ from assistant.integration.OAuthPaste import SignIn, parse_pasted
 from integrations.google.GoogleAuth import (SCOPE_CALENDAR, SCOPE_DRIVE_READONLY, SCOPE_MAIL, GoogleAuth, NotSignedIn,
                                             delete_all_token_files, not_signed_in_hint, sign_in_again_hint)
 from integrations.google.GoogleCalendarAccount import GoogleCalendarAccount
+from integrations.google.GoogleDrive import GoogleDrive
+from integrations.google.GoogleDriveFiles import TEXT_CACHE_DIR, DriveFiles
 
 SECTION = "google"
 ACCOUNTS_KEY = f"{SECTION}.accounts"
@@ -43,16 +46,17 @@ def docs_of(entry: dict) -> list[dict]:
 
 
 def account_scopes(entry: dict) -> list[str]:
-    """The scopes an account's entry asks for: mail, calendar, and Drive read-only for the docs
-    it lists. The one place that decides them — the sign-in link and the feed read the same."""
+    """The scopes an account's entry asks for: mail and calendar by its flags, and Drive read-only
+    always — the read commands and the docs feed. The one place that decides them."""
     return [s for s, on in ((SCOPE_MAIL, flag(entry, "mail")), (SCOPE_CALENDAR, flag(entry, "calendar")),
-                            (SCOPE_DRIVE_READONLY, bool(docs_of(entry)))) if on]
+                            (SCOPE_DRIVE_READONLY, True)) if on]
 
 
 class GoogleAccount:
-    """One signed-in (or not yet) Google account: its auth, and the mail (the core IMAP account
-    with XOAUTH2) and calendar accounts it gives when the entry asks for them. `check()` is the
-    per-account health: a token, then a calendarList read and an IMAP login."""
+    """One signed-in (or not yet) Google account: its auth, the mail (the core IMAP account
+    with XOAUTH2) and calendar accounts it gives when the entry asks for them, and its Drive.
+    `check()` is the per-account health: a token, then a calendarList read and an IMAP login —
+    no Drive probe, so an install whose project has no Drive API stays healthy for the rest."""
 
     def __init__(self, name: str, address: Callable[[], str], auth: GoogleAuth,
                  mail: Optional[ImapMailAccount], calendar: Optional[GoogleCalendarAccount]):
@@ -61,6 +65,7 @@ class GoogleAccount:
         self.auth = auth
         self.mail = mail
         self.calendar = calendar
+        self.drive = GoogleDrive(name, auth)
 
     @property
     def address(self) -> str:
@@ -83,21 +88,24 @@ class GoogleAccount:
 
 
 class GoogleIntegration(AccountHealth, Integration, MailSource, CalendarSource):
-    """Gmail and Google Calendar, mail and events, with one Google sign-in.
+    """Gmail, Google Calendar and Google Drive, with one Google sign-in.
 
-    Reads, searches and files the Gmail of every Google account listed under google.accounts,
-    sends from the one the user means, and shows and adds to their Google calendars; an
-    account signs in once in a browser and pastes the address it lands on back into the chat.
+    Reads, searches, files and sends the Gmail of every Google account under google.accounts,
+    shows and adds to their calendars, and searches their Drive and reads a Google Doc or
+    Slides deck page by page; an account signs in once in a browser and pastes back the address.
 
     A MailSource and CalendarSource building one GoogleAccount per `google.accounts[]` entry
     (`name`, `address`, `mail`, `calendar`, `default_calendar`, `shown_calendars`) over one
     OAuth Desktop-app client (`google.oauth.client_id` / `client_secret`). Mail is the core
     `ImapMailAccount` with the gmail preset and an XOAUTH2 login fed by `GoogleAuth.token`;
-    the calendar is `GoogleCalendarAccount` over Calendar v3. The accounts given to the
-    composites are those with the flag AND a refresh token in `cache/oauth/google-<slug>.json`;
-    one without is left out and reported in `accounts_status` and the health error with the
-    google_login hint. Config is read at call time; a changed list of accounts needs
-    restart_integration. Losing the config deletes the token files."""
+    the calendar is `GoogleCalendarAccount` over Calendar v3; the Drive read commands go through
+    `files()`, a `DriveFiles` over the signed-in accounts' `GoogleDrive`s, and every sign-in
+    asks for the Drive read-only scope (an older token without it meets the sign-in-again
+    verdict on the first Drive command). The accounts given to the composites are those with
+    the flag AND a refresh token in `cache/oauth/google-<slug>.json`; one without is left out
+    and reported in `accounts_status` and the health error with the google_login hint. Config
+    is read at call time; a changed list of accounts needs restart_integration. Losing the
+    config deletes the token files."""
     sensitive = True
 
     def __init__(self):
@@ -126,6 +134,14 @@ class GoogleIntegration(AccountHealth, Integration, MailSource, CalendarSource):
 
     def calendar_accounts(self) -> list[CalendarAccount]:
         return [a.calendar for a in self._accounts if a.calendar is not None and self._usable(a)]
+
+    def files(self) -> DriveFiles:
+        """The Drives of the accounts signed in right now, as one."""
+        return DriveFiles([a.drive for a in self._accounts if self._usable(a)])
+
+    @classmethod
+    def wipe_targets(cls) -> list[tuple[Path, str]]:
+        return [(TEXT_CACHE_DIR, "Google Drive text cache (the text of every document read)")]
 
     @staticmethod
     def _usable(account: GoogleAccount) -> bool:
@@ -231,8 +247,7 @@ class GoogleIntegration(AccountHealth, Integration, MailSource, CalendarSource):
             name = str(entry["name"]).strip()
             mail, calendar, docs = flag(entry, "mail"), flag(entry, "calendar"), len(docs_of(entry))
             if not mail and not calendar and not docs:
-                info(f"Google: account '{name}' has neither mail, calendar nor docs on, skipped")
-                continue
+                trace(f"Google: account '{name}' has neither mail, calendar nor docs on — its Drive alone")
             address = lambda i=index: str(cls._entry(i).get("address") or "")
             auth = GoogleAuth(name, cls._client_settings, lambda e=entry: account_scopes(e), address)
             mail_account = ImapMailAccount(
