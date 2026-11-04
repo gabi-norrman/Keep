@@ -79,6 +79,15 @@ class ClaudeLLM(AbstractLLM):
     EFFORT = "high"
     EFFORT_MODEL_PREFIXES = ALWAYS_THINKING_MODEL_PREFIXES + ("claude-haiku-5",)
 
+    # The thinking parameter. The 5-generation models (EFFORT_MODEL_PREFIXES) think without it,
+    # but their thinking blocks then come back empty — "omitted" is the API's default display;
+    # "summarized" fills them with a summary, traced for every call. Thinking, its cost and its
+    # latency are the same under either display. The parameter is part of the cached prompt,
+    # so it goes on every request to those models alike; an older model thinks only when a
+    # request asks for it (Thinking.FULL). The blocks are never sent back: the history keeps
+    # each turn as text.
+    THINKING_PARAM = {"type": "adaptive", "display": "summarized"}
+
     # CACHE_BREAKPOINT_MARKER is inherited from AbstractLLM.
     # Anthropic allows 4 cache_control breakpoints per request; _build_api_params
     # reserves one for the message-history breakpoint, leaving 3 for the system
@@ -438,12 +447,35 @@ class ClaudeLLM(AbstractLLM):
         if system:
             api_params['system'] = system
 
-        if full:
-            api_params['thinking'] = {"type": "adaptive"}
+        thinking_param = self._thinking_param(full)
+        if thinking_param:
+            api_params['thinking'] = thinking_param
         if self.model.startswith(self.EFFORT_MODEL_PREFIXES):
             api_params['output_config'] = {"effort": self.EFFORT}
 
         return api_params
+
+    def _thinking_param(self, full: bool) -> dict | None:
+        if full or self.model.startswith(self.EFFORT_MODEL_PREFIXES):
+            return dict(self.THINKING_PARAM)
+        return None
+
+    @staticmethod
+    def _trace_thinking(summary: str, cut: bool = False):
+        summary = summary.strip()
+        if summary:
+            trace(f"Claude thinking{' (cut off)' if cut else ''}:\n{summary}")
+        else:
+            trace("Claude thought, no summary came back")
+
+    def _trace_thinking_blocks(self, content):
+        """The thinking of a reply that arrived whole, one trace per thinking block."""
+        summaries = [getattr(block, 'thinking', '') or '' for block in content
+                     if getattr(block, 'type', None) == 'thinking']
+        if not summaries:
+            trace("Claude replied without thinking")
+        for summary in summaries:
+            self._trace_thinking(summary)
 
     @staticmethod
     def _cache_creation_breakdown(usage, cache_created: int) -> tuple[int, int]:
@@ -513,7 +545,8 @@ class ClaudeLLM(AbstractLLM):
                 and e.body['error'].get('type') == 'overloaded_error')
 
     def _stream_once(self, api_params: dict) -> Generator[str, None, None]:
-        """One streaming request: yield text deltas, log cache/output usage.
+        """One streaming request: yield text deltas, log cache/output usage. Each thinking
+        block's summary is traced when the block ends, so it stands before the reply in the log.
 
         When the stream completes without a single text delta (the Fable
         empty-reply misfire), log stop_reason and the block types we did get so
@@ -522,6 +555,7 @@ class ClaudeLLM(AbstractLLM):
         first_token_seen = False
         stop_reason = None
         block_types = []
+        thinking = None   # the summary parts of the thinking block being streamed
         self._last_stop_reason = None
         stream = self._create_message(api_params)
         try:
@@ -530,20 +564,32 @@ class ClaudeLLM(AbstractLLM):
                     self._log_cache_usage(event.message.usage)
                 elif event.type == 'content_block_start':
                     block_types.append(getattr(event.content_block, 'type', '?'))
+                    if block_types[-1] == 'thinking':
+                        thinking = []
                 elif event.type == 'content_block_delta' and event.delta.type == 'text_delta':
                     first_token_seen = True
                     yield event.delta.text
+                elif event.type == 'content_block_delta' and event.delta.type == 'thinking_delta':
+                    if thinking is not None:
+                        thinking.append(event.delta.thinking)
+                elif event.type == 'content_block_stop' and thinking is not None:
+                    self._trace_thinking(''.join(thinking))
+                    thinking = None
                 elif event.type == 'message_delta':
                     stop_reason = getattr(event.delta, 'stop_reason', None) or stop_reason
                     if hasattr(event, 'usage'):
                         self._log_output_tokens(event.usage)
         finally:
+            if thinking is not None:
+                self._trace_thinking(''.join(thinking), cut=True)
             # A consumer that stops reading (the reply cut after the command cap) closes this
             # generator; closing the SDK stream with it ends the request, and the generation.
             close = getattr(stream, "close", None)
             if close is not None:
                 close()
         self._last_stop_reason = stop_reason
+        if 'thinking' not in block_types:
+            trace("Claude replied without thinking")
         if not first_token_seen:
             info(f"Claude stream ended with no text (stop_reason={stop_reason}, blocks={block_types or 'none'})")
 
@@ -647,6 +693,7 @@ class ClaudeLLM(AbstractLLM):
         if self._last_stop_reason == 'max_tokens':
             info(f"Claude hit max_tokens={api_params['max_tokens']} - the reply is cut short")
 
+        self._trace_thinking_blocks(response.content)
         text = ''.join(block.text for block in response.content if block.type == 'text')
         if not text.strip():
             block_types = [getattr(block, 'type', '?') for block in response.content]
@@ -727,6 +774,7 @@ class ClaudeLLM(AbstractLLM):
             raise LLMRefusalError(f"{self.model} refused the request (stop_reason=refusal)")
         if self._last_stop_reason == 'max_tokens':
             info(f"Claude hit max_tokens={api_params['max_tokens']} - the reply is cut short")
+        self._trace_thinking_blocks(response.content)
         text = ''.join(block.text for block in response.content if block.type == 'text')
         if not text.strip():
             info(f"Claude batch {batch.id} returned no text (stop_reason={self._last_stop_reason})")
@@ -781,6 +829,9 @@ class ClaudeLLM(AbstractLLM):
             'messages': anthropic_messages,
             'max_tokens': 4096,
         }
+        thinking_param = self._thinking_param(False)
+        if thinking_param:
+            api_params['thinking'] = thinking_param
         if system_message and self.prompt_cache:
             # The system prompt is cached like a chat request's: with breakpoint markers
             # (a camera question from the chat) block by block, without them (the photo
@@ -797,6 +848,7 @@ class ClaudeLLM(AbstractLLM):
         if usage is not None:
             self._log_cache_usage(usage)
             self._log_output_tokens(usage)
+        self._trace_thinking_blocks(response.content)
         text = ''.join(block.text for block in response.content if block.type == 'text')
         if not text.strip():
             block_types = [getattr(block, 'type', '?') for block in response.content]

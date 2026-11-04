@@ -367,7 +367,7 @@ class TestClaudeLLM:
         messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
         params = llm._build_api_params(messages, thinking=True, stream=False)
         assert params['max_tokens'] == ClaudeLLM.THINKING_MAX_TOKENS
-        assert params['thinking'] == {"type": "adaptive"}
+        assert params['thinking']['type'] == "adaptive"
         assert params['stream'] is False
 
     @patch('assistant.llm.ClaudeLLM.config')

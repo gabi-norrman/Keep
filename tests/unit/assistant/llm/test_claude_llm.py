@@ -618,7 +618,7 @@ class TestEffort:
 
     def test_effort_rides_along_with_thinking(self):
         params = ClaudeLLM("claude-opus-5-5")._build_api_params(MESSAGES, thinking=True, stream=False)
-        assert params['thinking'] == {"type": "adaptive"}
+        assert params['thinking']['type'] == "adaptive"
         assert params['output_config'] == {"effort": "high"}
 
     def test_thinking_more_is_an_ordinary_request_on_claude(self):
@@ -629,9 +629,85 @@ class TestEffort:
         more = llm._build_api_params(MESSAGES, thinking=Thinking.MORE, stream=False)
         normal = llm._build_api_params(MESSAGES, thinking=Thinking.NORMAL, stream=False)
         assert more == normal
-        assert 'thinking' not in more and more['max_tokens'] == ClaudeLLM.MAX_TOKENS
+        assert more['max_tokens'] == ClaudeLLM.MAX_TOKENS
         full = llm._build_api_params(MESSAGES, thinking=Thinking.FULL, stream=False)
         assert full['max_tokens'] == ClaudeLLM.THINKING_MAX_TOKENS and 'thinking' in full
+
+
+def _thinking_stream_events(parts: list[str], text: str | None = None, ended: bool = True) -> list:
+    start = MagicMock()
+    start.type = 'content_block_start'
+    start.content_block.type = 'thinking'
+    deltas = []
+    for part in parts:
+        delta = MagicMock()
+        delta.type = 'content_block_delta'
+        delta.delta.type = 'thinking_delta'
+        delta.delta.thinking = part
+        deltas.append(delta)
+    stop = MagicMock()
+    stop.type = 'content_block_stop'
+    return [start, *deltas] + ([stop] if ended else []) + ([_text_delta(text)] if text else [])
+
+
+def _traced(trace_mock) -> str:
+    return "\n".join(str(call.args[0]) for call in trace_mock.call_args_list)
+
+
+class TestThinkingSummary:
+    """The thinking of every Claude call is traced. The 5-generation models return it only as a
+    summary, and only when the request asks for one."""
+
+    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"])
+    @pytest.mark.parametrize("thinking", [Thinking.NORMAL, Thinking.MORE, Thinking.FULL])
+    def test_api_contract_every_request_to_a_5_generation_model_asks_for_the_summary(self, model, thinking):
+        """One thinking parameter on every request alike: it is part of the cached prompt, and
+        without display=summarized the API sends the thinking blocks back empty."""
+        params = ClaudeLLM(model)._build_api_params(MESSAGES, thinking=thinking, stream=True)
+        assert params['thinking'] == {"type": "adaptive", "display": "summarized"}
+
+    def test_an_older_model_thinks_only_when_a_request_asks_for_it(self):
+        llm = ClaudeLLM("claude-sonnet-4-5")
+        assert 'thinking' not in llm._build_api_params(MESSAGES, thinking=Thinking.NORMAL, stream=True)
+        assert llm._build_api_params(MESSAGES, thinking=Thinking.FULL, stream=True)['thinking']['display'] == "summarized"
+
+    def test_a_streamed_summary_is_traced_before_the_reply_is_passed_on(self):
+        llm = _make_llm()
+        llm.client.messages.create = Mock(return_value=iter(_thinking_stream_events(["The hall light ", "is off."], "Done.")))
+        with patch("assistant.llm.ClaudeLLM.trace") as trace:
+            reply = llm._stream_once({})
+            assert next(reply) == "Done."
+            assert "The hall light is off." in _traced(trace)
+
+    def test_a_stream_that_ends_inside_the_thinking_still_traces_what_came(self):
+        llm = _make_llm()
+        llm.client.messages.create = Mock(return_value=iter(_thinking_stream_events(["Half a thought"], ended=False)))
+        with patch("assistant.llm.ClaudeLLM.trace") as trace:
+            assert list(llm._stream_once({})) == []
+        assert "Half a thought" in _traced(trace)
+
+    def test_a_reply_that_arrives_whole_has_its_thinking_traced(self):
+        llm = _make_llm()
+        response = MagicMock(stop_reason='end_turn')
+        response.usage.cache_creation_input_tokens = 0
+        response.usage.cache_read_input_tokens = 0
+        response.usage.input_tokens = 10
+        response.content = [MagicMock(type='thinking', thinking='Bob asked about the door.'),
+                            MagicMock(type='text', text='It is locked.')]
+        llm.client.messages.create = Mock(return_value=response)
+        with patch("assistant.llm.ClaudeLLM.trace") as trace:
+            assert llm._complete_once({}) == 'It is locked.'
+        assert "Bob asked about the door." in _traced(trace)
+
+    def test_an_image_call_asks_for_the_summary_and_traces_it(self):
+        llm = _make_llm()
+        llm._ensure_initialized = Mock()
+        llm.client.messages.create = Mock(return_value=Mock(usage=None, content=[
+            MagicMock(type='thinking', thinking='A cat on the porch.'), MagicMock(type='text', text='A cat.')]))
+        with patch("assistant.llm.ClaudeLLM.trace") as trace:
+            assert llm.create_completion_with_images([{"role": "user", "content": "what is it"}], [b'\xff\xd8jpeg']) == 'A cat.'
+        assert llm.client.messages.create.call_args.kwargs['thinking']['display'] == "summarized"
+        assert "A cat on the porch." in _traced(trace)
 
 
 @patch('assistant.llm.ClaudeLLM.time.sleep')
