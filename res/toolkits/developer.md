@@ -3,8 +3,9 @@ issue to your developers. Every one of these hands the job to Claude Code, which
 background; when it is done the system sends its report to the user over the chat (and you'll be notified about
 this). They need the "Self Improvement" integration enabled (`list_integrations` shows its state; the Claude Code CLI
 must be installed on the server machine; with `api_keys.anthropic` set nothing else is needed, a claude.ai login is
-the alternative — `config_help("self_improvement")` has the steps). Filing a PR or an issue also needs the GitHub
-CLI (`gh`) logged in on the server machine; if it is not, the job says so at once.
+the alternative — `config_help("self_improvement")` has the steps). A PR also needs the GitHub CLI (`gh`) logged in
+on the server machine, with any GitHub account; if it is not, the job says so at once. An issue does not: without
+that login it is drafted and sent to the user, who files it on GitHub themselves.
 The integration also has scheduled nightly runs (bug analysis, a PR fixing its critical and major findings, test generation, fixing flaky and slow tests, auto-merge of test-only PRs), off
 unless `self_improvement.nightly_runs` is true; the commands below work either way.
 
@@ -58,7 +59,9 @@ their words, with the time it happened; if a self-analysis ran first, feed its r
 report first (a prompt in the chat showing the text, with approve/deny, as for a restart), so nothing reaches
 GitHub unseen; if they deny, the command result says so and nothing is filed. When it is done the user is sent the
 link; tell them the issue is live there and that it is theirs to check: anything sensitive they find in it they
-edit by hand on GitHub, and the old revision can be dropped from the issue's edit history.
+edit by hand on GitHub, and the old revision can be dropped from the issue's edit history. Without a GitHub login
+on the server machine the result is "[Issue drafted]" instead: nothing is on GitHub yet, the user was sent the draft
+and the link, and filing it is theirs.
 
 Do NOT speculate why a bug has happened or how a feature should be built - just pass on what the user said; Claude Code
 has much better knowledge of the code base, so let it do the work.

@@ -10,7 +10,7 @@ import os
 import subprocess
 import threading
 
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, JobPullRequest, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeRunFailedError, ClaudeUsageLimitError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, JobPullRequest, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeRunFailedError, ClaudeUsageLimitError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS, GH_NOT_INSTALLED_MESSAGE, GithubAccess, IssueDraft, PREFILL_URL_LIMIT, ISSUE_LABEL
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -60,6 +60,23 @@ def signed_release():
 @pytest.fixture
 def maintainer():
     return CodeQualityMaintainer()
+
+
+PUSHER = GithubAccess(login="marcus", repo="marcus/keep", permission="WRITE")
+READER = GithubAccess(login="alice", repo="marcus/keep", permission="READ")
+
+
+def _claude_prompt(job, trial=""):
+    """Runs *job* through the real _pr_job with git, gh and Claude Code stubbed: (the prompt
+    Claude Code got — None when it never ran —, the job's result)."""
+    prompts = []
+    with patch.object(CodeQualityMaintainer, "_run_subprocess", return_value=Mock(returncode=0, stdout="master\n", stderr="")), \
+            patch.object(CodeQualityMaintainer, "_open_pull_requests", return_value={}), \
+            patch.object(CodeQualityMaintainer, "_trial_instructions", return_value=trial), \
+            patch.object(CodeQualityMaintainer, "_run_claude", side_effect=lambda prompt, label: prompts.append(prompt) or "done"), \
+            patch("assistant.agents.PullRequestTrial.PullRequestTrial.current", return_value=None):
+        result = job()
+    return (prompts[0] if prompts else None), result
 
 
 @pytest.mark.unit
@@ -717,7 +734,7 @@ class TestImproveCode:
         """improve_code first asks `gh auth status` and reads the version and the trial state
         from git — real subprocesses on the developer's machine, ~250 ms each test and a
         different answer on a machine without gh. These tests are about the job itself."""
-        with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
+        with patch.object(CodeQualityMaintainer, "_github_access", return_value=(PUSHER, None)), \
                 patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
                 patch.object(CodeQualityMaintainer, "_trial_instructions", return_value=""):
             yield
@@ -1918,7 +1935,7 @@ class TestImproveIntegration:
 
     @staticmethod
     def _run(folder, files, report=None, pr=JOB_PR, existing=("tesla", "music", "microsoft")):
-        with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
+        with patch.object(CodeQualityMaintainer, "_github_access", return_value=(PUSHER, None)), \
                 patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
                 patch.object(CodeQualityMaintainer, "_pr_job",
                              return_value=(report or TestImproveIntegration.REPORT, pr)) as job, \
@@ -1978,7 +1995,7 @@ class TestImproveIntegration:
         close.assert_called_once()
 
     def test_a_pr_whose_files_cannot_be_read_is_closed_too(self):
-        with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
+        with patch.object(CodeQualityMaintainer, "_github_access", return_value=(PUSHER, None)), \
                 patch.object(CodeQualityMaintainer, "_pr_job", return_value=(self.REPORT, JOB_PR)), \
                 patch.object(CodeQualityMaintainer, "_pr_files", side_effect=RuntimeError("gh: rate limited")), \
                 patch.object(CodeQualityMaintainer, "_close_pr") as close:
@@ -2011,12 +2028,16 @@ class TestImproveIntegration:
         assert "Adding an integration" in prompt and "docs/atlas/descriptions.py" in prompt
 
     def test_without_gh_nothing_runs(self):
-        with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value="gh is out"), \
+        with patch.object(CodeQualityMaintainer, "_github_access", return_value=(None, "gh is out")), \
                 patch.object(CodeQualityMaintainer, "_pr_job") as job:
             assert CodeQualityMaintainer.improve_integration("Tesla", "tesla", "x") == ("gh is out", None)
-            assert CodeQualityMaintainer.report_issue("x") == "gh is out"
             assert CodeQualityMaintainer.improve_code("x") == ("gh is out", None)
         job.assert_not_called()
+
+    def test_the_jobs_hand_the_account_to_the_pr_job(self):
+        """The PR job needs the account to tell whether the PR comes from a fork."""
+        _, job, _, _ = self._run("tesla", [_file("src/integrations/tesla/TeslaCommands.py")])
+        assert PUSHER in job.call_args.args
 
 
 def _prs(*entries):
@@ -2030,11 +2051,19 @@ class TestJobPullRequest:
     it, matched by the branch the run left the tree on. Never one the report mentions."""
 
     @staticmethod
-    def _find(before, after, work_branch=None, trial=None):
+    def _find(before, after, work_branch=None, trial=None, login=None):
         from assistant.agents.PullRequestTrial import PullRequestTrial
         with patch.object(CodeQualityMaintainer, "_open_pull_requests", return_value=after), \
                 patch.object(PullRequestTrial, "current", return_value=trial):
-            return CodeQualityMaintainer._job_pull_request("improve-integration Tesla", before, work_branch)
+            return CodeQualityMaintainer._job_pull_request("improve-integration Tesla", before, work_branch, login)
+
+    def test_a_new_pr_by_another_account_is_never_the_jobs(self):
+        """On a public repository anyone's PR can open during the hour a job runs."""
+        theirs = {133: JobPullRequest(133, "u", "tesla-trunk", "dave")}
+        assert self._find({}, theirs, login="Alice") is None
+        assert self._find({}, theirs, "tesla-trunk", login="alice") is None
+        both = {**theirs, 134: JobPullRequest(134, "u", "hue-dim", "alice")}
+        assert self._find({}, both, login="Alice") == both[134]
 
     def test_the_new_pr_from_the_jobs_branch_is_the_jobs(self):
         before, after = _prs((120, "microsoft-retry")), _prs((120, "microsoft-retry"), (133, "tesla-trunk"))
@@ -2069,8 +2098,10 @@ class TestJobPullRequest:
     @patch.object(CodeQualityMaintainer, "_run_subprocess")
     def test_the_open_prs_are_read_from_gh(self, mock_sub):
         mock_sub.return_value = Mock(returncode=0, stdout=json.dumps(
-            [{"number": 133, "url": "https://github.com/example/keep/pull/133", "headRefName": "tesla-trunk"}]))
-        assert CodeQualityMaintainer._open_pull_requests() == _prs((133, "tesla-trunk"))
+            [{"number": 133, "url": "https://github.com/example/keep/pull/133", "headRefName": "tesla-trunk",
+              "author": {"login": "alice"}}]))
+        assert CodeQualityMaintainer._open_pull_requests() == {
+            133: JobPullRequest(133, "https://github.com/example/keep/pull/133", "tesla-trunk", "alice")}
         mock_sub.return_value = Mock(returncode=1, stdout="", stderr="gh: HTTP 502")
         assert CodeQualityMaintainer._open_pull_requests() is None
 
@@ -2095,20 +2126,223 @@ class TestJobPullRequest:
         assert "touches two folders" in command[command.index("--comment") + 1]
 
 
+def _gh_answers(status=0, user="marcus", view=None, view_rc=0):
+    """subprocess.run answering gh auth status, gh api user and gh repo view."""
+    view = view if view is not None else {"nameWithOwner": "marcus/keep", "viewerPermission": "WRITE"}
+
+    def run(cmd, **kwargs):
+        if cmd[1:3] == ["auth", "status"]:
+            return Mock(returncode=status, stdout="", stderr="" if status == 0 else "You are not logged into any GitHub hosts")
+        if cmd[1:3] == ["api", "user"]:
+            return Mock(returncode=0, stdout=f"{user}\n", stderr="")
+        if cmd[1:3] == ["repo", "view"]:
+            return Mock(returncode=view_rc, stdout=json.dumps(view), stderr="" if view_rc == 0 else "HTTP 404")
+        raise AssertionError(f"unexpected command {cmd}")
+    return run
+
+
 @pytest.mark.unit
-class TestGithubUnavailable:
+class TestGithubAccess:
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
-    def test_a_logged_in_gh_is_no_reason(self, mock_run):
-        mock_run.return_value = Mock(returncode=0, stdout="Logged in to github.com", stderr="")
+    def test_a_logged_in_gh_is_the_account_and_its_permission(self, mock_run):
+        mock_run.side_effect = _gh_answers(user="alice", view={"nameWithOwner": "marcus/keep", "viewerPermission": "read"})
+        access, reason = CodeQualityMaintainer._github_access()
+        assert reason is None and access == GithubAccess("alice", "marcus/keep", "READ")
         assert CodeQualityMaintainer._github_unavailable() is None
-        assert mock_run.call_args.args[0][:3] == ["gh", "auth", "status"]
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
-    def test_a_logged_out_or_missing_gh_names_the_login(self, mock_run):
-        mock_run.return_value = Mock(returncode=1, stdout="", stderr="You are not logged into any GitHub hosts")
-        assert "gh auth login" in CodeQualityMaintainer._github_unavailable()
-        mock_run.side_effect = FileNotFoundError("gh")
-        assert "gh auth login" in CodeQualityMaintainer._github_unavailable()
+    def test_a_logged_out_gh_names_the_login(self, mock_run):
+        mock_run.side_effect = _gh_answers(status=1)
+        access, reason = CodeQualityMaintainer._github_access()
+        assert access is None and reason == GH_NOT_LOGGED_IN_MESSAGE and "gh auth login" in reason
+        assert CodeQualityMaintainer._github_unavailable() == reason
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run', side_effect=FileNotFoundError("gh"))
+    def test_a_missing_gh_names_the_install(self, mock_run):
+        access, reason = CodeQualityMaintainer._github_access()
+        assert access is None and reason == GH_NOT_INSTALLED_MESSAGE and "brew install gh" in reason
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_an_unreadable_repository_is_a_reason(self, mock_run):
+        mock_run.side_effect = _gh_answers(view_rc=1)
+        access, reason = CodeQualityMaintainer._github_access()
+        assert access is None and "HTTP 404" in reason
+
+    @pytest.mark.parametrize("permission, push, label", [
+        ("ADMIN", True, True), ("MAINTAIN", True, True), ("WRITE", True, True),
+        ("TRIAGE", False, True), ("READ", False, False)])
+    def test_what_each_permission_may_do(self, permission, push, label):
+        access = GithubAccess("alice", "marcus/keep", permission)
+        assert (access.can_push, access.can_label) == (push, label)
+
+
+def _fork_answers(forks, fork_rc=0):
+    """_run_subprocess answering gh repo fork, gh auth setup-git and gh repo list."""
+    def run(cmd, label, timeout):
+        if cmd[1:3] == ["repo", "fork"]:
+            return Mock(returncode=fork_rc, stdout="", stderr="" if fork_rc == 0 else "HTTP 403: forking is disabled")
+        if cmd[1:3] == ["auth", "setup-git"]:
+            return Mock(returncode=0, stdout="", stderr="")
+        if cmd[1:3] == ["repo", "list"]:
+            return Mock(returncode=0, stdout=json.dumps(forks), stderr="")
+        raise AssertionError(f"unexpected command {cmd}")
+    return run
+
+
+def _fork(name, parent):
+    owner, repo = parent.split("/")
+    return {"nameWithOwner": name, "parent": {"name": repo, "owner": {"login": owner}}}
+
+
+@pytest.mark.unit
+class TestEnsureFork:
+    def test_the_fork_of_the_repository_is_found_among_the_accounts_forks(self):
+        forks = [_fork("alice/tensorflow", "tensorflow/tensorflow"), _fork("alice/keep-1", "Marcus/Keep")]
+        with patch.object(CodeQualityMaintainer, "_run_subprocess", side_effect=_fork_answers(forks)) as run:
+            assert CodeQualityMaintainer._ensure_fork(READER) == "alice/keep-1"
+        commands = [c.args[0] for c in run.call_args_list]
+        assert commands[0][:4] == ["gh", "repo", "fork", "marcus/keep"] and "--clone=false" in commands[0]
+        assert ["gh", "auth", "setup-git"] in commands, "the push over HTTPS goes through gh's login"
+
+    def test_no_matching_fork_raises(self):
+        forks = [_fork("alice/tensorflow", "tensorflow/tensorflow")]
+        with patch.object(CodeQualityMaintainer, "_run_subprocess", side_effect=_fork_answers(forks)):
+            with pytest.raises(RuntimeError):
+                CodeQualityMaintainer._ensure_fork(READER)
+
+    def test_a_failing_fork_raises_with_githubs_words(self):
+        with patch.object(CodeQualityMaintainer, "_run_subprocess", side_effect=_fork_answers([], fork_rc=1)):
+            with pytest.raises(RuntimeError) as raised:
+                CodeQualityMaintainer._ensure_fork(READER)
+        assert "forking is disabled" in str(raised.value)
+
+
+@pytest.mark.unit
+class TestPrJobDelivery:
+    """What a PR job is told on top of its prompt about where the PR goes."""
+
+    def test_an_account_without_push_opens_the_pr_from_its_fork(self):
+        with patch.object(CodeQualityMaintainer, "_ensure_fork", return_value="alice/keep") as fork:
+            prompt, _ = _claude_prompt(lambda: CodeQualityMaintainer._pr_job("Fix the trunk.", "self-improvement", READER))
+        fork.assert_called_once_with(READER)
+        assert prompt.startswith("Fix the trunk.")
+        assert "https://github.com/alice/keep.git" in prompt
+        assert "--repo marcus/keep" in prompt and "--head alice:" in prompt
+
+    def test_no_fork_means_no_run(self):
+        with patch.object(CodeQualityMaintainer, "_ensure_fork", side_effect=RuntimeError("forking is disabled")):
+            prompt, (report, pr) = _claude_prompt(lambda: CodeQualityMaintainer._pr_job("Fix it.", "self-improvement", READER))
+        assert prompt is None and pr is None
+        assert "forking is disabled" in report
+
+    def test_during_a_trial_the_trial_paragraph_wins_and_no_fork_is_made(self):
+        with patch.object(CodeQualityMaintainer, "_ensure_fork") as fork:
+            prompt, _ = _claude_prompt(lambda: CodeQualityMaintainer._pr_job("Fix it.", "self-improvement", READER),
+                                       trial="\nPUSH TO PR #204\n")
+        fork.assert_not_called()
+        assert prompt.endswith("PUSH TO PR #204\n") and "alice" not in prompt
+
+    @pytest.mark.parametrize("access", [PUSHER, None])
+    def test_an_account_that_can_push_gets_the_prompt_as_is(self, access):
+        with patch.object(CodeQualityMaintainer, "_ensure_fork") as fork:
+            prompt, _ = _claude_prompt(lambda: CodeQualityMaintainer._pr_job("Fix it.", "self-improvement", access))
+        fork.assert_not_called()
+        assert prompt == "Fix it."
+
+
+@pytest.mark.unit
+class TestIssueDraft:
+    def test_a_short_draft_is_prefilled_whole(self):
+        from urllib.parse import urlparse, parse_qs
+        draft = IssueDraft("marcus/keep", "Hallway lights stay on", "The scene ended at 23:10.\n\n- step one")
+        link, prefilled = draft.link()
+        url = urlparse(link)
+        query = parse_qs(url.query)
+        assert prefilled and url.netloc == "github.com" and url.path == "/marcus/keep/issues/new"
+        assert query == {"title": [draft.title], "body": [draft.body], "labels": [ISSUE_LABEL]}
+
+    def test_a_long_draft_is_linked_with_its_title_alone(self):
+        from urllib.parse import urlparse, parse_qs
+        draft = IssueDraft("marcus/keep", "Hallway lights stay on", "log excerpt " * 400)
+        link, prefilled = draft.link()
+        assert not prefilled and len(link) <= PREFILL_URL_LIMIT
+        query = parse_qs(urlparse(link).query)
+        assert query["title"] == [draft.title] and "body" not in query
+
+    def test_a_comment_links_the_issue_itself(self):
+        link, prefilled = IssueDraft("marcus/keep", "", "Seen again tonight.", comment_on=7).link()
+        assert link == "https://github.com/marcus/keep/issues/7" and not prefilled
+
+
+@pytest.mark.unit
+class TestReadIssueDraft:
+    def test_a_new_issue_draft_reads(self, tmp_path):
+        path = tmp_path / "d.md"
+        path.write_text("Title: Hallway lights stay on\n\nThe scene ended at 23:10.\nThen nothing.\n")
+        draft = CodeQualityMaintainer.read_issue_draft(path, "marcus/keep")
+        assert draft == IssueDraft("marcus/keep", "Hallway lights stay on", "The scene ended at 23:10.\nThen nothing.")
+
+    def test_a_comment_draft_reads(self, tmp_path):
+        path = tmp_path / "d.md"
+        path.write_text("Comment on: #12\n\nSeen again tonight at 23:10.")
+        draft = CodeQualityMaintainer.read_issue_draft(path, "marcus/keep")
+        assert draft.comment_on == 12 and draft.body == "Seen again tonight at 23:10."
+
+    @pytest.mark.parametrize("text", [None, "Title: Lights\n\n   \n", "Lights stay on\n\nbody", ""])
+    def test_no_or_a_malformed_draft_is_none(self, tmp_path, text):
+        path = tmp_path / "d.md"
+        if text is not None:
+            path.write_text(text)
+        assert CodeQualityMaintainer.read_issue_draft(path, "marcus/keep") is None
+
+
+@pytest.mark.unit
+class TestReportIssue:
+    @pytest.fixture(autouse=True)
+    def version(self):
+        with patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"):
+            yield
+
+    def _report(self, access, reason=None, write_draft=None, origin="marcus/keep", tmp_path=None):
+        prompts = []
+
+        def claude(prompt, label):
+            prompts.append(prompt)
+            if write_draft is not None:
+                import re
+                path = re.search(r"Write the draft to (\S+):", prompt).group(1)
+                with open(path, "w") as f:
+                    f.write(write_draft)
+            return "Drafted: the hallway lights."
+        with patch.object(CodeQualityMaintainer, "_github_access", return_value=(access, reason)), \
+                patch.object(CodeQualityMaintainer, "_origin_repo", return_value=origin), \
+                patch("assistant.agents.CodeQualityMaintainer.ISSUE_DRAFT_DIR", tmp_path), \
+                patch.object(CodeQualityMaintainer, "_run_claude", side_effect=claude):
+            result = CodeQualityMaintainer.report_issue("the hallway lights stayed on at 23:10")
+        return (prompts[0] if prompts else None), result
+
+    def test_without_gh_the_issue_is_drafted_and_comes_back(self, tmp_path):
+        prompt, (report, draft) = self._report(None, GH_NOT_INSTALLED_MESSAGE,
+                                               write_draft="Title: Hallway lights stay on\n\nThe scene ended.",
+                                               tmp_path=tmp_path)
+        assert "gh issue create" not in prompt and str(tmp_path) in prompt
+        assert "api.github.com/search/issues?q=repo:marcus/keep" in prompt
+        assert report == "Drafted: the hallway lights."
+        assert draft == IssueDraft("marcus/keep", "Hallway lights stay on", "The scene ended.")
+
+    def test_a_run_that_drafted_nothing_returns_no_draft(self, tmp_path):
+        _, (report, draft) = self._report(None, GH_NOT_INSTALLED_MESSAGE, tmp_path=tmp_path)
+        assert draft is None and report
+
+    def test_without_gh_and_without_a_github_origin_nothing_runs(self, tmp_path):
+        prompt, result = self._report(None, GH_NOT_LOGGED_IN_MESSAGE, origin=None, tmp_path=tmp_path)
+        assert prompt is None and result == (GH_NOT_LOGGED_IN_MESSAGE, None)
+
+    def test_with_gh_the_issue_is_filed_and_labelled_only_where_the_account_may(self, tmp_path):
+        prompt, (_, draft) = self._report(GithubAccess("alice", "marcus/keep", "READ"), tmp_path=tmp_path)
+        assert "gh issue create" in prompt and ISSUE_LABEL not in prompt and draft is None
+        prompt, _ = self._report(GithubAccess("alice", "marcus/keep", "TRIAGE"), tmp_path=tmp_path)
+        assert ISSUE_LABEL in prompt
 
 
 @pytest.mark.unit
@@ -2149,15 +2383,14 @@ class TestPullRequestTrialHooks:
 
     @pytest.mark.parametrize("job", ["improve_code", "improve_integration"])
     def test_a_pr_job_during_a_trial_is_told_to_push_to_the_pr(self, job):
-        with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
-                patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
-                patch.object(CodeQualityMaintainer, "_trial_instructions", return_value="\nPUSH TO PR #204\n"), \
-                patch.object(CodeQualityMaintainer, "_pr_job", return_value=("no PR", None)) as run:
+        with patch.object(CodeQualityMaintainer, "_github_access", return_value=(PUSHER, None)), \
+                patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"):
             if job == "improve_code":
-                CodeQualityMaintainer.improve_code("fix the trunk")
+                prompt, _ = _claude_prompt(lambda: CodeQualityMaintainer.improve_code("fix the trunk"),
+                                           trial="\nPUSH TO PR #204\n")
             else:
-                CodeQualityMaintainer.improve_integration("Tesla", "tesla", "fix the trunk")
-        prompt = run.call_args.args[0]
+                prompt, _ = _claude_prompt(lambda: CodeQualityMaintainer.improve_integration("Tesla", "tesla", "fix the trunk"),
+                                           trial="\nPUSH TO PR #204\n")
         assert prompt.endswith("PUSH TO PR #204\n") and "fix the trunk" in prompt
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
@@ -2203,11 +2436,10 @@ class TestFixBugsStep:
         assert NIGHTLY_FIX_LABEL in prompt and "v2026.10.1" in prompt
 
     def test_the_trial_instructions_follow_the_prompt(self):
-        with patch.object(CodeQualityMaintainer, '_pr_job', return_value="ok") as job, \
-                patch.object(CodeQualityMaintainer, '_github_unavailable', return_value=None), \
-                patch.object(CodeQualityMaintainer, '_trial_instructions', return_value="\nPush to the tried PR."):
-            CodeQualityMaintainer._step_fix_bugs(self.ANALYSIS)
-        assert job.call_args[0][0].endswith("Push to the tried PR.")
+        with patch.object(CodeQualityMaintainer, '_github_unavailable', return_value=None):
+            prompt, _ = _claude_prompt(lambda: CodeQualityMaintainer._step_fix_bugs(self.ANALYSIS),
+                                       trial="\nPush to the tried PR.")
+        assert prompt.endswith("Push to the tried PR.") and "off by one" in prompt
 
     def test_without_gh_the_step_says_so_instead_of_running(self):
         with patch.object(CodeQualityMaintainer, '_pr_job') as job, \

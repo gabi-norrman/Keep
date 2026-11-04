@@ -15,8 +15,9 @@ class SelfImprovementIntegration(Integration):
     The commands: self_analysis, improve_integration (a PR confined to one integration folder,
     or a new one), report_issue (an investigated GitHub issue) and, with the root config key
     is_developer true, self_improvement (a PR on any part of the code); the nightly
-    code-quality runs are the integration's too. The runs use api_keys.anthropic unless a
-    claude.ai login is there.
+    code-quality runs are the integration's too. A gh account without write access opens its
+    PRs from its own fork, and without gh an issue is drafted for the user to file by hand. The
+    runs use api_keys.anthropic unless a claude.ai login is there.
 
     The switch and the health check: the runs (CodeQualityMaintainer) happen only while this
     integration is enabled, the nightly ones also only while `self_improvement.nightly_runs` is

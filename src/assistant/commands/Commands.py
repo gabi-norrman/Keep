@@ -6,6 +6,7 @@ import re
 import threading
 import time
 import urllib.parse
+from html import escape as html_escape
 from collections import deque
 from typing import Callable, Optional
 
@@ -18,7 +19,7 @@ from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import CommandSet, Toolkits, ToolkitPreloader
 from assistant import Destinations, FirstRun, MemoryFile, Procedures, VoiceCandidates, WatchList
 from common.logging import trace, info, note, error, fine
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, JobPullRequest
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, IssueDraft, JobPullRequest
 from common.ConfigManager import ConfigManager
 from common import ConfigSchema, ConfigStore, FullDiskAccess, Watchdog
 from common.ConfigStore import ConfigStoreError
@@ -1066,7 +1067,9 @@ class Commands:
 
     def cmd_report_issue(self, parameter_string: str):
         """`report_issue(report)`: Claude Code investigates and files a GitHub issue on the
-        repository (or comments on an open one about the same thing); the user gets the link."""
+        repository (or comments on an open one about the same thing); the user gets the link.
+        Without a gh login on this machine the issue is drafted instead, and the user gets the
+        draft and the link to file it with."""
         reason = CodeQualityMaintainer.unavailable_reason()
         if reason:
             info(f"report_issue not started: {reason}")
@@ -1074,9 +1077,15 @@ class Commands:
 
         def _run_and_deliver(params):
             try:
-                report = CodeQualityMaintainer.report_issue(params)
+                report, draft = CodeQualityMaintainer.report_issue(params)
                 trace("Received the issue report from Code Quality Maintainer")
                 fine(f"Report: {report}")
+                if draft is not None:
+                    sent = False
+                    for message in self._issue_draft_messages(draft):
+                        sent = notifier().send_message(message, disable_web_page_preview=True) or sent
+                    system_note("report_issue", self._draft_outcome(report, draft, sent), push=False)
+                    return
                 number, url = CodeQualityMaintainer.issue_in(report)
                 if url:
                     message = (f"Your issue is now live here: {url}\n\nPlease check it: if you find anything "
@@ -1090,6 +1099,42 @@ class Commands:
                 error(f"report_issue failed: {e}")
 
         self.fire_and_forget(_run_and_deliver, parameter_string)
+
+    @staticmethod
+    def _issue_draft_messages(draft: IssueDraft) -> list[str]:
+        """The two messages a drafted issue reaches the user in: what to do, with the link, and
+        the draft itself in a block the chat copies whole — two, so a long draft split into
+        chunks never cuts the link."""
+        link, prefilled = draft.link()
+        anchor = lambda text: f'<a href="{html_escape(link, quote=True)}">{text}</a>'
+        if draft.comment_on is not None:
+            intro = (f"There is no GitHub login on this machine, so I could not post this myself. Issue "
+                     f"#{draft.comment_on} is already about the same thing, so it is drafted as a comment there: "
+                     f"read it below, then {anchor(f'open issue #{draft.comment_on}')} and paste it as a comment.")
+        elif prefilled:
+            intro = (f"There is no GitHub login on this machine, so I could not file this myself. Read the draft "
+                     f"below, then {anchor('open it on GitHub')} — the title and the description are filled in, "
+                     f"you only submit it.")
+        else:
+            intro = (f"There is no GitHub login on this machine, so I could not file this myself. Read the draft "
+                     f"below, then {anchor('open a new issue on GitHub')} — the title is filled in; copy the "
+                     f"description from the block below into it.")
+        intro += " Anything private you spot in it, take out before it goes up: the issue is public."
+        title = "" if draft.comment_on is not None else f"<b>{html_escape(draft.title)}</b>\n"
+        return [intro, f"{title}<pre>{html_escape(draft.body)}</pre>"]
+
+    @staticmethod
+    def _draft_outcome(report: str, draft: IssueDraft, sent: bool) -> str:
+        """The system row a report_issue job that drafted its issue leaves: that nothing is on
+        GitHub yet — the user files the draft — so the LLM never calls it live. "[Issue
+        drafted]" is the tag the LLM keys off; keep it first."""
+        delivery = "" if sent else f" ({NO_NOTIFICATION_CHANNEL})"
+        what = f"a comment on issue #{draft.comment_on}" if draft.comment_on is not None else f"the issue '{draft.title}'"
+        text = (f"[Issue drafted]{delivery} no GitHub login on this machine, so nothing was filed: the user was sent "
+                f"{what} as a draft, with the link to post it themselves.")
+        if not sent:
+            text += f"\n\nDraft:\n{draft.title}\n{draft.body}\n\nReport:\n{report}"
+        return text
 
     @staticmethod
     def _issue_outcome(report: str, number, url, sent: bool) -> str:

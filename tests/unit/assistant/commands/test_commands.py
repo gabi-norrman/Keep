@@ -11,7 +11,7 @@ from assistant.commands.CommandParser import CommandParser
 from assistant import Procedures
 from assistant.commands import Toolkits, ToolkitPreloader
 from assistant.commands.Commands import Commands, is_reference_result
-from assistant.agents.CodeQualityMaintainer import JobPullRequest
+from assistant.agents.CodeQualityMaintainer import JobPullRequest, IssueDraft
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from assistant.tools.WebAccess import WebAccess
 
@@ -2541,21 +2541,48 @@ class TestCmdImproveIntegration:
 @pytest.mark.unit
 class TestCmdReportIssue:
     @staticmethod
-    def _run(commands_instance, report, delivered=True):
+    def _run(commands_instance, report, delivered=True, draft=None, all_sent=False):
         with patch("assistant.commands.Commands.CodeQualityMaintainer", wraps=CodeQualityMaintainer) as mock_cqm, \
              patch.object(commands_instance, "fire_and_forget") as fire, \
              patch("assistant.commands.Commands.notifier") as notifier, \
              patch("assistant.commands.Commands.system_note") as note:
             mock_cqm.unavailable_reason.return_value = ""
-            mock_cqm.report_issue.return_value = report
+            mock_cqm.report_issue.return_value = (report, draft)
             notifier.return_value.send_message.return_value = delivered
             notifier.return_value.markdown_to_html.side_effect = lambda text: text
             commands_instance.cmd_report_issue("the lights stayed on at 23:10")
             fire.call_args.args[0](fire.call_args.args[1])
-        sent = notifier.return_value.send_message.call_args.args[0]
+        messages = [c.args[0] for c in notifier.return_value.send_message.call_args_list]
         row = note.call_args.args[1]
         assert note.call_args.kwargs.get("push") is False, "the link was sent already; the row is for the LLM"
-        return sent, row
+        return (messages if all_sent else messages[-1]), row
+
+    DRAFT = IssueDraft("marcus/keep", "Hallway lights stay on <after> the scene",
+                       "The scene ended at 23:10 & the lights stayed on.")
+
+    def test_a_drafted_issue_sends_the_link_then_the_draft(self, commands_instance):
+        messages, row = self._run(commands_instance, "Drafted: the hallway lights.", draft=self.DRAFT, all_sent=True)
+        link, _ = self.DRAFT.link()
+        assert len(messages) == 2
+        from html import escape
+        assert escape(link, quote=True) in messages[0], "the link comes first, where no chunking can cut it"
+        assert "<pre>" in messages[1] and "23:10 &amp; the lights" in messages[1]
+        assert "&lt;after&gt;" in messages[1], "the title is escaped for the chat's HTML"
+        assert row.startswith("[Issue drafted]") and "Hallway lights" in row
+        assert "live" not in row, "nothing is on GitHub yet"
+
+    def test_a_drafted_comment_links_the_open_issue(self, commands_instance):
+        draft = IssueDraft("marcus/keep", "", "Seen again at 23:10.", comment_on=7)
+        messages, row = self._run(commands_instance, "Drafted a comment.", draft=draft, all_sent=True)
+        assert "https://github.com/marcus/keep/issues/7" in messages[0]
+        assert "Seen again at 23:10." in messages[1]
+        assert row.startswith("[Issue drafted]") and "#7" in row
+
+    def test_a_drafted_issue_without_a_chat_rides_in_the_row(self, commands_instance):
+        _, row = self._run(commands_instance, "Drafted: the hallway lights.", draft=self.DRAFT, delivered=False)
+        assert row.startswith("[Issue drafted]") and self.DRAFT.body in row
+        _, delivered_row = self._run(commands_instance, "Drafted: the hallway lights.", draft=self.DRAFT)
+        assert self.DRAFT.body not in delivered_row
 
     def test_the_outcome_is_a_system_row_of_its_own_outside_the_calling_turn(self):
         """#137: stored as an assistant row, the outcome rendered glued onto the reply that

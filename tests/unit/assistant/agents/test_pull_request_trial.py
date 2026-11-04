@@ -109,9 +109,21 @@ class TestTheBranchIsTheState:
     def test_a_pr_job_is_told_to_push_to_the_tried_pr_and_open_none(self, github, git):
         with patch.object(module.Version, "branch", return_value="trial/pr-204"), \
                 patch.object(CodeQualityMaintainer, "target_branch", return_value="release"):
+            assert PullRequestTrial.current().head_repo == "", "a branch of origin has no fork to name"
             text = PullRequestTrial.pr_job_instructions()
         assert "refs/heads/feat/trunk" in text and "PR #204" in text and "trial/pr-204" in text
         assert "do NOT create a branch" in text
+        assert "git push origin HEAD:refs/heads/feat/trunk" in text
+
+    def test_a_pr_job_on_a_tried_fork_pr_pushes_to_the_fork(self, github, git):
+        github.answer(_pr(isCrossRepository=True, headRepositoryOwner={"login": "alice"},
+                          headRepository={"nameWithOwner": "alice/keep"}))
+        with patch.object(module.Version, "branch", return_value="trial/pr-204"), \
+                patch.object(CodeQualityMaintainer, "target_branch", return_value="release"):
+            assert PullRequestTrial.current().head_repo == "alice/keep"
+            text = PullRequestTrial.pr_job_instructions()
+        assert "git push https://github.com/alice/keep.git HEAD:refs/heads/feat/trunk" in text
+        assert "git push origin" not in text
 
 
 class TestVetting:
@@ -129,6 +141,19 @@ class TestVetting:
         with pytest.raises(TrialRefused) as refused:
             PullRequestTrial.vet(204)
         assert words in str(refused.value)
+
+    def test_a_pr_from_the_authors_own_fork_passes(self, github, trusted, git):
+        """An account without push access opens its PRs from its own fork."""
+        github.answer(_pr(isCrossRepository=True, headRepositoryOwner={"login": "marcus"},
+                          headRepository={"nameWithOwner": "marcus/keep-fork"}))
+        assert PullRequestTrial.vet(204)["number"] == 204
+
+    def test_a_pr_from_someone_elses_fork_is_refused(self, github, trusted, git):
+        github.answer(_pr(isCrossRepository=True, headRepositoryOwner={"login": "dave"},
+                          headRepository={"nameWithOwner": "dave/keep"}))
+        with pytest.raises(TrialRefused) as refused:
+            PullRequestTrial.vet(204)
+        assert "dave" in str(refused.value)
 
     def test_a_dirty_checkout_is_refused(self, github, trusted, git):
         git.return_value = Mock(returncode=0, stdout=" M src/x.py\n", stderr="")

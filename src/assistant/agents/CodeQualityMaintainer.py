@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlencode
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -17,7 +18,7 @@ from common.logging import info, error, trace, note
 from ..llm import parse_llm_config
 from ..llm.ClaudeLLM import WORKSPACE_HEADER, claude_workspace_id
 from common.ConfigManager import ConfigManager
-from common.Paths import REPO_DIR, AISERVER_DIR as _AISERVER_PATH
+from common.Paths import REPO_DIR, LOG_DIR, AISERVER_DIR as _AISERVER_PATH
 from common.RequirementsChecker import RequirementsChecker
 from common.SignedRelease import SignedRelease, RELEASE_BRANCH
 
@@ -102,11 +103,21 @@ REPORT_TITLES = dict(zip(NIGHTLY_STEPS, ("Test Generation", "Bug Analysis", "Log
 REPORT_ORDER = ("bugs", "logs", "fix", "tests", "health", "merge", "pins")
 # The pattern of a pinned bug in tests/unit: the open-pins step runs Claude Code only when the tree holds one.
 STRICT_XFAIL_PATTERN = r"pytest\.mark\.xfail\(\s*strict\s*=\s*True"
-GH_NOT_LOGGED_IN_MESSAGE = (
-    "GitHub CLI is not logged in on the server, so nothing can be filed on the repository. "
-    "Run `gh auth login` in a terminal on the server machine with an account that has write access "
-    "to the repository, then try again."
+GH_NOT_INSTALLED_MESSAGE = (
+    "The GitHub CLI (gh) is not installed on the server machine, so Keep cannot open a pull request. "
+    "Install it with `brew install gh` and run `gh auth login` in a terminal on that machine — any GitHub "
+    "account will do — then try again."
 )
+GH_NOT_LOGGED_IN_MESSAGE = (
+    "The GitHub CLI (gh) is not logged in on the server machine, so Keep cannot open a pull request. "
+    "Run `gh auth login` in a terminal on that machine — any GitHub account will do — then try again."
+)
+PUSH_PERMISSIONS = ("ADMIN", "MAINTAIN", "WRITE")   # GitHub's viewerPermission values that may push a branch
+ISSUE_DRAFT_DIR = LOG_DIR / "issue_drafts"           # report_issue's drafts when gh cannot file them
+# The longest prefilled new-issue link sent to the chat. Telegram documents no limit for a link's
+# address, so a link stays the size browsers and chat apps all take; a longer draft is linked with
+# its title alone and the description is copied from the message.
+PREFILL_URL_LIMIT = 2000
 # The labels the filed PRs and issues carry, for triage on GitHub (created once in the repository).
 INTEGRATION_PR_LABEL = "integration-pr"
 SELF_IMPROVEMENT_LABEL = "self-improvement"
@@ -136,6 +147,46 @@ class JobPullRequest:
     number: int
     url: str
     head: str
+    author: str = ""
+
+
+@dataclass(frozen=True)
+class GithubAccess:
+    """The account gh is logged in as on this machine and its permission on the repository the
+    checkout's origin is. An account that cannot push opens its PRs from a fork of its own."""
+    login: str
+    repo: str          # owner/name
+    permission: str    # GitHub's viewerPermission: ADMIN, MAINTAIN, WRITE, TRIAGE or READ
+
+    @property
+    def can_push(self) -> bool:
+        return self.permission in PUSH_PERMISSIONS
+
+    @property
+    def can_label(self) -> bool:
+        return self.can_push or self.permission == "TRIAGE"
+
+
+@dataclass(frozen=True)
+class IssueDraft:
+    """An issue report_issue wrote but could not file — no gh login on this machine — for the
+    user to file by hand: a new issue (*comment_on* None) or a comment on an open one."""
+    repo: str
+    title: str
+    body: str
+    comment_on: Optional[int] = None
+
+    def link(self) -> tuple[str, bool]:
+        """Where the user files it, and whether the link carries the description too. A comment
+        cannot be prefilled: the link is the issue, its comment box at the bottom."""
+        if self.comment_on is not None:
+            return f"https://github.com/{self.repo}/issues/{self.comment_on}", False
+        base = f"https://github.com/{self.repo}/issues/new?"
+        full = base + urlencode({"title": self.title, "body": self.body, "labels": ISSUE_LABEL})
+        if len(full) <= PREFILL_URL_LIMIT:
+            return full, True
+        trace(f"IssueDraft: the prefilled link would be {len(full)} characters, linking the title alone")
+        return base + urlencode({"title": self.title, "labels": ISSUE_LABEL}), False
 
 
 class ClaudeUnavailableError(RuntimeError):
@@ -515,18 +566,15 @@ IMPORTANT: Your entire response to the user must be in your final message. Keep 
 """
 
 REPORT_ISSUE_PROMPT = """
-A user of this system wants to report an issue to its developers. Investigate it thoroughly and file it as a GitHub
-issue on this repository with `gh issue create`, written so the developers understand it at once and can fix it
-without asking back:
+A user of this system wants to report an issue to its developers. Investigate it thoroughly and {filing}, written so
+the developers understand it at once and can fix it without asking back:
 
 {request}
 
 Investigate first. log/floxy.out has the server logs (huge — grep for the time in question, then read around it);
 the code is in src/. Reconstruct what happened before writing a word.
 
-Then search the open issues (`gh issue list --state open --search "..."`, a few keyword variants) for one about the
-same thing. If there is one, add what you found as a comment on it (`gh issue comment`) instead of opening a
-duplicate, and say so in your report.
+{duplicates}
 
 The issue (markdown):
 - Title: precise, one line, the symptom not the guess.
@@ -539,16 +587,37 @@ The issue (markdown):
 - Environment: Keep {version}, the OS and its version, the integrations enabled, the channel the user spoke
   through (Telegram, voice, console, HTTP), the LLM model in use (its name only).
 - Last line: `Reported by Keep {version} (report_issue)`.
-Give it the label `{label}`.
+{label}
 
 Privacy — the issue leaves this machine: never put private information in it. Quote log lines only after replacing
 private values with a placeholder like <phone> or <name>.
 
-Your final message: the issue's URL on its own line, then one line on what it says — or, when you filed nothing
-(the report was too vague to investigate, or filing failed), why.
+{final}
 
 IMPORTANT: Your entire response must be in your final message. Do not ask follow-up questions. Keep it concise — it will be read over a chat on a phone.
 """
+
+# The parts of REPORT_ISSUE_PROMPT that depend on whether gh can file the issue on this machine.
+ISSUE_FILED = dict(
+    filing="file it as a GitHub issue on this repository with `gh issue create`",
+    duplicates="""Then search the open issues (`gh issue list --state open --search "..."`, a few keyword variants) for one about the
+same thing. If there is one, add what you found as a comment on it (`gh issue comment`) instead of opening a
+duplicate, and say so in your report.""",
+    final="""Your final message: the issue's URL on its own line, then one line on what it says — or, when you filed nothing
+(the report was too vague to investigate, or filing failed), why.""",
+)
+ISSUE_DRAFTED = dict(
+    filing="draft it as a GitHub issue on {repo} — this machine has no GitHub login, so the user files it by hand",
+    duplicates="""Then search the open issues of {repo} through GitHub's public API for one about the same thing, a few keyword
+variants: `curl -s "https://api.github.com/search/issues?q=repo:{repo}+is:issue+is:open+<keywords>"`. If there
+is one, draft what you found as a comment on it instead of a duplicate issue.""",
+    final="""Write the draft to {path}: its first line `Title: <the title>` for a new issue, or `Comment on: #<number>` for
+a comment on an open one, then an empty line, then the markdown body. Do not file anything on GitHub.
+
+Your final message: one line on what the draft says — or, when you drafted nothing (the report was too vague to
+investigate), why.""",
+)
+_DRAFT_HEAD = re.compile(r"^\s*(?:Title:\s*(?P<title>.+?)|Comment on:\s*#?(?P<number>\d+))\s*$", re.IGNORECASE)
 
 
 class CodeQualityMaintainer:
@@ -1276,7 +1345,7 @@ class CodeQualityMaintainer:
         info(f"CodeQualityMaintainer: the reports mention {', '.join(severities)} findings, fixing...")
         prompt = FIX_BUGS_PROMPT.format(analysis=analysis, label=NIGHTLY_FIX_LABEL,
                                         version=CodeQualityMaintainer._version())
-        return CodeQualityMaintainer._pr_job(prompt + CodeQualityMaintainer._trial_instructions(), "nightly-fix")
+        return CodeQualityMaintainer._pr_job(prompt, "nightly-fix")
 
     @staticmethod
     def analyze_code(request: str) -> str:
@@ -1313,20 +1382,85 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def _github_unavailable() -> Optional[str]:
-        """Why nothing can be filed on the repository right now — `gh` is not logged in on
-        this machine — or None. Checked before a run that ends in a PR or an issue, so the
-        user hears it at once instead of after an hour of Claude Code."""
+        """Why nothing can be filed on the repository right now, or None."""
+        return CodeQualityMaintainer._github_access()[1]
+
+    @staticmethod
+    def _github_access() -> tuple[Optional[GithubAccess], Optional[str]]:
+        """Who gh is logged in as and what the account may do on the repository — or, when
+        nothing can be filed from this machine (gh missing, logged out, or the repository
+        unreadable), why. Checked before a run that ends in a PR or an issue, so the user
+        hears it at once instead of after an hour of Claude Code."""
+        def gh(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(["gh", *args], cwd=WORKING_DIR, capture_output=True, text=True,
+                                  timeout=GIT_TIMEOUT, stdin=subprocess.DEVNULL)
         try:
-            result = subprocess.run(["gh", "auth", "status"], cwd=WORKING_DIR, capture_output=True, text=True,
-                                    timeout=GIT_TIMEOUT, stdin=subprocess.DEVNULL)
+            status = gh("auth", "status")
+        except FileNotFoundError:
+            info("CodeQualityMaintainer: gh is not installed")
+            return None, GH_NOT_INSTALLED_MESSAGE
         except Exception as e:
             error(f"CodeQualityMaintainer: gh auth status failed: {e}")
-            return GH_NOT_LOGGED_IN_MESSAGE
+            return None, GH_NOT_LOGGED_IN_MESSAGE
+        if status.returncode != 0:
+            info(f"CodeQualityMaintainer: gh is not logged in: {(status.stderr or status.stdout).strip()}")
+            return None, GH_NOT_LOGGED_IN_MESSAGE
+        try:
+            user = gh("api", "user", "--jq", ".login")
+            repo = gh("repo", "view", "--json", "nameWithOwner,viewerPermission")
+            if user.returncode != 0 or repo.returncode != 0:
+                raise RuntimeError((user.stderr or repo.stderr or "").strip() or "gh exited with an error")
+            view = json.loads(repo.stdout)
+            access = GithubAccess(login=user.stdout.strip(), repo=view["nameWithOwner"],
+                                  permission=str(view.get("viewerPermission") or "READ").upper())
+        except Exception as e:
+            error(f"CodeQualityMaintainer: gh is logged in but the account or the repository cannot be read: {e}")
+            return None, f"The GitHub CLI is logged in, but the repository cannot be read through it: {e}"
+        info(f"CodeQualityMaintainer: gh is logged in as {access.login}, {access.permission} on {access.repo}")
+        return access, None
+
+    @staticmethod
+    def _origin_repo() -> Optional[str]:
+        """owner/name of the GitHub repository the checkout's origin is, without asking gh."""
+        result = CodeQualityMaintainer._run_subprocess(["git", "remote", "get-url", "origin"], "git remote", GIT_TIMEOUT)
+        match = re.search(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?/?$", (result.stdout or "").strip())
+        if not match:
+            error(f"CodeQualityMaintainer: origin is not a GitHub repository: {(result.stdout or result.stderr).strip()}")
+            return None
+        return match.group(1)
+
+    @staticmethod
+    def _ensure_fork(access: GithubAccess) -> str:
+        """owner/name of the account's fork of the repository, made on its first PR — an account
+        without push access opens its PRs from there. git is pointed at gh's login, so the push
+        over HTTPS needs no credentials of its own. Raises when there is no fork to push to."""
+        for cmd, label in ((["gh", "repo", "fork", access.repo, "--clone=false", "--default-branch-only"], "gh repo fork"),
+                           (["gh", "auth", "setup-git"], "gh auth setup-git")):
+            result = CodeQualityMaintainer._run_subprocess(cmd, label, GIT_TIMEOUT)
+            if result.returncode != 0:
+                raise RuntimeError(f"{label} failed: {(result.stderr or result.stdout).strip()}")
+        result = CodeQualityMaintainer._run_subprocess(
+            ["gh", "repo", "list", access.login, "--fork", "--limit", "1000", "--json", "nameWithOwner,parent"],
+            "gh repo list", GIT_TIMEOUT)
         if result.returncode != 0:
-            error(f"CodeQualityMaintainer: gh is not logged in: {(result.stderr or result.stdout).strip()}")
-            return GH_NOT_LOGGED_IN_MESSAGE
-        trace("CodeQualityMaintainer: gh is logged in")
-        return None
+            raise RuntimeError(f"gh repo list failed: {(result.stderr or '').strip()}")
+        for repo in json.loads(result.stdout or "[]"):
+            parent = repo.get("parent") or {}
+            if f"{(parent.get('owner') or {}).get('login')}/{parent.get('name')}".lower() == access.repo.lower():
+                info(f"CodeQualityMaintainer: {access.login} has no push access to {access.repo}, "
+                     f"the PR comes from the fork {repo['nameWithOwner']}")
+                return repo["nameWithOwner"]
+        raise RuntimeError(f"no fork of {access.repo} under {access.login} after gh repo fork")
+
+    @staticmethod
+    def _fork_instructions(access: GithubAccess, fork: str) -> str:
+        """What a PR job is told when the account cannot push to the repository: the branch
+        goes to the account's fork and the PR from there, without a label."""
+        return (f"\nIMPORTANT: the GitHub account here ({access.login}) cannot push to {access.repo}, so the pull "
+                f"request comes from its fork {fork}. This overrides the steps above: never push to origin; push "
+                f"the branch with `git push https://github.com/{fork}.git HEAD:refs/heads/<branch>` and open the PR "
+                f"with `gh pr create --repo {access.repo} --head {access.login}:<branch>`. Give it no label — the "
+                f"account cannot set labels on {access.repo}.\n")
 
     @staticmethod
     def _version() -> str:
@@ -1336,12 +1470,12 @@ class CodeQualityMaintainer:
     @staticmethod
     def improve_code(request: str) -> tuple[str, Optional[JobPullRequest]]:
         """A PR anywhere in the code base: the report and the PR the run opened (None for none)."""
-        reason = CodeQualityMaintainer._github_unavailable()
+        access, reason = CodeQualityMaintainer._github_access()
         if reason:
             return reason, None
         prompt = SELF_IMPROVEMENT_PROMPT.format(request=request, label=SELF_IMPROVEMENT_LABEL,
                                                 version=CodeQualityMaintainer._version())
-        return CodeQualityMaintainer._pr_job(prompt + CodeQualityMaintainer._trial_instructions(), "self-improvement")
+        return CodeQualityMaintainer._pr_job(prompt, "self-improvement", access)
 
     @staticmethod
     def improve_integration(name: str, folder: Optional[str], request: str) -> tuple[str, Optional[JobPullRequest]]:
@@ -1352,7 +1486,7 @@ class CodeQualityMaintainer:
         folder `_judged_folder` settles) and a PR that strays is closed, its branch kept and
         the reason in the report, so a user's install can only ever open PRs the developers
         can review as one integration's. Returns the report and the PR left open, if any."""
-        reason = CodeQualityMaintainer._github_unavailable()
+        access, reason = CodeQualityMaintainer._github_access()
         if reason:
             return reason, None
         version = CodeQualityMaintainer._version()
@@ -1367,7 +1501,7 @@ class CodeQualityMaintainer:
             prompt = IMPROVE_INTEGRATION_PROMPT.format(name=name, request=request, scope=scope,
                                                        label=INTEGRATION_PR_LABEL, version=version)
         label = f"improve-integration {name}"
-        report, pr = CodeQualityMaintainer._pr_job(prompt + CodeQualityMaintainer._trial_instructions(), label)
+        report, pr = CodeQualityMaintainer._pr_job(prompt, label, access)
         if pr is None:
             info(f"CodeQualityMaintainer: {label} opened no PR, so nothing is checked against the integration scope")
             return report, None
@@ -1409,10 +1543,21 @@ class CodeQualityMaintainer:
         return PullRequestTrial.pr_job_instructions()
 
     @staticmethod
-    def _pr_job(prompt: str, label: str) -> tuple[str, Optional[JobPullRequest]]:
+    def _pr_job(prompt: str, label: str, access: Optional[GithubAccess] = None) -> tuple[str, Optional[JobPullRequest]]:
         """One Claude Code run that ends in a pull request: on the pulled current branch,
-        back on it afterwards whatever happened. Returns the report and the PR the run
-        opened (`_job_pull_request`), None when it opened none or that cannot be told."""
+        back on it afterwards whatever happened. During a trial the prompt gains the trial's
+        paragraph (the change goes onto the tried PR); otherwise an *access* that cannot push
+        gets its fork made first and the fork's paragraph. Returns the report and the PR the
+        run opened (`_job_pull_request`), None when it opened none or that cannot be told."""
+        delivery = CodeQualityMaintainer._trial_instructions()
+        if not delivery and access is not None and not access.can_push:
+            try:
+                delivery = CodeQualityMaintainer._fork_instructions(access, CodeQualityMaintainer._ensure_fork(access))
+            except Exception as e:
+                error(f"CodeQualityMaintainer: {label} not started, no fork to open the PR from: {e}")
+                return (f"{access.login} cannot push to {access.repo}, and the fork the pull request would come "
+                        f"from could not be made: {e}"), None
+        prompt += delivery
         branch = CodeQualityMaintainer._current_branch()
         open_before = CodeQualityMaintainer._open_pull_requests()
         try:
@@ -1421,7 +1566,8 @@ class CodeQualityMaintainer:
             trace(f"prompt: {prompt}")
             result = CodeQualityMaintainer._run_claude(prompt, label)
             left_on = CodeQualityMaintainer._current_branch()
-            pr = CodeQualityMaintainer._job_pull_request(label, open_before, left_on if left_on != branch else None)
+            pr = CodeQualityMaintainer._job_pull_request(label, open_before, left_on if left_on != branch else None,
+                                                         access.login if access else None)
             return (result if result else f"{label.capitalize()} produced no output."), pr
         except ClaudeUnavailableError as e:
             return str(e), None
@@ -1437,12 +1583,13 @@ class CodeQualityMaintainer:
         can be told to be a job's, and none is judged."""
         try:
             result = CodeQualityMaintainer._run_subprocess(
-                ["gh", "pr", "list", "--state", "open", "--limit", "200", "--json", "number,url,headRefName"],
+                ["gh", "pr", "list", "--state", "open", "--limit", "200", "--json", "number,url,headRefName,author"],
                 "gh pr list", GIT_TIMEOUT)
             if result.returncode != 0:
                 raise RuntimeError((result.stderr or "").strip() or f"gh pr list exited {result.returncode}")
             prs = json.loads(result.stdout or "[]")
-            return {pr["number"]: JobPullRequest(pr["number"], pr.get("url", ""), pr.get("headRefName", ""))
+            return {pr["number"]: JobPullRequest(pr["number"], pr.get("url", ""), pr.get("headRefName", ""),
+                                                 ((pr.get("author") or {}).get("login") or ""))
                     for pr in prs}
         except Exception as e:
             error(f"CodeQualityMaintainer: could not list the open PRs: {e}")
@@ -1450,12 +1597,13 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def _job_pull_request(label: str, open_before: Optional[dict[int, JobPullRequest]],
-                          work_branch: Optional[str]) -> Optional[JobPullRequest]:
+                          work_branch: Optional[str], login: Optional[str] = None) -> Optional[JobPullRequest]:
         """The PR a job opened: during a trial the tried PR, which the job pushed onto; else
-        an open PR that was not open before the run — the one from *work_branch*, the branch
-        the run left the tree on, or the only new one when the tree is back on its own branch.
-        None when the job opened none, and when it cannot be told: a job's PR is never
-        guessed, since the scope check closes the PR it is handed."""
+        an open PR that was not open before the run and, with *login*, opened by that account
+        — on a public repository anyone's PR can appear during the hour a job runs — the one
+        from *work_branch*, the branch the run left the tree on, or the only new one when the
+        tree is back on its own branch. None when the job opened none, and when it cannot be
+        told: a job's PR is never guessed, since the scope check closes the PR it is handed."""
         open_after = CodeQualityMaintainer._open_pull_requests()
         if open_after is None:
             info(f"CodeQualityMaintainer: {label}: the open PRs cannot be listed, so no PR is taken as the job's")
@@ -1471,6 +1619,12 @@ class CodeQualityMaintainer:
             info(f"CodeQualityMaintainer: {label}: the PRs open before the run are unknown, so no PR is taken as the job's")
             return None
         new = [pr for number, pr in open_after.items() if number not in open_before]
+        if login:
+            others = [pr for pr in new if pr.author.lower() != login.lower()]
+            if others:
+                info(f"CodeQualityMaintainer: {label}: new PR(s) by other accounts are not the job's: "
+                     + ", ".join(f"#{pr.number} by {pr.author or 'unknown'}" for pr in others))
+            new = [pr for pr in new if pr not in others]
         if not new:
             info(f"CodeQualityMaintainer: {label} opened no pull request")
             return None
@@ -1582,24 +1736,66 @@ class CodeQualityMaintainer:
             error(f"CodeQualityMaintainer: could not close PR #{number}: {result.stderr.strip()}")
 
     @staticmethod
-    def report_issue(request: str) -> str:
+    def report_issue(request: str) -> tuple[str, Optional[IssueDraft]]:
         """One Claude Code run that investigates and files a GitHub issue; the report names
-        the issue's URL (`issue_in`), or says why none was filed."""
-        reason = CodeQualityMaintainer._github_unavailable()
-        if reason:
-            return reason
+        the issue's URL (`issue_in`), or says why none was filed. Where gh cannot file it (not
+        installed or not logged in — a normal install), the run drafts it instead and the
+        draft comes back for the user to file by hand."""
+        access, reason = CodeQualityMaintainer._github_access()
+        version = CodeQualityMaintainer._version()
+        draft_path = None
+        if access is not None:
+            label = (f"Give it the label `{ISSUE_LABEL}`." if access.can_label
+                     else f"Give it no label — the account cannot set labels on {access.repo}.")
+            parts = ISSUE_FILED
+        else:
+            repo = CodeQualityMaintainer._origin_repo()
+            if repo is None:
+                return reason, None
+            ISSUE_DRAFT_DIR.mkdir(parents=True, exist_ok=True)
+            draft_path = ISSUE_DRAFT_DIR / f"{datetime.now():%Y%m%d-%H%M%S}.md"
+            info(f"CodeQualityMaintainer: gh cannot file the issue ({reason.split(',')[0]}), drafting it to {draft_path}")
+            label = ""
+            parts = {k: v.format(repo=repo, path=draft_path) for k, v in ISSUE_DRAFTED.items()}
         info("CodeQualityMaintainer: starting the issue report...")
-        prompt = REPORT_ISSUE_PROMPT.format(request=request, label=ISSUE_LABEL,
-                                            version=CodeQualityMaintainer._version())
+        prompt = REPORT_ISSUE_PROMPT.format(request=request, label=label, version=version, **parts)
         trace(f"prompt: {prompt}")
         try:
             result = CodeQualityMaintainer._run_claude(prompt, "report-issue")
         except ClaudeUnavailableError as e:
-            return str(e)
+            return str(e), None
         except Exception as e:
             error(f"CodeQualityMaintainer: the issue report failed: {e}")
-            return f"The issue report failed: {e}"
-        return result if result else "The issue report produced no output."
+            return f"The issue report failed: {e}", None
+        report = result if result else "The issue report produced no output."
+        if draft_path is None:
+            return report, None
+        return report, CodeQualityMaintainer.read_issue_draft(draft_path, repo)
+
+    @staticmethod
+    def read_issue_draft(path, repo: str) -> Optional[IssueDraft]:
+        """The draft a report_issue run wrote to *path* (`Title: …` or `Comment on: #N`, an
+        empty line, the body); None when it wrote none or one that does not read."""
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            info(f"CodeQualityMaintainer: the issue run wrote no draft to {path}")
+            return None
+        except OSError as e:
+            error(f"CodeQualityMaintainer: the issue draft {path} cannot be read: {e}")
+            return None
+        head, _, body = text.partition("\n")
+        match = _DRAFT_HEAD.match(head)
+        if not match or not body.strip():
+            error(f"CodeQualityMaintainer: the issue draft {path} does not start with a title or an issue number "
+                  f"and a body: {head[:120]!r}")
+            return None
+        number = match.group("number")
+        draft = IssueDraft(repo=repo, title=(match.group("title") or "").strip(), body=body.strip(),
+                           comment_on=int(number) if number else None)
+        info(f"CodeQualityMaintainer: issue drafted, "
+             f"{f'a comment on #{draft.comment_on}' if number else repr(draft.title)} ({len(draft.body)} characters)")
+        return draft
 
     _ISSUE_URL = re.compile(r"https?://github\.com/[\w.-]+/[\w.-]+/issues/(\d+)(?:#issuecomment-\d+)?")
 

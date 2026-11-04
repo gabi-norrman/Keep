@@ -33,9 +33,10 @@ ROLLBACK_NOTE_CHARS = 1500
 class Trial:
     number: int
     title: str
-    head_ref: str        # the PR's own branch on origin, where a follow-up job pushes
+    head_ref: str        # the PR's own branch, where a follow-up job pushes
     since: str           # when the trial began, HH:MM today or YYYY-MM-DD HH:MM
     return_branch: str   # what restart_server and the nightly update go back to
+    head_repo: str = ""  # owner/name of the fork the PR comes from; "" for a branch of origin
 
     @property
     def branch(self) -> str:
@@ -65,7 +66,8 @@ class PullRequestTrial:
         """What GitHub knows of the PR; cached, since the title and the branch name do not move
         while this process runs and the prompt section asks at every build."""
         result = subprocess.run(
-            ["gh", "pr", "view", str(number), "--json", "number,title,state,author,isCrossRepository,headRefName"],
+            ["gh", "pr", "view", str(number), "--json",
+             "number,title,state,author,isCrossRepository,headRefName,headRepository,headRepositoryOwner"],
             cwd=WORKING_DIR, capture_output=True, text=True, timeout=GIT_TIMEOUT, stdin=subprocess.DEVNULL)
         if result.returncode != 0:
             raise RuntimeError((result.stderr or "").strip() or f"gh pr view exited {result.returncode}")
@@ -81,11 +83,12 @@ class PullRequestTrial:
         try:
             pr = PullRequestTrial._pr(number)
             title, head_ref = pr.get("title", ""), pr.get("headRefName", "")
+            head_repo = (pr.get("headRepository") or {}).get("nameWithOwner", "") if pr.get("isCrossRepository") else ""
         except Exception as e:
             error(f"PullRequestTrial: PR #{number} could not be read ({e}), the trial is known by its number alone")
-            title, head_ref = "", ""
+            title, head_ref, head_repo = "", "", ""
         return Trial(number=number, title=title, head_ref=head_ref, since=PullRequestTrial._since(number),
-                     return_branch=CodeQualityMaintainer.target_branch())
+                     return_branch=CodeQualityMaintainer.target_branch(), head_repo=head_repo)
 
     @staticmethod
     def _since(number: int) -> str:
@@ -102,17 +105,19 @@ class PullRequestTrial:
     @staticmethod
     def vet(number: int) -> dict:
         """The PR when this machine may run it, TrialRefused otherwise. Running a PR is running
-        its code next to the user's mail and messages, so the trust is the auto-merge's: a branch
-        of this repository, by one of the install's own authors, and still open."""
+        its code next to the user's mail and messages, so it must be by one of the install's own
+        authors and still open; a PR from a fork only from the author's own fork — the way an
+        account without push access opens its PRs."""
         try:
             pr = PullRequestTrial._pr.__wrapped__(number)
         except Exception as e:
             raise TrialRefused(f"PR #{number} could not be read: {e}")
         if pr.get("state") != "OPEN":
             raise TrialRefused(f"PR #{number} is {str(pr.get('state', '')).lower() or 'not open'}; only an open PR can be tried")
-        if pr.get("isCrossRepository"):
-            raise TrialRefused(f"PR #{number} comes from a fork, not from this repository")
         author = ((pr.get("author") or {}).get("login") or "").lower()
+        fork_owner = ((pr.get("headRepositoryOwner") or {}).get("login") or "").lower()
+        if pr.get("isCrossRepository") and fork_owner != author:
+            raise TrialRefused(f"PR #{number} comes from {fork_owner or 'a fork'}'s fork, not its author's own")
         trusted = CodeQualityMaintainer._trusted_pr_authors()
         if author not in trusted:
             raise TrialRefused(f"PR #{number} is by {author or 'an unknown author'}, not one of this install's own PRs")
@@ -211,10 +216,11 @@ class PullRequestTrial:
         if not trial.head_ref:
             error(f"PullRequestTrial: PR #{trial.number}'s branch is unknown, the job is told nothing of the trial")
             return ""
+        remote = f"https://github.com/{trial.head_repo}.git" if trial.head_repo else "origin"
         return (f"\nIMPORTANT: this server runs PR #{trial.number} as a trial, and the checkout is on that PR's head "
                 f"(local branch `{trial.branch}`). The request is feedback on that PR, so it is the PR to change: "
                 f"do NOT create a branch or open a new pull request. Commit on the current branch and push it to the "
-                f"PR's own branch with `git push origin HEAD:refs/heads/{trial.head_ref}`; the PR updates by itself. "
+                f"PR's own branch with `git push {remote} HEAD:refs/heads/{trial.head_ref}`; the PR updates by itself. "
                 f"Name PR #{trial.number} in your report.\n")
 
     @staticmethod
