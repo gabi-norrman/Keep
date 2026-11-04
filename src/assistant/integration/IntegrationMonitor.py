@@ -95,6 +95,7 @@ class IntegrationMonitor:
         self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
         self._config_manager = ConfigManager()
         self._listeners: List[Callable[[], None]] = []
 
@@ -347,12 +348,14 @@ class IntegrationMonitor:
             info("IntegrationMonitor not starting — running under test, integrations stay idle")
             return
         self._running = True
+        self._stop_event.clear()
         self._thread = threading.Thread(target=self._run_loop, name="IntegrationMonitor", daemon=True)
         self._thread.start()
         info("IntegrationMonitor started")
 
     def stop(self):
         self._running = False
+        self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
@@ -361,7 +364,9 @@ class IntegrationMonitor:
     FEED_OPEN_TIMEOUT = 15     # seconds a restart waits for a feed's open_feed before the health check
 
     def _run_loop(self):
-        time.sleep(self.STARTUP_GRACE_PERIOD)
+        if self._stop_event.wait(self.STARTUP_GRACE_PERIOD):
+            info("IntegrationMonitor stopped during the startup grace period, no health checks run")
+            return
 
         for integration in self._snapshot():
             if integration.state in (IntegrationState.NOT_CONFIGURED, IntegrationState.DISABLED, IntegrationState.NEEDS_2FA,
@@ -371,10 +376,7 @@ class IntegrationMonitor:
 
         self._log_cycle_summary()
 
-        while self._running:
-            time.sleep(self.CHECK_INTERVAL)
-            if not self._running:
-                break
+        while not self._stop_event.wait(self.CHECK_INTERVAL):
             self._check_cycle()
 
     def _check_cycle(self):

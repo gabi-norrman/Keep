@@ -1,3 +1,4 @@
+import threading
 import time
 from typing import List
 from unittest.mock import patch, Mock
@@ -278,35 +279,55 @@ class TestRunLoop:
         monitor._config_manager = mock_cm
         return monitor
 
-    @patch("assistant.integration.IntegrationMonitor.time.sleep")
-    def test_startup_grace_period_sleeps_before_first_check(self, mock_sleep):
+    @staticmethod
+    def _drive(monitor, on_wait):
+        """Run the loop with the stop event's wait answered by on_wait(seconds) — True stops it."""
+        monitor._stop_event = Mock()
+        monitor._stop_event.wait.side_effect = on_wait
+        monitor._run_loop()
+
+    def test_startup_grace_period_waits_before_first_check(self):
         monitor = self._make_monitor()
-        integration = FakeIntegration(healthy=True)
-        monitor.register(integration)
+        monitor.register(FakeIntegration(healthy=True))
 
         call_order = []
-        mock_sleep.side_effect = lambda s: call_order.append(("sleep", s))
         original_check = monitor._check_integration
         def tracking_check(i):
             call_order.append(("check", i.name))
             original_check(i)
         monitor._check_integration = tracking_check
 
-        # Stop after first cycle
-        monitor._running = True
-        def stop_on_interval(s):
-            if s == IntegrationMonitor.CHECK_INTERVAL:
-                monitor._running = False
-            call_order.append(("sleep", s))
-        mock_sleep.side_effect = stop_on_interval
+        def wait(s):
+            call_order.append(("wait", s))
+            return s == IntegrationMonitor.CHECK_INTERVAL
+        self._drive(monitor, wait)
 
-        monitor._run_loop()
-
-        assert call_order[0] == ("sleep", IntegrationMonitor.STARTUP_GRACE_PERIOD)
+        assert call_order[0] == ("wait", IntegrationMonitor.STARTUP_GRACE_PERIOD)
         assert ("check", "FakeService") in call_order
 
-    @patch("assistant.integration.IntegrationMonitor.time.sleep")
-    def test_initial_check_skips_not_configured(self, mock_sleep):
+    def test_stop_during_grace_period_runs_no_check(self):
+        monitor = self._make_monitor()
+        monitor.register(FakeIntegration(healthy=True))
+        monitor._check_integration = Mock()
+
+        self._drive(monitor, lambda s: True)
+
+        monitor._check_integration.assert_not_called()
+
+    def test_stop_wakes_the_loop_at_once(self):
+        monitor = self._make_monitor()
+        monitor._running = True
+        monitor._thread = threading.Thread(target=monitor._run_loop, daemon=True)
+        monitor._thread.start()
+        thread = monitor._thread
+
+        started = time.monotonic()
+        monitor.stop()
+
+        assert not thread.is_alive()
+        assert time.monotonic() - started < 1
+
+    def test_initial_check_skips_not_configured(self):
         monitor = self._make_monitor()
 
         healthy = FakeIntegration("Healthy", ["h"], healthy=True)
@@ -323,16 +344,13 @@ class TestRunLoop:
             checked.append(i.name)
             original_check(i)
         monitor._check_integration = tracking_check
-        monitor._running = True
-        mock_sleep.side_effect = lambda s: setattr(monitor, '_running', False) if s == IntegrationMonitor.CHECK_INTERVAL else None
 
-        monitor._run_loop()
+        self._drive(monitor, lambda s: s == IntegrationMonitor.CHECK_INTERVAL)
 
         assert "Healthy" in checked
         assert "Unconfigured" not in checked
 
-    @patch("assistant.integration.IntegrationMonitor.time.sleep")
-    def test_initial_check_skips_needs_2fa(self, mock_sleep):
+    def test_initial_check_skips_needs_2fa(self):
         monitor = self._make_monitor()
         integration = Fake2FAIntegration(requires_2fa=True)
         monitor.register(integration)
@@ -341,15 +359,12 @@ class TestRunLoop:
         checked = []
         original_check = monitor._check_integration
         monitor._check_integration = lambda i: checked.append(i.name) or original_check(i)
-        monitor._running = True
-        mock_sleep.side_effect = lambda s: setattr(monitor, '_running', False) if s == IntegrationMonitor.CHECK_INTERVAL else None
 
-        monitor._run_loop()
+        self._drive(monitor, lambda s: s == IntegrationMonitor.CHECK_INTERVAL)
 
         assert "TwoFAService" not in checked
 
-    @patch("assistant.integration.IntegrationMonitor.time.sleep")
-    def test_periodic_check_resolves_2fa(self, mock_sleep):
+    def test_periodic_check_resolves_2fa(self):
         monitor = self._make_monitor()
         integration = Fake2FAIntegration(requires_2fa=True, healthy=True)
         monitor.register(integration)
@@ -363,23 +378,19 @@ class TestRunLoop:
         monitor._check_integration = tracking_check
 
         cycle = [0]
-        monitor._running = True
-        def sleep_handler(s):
-            if s == IntegrationMonitor.CHECK_INTERVAL:
-                cycle[0] += 1
-                if cycle[0] == 1:
-                    integration._requires_2fa = False
-                elif cycle[0] >= 2:
-                    monitor._running = False
-        mock_sleep.side_effect = sleep_handler
-
-        monitor._run_loop()
+        def wait(s):
+            if s != IntegrationMonitor.CHECK_INTERVAL:
+                return False
+            cycle[0] += 1
+            if cycle[0] == 1:
+                integration._requires_2fa = False
+            return cycle[0] >= 2
+        self._drive(monitor, wait)
 
         assert "TwoFAService" in checked
         assert integration.state == IntegrationState.OK
 
-    @patch("assistant.integration.IntegrationMonitor.time.sleep")
-    def test_periodic_check_detects_new_2fa_requirement(self, mock_sleep):
+    def test_periodic_check_detects_new_2fa_requirement(self):
         monitor = self._make_monitor()
         integration = Fake2FAIntegration(requires_2fa=False, healthy=True)
         monitor.register(integration)
@@ -389,22 +400,18 @@ class TestRunLoop:
         monitor._check_integration = lambda i: checked.append(i.name) or original_check(i)
 
         cycle = [0]
-        monitor._running = True
-        def sleep_handler(s):
-            if s == IntegrationMonitor.CHECK_INTERVAL:
-                cycle[0] += 1
-                if cycle[0] == 1:
-                    integration._requires_2fa = True
-                elif cycle[0] >= 2:
-                    monitor._running = False
-        mock_sleep.side_effect = sleep_handler
-
-        monitor._run_loop()
+        def wait(s):
+            if s != IntegrationMonitor.CHECK_INTERVAL:
+                return False
+            cycle[0] += 1
+            if cycle[0] == 1:
+                integration._requires_2fa = True
+            return cycle[0] >= 2
+        self._drive(monitor, wait)
 
         assert integration.state == IntegrationState.NEEDS_2FA
 
-    @patch("assistant.integration.IntegrationMonitor.time.sleep")
-    def test_periodic_check_rechecks_rate_limited(self, mock_sleep):
+    def test_periodic_check_rechecks_rate_limited(self):
         monitor = self._make_monitor()
         integration = FakeIntegration(healthy=True)
         monitor.register(integration)
@@ -418,15 +425,12 @@ class TestRunLoop:
         monitor._check_integration = tracking_check
 
         cycle = [0]
-        monitor._running = True
-        def sleep_handler(s):
-            if s == IntegrationMonitor.CHECK_INTERVAL:
-                cycle[0] += 1
-                if cycle[0] >= 2:
-                    monitor._running = False
-        mock_sleep.side_effect = sleep_handler
-
-        monitor._run_loop()
+        def wait(s):
+            if s != IntegrationMonitor.CHECK_INTERVAL:
+                return False
+            cycle[0] += 1
+            return cycle[0] >= 2
+        self._drive(monitor, wait)
 
         periodic_checks = [c for c in checked if c == "FakeService"]
         assert len(periodic_checks) >= 1
