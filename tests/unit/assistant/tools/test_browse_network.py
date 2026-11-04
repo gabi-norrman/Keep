@@ -84,6 +84,11 @@ class TestCapture:
         'https://www.google.com/ccm/collect?en=purchase',
         'https://region1.analytics.google.com/g/collect?v=2',
         'https://o123.ingest.sentry.io/api/5/envelope/',
+        # Header bidding re-auctions an idle tab's ad slots every few seconds, for hours.
+        'https://hb.primis-tech.org/hb-multi',
+        'https://rtb.primis.tech/live/liveInternalSsp.php?sspData=%7B%22enc%22%3Atrue%7D',
+        'https://targeting.unrulymedia.com/unruly_prebid?pbjs=1',
+        'https://c.amazon-adsystem.com/e/dtb/bid?src=3&u=https%3A%2F%2Fshop.example%2Fcart',
     ])
     def test_analytics_and_ad_beacons_are_not_captured_nor_in_flight(self, url):
         # The 2026-10-22 Tesla checkout: pixels whose query strings said "cart" buried the one

@@ -211,7 +211,9 @@ class WebAccess(Integration):
     # Tesla checkout's browse_network("cart|order") filter and buried the one failing POST,
     # they ate the ring buffer, and a Facebook pixel that never answers held the network-idle
     # wait at its cap on every step. Payment and auth hosts (Adyen, Stripe, Klarna, BankID…)
-    # are not beacons and stay.
+    # are not beacons and stay. Header-bidding networks (Primis, Unruly, Publift, Amazon TAM, Lotame)
+    # re-auction an idle page's ad slots every few seconds for as long as the tab is open: a
+    # Songkick tab left by the 2026-11-04 watch check wrote 500 of them in twenty minutes.
     _NETWORK_NOISE_URL_RE = re.compile(
         r'^https?://(?:[^/]*\.)?(?:'
         r'facebook\.com/tr\b|connect\.facebook\.net|google-analytics\.com|analytics\.google\.com|'
@@ -219,7 +221,8 @@ class WebAccess(Integration):
         r'google\.[a-z.]{2,6}/(?:pagead|ccm)/|bat\.bing\.com|clarity\.ms|hotjar\.com|'
         r'segment\.(?:io|com)|mixpanel\.com|amplitude\.com|sentry\.io|datadoghq\.com|nr-data\.net|'
         r'analytics\.tiktok\.com|ads\.linkedin\.com|tr\.snapchat\.com|ct\.pinterest\.com|'
-        r'criteo\.(?:com|net)|adnxs\.com|klaviyo\.com|fullstory\.com'
+        r'criteo\.(?:com|net)|adnxs\.com|klaviyo\.com|fullstory\.com|'
+        r'primis\.tech|primis-tech\.org|unrulymedia\.com|pub\.network|amazon-adsystem\.com|crwdcntrl\.net'
         r')', re.I)
     _NETWORK_BODY_TYPES = frozenset({'XHR', 'Fetch', 'EventSource'})
     _NETWORK_BODY_MIME_RE = re.compile(r'json|text/|javascript|xml|x-www-form-urlencoded', re.I)
