@@ -40,9 +40,7 @@ You can have Keep running in minutes:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/maciekd/Keep/release/install.sh | bash
 ```
-
-> [!NOTE]
-> The installer is self-contained, it won't touch anything else on your Mac.
+The installer is self-contained, it won't touch anything else on your Mac.
 
 <br>
 
