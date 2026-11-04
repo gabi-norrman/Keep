@@ -2,7 +2,7 @@
 from assistant.commands.CommandSet import CommandSet
 from assistant.SystemNote import system_note
 from common.logging import info, trace
-from integrations.dropbox.DocumentText import FIND_LIMIT, find, pages
+from assistant.integration.DocumentPages import FIND_LIMIT, find, pages
 from integrations.dropbox.DropboxAuth import NotSignedIn
 from integrations.dropbox.DropboxClient import DropboxError
 from integrations.dropbox.DropboxIntegration import DropboxIntegration, human_size

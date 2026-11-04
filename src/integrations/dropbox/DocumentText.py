@@ -1,32 +1,24 @@
-"""The text of a document and its pages: bytes and a name in, text out; then the paging and the find.
+"""The text of a document: bytes and a name in, text out, with a marker line before each PDF page or slide.
 
 Pure functions, no I/O. `extract` reads what it has a reader for — plain text of any kind, a
 PDF through pdfplumber with a `[p. N]` marker before each PDF page, a .docx or .pptx through
 the stdlib zip and XML readers (`[slide N]` markers), an RTF through the small reader here
 (the control words dropped, the `\'xx` escapes decoded in the document's code page, so a
 TextEdit file's ö, ä and å come out as letters) — and raises `Unreadable` for the rest
-(images, spreadsheets, archives, a binary it cannot place). `pages` cuts a text into pages of
-at most PAGE_CHARS at paragraph boundaries, so a page and its header stay under the size the
-history stores a command result at. `find` is the content search that works on any plan:
-the lines of the text that carry every given word, each with its page and its PDF page."""
+(images, spreadsheets, archives, a binary it cannot place). The paging and the find are
+the core's `assistant/integration/DocumentPages.py`, shared with Google Drive."""
 import codecs
 import io
 import re
 import zipfile
-from dataclasses import dataclass
 from xml.etree import ElementTree
 
-# Under MessageHistory.COMMAND_RESULT_CHARS (6,000) with the header of a page over it.
-PAGE_CHARS = 5000
-FIND_LIMIT = 20
-SNIPPET_CHARS = 200
 TEXT_EXTENSIONS = {"txt", "md", "markdown", "csv", "tsv", "json", "yaml", "yml", "xml", "html", "htm", "log", "ini",
                    "toml", "cfg", "conf", "rtf", "tex", "py", "js", "ts", "sh", "sql", "java", "c", "h", "cpp", "rs",
                    "go", "rb", "php", "css", "srt", "vtt", "ics", "eml", "paper"}
 BINARY_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "tif", "tiff", "bmp", "svg", "mp3", "m4a",
                      "wav", "aac", "flac", "mp4", "mov", "m4v", "avi", "mkv", "zip", "gz", "tgz", "rar", "7z", "dmg",
                      "pkg", "exe", "app", "xls", "xlsx", "numbers", "key", "pages", "doc", "ppt", "psd", "ai", "sketch"}
-MARKER_RE = re.compile(r"^\[(?:p\.|slide) (\d+)\]$")
 RTF_TOKEN_RE = re.compile(rb"\\([a-zA-Z]{1,32})(-?\d{1,10})? ?|\\'([0-9a-fA-F]{2})|\\([^a-zA-Z])|([{}])|([^\\{}]+)")
 # Groups whose text is not the document's: the font and colour tables, the metadata, pictures,
 # the headers and footers, a field's instruction (its result stays). `{\*\…}` groups are skipped as such.
@@ -44,13 +36,6 @@ DRAWING_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 
 class Unreadable(Exception):
     """The file has no text to give: its kind, or what went wrong, in a few words."""
-
-
-@dataclass(frozen=True)
-class Hit:
-    page: int                   # the page of `pages()` the line is on
-    marker: str                 # the PDF page or slide the line is under, "" for plain text
-    line: str
 
 
 def extension(name: str) -> str:
@@ -248,51 +233,3 @@ def _tidy(text: str) -> str:
 
 
 # --- paging ----------------------------------------------------------------------------------
-
-def pages(text: str, limit: int = PAGE_CHARS) -> list[str]:
-    """The text cut into pages of at most `limit` characters, at a blank line when one is in
-    reach, else a line end, else a space, else hard. An empty text is one empty page."""
-    text = text.strip()
-    if not text:
-        return [""]
-    out = []
-    while len(text) > limit:
-        window = text[:limit]
-        cut = next((at for at in (window.rfind("\n\n", limit // 4), window.rfind("\n", limit // 2),
-                                  window.rfind(" ", limit * 3 // 4)) if at > 0), limit)
-        out.append(text[:cut].strip())
-        text = text[cut:].strip()
-    out.append(text)
-    return out
-
-
-def find(text: str, words: list[str], limit: int = FIND_LIMIT) -> list[Hit]:
-    """The lines carrying every word (case aside), each with its page of `pages()` and the
-    `[p. N]` / `[slide N]` marker it stands under; at most `limit` hits."""
-    wanted = [w.lower() for w in words if w.strip()]
-    if not wanted:
-        return []
-    hits: list[Hit] = []
-    marker = ""
-    for number, page in enumerate(pages(text), 1):
-        for line in page.splitlines():
-            stripped = line.strip()
-            if match := MARKER_RE.match(stripped):
-                marker = stripped
-                continue
-            lowered = stripped.lower()
-            if stripped and all(w in lowered for w in wanted):
-                hits.append(Hit(number, marker, snippet(stripped, wanted[0])))
-                if len(hits) >= limit:
-                    return hits
-    return hits
-
-
-def snippet(line: str, word: str, limit: int = SNIPPET_CHARS) -> str:
-    """The line, or the part of it around the first `word` when it is longer than `limit`."""
-    if len(line) <= limit:
-        return line
-    at = line.lower().find(word)
-    start = max(0, min(at - limit // 3, len(line) - limit))
-    piece = line[start:start + limit]
-    return ("…" if start > 0 else "") + piece + ("…" if start + limit < len(line) else "")

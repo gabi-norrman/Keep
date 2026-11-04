@@ -8,7 +8,7 @@ import pytest
 from assistant.commands.Commands import Commands
 from assistant.integration.OAuthPaste import SignIn
 from assistant.prompt.MessageHistory import MessageHistory
-from integrations.dropbox.DocumentText import FIND_LIMIT
+from assistant.integration.DocumentPages import FIND_LIMIT
 from integrations.dropbox.DropboxAuth import REDIRECT_URI
 from integrations.dropbox.DropboxClient import DropboxError, Entry, Match
 from integrations.dropbox.DropboxIntegration import Document, DropboxIntegration
