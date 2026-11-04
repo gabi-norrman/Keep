@@ -1,4 +1,4 @@
-"""The Google commands: the browser sign-in of an account from any chat, and the Drive search, the paged read of a Doc or deck and the find inside it."""
+"""The Google commands: the browser sign-in of an account from any chat, and the Drive search, the paged read of a Doc, Sheet or deck and the find inside it."""
 from assistant.commands.CommandSet import CommandSet
 from assistant.integration.DocumentPages import FIND_LIMIT, find, pages
 from assistant.SystemNote import system_note
@@ -23,7 +23,7 @@ def _listed(items: list[str]) -> str:
 
 class GoogleCommands(CommandSet):
     """Signs a Google account in from the chat (the URL out, the address the browser lands on back
-    in), searches the accounts' Drives and reads a Google Doc or Slides deck in pages."""
+    in), searches the accounts' Drives and reads a Google Doc, Sheet or Slides deck in pages."""
     MULTI_PARAM_COMMANDS = frozenset({"search_google_drive", "read_google_doc", "find_in_google_doc"})
 
     def cmd_google_login(self, parameter_string: str):
@@ -170,8 +170,10 @@ class GoogleCommands(CommandSet):
             header += f'\nNext: read_google_doc("{document.id}", {number + 1}).'
         if len(parts) > 1:
             header += f' Looking for something: find_in_google_doc("{document.id}", "<words>") says which page.'
-        if head.is_presentation and not document.numbered_slides:
-            header += "\nThe slides are not numbered: enabling the Google Slides API in the Cloud project gives [slide N] markers."
+        if not document.whole:
+            header += ("\nThe slides are not numbered: enabling the Google Slides API in the Cloud project gives [slide N] markers."
+                       if head.is_presentation else
+                       "\nThis is the first tab alone: enabling the Google Sheets API in the Cloud project gives every tab.")
         trace(f"read_google_doc: page {number}/{len(parts)} of «{head.name}» ({len(parts[number - 1])} chars)")
         return f"{header}\n---\n{parts[number - 1]}"
 

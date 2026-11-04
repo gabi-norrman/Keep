@@ -7,9 +7,10 @@ sign-in-again hint (the token on file was granted before the Drive scope was ask
 A revision of a native Google Doc carries `exportLinks`, one per format; the `text/plain` one
 is what the diff is made of. Google sends that export with a BOM, which `export` strips. A
 Slides deck exports as `text/plain` too, but with the slides run together, so `slides_text`
-reads it through the Slides API with a `[slide N]` line before each slide — when that API is
-enabled in the Cloud project; `ApiDisabled` is the 403 Google answers when it is not, and the
-caller falls back to the export."""
+reads it through the Slides API with a `[slide N]` line before each slide; a spreadsheet's
+export is the first tab alone as CSV, so `sheets_text` reads every tab through the Sheets API
+under a `[sheet <title>]` line — each when that API is enabled in the Cloud project;
+`ApiDisabled` is the 403 Google answers when it is not, and the caller falls back to the export."""
 import re
 import time
 from dataclasses import dataclass
@@ -23,11 +24,14 @@ from integrations.google.GoogleAuth import GoogleAuth, NotSignedIn, sign_in_agai
 
 BASE_URL = "https://www.googleapis.com/drive/v3"
 SLIDES_URL = "https://slides.googleapis.com/v1"
+SHEETS_URL = "https://sheets.googleapis.com/v4"
 DOC_MIME_TYPE = "application/vnd.google-apps.document"
 SLIDES_MIME_TYPE = "application/vnd.google-apps.presentation"
+SHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet"
 EXPORT_MIME_TYPE = "text/plain"
+CSV_MIME_TYPE = "text/csv"
 KINDS = {DOC_MIME_TYPE: "Google Doc", SLIDES_MIME_TYPE: "Google Slides",
-         "application/vnd.google-apps.spreadsheet": "Google Sheet", "application/vnd.google-apps.folder": "folder",
+         SHEET_MIME_TYPE: "Google Sheet", "application/vnd.google-apps.folder": "folder",
          "application/vnd.google-apps.form": "Google Form", "application/vnd.google-apps.drawing": "Google Drawing",
          "application/pdf": "PDF", "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word file",
          "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PowerPoint file",
@@ -41,6 +45,7 @@ REVISION_FIELDS = "nextPageToken,revisions(id,modifiedTime,lastModifyingUser/dis
 HEAD_FIELDS = "name,mimeType,modifiedTime"
 SEARCH_FIELDS = "nextPageToken,files(id,name,mimeType,modifiedTime,owners/displayName)"
 SLIDES_FIELDS = "slides(pageElements,slideProperties/notesPage/pageElements)"
+SHEETS_FIELDS = "sheets(properties/title,data/rowData/values/formattedValue)"
 PAGE_SIZE = 1000
 SEARCH_LIMIT = 20
 # docs.google.com/document/d/<id>/edit, /presentation/d/<id>/…, drive.google.com/file/d/<id>/view, …?id=<id>
@@ -80,9 +85,13 @@ class DocHead:
         return self.mime_type == SLIDES_MIME_TYPE
 
     @property
+    def is_spreadsheet(self) -> bool:
+        return self.mime_type == SHEET_MIME_TYPE
+
+    @property
     def readable(self) -> bool:
-        """Whether the read commands can give its text: a native Doc or a Slides deck."""
-        return self.is_document or self.is_presentation
+        """Whether the read commands can give its text: a native Doc, Sheet or Slides deck."""
+        return self.is_document or self.is_presentation or self.is_spreadsheet
 
     @property
     def kind(self) -> str:
@@ -168,14 +177,15 @@ class GoogleDrive:
         trace(f"{self.account}: {len(found)} revisions of {file_id} over {pages} page(s)")
         return found
 
-    def export(self, file_id: str, revision: Optional[Revision] = None) -> str:
-        """The plain text of `revision`, or of the document as it is now."""
+    def export(self, file_id: str, revision: Optional[Revision] = None, mime_type: str = EXPORT_MIME_TYPE) -> str:
+        """The plain text of `revision`, or of the document as it is now (`mime_type` picks the
+        export format — text/csv is a spreadsheet's first tab)."""
         if revision is not None and revision.export_url:
             response = self._request("GET", revision.export_url, None)
         else:
             if revision is not None:
                 info(f"{self.account}: revision {revision.id} of {file_id} has no export link, exporting the head instead")
-            response = self._request("GET", f"{BASE_URL}/files/{file_id}/export", {"mimeType": EXPORT_MIME_TYPE})
+            response = self._request("GET", f"{BASE_URL}/files/{file_id}/export", {"mimeType": mime_type})
         text = response.content.decode("utf-8-sig", errors="replace")
         trace(f"{self.account}: exported {len(text)} chars of {file_id}" + (f" at revision {revision.id}" if revision else ""))
         return text
@@ -194,6 +204,24 @@ class GoogleDrive:
             out.append("")
         text = "\n".join(out).strip()
         trace(f"{self.account}: {len(text)} chars over {len(body.get('slides') or [])} slide(s) of {file_id}")
+        return text
+
+    def sheets_text(self, file_id: str) -> str:
+        """Every tab of a spreadsheet, a `[sheet <title>]` line then its rows as tab-separated
+        cells as they are shown, empty rows left out. Raises ApiDisabled without the Sheets API."""
+        body = self._call("GET", f"{SHEETS_URL}/spreadsheets/{file_id}", {"includeGridData": "true", "fields": SHEETS_FIELDS})
+        out: list[str] = []
+        for sheet in body.get("sheets") or []:
+            out.append(f"[sheet {(sheet.get('properties') or {}).get('title') or len(out) + 1}]")
+            for grid in sheet.get("data") or []:
+                for row in grid.get("rowData") or []:
+                    cells = [str(cell.get("formattedValue") or "") for cell in row.get("values") or []]
+                    line = "\t".join(cells).rstrip("\t")
+                    if line.strip():
+                        out.append(line)
+            out.append("")
+        text = "\n".join(out).strip()
+        trace(f"{self.account}: {len(text)} chars over {len(body.get('sheets') or [])} tab(s) of {file_id}")
         return text
 
     # --- the API -----------------------------------------------------------------------------
@@ -255,7 +283,7 @@ class GoogleDrive:
 
 
 def _shown(url: str) -> str:
-    for base, label in ((BASE_URL, ""), (SLIDES_URL, "slides ")):
+    for base, label in ((BASE_URL, ""), (SLIDES_URL, "slides "), (SHEETS_URL, "sheets ")):
         if url.startswith(base):
             return label + url[len(base):]
     return "export link"

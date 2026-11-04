@@ -43,6 +43,10 @@ class TestFind:
             (1, "[p. 2]", "The deposit is returned within 30 days."),
         ]
 
+    def test_a_sheet_marker_carries_the_tab_title_and_is_never_a_hit_itself(self):
+        hits = find("[sheet Budget 2026]\nBudget line\n", ["budget"])
+        assert [(h.marker, h.line) for h in hits] == [("[sheet Budget 2026]", "Budget line")]
+
     def test_every_word_must_be_on_the_line_case_aside(self):
         assert [h.line for h in find(self.TEXT, ["DEPOSIT", "returned"])] == ["The deposit is returned within 30 days."]
         assert find(self.TEXT, ["deposit", "march"]) == []

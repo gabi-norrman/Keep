@@ -10,8 +10,8 @@ from unittest.mock import patch
 import pytest
 
 from integrations.google.GoogleAuth import NotSignedIn
-from integrations.google.GoogleDrive import (BASE_URL, SLIDES_URL, ApiDisabled, DriveFile, GoogleDrive, GoogleDriveError,
-                                             Revision, file_id_of, kind_of, rfc3339_ts)
+from integrations.google.GoogleDrive import (BASE_URL, SHEETS_URL, SLIDES_URL, ApiDisabled, DriveFile, GoogleDrive,
+                                             GoogleDriveError, Revision, file_id_of, kind_of, rfc3339_ts)
 
 from .google_fakes import Call, FakeGoogle, FakeResponse, StubAuth
 
@@ -233,6 +233,35 @@ class TestSlides:
                       {"@type": "type.googleapis.com/google.rpc.Help"}, {"@type": "ErrorInfo", "reason": "SERVICE_DISABLED"}]}}))
         with pytest.raises(ApiDisabled):
             drive.slides_text(FILE)
+
+
+@pytest.mark.unit
+class TestSheets:
+    BOOK = {"sheets": [
+        {"properties": {"title": "Budget 2026"}, "data": [{"rowData": [
+            {"values": [{"formattedValue": "Item"}, {"formattedValue": "Cost"}]},
+            {"values": [{}, {}]},
+            {"values": [{"formattedValue": "Rent"}, {"formattedValue": "12 000 kr"}, {}]},
+            {}]}]},
+        {"properties": {"title": "Notes"}, "data": [{"rowData": [{"values": [{"formattedValue": "Ask Charlotte"}]}]}]},
+    ]}
+
+    def test_every_tab_stands_under_its_title_with_its_rows_as_shown_and_empty_rows_left_out(self, api, drive):
+        api.route("GET", f"{SHEETS_URL}/spreadsheets/{FILE}", self.BOOK)
+        text = drive.sheets_text(FILE)
+        assert text.splitlines() == ["[sheet Budget 2026]", "Item\tCost", "Rent\t12 000 kr", "", "[sheet Notes]", "Ask Charlotte"]
+        call, = api.calls
+        assert call.params["includeGridData"] == "true" and "formattedValue" in call.params["fields"]
+
+    def test_a_project_without_the_sheets_api_is_api_disabled_and_the_csv_export_asks_for_csv(self, api, drive):
+        api.route("GET", f"{SHEETS_URL}/spreadsheets/{FILE}", _error(403, "Google Sheets API has not been used", reason="accessNotConfigured"))
+        with pytest.raises(ApiDisabled):
+            drive.sheets_text(FILE)
+        response = FakeResponse(200)
+        response.content = b"Item,Cost\nRent,12000"
+        api.route("GET", f"/files/{FILE}/export", response)
+        assert drive.export(FILE, mime_type="text/csv") == "Item,Cost\nRent,12000"
+        assert api.sent("GET", f"/files/{FILE}/export")[0].params["mimeType"] == "text/csv"
 
 
 def test_rfc3339_ts_reads_googles_utc_stamps_with_milliseconds():

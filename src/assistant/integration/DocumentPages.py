@@ -4,7 +4,7 @@ A command's result is kept whole in the history up to `MessageHistory.COMMAND_RE
 (6,000) and cut after that, so a document is read in pages of at most PAGE_CHARS that the LLM
 asks for one at a time. `pages` cuts a text at paragraph boundaries; `find` is the content
 search that works on any backend: the lines carrying every given word, each with its page
-and the `[p. N]` / `[slide N]` marker line a reader put before it."""
+and the `[p. N]` / `[slide N]` / `[sheet <title>]` marker line a reader put before it."""
 import re
 from dataclasses import dataclass
 
@@ -12,13 +12,13 @@ from dataclasses import dataclass
 PAGE_CHARS = 5000
 FIND_LIMIT = 20
 SNIPPET_CHARS = 200
-MARKER_RE = re.compile(r"^\[(?:p\.|slide) (\d+)\]$")
+MARKER_RE = re.compile(r"^\[(?:p\. \d+|slide \d+|sheet .+)\]$")
 
 
 @dataclass(frozen=True)
 class Hit:
     page: int                   # the page of `pages()` the line is on
-    marker: str                 # the PDF page or slide the line is under, "" for plain text
+    marker: str                 # the PDF page, slide or sheet the line is under, "" for plain text
     line: str
 
 
@@ -41,7 +41,7 @@ def pages(text: str, limit: int = PAGE_CHARS) -> list[str]:
 
 def find(text: str, words: list[str], limit: int = FIND_LIMIT) -> list[Hit]:
     """The lines carrying every word (case aside), each with its page of `pages()` and the
-    `[p. N]` / `[slide N]` marker it stands under; at most `limit` hits."""
+    `[p. N]` / `[slide N]` / `[sheet <title>]` marker it stands under; at most `limit` hits."""
     wanted = [w.lower() for w in words if w.strip()]
     if not wanted:
         return []

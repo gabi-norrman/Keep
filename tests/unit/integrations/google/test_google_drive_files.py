@@ -1,7 +1,8 @@
 """DriveFiles: a read by link or id tries the accounts until one sees the file, the text is cached
 by the file's modified time so an unchanged document is exported once, an edit exports again and
-drops the old file, a deck goes through the Slides API and falls back to the export when the
-project has no Slides API, and a kind the reader cannot open is refused by name."""
+drops the old file, a deck goes through the Slides API and a spreadsheet through the Sheets API
+and each falls back to the export when the project has no such API, and a kind the reader cannot
+open is refused by name."""
 from unittest.mock import Mock, patch
 
 import pytest
@@ -24,6 +25,7 @@ def _drive(account: str, head=DOC, text="The plan.\n"):
     drive.head.return_value = head
     drive.export.return_value = text
     drive.slides_text.return_value = "[slide 1]\nTitle\n\n[slide 2]\nEnd"
+    drive.sheets_text.return_value = "[sheet Budget]\nRent\t12000\n\n[sheet Notes]\nAsk Charlotte"
     return drive
 
 
@@ -72,9 +74,9 @@ class TestRead:
         with pytest.raises(NotSignedIn, match="Drive scope"):
             DriveFiles([old]).document(FILE)
 
-    def test_a_sheet_is_refused_by_its_kind_and_a_name_is_no_reference(self):
-        with pytest.raises(ValueError, match="Google Sheet"):
-            DriveFiles([_drive("Personal", SHEET)]).document(FILE)
+    def test_a_drawing_is_refused_by_its_kind_and_a_name_is_no_reference(self):
+        with pytest.raises(ValueError, match="Google Drawing"):
+            DriveFiles([_drive("Personal", DocHead("Map", "application/vnd.google-apps.drawing", 1.0))]).document(FILE)
         with pytest.raises(ValueError, match="link or a file id"):
             DriveFiles([_drive("Personal")]).document("Family plan")
 
@@ -88,14 +90,31 @@ class TestDeck:
     def test_a_deck_is_read_through_the_slides_api_with_its_markers(self):
         personal = _drive("Personal", DECK)
         document = DriveFiles([personal]).document(FILE)
-        assert document.numbered_slides and document.text.startswith("[slide 1]")
+        assert document.whole and document.text.startswith("[slide 1]")
         personal.export.assert_not_called()
 
     def test_without_the_slides_api_the_deck_is_the_plain_export_and_says_its_slides_are_not_numbered(self):
         personal = _drive("Personal", DECK, "Title\nEnd\n")
         personal.slides_text.side_effect = ApiDisabled(403, "Google Slides API has not been used in project 1")
         document = DriveFiles([personal]).document(FILE)
-        assert document.text == "Title\nEnd\n" and not document.numbered_slides
+        assert document.text == "Title\nEnd\n" and not document.whole
+        assert DriveFiles([_drive("Personal")]).document(FILE).whole, "a doc is always whole"
+
+
+@pytest.mark.unit
+class TestSpreadsheet:
+    def test_a_spreadsheet_is_read_through_the_sheets_api_every_tab_under_its_title(self):
+        personal = _drive("Personal", SHEET)
+        document = DriveFiles([personal]).document(FILE)
+        assert document.whole and "[sheet Notes]" in document.text
+        personal.export.assert_not_called()
+
+    def test_without_the_sheets_api_the_first_tab_comes_as_csv_and_the_document_is_not_whole(self):
+        personal = _drive("Personal", SHEET, 'Item,Cost,\r\n,,\r\n"Rent, flat",12000,\r\n')
+        personal.sheets_text.side_effect = ApiDisabled(403, "Google Sheets API has not been used in project 1")
+        document = DriveFiles([personal]).document(FILE)
+        assert document.text == "Item\tCost\nRent, flat\t12000" and not document.whole
+        personal.export.assert_called_once_with(FILE, mime_type="text/csv")
 
 
 @pytest.mark.unit

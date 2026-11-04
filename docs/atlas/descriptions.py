@@ -29,7 +29,7 @@ GROUPS = {
     'src/integrations/husdata': ('husdata', 'The heat pump through a Husdata H60/H66 gateway: the readings in the prompt, the room target and hot water setpoint as commands.'),
     'src/integrations/icloud': ('icloud', 'The iCloud account: Find My locations and device pings, with its 2FA recovery.'),
     'src/integrations/imap': ('imap', 'Mail over IMAP/SMTP: one mail account per imap.accounts entry, iCloud and Gmail by preset, any other server by its hosts.'),
-    'src/integrations/google': ('google', 'Gmail, Google Calendar and Google Drive: the mail (IMAP with the sign-in’s token), calendars, a search of Drive with a Google Doc or Slides deck read page by page, and a feed of the edits to listed documents, one account per google.accounts entry, signed in once in a browser.'),
+    'src/integrations/google': ('google', 'Gmail, Google Calendar and Google Drive: the mail (IMAP with the sign-in’s token), calendars, a search of Drive with a Google Doc, Sheet or Slides deck read page by page, and a feed of the edits to listed documents, one account per google.accounts entry, signed in once in a browser.'),
     'src/integrations/dropbox': ('dropbox', 'The files in Dropbox, read-only: a search, a folder listing and a document read page by page with a find inside it, one account signed in by PKCE and paste.'),
     'src/integrations/microsoft': ('microsoft','Microsoft 365 over the Graph API: the mail and calendars of one account per microsoft.accounts entry, signed in once with a device code.'),
     'src/integrations/imessage': ('imessage', 'iMessage and SMS on the server’s Mac: a feed of incoming messages and the way to send one.'),

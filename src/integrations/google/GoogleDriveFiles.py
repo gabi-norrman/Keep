@@ -6,7 +6,11 @@ when one answers 404 (the file is not shared with it). The text is cached as
 without a sidecar, every page of an unchanged document costs one `files.get` and no export (an
 export of a large doc takes Google tens of seconds), and an edit gets a fresh export while the
 older files of the id are deleted. A deck is read through the Slides API for its `[slide N]`
-markers and falls back to the plain export, slides run together, when that API is not enabled."""
+markers and a spreadsheet through the Sheets API for every tab under a `[sheet <title>]` line;
+each falls back to the Drive export — the slides run together, the first tab alone — when its
+API is not enabled in the Cloud project."""
+import csv
+import io
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,10 +20,11 @@ from assistant.integration.Accounts import slug
 from common.Paths import CACHE_DIR
 from common.logging import error, info, trace
 from integrations.google.GoogleAuth import NotSignedIn
-from integrations.google.GoogleDrive import ApiDisabled, DocHead, DriveFile, GoogleDrive, GoogleDriveError, file_id_of
+from integrations.google.GoogleDrive import (CSV_MIME_TYPE, ApiDisabled, DocHead, DriveFile, GoogleDrive, GoogleDriveError,
+                                             file_id_of)
 
 TEXT_CACHE_DIR = CACHE_DIR / "google_drive"
-SLIDE_MARKER = "[slide 1]"
+SECTION_MARKERS = ("[slide 1]", "[sheet ")
 
 
 @dataclass(frozen=True)
@@ -31,9 +36,19 @@ class Document:
     from_cache: bool
 
     @property
-    def numbered_slides(self) -> bool:
-        """Whether a deck's text carries the `[slide N]` markers (read through the Slides API)."""
-        return self.head.is_presentation and self.text.startswith(SLIDE_MARKER)
+    def whole(self) -> bool:
+        """Whether a deck or a spreadsheet came through its own API — every slide under a
+        `[slide N]` line, every tab under a `[sheet <title>]` one — rather than the Drive export."""
+        if self.head.is_presentation or self.head.is_spreadsheet:
+            return self.text.startswith(SECTION_MARKERS)
+        return True
+
+
+def csv_rows(text: str) -> str:
+    """A CSV export as the Sheets API path renders a tab: a row per line, the cells separated by
+    tabs, trailing empty cells and empty rows left out."""
+    rows = ["\t".join(row).rstrip("\t") for row in csv.reader(io.StringIO(text))]
+    return "\n".join(row for row in rows if row.strip())
 
 
 class DriveFiles:
@@ -89,7 +104,7 @@ class DriveFiles:
                 continue
             if not head.readable:
                 info(f"Google Drive: «{head.name}» is a {head.kind}, not read")
-                raise ValueError(f"«{head.name}» is a {head.kind}; only a Google Doc or a Google Slides deck can be read")
+                raise ValueError(f"«{head.name}» is a {head.kind}; only a Google Doc, Sheet or Slides deck can be read")
             return self._read(drive, file_id, head)
         if not_signed_in is not None:
             raise not_signed_in
@@ -120,6 +135,12 @@ class DriveFiles:
             except ApiDisabled:
                 info(f"Google Drive: the Slides API is not enabled, «{head.name}» is exported with its slides run together")
                 text = drive.export(file_id)
+        elif head.is_spreadsheet:
+            try:
+                text = drive.sheets_text(file_id)
+            except ApiDisabled:
+                info(f"Google Drive: the Sheets API is not enabled, only the first tab of «{head.name}» is exported")
+                text = csv_rows(drive.export(file_id, mime_type=CSV_MIME_TYPE))
         else:
             text = drive.export(file_id)
         info(f"Google Drive: «{head.name}» ({head.kind}, {drive.account}) read, {len(text):,} chars")

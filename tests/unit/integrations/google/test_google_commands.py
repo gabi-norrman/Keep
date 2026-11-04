@@ -45,6 +45,7 @@ def _with(integration):
 FILE = "1AbCdEfGhIjKlMnOpQrStUvWxYz"
 DOC = DocHead("Family plan", "application/vnd.google-apps.document", 1_790_000_000.0)
 DECK = DocHead("Thursday deck", "application/vnd.google-apps.presentation", 1_790_000_000.0)
+SHEET = DocHead("Budget", "application/vnd.google-apps.spreadsheet", 1_790_000_000.0)
 
 
 def _document(text: str, head=DOC) -> Document:
@@ -249,12 +250,20 @@ class TestReadGoogleDoc:
         assert "Slides API" in plain and "Google Slides of Personal" in plain
         assert "Slides API" not in numbered
 
+    def test_a_spreadsheet_of_one_exported_tab_says_how_to_get_them_all_and_a_whole_one_does_not(self, commands_instance):
+        with _with(_files(_document("Item,Cost\nRent,12000", SHEET))):
+            first_tab = commands_instance._owner("read_google_doc")._run_read(FILE, 1)
+        with _with(_files(_document("[sheet Budget]\nRent\t12000", SHEET))):
+            whole = commands_instance._owner("read_google_doc")._run_read(FILE, 1)
+        assert "Sheets API" in first_tab and "first tab" in first_tab and "Google Sheet of Personal" in first_tab
+        assert "Sheets API" not in whole and "Slides API" not in whole
+
     def test_an_empty_document_and_a_refusal_are_told(self, commands_instance):
         with _with(_files(_document("  \n"))):
             assert "no text" in commands_instance._owner("read_google_doc")._run_read(FILE, 1)
-        with _with(_files(ValueError("«Budget» is a Google Sheet; only a Google Doc or a Google Slides deck can be read"))):
+        with _with(_files(ValueError("«Map» is a Google Drawing; only a Google Doc, Sheet or Slides deck can be read"))):
             reply = commands_instance._owner("read_google_doc")._run_read(FILE, 1)
-        assert reply.startswith("read_google_doc failed") and "Google Sheet" in reply
+        assert reply.startswith("read_google_doc failed") and "Google Drawing" in reply
 
 
 @pytest.mark.unit
@@ -271,6 +280,12 @@ class TestFindInGoogleDoc:
         lines = reply.splitlines()
         assert "1 line(s) match" in lines[0] and f'read_google_doc("{FILE}", <page>)' in lines[0]
         assert lines[1].startswith("page ") and "[slide 37]" in lines[1] and "Point 37:" in lines[1]
+
+    def test_a_hit_in_a_spreadsheet_names_the_tab(self, commands_instance):
+        with _with(_files(_document("[sheet Budget 2026]\nRent\t12 000 kr\n\n[sheet Notes]\nrent is due", SHEET))):
+            reply = commands_instance._owner("find_in_google_doc")._run_find(FILE, "rent")
+        lines = reply.splitlines()
+        assert "2 line(s)" in lines[0] and "[sheet Budget 2026]" in lines[1] and "[sheet Notes]" in lines[2]
 
     def test_no_hit_says_so_and_the_cap_is_told(self, commands_instance):
         with _with(_files(long_document())):

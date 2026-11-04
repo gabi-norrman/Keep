@@ -10,6 +10,11 @@ calendar work; the first Drive command says it instead; (3) `read_google_doc` an
 take no `account` argument — a file id is global and the read tries the accounts in order. Verified on
 the production account: a search, a deck through the fallback, a 394k-character doc in 80 pages.
 
+Sheets were added the same day, out of the "not in this plan" list: a spreadsheet is read through the
+Sheets API (`GoogleDrive.sheets_text`, every tab under a `[sheet <title>]` line, a row per line with the
+cells as shown, tab-separated) and falls back to the CSV export of the first tab — rendered the same way,
+empty rows dropped — when that API is off, the header saying so. `find` knows the `[sheet …]` marker.
+
 ## What we want
 
 The assistant can find a Google Doc or a Google Slides deck in the user's Drive and read it: "what does

@@ -91,8 +91,8 @@ class GoogleIntegration(AccountHealth, Integration, MailSource, CalendarSource):
     """Gmail, Google Calendar and Google Drive, with one Google sign-in.
 
     Reads, searches, files and sends the Gmail of every Google account under google.accounts,
-    shows and adds to their calendars, and searches their Drive and reads a Google Doc or
-    Slides deck page by page; an account signs in once in a browser and pastes back the address.
+    shows and adds to their calendars, and searches their Drive and reads a Google Doc, Sheet
+    or Slides deck page by page; an account signs in once in a browser and pastes back the address.
 
     A MailSource and CalendarSource building one GoogleAccount per `google.accounts[]` entry
     (`name`, `address`, `mail`, `calendar`, `default_calendar`, `shown_calendars`) over one
