@@ -195,7 +195,7 @@ source .venv/bin/activate && python -m pytest tests/ --override-ini="log_cli=fal
 
 `docs/atlas/` builds the Keep Atlas, the zoomable architecture map the readme links to: `python3 docs/atlas/build.py`
 (stdlib only) writes `docs/atlas/out/index.html`, and `.github/workflows/pages.yml` publishes it to GitHub Pages
-(under `atlas/`) on every push to master. A module's description is the first sentence of its docstring (its main class's when it has one), so a
+at https://keep-ai.dev/atlas/ on every push to master. A module's description is the first sentence of its docstring (its main class's when it has one), so a
 new module needs a docstring that opens with one plain sentence. `docs/atlas/descriptions.py` holds the package blurbs,
 overrides for missing or overlong docstrings, and the "Follow a request" tour; **add a package blurb to `GROUPS` when you
 create a package, and update `TOUR` when a module it names moves**. `tests/unit/test_architecture_atlas.py` fails on
@@ -204,7 +204,9 @@ either omission.
 ## Public repository
 
 The repository is public: every commit, branch, tag, issue and PR body is public the moment it reaches GitHub — not
-only the tree. The Pages site holds the Keep Atlas alone; its root redirects to the repository.
+only the tree. The Pages site is keep-ai.dev (the domain is on Cloudflare, DNS-only records pointing at GitHub
+Pages, the old maciekd.github.io address redirects there); it holds the Keep Atlas alone and its root redirects to
+the repository.
 
 ## Dependencies
 

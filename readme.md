@@ -230,9 +230,9 @@ Every integration is off until you turn it on, and Keep walks you through the se
 
 ## Architecture
 
-<p align="center"><a href="https://maciekd.github.io/Keep/atlas/"><img src="docs/images/atlas.png" width="70%" alt="The Keep Atlas"></a></p>
+<p align="center"><a href="https://keep-ai.dev/atlas/"><img src="docs/images/atlas.png" width="70%" alt="The Keep Atlas"></a></p>
 
-Curious how it fits together? The **[Keep Atlas](https://maciekd.github.io/Keep/atlas/)** is a zoomable map of the whole server: every package, module and class with a one-line description, and a walk through one spoken request from the microphone to the speaker.
+Curious how it fits together? The **[Keep Atlas](https://keep-ai.dev/atlas/)** is a zoomable map of the whole server: every package, module and class with a one-line description, and a walk through one spoken request from the microphone to the speaker.
 
 <br>
 
