@@ -63,7 +63,7 @@ rlog "Ports free — launching new server via Terminal (so mic access works)..."
 mkdir -p log && touch log/verbose-floxy.out
 log_offset=$(/usr/bin/stat -f %z log/verbose-floxy.out 2>/dev/null || echo 0)  # BSD stat even with GNU coreutils on PATH
 rm -f log/cli_start.tty
-open -a Terminal "$PWD/cli_start.sh"
+open -a Terminal "$PWD/scripts/cli_start.sh"
 # cli_start.sh reports its tty once the server has left that window's session. Close
 # that one window (or tab, if Terminal opened it as one) and nothing else of the
 # user's; it would otherwise linger as "[Process completed]" after every restart.

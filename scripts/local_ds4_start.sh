@@ -31,7 +31,7 @@
 # Overrides: DS4_DIR, MODEL (GGUF path), VISION (encoder GGUF path), CTX (context tokens), KV_DIR, KV_MB,
 # COLD_MAX, COLD_ANCHOR, HOST, PORT.
 set -euo pipefail
-DS4_DIR="${DS4_DIR:-$(cd "$(dirname "$0")/.." && pwd)/ds4}"
+DS4_DIR="${DS4_DIR:-$(cd "$(dirname "$0")/../.." && pwd)/ds4}"
 cd "$DS4_DIR" 2>/dev/null || { echo "no ds4 checkout at $DS4_DIR — clone github.com/antirez/ds4 beside this repository or set DS4_DIR"; exit 1; }
 
 MODEL="${MODEL:-gguf/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf}"

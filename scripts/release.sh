@@ -4,19 +4,19 @@
 # `release` — install.sh clones it and restart_server pulls it — while the development
 # machine stays on master, so a release is nothing more than moving that branch.
 #
-#   ./release.sh            release what origin/master is at
-#   ./release.sh <commit>   release an earlier master commit instead (must still be ahead
+#   scripts/release.sh            release what origin/master is at
+#   scripts/release.sh <commit>   release an earlier master commit instead (must still be ahead
 #                           of the current release; a rollback is a deliberate
 #                           `git push -f origin <commit>:release`)
-#   ./release.sh --dry-run [<commit>]
+#   scripts/release.sh --dry-run [<commit>]
 #                           run the checks and print the what's new, but neither tag nor push
-#   ./release.sh --ignore-commits <hash>[,<hash>…] [<commit>]
+#   scripts/release.sh --ignore-commits <hash>[,<hash>…] [<commit>]
 #                           leave these released commits out of the what's new (a change
 #                           the household should not be told about, or one a later commit
 #                           undid); the commits are released all the same
-#   ./release.sh [<commit>] <guidance for the note…>
+#   scripts/release.sh [<commit>] <guidance for the note…>
 #                           any words that are not a commit go to Claude as guidance for the
-#                           what's new, e.g. `./release.sh dont talk about icloud accounts
+#                           what's new, e.g. `scripts/release.sh dont talk about icloud accounts
 #                           being blocked`
 #
 # Before tagging, Claude Code (`claude -p`) reads the released commits and writes a "what's
@@ -34,7 +34,7 @@
 # not merely to the previous release: installs update nightly, so a household that gets the
 # evening release never saw the midday one, and its note has to cover the whole day.
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 ignored=()  # full hashes of the --ignore-commits, resolved once the release range is known
 is_ignored() {  # $1: a full commit hash

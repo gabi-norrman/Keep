@@ -24,7 +24,7 @@ send the stream back to the client for playback.
 
 ## Releases
 
-Development happens on `master`; installs track the `release` branch. `./release.sh` fast-forwards
+Development happens on `master`; installs track the `release` branch. `scripts/release.sh` fast-forwards
 `origin/release` to `origin/master` and tags the commit with its version (`vYYYY.MM.N`, see
 `src/common/Version.py`) — that is the whole release. The tag is signed (`git tag -s`, an SSH key
 in the maintainer's 1Password, set with `git config --local` in the development checkout) and an
@@ -77,7 +77,7 @@ source .venv/bin/activate && python <script.py>
 
 ### Core Components
 
-**Layout**: the root holds only scripts (`floxy_ai_server.py`, `tui.py`, `*.sh`), config, data (`res/`, `cache/`, `log/`, `voice_id/`, `memory/`, `floxy.db`), `tests/` and `tools/` (standalone maintainer scripts the server never imports, one folder each — `tools/generate_html_report_from_logs/` renders a copied `log/` folder as a chat-style HTML transcript); the four source packages live under `src/` and are imported without a `src.` prefix (`from common.x import …`). `pytest.ini` adds `src` via `pythonpath`; `floxy_ai_server.py` and every external script insert `<root>/src` at the front of `sys.path`. `common/Paths.py` (`AISERVER_DIR` — the repository root, `REPO_DIR` — the same, `SRC_DIR`, `INTEGRATIONS_DIR`, `RES_DIR`, `CACHE_DIR`, `LOG_DIR`, `VOICE_ID_DIR`, `MEMORY_DIR`, `CONFIG_PATH`) is the one place that knows where the tree is — never do `Path(__file__).parents[N]` arithmetic in a package module.
+**Layout**: the root holds only the entry points (`floxy_ai_server.py`, `tui.py`, `keep.sh`, `start.sh`, `stop.sh`, `autostart.sh`, `install.sh` — scripts macOS, a running install or the readme's one-liner call by path), `scripts/` (the ones only the tree or a person calls: `cli_start.sh`, `release.sh`, `migrate.sh`, `local_*_start.sh`; each cds to the root first), config, data (`res/`, `cache/`, `log/`, `voice_id/`, `memory/`, `floxy.db`), `tests/` and `tools/` (standalone maintainer scripts the server never imports, one folder each — `tools/generate_html_report_from_logs/` renders a copied `log/` folder as a chat-style HTML transcript); the four source packages live under `src/` and are imported without a `src.` prefix (`from common.x import …`). `pytest.ini` adds `src` via `pythonpath`; `floxy_ai_server.py` and every external script insert `<root>/src` at the front of `sys.path`. `common/Paths.py` (`AISERVER_DIR` — the repository root, `REPO_DIR` — the same, `SRC_DIR`, `INTEGRATIONS_DIR`, `RES_DIR`, `CACHE_DIR`, `LOG_DIR`, `VOICE_ID_DIR`, `MEMORY_DIR`, `CONFIG_PATH`) is the one place that knows where the tree is — never do `Path(__file__).parents[N]` arithmetic in a package module.
 - `floxy_ai_server.py` — thin launcher: `build(port, testsuite) -> Server` constructs the `Assistant` and starts every enabled interface; `main()` serves (only under `__main__`)
 - `src/common/` — logging, ConfigManager (which runs `ConfigMigrations` — the one-off moves of config.yaml sections, such as the mail and calendar accounts — before the sections are read), Paths, DevelopmentConfig, FloxyDatabase, monitors, RequirementsChecker
 - `src/assistant/` — the assistant proper; it never imports `interfaces.*`

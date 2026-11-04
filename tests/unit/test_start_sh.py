@@ -196,7 +196,7 @@ class TestLaunchWindow:
         assert 'did not report its tty' in harness.restart_log
 
 
-CLI_START_SH = START_SH.with_name('cli_start.sh')
+CLI_START_SH = START_SH.parent / 'scripts' / 'cli_start.sh'
 
 
 class TestCliStartSh:
@@ -211,7 +211,8 @@ class TestCliStartSh:
             'import os, pathlib\n'
             f'pathlib.Path({str(report)!r}).write_text('
             '  f"{os.getsid(0)} {os.getpid()} {os.path.exists(\'log/cli_start.tty\')}")\n')
-        script = tmp_path / 'cli_start.sh'
+        script = tmp_path / 'scripts' / 'cli_start.sh'
+        script.parent.mkdir()
         script.write_text(CLI_START_SH.read_text())
         subprocess.run(['bash', str(script)], capture_output=True, text=True, timeout=30, check=True)
         deadline = time.time() + 5.0

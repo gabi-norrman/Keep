@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[2] / 'local_ds4_start.sh'
+SCRIPT = Path(__file__).resolve().parents[2] / 'scripts' / 'local_ds4_start.sh'
 MODEL = 'gguf/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf'
 VISION = 'gguf/DeepSeek-V4.1-Flash-Vision.gguf'
 # The memory curator's nightly prompt of 2026-10-22, the request that failed at the old window.

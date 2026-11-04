@@ -4,8 +4,8 @@
 # (the code and the venv are rebuilt by the installer), so a migration is: pack that state
 # here, install Keep there, unpack it over the fresh checkout, start.
 #
-#   ./migrate.sh pack              writes ~/keep-migration-<date>.zip  (default)
-#   ./migrate.sh unpack <zip>      on the new Mac, from the fresh checkout, before the first start
+#   scripts/migrate.sh pack              writes ~/keep-migration-<date>.zip  (default)
+#   scripts/migrate.sh unpack <zip>      on the new Mac, from the fresh checkout, before the first start
 #
 # Carried: config.yaml (keys, accounts, the vault passphrase), vault.bin, floxy.db with its
 # SQLite sidecars, memory/, first_run.json, voice_id/, the signed-in sessions (cache/ and the
@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-KEEP_DIR=$(cd "$(dirname "$0")" && pwd)
+KEEP_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$KEEP_DIR"
 
 STATE=(
@@ -66,7 +66,7 @@ pack() {
          curl -fsSL https://raw.githubusercontent.com/maciekd/Keep/release/install.sh \\
            | KEEP_NO_START=1 bash
     2. copy the zip over and unpack it into the new checkout:
-         ~/Keep/migrate.sh unpack ~/$(basename "$out")
+         ~/Keep/scripts/migrate.sh unpack ~/$(basename "$out")
     3. ./start.sh
   The zip holds your API keys, vault and logins: delete it on both Macs once Keep runs there.
 
@@ -75,7 +75,7 @@ EOF
 
 unpack() {
   local archive=${1:-}
-  [ -n "$archive" ] || die "Usage: ./migrate.sh unpack <keep-migration-....zip>"
+  [ -n "$archive" ] || die "Usage: scripts/migrate.sh unpack <keep-migration-....zip>"
   [ -f "$archive" ] || die "No such file: $archive"
   require_stopped
   [ -d .git ] || die "Run this from a Keep checkout (the installer's ~/Keep)."
@@ -96,5 +96,5 @@ unpack() {
 case "${1:-pack}" in
   pack)   pack ;;
   unpack) shift; unpack "$@" ;;
-  *)      die "Usage: ./migrate.sh [pack | unpack <zip>]" ;;
+  *)      die "Usage: scripts/migrate.sh [pack | unpack <zip>]" ;;
 esac

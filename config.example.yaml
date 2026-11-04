@@ -246,7 +246,7 @@ ai_message_footer: true
 # each request, no restart needed.
 prepend_user_query: auto
 
-# Which line of the code restart_server follows. false: the `release` branch, what ./release.sh
+# Which line of the code restart_server follows. false: the `release` branch, what scripts/release.sh
 # last published. true: `master`, the development line — every commit, straight away. The
 # restart checks that branch out before pulling, so flipping this and restarting switches the
 # install; the assistant may set it itself (config_set).
@@ -361,7 +361,7 @@ local_backend: none
 
 # ds4-server (antirez's DwarfStar engine, github.com/antirez/ds4) used by every Ds4LLM tier: one
 # large open-weight model (DeepSeek V4.1 Flash by default; GLM 5.3 and Qwen3.8 Flash Next also run)
-# resident on this machine's GPU, served OpenAI-style on localhost — start it with `./local_ds4_start.sh`
+# resident on this machine's GPU, served OpenAI-style on localhost — start it with `scripts/local_ds4_start.sh`
 # (the ds4 checkout beside this repository; it runs `./ds4-server --ctx 32768 --kv-disk-dir
 # ~/.ds4/server-kv --kv-disk-space-mb 65536` and waits until the API answers). The disk KV
 # cache keeps the prompt prefixes across tiers, the autonomous check and restarts: without it every

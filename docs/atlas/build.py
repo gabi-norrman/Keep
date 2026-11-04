@@ -166,7 +166,7 @@ def build_tree() -> dict:
     launcher = _group("launcher")
     launcher["path"] = "./"
     for name, desc in SCRIPTS.items():
-        launcher["children"].append({"id": name, "name": name, "kind": "script", "path": name,
+        launcher["children"].append({"id": name, "name": Path(name).name, "kind": "script", "path": name,
                                      "lines": _line_count(REPO / name), "desc": desc})
     res = _group("res")
     res["children"].append({"id": "res/prompt.md", "name": "prompt.md", "kind": "resource", "path": "res/prompt.md",

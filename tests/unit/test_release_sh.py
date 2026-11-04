@@ -22,7 +22,7 @@ import pytest
 
 from .git_sandbox import History, _program, empty_repo, git, git_env, signing_key, spawn
 
-RELEASE_SH = Path(__file__).resolve().parents[2] / 'release.sh'
+RELEASE_SH = Path(__file__).resolve().parents[2] / 'scripts' / 'release.sh'
 
 
 class Repos:
@@ -34,7 +34,8 @@ class Repos:
         self.origin = empty_repo(tmp_path / 'origin.git', bare=True)
         self.dev = empty_repo(tmp_path / 'dev', origin=self.origin)
         self.sign_with('maintainer')
-        shutil.copy(RELEASE_SH, self.dev / 'release.sh')
+        (self.dev / 'scripts').mkdir()
+        shutil.copy(RELEASE_SH, self.dev / 'scripts' / 'release.sh')
         self.history = History()
         bin_dir = tmp_path / 'bin'
         bin_dir.mkdir()
@@ -91,7 +92,7 @@ class Repos:
         one either — and the script skips the what's new: a git process per summarised
         commit fewer, for a test that only reads the listing."""
         env = self.env if note else {**self.env, 'PATH': self.no_claude_path}
-        return spawn(['bash', str(self.dev / 'release.sh'), *args], timeout=30, env=env)
+        return spawn(['bash', str(self.dev / 'scripts' / 'release.sh'), *args], timeout=30, env=env)
 
     def origin_state(self) -> tuple[str | None, dict[str, str]]:
         """Where origin's `release` branch is (None without one) and the commit each tag names."""

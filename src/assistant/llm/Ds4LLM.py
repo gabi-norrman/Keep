@@ -45,7 +45,7 @@ ds4-server held a whole text reply back until generation ended (its second-reaso
 
 The replay covers one miss only: the next turn of the same dialog. Any other prompt in between
 (another tier, the autonomous check, a second dialog) or a server restart evicts the live
-context, and that is the server's own fix — start it with a disk KV cache (`local_ds4_start.sh`
+context, and that is the server's own fix — start it with a disk KV cache (`scripts/local_ds4_start.sh`
 in the repository root does):
 
     ./ds4-server --kv-disk-dir ~/.ds4/server-kv --kv-disk-space-mb 65536
@@ -202,7 +202,7 @@ class Ds4LLM(ChatGPTLLM):
 
     def prefers_query_as_own_turn(self) -> bool:
         """The test suite's query as its own user turn: ds4-server's cold checkpoint (with
-        `--kv-cache-cold-anchor last-user`, `local_ds4_start.sh`) is cut right before the last
+        `--kv-cache-cold-anchor last-user`, `scripts/local_ds4_start.sh`) is cut right before the last
         user turn, so a test loads the system prompt, the history fixture and the toolkits from
         disk and prefills only its query (measured 2026-10-21, see DialogManager). The V4.1
         renderer joins consecutive user-like messages — a user turn, a tool result — into one
