@@ -2544,3 +2544,19 @@ class TestOpenPins:
             '@pytest.mark.xfail(strict=True, reason="a bug")\ndef test_one(): ...\n')
         with patch.object(CodeQualityMaintainer, '_run_claude', side_effect=RuntimeError("claude down")):
             assert CodeQualityMaintainer._step_open_pins() == ""
+
+
+@pytest.mark.unit
+class TestPullSummary:
+    """The pull output is logged, sent to the chat and carried through the restart as the
+    resumed turn's query, so the per-file diffstat was repeated a dozen times."""
+
+    def test_the_diffstat_is_dropped_and_the_first_and_summary_lines_kept(self):
+        from assistant.agents.CodeQualityMaintainer import _pull_summary
+        stdout = ("Updating 5e70670..bcff709\nFast-forward\n src/a.py | 12 ++--\n tests/b.py | 40 +++\n"
+                  " 13 files changed, 176 insertions(+), 51 deletions(-)\n")
+        assert _pull_summary(stdout) == "Updating 5e70670..bcff709, 13 files changed, 176 insertions(+), 51 deletions(-)"
+        assert _pull_summary("Already up to date.\n") == "Already up to date."
+        assert _pull_summary("Updating a..b\nFast-forward\n src/a.py | 1 +\n 1 file changed, 1 insertion(+)") == \
+            "Updating a..b, 1 file changed, 1 insertion(+)"
+        assert _pull_summary("") == ""

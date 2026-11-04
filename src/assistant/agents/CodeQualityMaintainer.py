@@ -1882,7 +1882,7 @@ class CodeQualityMaintainer:
         if result.returncode != 0:
             error(f"CodeQualityMaintainer: git pull failed: {result.stderr}")
             return f"Git pull failed: {result.stderr}", ""
-        return "", (result.stdout or "").strip()
+        return "", _pull_summary(result.stdout or "")
 
     @staticmethod
     def _pull_current() -> None:
@@ -2121,3 +2121,15 @@ class CodeQualityMaintainer:
         info(f"CodeQualityMaintainer: email sent to {address} from {account.name}"
              + (f" with {len(attachments)} attachment(s)" if attachments else ""))
         return address
+
+
+def _pull_summary(stdout: str) -> str:
+    """`git pull`'s output without the per-file diffstat: its first line ("Updating a..b",
+    "Already up to date.") and the "N files changed" line — the text is logged, sent to the chat
+    and carried through the restart as the resumed turn's query, so the diffstat was repeated
+    a dozen times."""
+    lines = [line.strip() for line in stdout.strip().splitlines() if line.strip()]
+    if not lines:
+        return ""
+    summary = next((line for line in lines[1:] if re.search(r"\d+ files? changed", line)), "")
+    return f"{lines[0]}, {summary}" if summary else lines[0]
