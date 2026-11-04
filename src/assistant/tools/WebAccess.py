@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 import requests
 from typing import Optional, ClassVar, List
-from urllib.parse import urljoin, urlparse, parse_qs, parse_qsl
+from urllib.parse import urljoin, urlparse, urlunparse, urlencode, parse_qs, parse_qsl
 
 from . import PdfExtractor, SnapshotFormat
 
@@ -1564,6 +1564,47 @@ class WebAccess(Integration):
             trace(f"cookie consent: kept {result['kept']} matched element(s) on {url} — "
                   f"<html>/<body> or a wrapper of the page content, not a banner")
 
+    # Query parameters that only track the click: dropped from every link the extractor
+    # renders. A page's links are most of its text on a commerce site — booking.com gives
+    # each hotel three or four links of 500–900 chars of affiliate and session parameters
+    # (prod 2026-11-03: 164k of a 199k-char results page), and the LLM pays to read every
+    # byte. Generic ones everywhere, a site's own under its host suffix.
+    TRACKING_PARAMS = frozenset({
+        'fbclid', 'gclid', 'dclid', 'msclkid', 'yclid', 'twclid', 'ttclid', 'igshid', 'srsltid',
+        'mc_cid', 'mc_eid', '_ga', '_gl', '_hsenc', '_hsmi', 'ref_src', 'ref_url', 'spm',
+        'vero_id', 'wickedid', 'oly_enc_id', 'oly_anon_id', 'mkt_tok', 'trk', 'trkCampaign',
+    })
+    TRACKING_PARAM_PREFIXES = ('utm_',)
+    SITE_TRACKING_PARAMS = {
+        'booking.com': frozenset({
+            'aid', 'label', 'sid', 'srpvid', 'srepoch', 'ucfs', 'arphpl', 'all_sr_blocks',
+            'highlighted_blocks', 'matching_block_id', 'sr_pri_blocks', 'hpos', 'hapos',
+            'sr_order', 'from', 'from_sr', 'dest_id', 'dest_type', 'search_selected',
+            'ss', 'ssne', 'ssne_untouched', 'lang', 'soz', 'lang_changed', 'sb_price_type', 'map',
+        }),
+        'airbnb.com': frozenset({
+            'ref_fsid', 'ref_search_session_id', 'federated_search_id', 'search_session_id',
+            'source_impression_id', 'previous_page_section_name',
+        }),
+    }
+
+    @classmethod
+    def clean_link(cls, url: str) -> str:
+        """The link without its tracking parameters; the rest of the query, the order
+        included, stays as it was."""
+        parsed = urlparse(url)
+        if not parsed.query:
+            return url
+        host = parsed.netloc.lower()
+        site_params = next((params for suffix, params in cls.SITE_TRACKING_PARAMS.items()
+                            if host == suffix or host.endswith('.' + suffix)), frozenset())
+        kept = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+                if k not in cls.TRACKING_PARAMS and k not in site_params
+                and not k.startswith(cls.TRACKING_PARAM_PREFIXES)]
+        if len(kept) == parsed.query.count('&') + 1:
+            return url
+        return urlunparse(parsed._replace(query=urlencode(kept)))
+
     @staticmethod
     def extract_text_with_links(html_content: str, base_url: str, *, visible_only: bool = False) -> str:
         """The readable text of a page. visible_only leaves out what the JSON payloads
@@ -1640,14 +1681,23 @@ class WebAccess(Integration):
         else:
             main_content = body
 
-        # Convert relative URLs to absolute
+        # Absolute URLs without their tracking parameters
+        stripped = 0
         for a_tag in main_content.find_all('a', href=True):
-            href = a_tag['href']
-            absolute_url = urljoin(base_url, href)
-            a_tag['href'] = absolute_url
+            absolute_url = urljoin(base_url, a_tag['href'])
+            cleaned = WebAccess.clean_link(absolute_url)
+            stripped += len(absolute_url) - len(cleaned)
+            a_tag['href'] = cleaned
+
+        # A link rendered once: the second and later <a> to the same URL go in as their
+        # text alone (a results page links each item from its image, its name and its
+        # price). The LLM has the URL from the first one.
+        seen_links: set[str] = set()
+        repeated = 0
 
         # Extract text while preserving <a> tags
         def extract_with_links(element) -> str:
+            nonlocal repeated
             result = []
             for child in element.children:
                 if isinstance(child, Comment):
@@ -1661,7 +1711,12 @@ class WebAccess(Integration):
                     link_text = child.get_text(strip=True)
                     if link_text:  # Only include links with text
                         href = child['href']
-                        result.append(f'<a href="{href}">{link_text}</a>')
+                        if href in seen_links:
+                            repeated += 1
+                            result.append(link_text)
+                        else:
+                            seen_links.add(href)
+                            result.append(f'<a href="{href}">{link_text}</a>')
                 elif child.name in ['br']:
                     result.append('\n')
                 elif child.name in ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li',
@@ -1680,6 +1735,11 @@ class WebAccess(Integration):
             return ' '.join(result)
 
         text = extract_with_links(main_content)
+        if stripped or repeated:
+            info(f"extract_text: {stripped} chars of tracking parameters stripped from links, "
+                 f"{repeated} repeated link(s) rendered as text on {base_url}")
+        else:
+            trace(f"extract_text: links clean on {base_url}, nothing stripped")
 
         # Clean up excessive whitespace
         lines = [line.strip() for line in text.split('\n')]
