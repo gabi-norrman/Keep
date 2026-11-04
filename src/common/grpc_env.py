@@ -2,7 +2,8 @@
 
 Importing this module sets the required gRPC env vars. It MUST be imported
 before any gRPC channel is created (i.e. before importing google.genai or
-anything that pulls it in), which is why floxy_ai_server.py imports it first.
+anything that pulls it in), which is why floxy_ai_server.py imports it right after
+putting src on the path.
 
 - GRPC_DNS_RESOLVER=native: c-ares hits a fatal assertion
   (ares_resolver.cc: "Check failed: channel_ != nullptr") when the process

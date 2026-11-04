@@ -76,7 +76,7 @@ class TestLauncherOrder:
     def test_the_launcher_installs_it_before_importing_anything_that_could_build_a_context(self):
         # aiohttp builds its default SSL context at import: installed after that, the swap
         # would miss it. Only these may be imported ahead of the call.
-        harmless = {"grpc_env", "sys", "pathlib", "common"}
+        harmless = {"sys", "pathlib", "common"}
         body = ast.parse((AISERVER_DIR / "floxy_ai_server.py").read_text()).body
         imported_before = set()
         for node in body:

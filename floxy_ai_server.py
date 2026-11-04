@@ -3,11 +3,12 @@ interfaces (http, console, voice, telegram) → serve.
 
 `build()` is importable without serving (tests boot a Telegram-only process with it);
 `main()` runs only under __main__. A disabled interface's module is never imported."""
-import grpc_env  # noqa: F401
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # packages live under AIServer/src
+
+from common import grpc_env  # noqa: F401  — sets gRPC env vars; ahead of anything that could pull google.genai in
 
 # Ahead of every other import: a library that builds its SSL context at import time (aiohttp)
 # would otherwise keep the bundled CA list for good.
