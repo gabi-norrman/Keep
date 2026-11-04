@@ -282,7 +282,8 @@ watchdog: false
 approve_guarded_commands: false
 
 # Beta usage telemetry (assistant/Telemetry.py). An install is known by `id` alone, a random
-# value the server writes here on its first start; the events are one per user turn, one per
+# value install.sh writes here (the server, when it is missing on the first start); the events
+# are the install itself (started, finished, or the step it failed in), one per user turn, one per
 # assistant turn (with the names of the commands it ran, never their arguments), one per
 # integration switched on or off, one per TUI tab opened, the size of the memory (word and item
 # counts) after a curation, the number of indexed photos and messages and the size of the prompt
@@ -292,7 +293,7 @@ approve_guarded_commands: false
 # event on (no restart).
 telemetry:
   enabled: true
-  id:                   # written by the server
+  id:                   # written by install.sh, or by the server when missing
 
 # Home automation extras, whichever backends are enabled — several at once make one house. Optional.
 # home:

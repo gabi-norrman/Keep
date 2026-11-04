@@ -8,6 +8,7 @@ the output is plain text. `curl` and the terminal prompt `ask` are bash function
 sourced before the call (see test_start_sh.py for why functions, not executables);
 the repository tests run real git against a throwaway origin in tmp_path.
 """
+import json
 import re
 import stat
 import subprocess
@@ -450,3 +451,89 @@ class TestEnsureRepo:
         assert 'is not a Keep checkout' in result.stdout
         assert (harness.keep_dir / 'log' / 'floxy.out').read_text() == 'not ours\n'
 
+
+
+class TestTelemetry:
+    """The install reports to PostHog: the id it mints is the one the server's events carry
+    from then on, a re-run reads the id and the opt-out from the existing config.yaml, and
+    an event is one curl that can never stop the install."""
+
+    def event(self, harness) -> dict:
+        lines = harness.curl_calls.read_text().splitlines()
+        assert len(lines) == 1, lines
+        match = re.search(r'-d (\{.*\}) https://eu\.i\.posthog\.com/capture/$', lines[0])
+        assert match, lines[0]
+        return json.loads(match.group(1))
+
+    def test_project_key_and_host_are_the_servers(self):
+        """Contract with PostHog: install.sh runs before the clone, so it carries its own copy
+        of the key and host Telemetry.py posts to; both must stay the same project."""
+        from assistant import Telemetry
+        text = INSTALL_SH.read_text()
+        assert re.search(r'^POSTHOG_PROJECT_KEY="(.*)"$', text, re.M).group(1) == Telemetry.POSTHOG_PROJECT_KEY
+        assert re.search(r'^POSTHOG_HOST="(.*)"$', text, re.M).group(1) == Telemetry.POSTHOG_HOST
+
+    def test_fresh_install_mints_an_id_and_writes_it_as_the_servers(self, harness):
+        """Contract with config.yaml: the server reads the install id as telemetry.id."""
+        harness.keep_dir.mkdir()
+        result = harness.run('init_telemetry; echo "id=$TELEMETRY_ID"; API_KEY=sk-ant-typed-47L; write_config')
+        assert result.returncode == 0, result.stdout
+        minted = re.search(r'^id=(.*)$', result.stdout, re.M).group(1)
+        assert re.fullmatch(r'[0-9a-f-]{36}', minted), minted
+        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
+        assert config['telemetry'] == {'enabled': True, 'id': minted}
+
+    def test_rerun_reuses_the_id_the_config_holds(self, harness):
+        harness.keep_dir.mkdir()
+        (harness.keep_dir / 'config.yaml').write_text(
+            'api_keys:\n  anthropic: sk-ant-typed-47L\ntelemetry:\n  enabled: true   # on\n  id: "11111111-2222-4333-8444-555555555555"\nvault:\n  key: x\n')
+        result = harness.run('init_telemetry; echo "id=$TELEMETRY_ID"')
+        assert 'id=11111111-2222-4333-8444-555555555555' in result.stdout
+
+    def test_opt_out_in_the_config_sends_nothing(self, harness):
+        harness.keep_dir.mkdir()
+        (harness.keep_dir / 'config.yaml').write_text(
+            'telemetry:\n  enabled: false\n  id: 11111111-2222-4333-8444-555555555555\n')
+        result = harness.run('init_telemetry; telemetry_event install_started fresh=false; echo "id=[$TELEMETRY_ID]"')
+        assert 'id=[]' in result.stdout
+        assert not harness.curl_calls.exists()
+
+    def test_environment_opt_out_sends_nothing_and_writes_the_opt_out(self, harness):
+        harness.keep_dir.mkdir()
+        result = harness.run('init_telemetry; telemetry_started; API_KEY=sk-ant-typed-47L; write_config',
+                             KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 0, result.stdout
+        assert not harness.curl_calls.exists()
+        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
+        assert config['telemetry'] == {'enabled': False}
+
+    def test_event_carries_the_id_and_typed_properties_without_the_home_path(self, harness):
+        result = harness.run(
+            'TELEMETRY_ID=11111111-2222-4333-8444-555555555555; HOME=/Users/tester\n'
+            'telemetry_event install_finished elapsed_s=42 fresh=true '
+            'commit=d4008b4 reason="Python at \'/Users/tester/py\' said \\"no\\""')
+        assert result.returncode == 0, result.stdout
+        event = self.event(harness)
+        assert event['event'] == 'install_finished'
+        assert event['distinct_id'] == '11111111-2222-4333-8444-555555555555'
+        assert event['properties']['elapsed_s'] == 42
+        assert event['properties']['fresh'] is True
+        assert event['properties']['commit'] == 'd4008b4'
+        assert event['properties']['reason'] == 'Python at \'~/py\' said "no"'
+        assert '/Users/tester' not in harness.curl_calls.read_text()
+
+    def test_failure_reports_the_step_and_still_exits_with_the_error(self, harness):
+        result = harness.run('TELEMETRY_ID=11111111-2222-4333-8444-555555555555; STEP_NAME="Python 3.12"\n'
+                             'fail "uv did not install." "Try again."')
+        assert result.returncode == 1
+        event = self.event(harness)
+        assert event['event'] == 'install_failed'
+        assert event['properties']['step'] == 'Python 3.12'
+        assert event['properties']['reason'] == 'uv did not install.'
+
+    def test_unreachable_posthog_never_stops_the_install(self, harness):
+        harness.set_curl_code('000')
+        result = harness.run('TELEMETRY_ID=11111111-2222-4333-8444-555555555555\n'
+                             'telemetry_event install_started fresh=true; echo survived')
+        assert result.returncode == 0
+        assert 'survived' in result.stdout

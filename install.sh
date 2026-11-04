@@ -20,6 +20,8 @@
 #   KEEP_REPO          repository URL              (default: https://github.com/maciekd/Keep.git)
 #   KEEP_BRANCH        branch to install           (default: release — what release.sh publishes;
 #                      an existing checkout keeps the branch it is on unless this is set)
+#   KEEP_NO_TELEMETRY=1  send no install events to PostHog and write telemetry.enabled: false
+#                      into the new config.yaml (see the telemetry section below)
 #
 # Written for the bash 3.2 that ships with macOS: no associative arrays, mapfile or ${var,,}.
 # Everything sits inside main() so a truncated download runs nothing at all.
@@ -40,6 +42,8 @@ main() {
   SPINNER_STATUS=""    # a command the spinner evaluates each tick for extra text (see pip_status)
   CHILD_PID=""
   PY=""
+  PY_SOURCE=""         # found | brew | uv: where the Python came from, for the install report
+  TELEMETRY_ID=""
   API_KEY=""
   WORKSPACE_ID=""
   VERIFY_CODE=""
@@ -54,6 +58,8 @@ main() {
   printf '\n  %sKeep%s - personal AI done right\n' "$C_BOLD" "$C_RESET"
   dim "Installing into $KEEP_DIR  (override with KEEP_DIR=...)"
   dim "Install log: $LOG"
+  init_telemetry
+  telemetry_started
 
   step "Checking this Mac"
   check_mac
@@ -86,6 +92,8 @@ main() {
   fi
 
   summary
+  telemetry_event install_finished elapsed_s="$SECONDS" python="$PY_SOURCE" \
+    commit="$(git -C "$KEEP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   launch
 }
 
@@ -142,11 +150,13 @@ note() { printf '    %s\n' "$1"; }
 log()  { if [ -n "${LOG:-}" ]; then printf '%s\n' "$*" >>"$LOG"; fi; }
 
 fail() {
+  local reason=$1
   printf '\n  %s✖ %s%s\n' "$C_RED" "$1" "$C_RESET"
   shift
   local line
   for line in "$@"; do note "$line"; done
   log "FAILED in step: $STEP_NAME"
+  telemetry_event install_failed step="$STEP_NAME" reason="$reason" elapsed_s="$SECONDS"
   if [ -n "${LOG:-}" ] && [ -f "$LOG" ]; then printf '\n  %sLog: %s%s\n' "$C_DIM" "$LOG" "$C_RESET"; fi
   printf '  %sRe-run the same command to resume; finished steps are skipped.%s\n\n' "$C_DIM" "$C_RESET"
   exit 1
@@ -163,6 +173,7 @@ on_interrupt() {
   stop_spinner
   if [ -n "$CHILD_PID" ]; then kill "$CHILD_PID" 2>/dev/null || true; fi
   printf '\n  %sInterrupted.%s Re-run the same command to resume.\n\n' "$C_YELLOW" "$C_RESET"
+  telemetry_event install_failed step="$STEP_NAME" reason=interrupted elapsed_s="$SECONDS"
   exit 130
 }
 
@@ -366,6 +377,7 @@ find_python() {
 
 ensure_python() {
   if find_python; then
+    PY_SOURCE=found
     ok "Python $(python_version "$PY") at $PY"
     return
   fi
@@ -377,6 +389,7 @@ ensure_python() {
     note "Installing python@3.12 with Homebrew (adds the versioned python3.12 only)."
     run "brew install python@3.12" brew install python@3.12
     PY="$(brew --prefix python@3.12 2>/dev/null || true)/bin/python3.12"
+    PY_SOURCE=brew
   else
     # No Homebrew: uv keeps its interpreters under ~/.local/share/uv and edits no shell
     # profile, so this is the least intrusive way to get a 3.12 without an admin password.
@@ -392,6 +405,7 @@ ensure_python() {
     fi
     run "uv python install 3.12" "$uv" python install 3.12
     PY=$("$uv" python find 3.12 2>>"$LOG" || true)
+    PY_SOURCE=uv
   fi
 
   python_ok "$PY" || fail "Installed Python at '$PY' but it does not pass the checks." \
@@ -668,10 +682,81 @@ vault:
   # Encrypts vault.bin, the secrets the assistant stores for you. Lose it and the vault is
   # lost; change it and the existing vault.bin can no longer be opened.
   key: $vault_key
+telemetry:
+  # Beta usage telemetry; config.example.yaml says what goes out. enabled: false turns it off.
+$(if [ -n "${KEEP_NO_TELEMETRY:-}" ]; then echo "  enabled: false"
+   else echo "  enabled: true"; echo "  id: $TELEMETRY_ID"; fi)
 EOF
   )
   ok "Wrote config.yaml (readable by you only)"
   note "A random vault passphrase was generated for you. It lives in config.yaml: back that file up."
+}
+
+# --------------------------------------------------------- telemetry --------
+
+# The install reports to the PostHog project the server reports to (assistant/Telemetry.py
+# says what goes out from there and why): started, finished, or the step it failed in and
+# why — a tester whose install died is otherwise never heard of. The key is the project's
+# write-only one, meant to ship in clients. The install id is minted here and written into
+# config.yaml, so the server's events carry the same one and the install joins the turns
+# that follow it. A re-run reads the id, and the opt-out, from the existing config.yaml.
+POSTHOG_HOST="https://eu.i.posthog.com"
+POSTHOG_PROJECT_KEY="phc_nvbSSUXHLCDv5oDic5ULNwQXTJT2Xk4SrdMSQbMGjyCk"
+
+init_telemetry() {
+  TELEMETRY_ID=""
+  if [ -n "${KEEP_NO_TELEMETRY:-}" ]; then log "telemetry: off (KEEP_NO_TELEMETRY is set)"; return; fi
+  if [ -f "$KEEP_DIR/config.yaml" ]; then
+    if [ "$(config_telemetry_value enabled)" = false ]; then
+      log "telemetry: off (telemetry.enabled is false in config.yaml)"; return
+    fi
+    TELEMETRY_ID=$(config_telemetry_value id)
+  fi
+  [ -n "$TELEMETRY_ID" ] || TELEMETRY_ID=$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z' || true)
+  log "telemetry: install id ${TELEMETRY_ID:-none}"
+}
+
+# One value of config.yaml's telemetry section: the key's line among those indented under
+# `telemetry:`, up to the next top-level key, with the comment and any quotes stripped.
+config_telemetry_value() {
+  awk -v key="$1:" '
+    /^telemetry:/ { in_section = 1; next }
+    /^[^ \t#]/   { in_section = 0 }
+    in_section && $1 == key { sub(/^[ \t]*[^ ]+:[ \t]*/, ""); sub(/[ \t]*#.*$/, ""); gsub(/["'"'"']/, ""); print; exit }
+  ' "$KEEP_DIR/config.yaml" 2>/dev/null || true
+}
+
+telemetry_started() {
+  local fresh=true
+  [ ! -f "$KEEP_DIR/config.yaml" ] || fresh=false
+  telemetry_event install_started fresh=$fresh branch="$BRANCH" terminal="${TERM_PROGRAM:-unknown}" \
+    macos="$(sw_vers -productVersion 2>/dev/null || echo unknown)" \
+    chip="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)" \
+    default_dir=$([ "$KEEP_DIR" = "$HOME/Keep" ] && echo true || echo false)
+}
+
+# telemetry_event <event> [name=value ...]: one event, posted right away. A number or
+# true/false goes as one, anything else as a string; the home directory in a value becomes
+# ~, since the path holds the user's name. Never holds the install up: five seconds at most,
+# and the outcome goes to the log only.
+telemetry_event() {
+  [ -n "${TELEMETRY_ID:-}" ] || return 0
+  local event=$1 props="" kv name value code
+  shift
+  for kv in "$@"; do
+    name=${kv%%=*}
+    value=${kv#*=}
+    value=${value//"$HOME"/"~"}
+    case "$value" in
+      true|false) ;;
+      ''|*[!0-9]*) value=${value//\\/\\\\}; value=${value//\"/\\\"}; value="\"$value\"" ;;
+    esac
+    props="$props,\"$name\":$value"
+  done
+  local json="{\"api_key\":\"$POSTHOG_PROJECT_KEY\",\"event\":\"$event\",\"distinct_id\":\"$TELEMETRY_ID\",\"properties\":{\"\$lib\":\"keep-install\"$props}}"
+  code=$(curl -sS -o /dev/null --max-time 5 -w '%{http_code}' -H 'content-type: application/json' \
+    -d "$json" "$POSTHOG_HOST/capture/" 2>>"${LOG:-/dev/null}" || true)
+  log "telemetry: $event -> HTTP ${code:-none}"
 }
 
 # ----------------------------------------------------------- summary --------

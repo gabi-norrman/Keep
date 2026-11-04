@@ -3,8 +3,10 @@ assistant answers, one when an integration is switched on or off, one per TUI ta
 size of the memory after a curation, the install's status — what every running feed holds,
 which integrations are on and how big the prompt is, hourly when it changed —, a daily heartbeat — and, for the install's first `TRANSCRIPT_DAYS`, the transcript itself.
 
-An install is known only by a random id (`telemetry.id`, written to config.yaml on the first
-start) and `telemetry.enabled: false` turns the whole thing off — read again for every event,
+An install is known only by a random id (`telemetry.id`: install.sh mints it and writes it into
+config.yaml, so its own events — the install started, finished, or failed in a step — share
+the id with everything after; a config without one gets it on the first start) and
+`telemetry.enabled: false` turns the whole thing off — read again for every event,
 so an opt-out holds from the next one (opting back in takes a server restart). A server started
 with `--developer-mode` sends nothing at all: a developer's turns are not a beta tester's. Every event
 carries the source (voice, Telegram, the console), the version and the names of the commands a
