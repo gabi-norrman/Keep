@@ -2426,7 +2426,7 @@ class TestFixBugsStep:
     @pytest.mark.parametrize("severity", ["Major", "CRITICAL"])
     def test_a_critical_or_major_finding_starts_the_pr_job_with_the_analysis(self, severity):
         analysis = f"| {severity} | foo.py:3 | off by one |"
-        with patch.object(CodeQualityMaintainer, '_pr_job', return_value="PR #7 opened") as job, \
+        with patch.object(CodeQualityMaintainer, '_pr_job', return_value=("PR #7 opened", JOB_PR)) as job, \
                 patch.object(CodeQualityMaintainer, '_github_unavailable', return_value=None), \
                 patch.object(CodeQualityMaintainer, '_trial_instructions', return_value=""), \
                 patch.object(CodeQualityMaintainer, '_version', return_value="v2026.10.1"):
@@ -2440,6 +2440,14 @@ class TestFixBugsStep:
             prompt, _ = _claude_prompt(lambda: CodeQualityMaintainer._step_fix_bugs(self.ANALYSIS),
                                        trial="\nPush to the tried PR.")
         assert prompt.endswith("Push to the tried PR.") and "off by one" in prompt
+
+    def test_the_step_hands_the_report_on_without_the_pr(self):
+        """The step feeds the nightly report; _pr_job's tuple there rendered as its repr."""
+        with patch.object(CodeQualityMaintainer, '_pr_job', return_value=("Fixed the trunk.", JOB_PR)), \
+                patch.object(CodeQualityMaintainer, '_github_unavailable', return_value=None), \
+                patch.object(CodeQualityMaintainer, '_version', return_value="v2026.10.1"):
+            report = CodeQualityMaintainer._step_fix_bugs(self.ANALYSIS)
+        assert isinstance(report, str) and report == "Fixed the trunk."
 
     def test_without_gh_the_step_says_so_instead_of_running(self):
         with patch.object(CodeQualityMaintainer, '_pr_job') as job, \

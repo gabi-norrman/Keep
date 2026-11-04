@@ -1345,7 +1345,8 @@ class CodeQualityMaintainer:
         info(f"CodeQualityMaintainer: the reports mention {', '.join(severities)} findings, fixing...")
         prompt = FIX_BUGS_PROMPT.format(analysis=analysis, label=NIGHTLY_FIX_LABEL,
                                         version=CodeQualityMaintainer._version())
-        return CodeQualityMaintainer._pr_job(prompt, "nightly-fix")
+        report, _ = CodeQualityMaintainer._pr_job(prompt, "nightly-fix")
+        return report
 
     @staticmethod
     def analyze_code(request: str) -> str:
