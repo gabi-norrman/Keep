@@ -70,6 +70,30 @@ class CommandProcessor:
         "Your reply wrote a <function_results> block of its own{after}. Only the system writes "
         "results, so that block and everything after it were dropped unread and did not reach the "
         "user. {real}")
+    # The repeat guard (#123): a reply gets no result between its calls, so the same call
+    # twice in a row is one result twice — never for a stop-and-wait command (prod 2026-11-04:
+    # `load_watch` 15 times to an "ok", a 129 KB result), and for any other command only as
+    # far as its effect adds up (`volume_up` ×3 is a louder room; ×15 is a runaway). The
+    # reply is cut at the repeat that passes the allowance, as the cap cuts: the duplicate
+    # does not run, nothing after it is read, and the stored turn ends at the last call that
+    # ran — cut rather than skipped, since `kept_of` keeps the first `commands_dispatched`
+    # calls of the raw text, which only holds while every call read so far was dispatched.
+    MAX_IDENTICAL_CALLS = 3
+    REPEAT_CUT_NOTE = ("Your reply wrote the call {label} {times} times in a row. A reply gets no result "
+                       "between its calls, so {why}: the reply was cut at copy {times}, {ran} command(s) "
+                       "ran, the rest was dropped unread and no text after it reached the user. The "
+                       "result(s) follow.")
+    # The degenerate-value guard (#123, prod 2026-10-29): a stream that drifts into bare
+    # `<invoke>` blocks whose every value is quotes and brackets alone (`"`, `}`, `]`) — 313
+    # `browse_eval` blocks after one real call, 14 of them run as JavaScript. Only a rescued
+    # call is checked (every occurrence came through the rescue; a call in the taught syntax
+    # never looks like this), a call with no values is left alone, and the reply is cut at the
+    # first such call like the repeat above.
+    DEGENERATE_VALUE_RE = re.compile(r'^[\s"\'`{}\[\](),]*$')
+    DEGENERATE_CUT_NOTE = ("Your reply wrote a `{name}` call (as an <invoke> block) whose value(s) held nothing "
+                           "but punctuation: {values}. That is no call, so the reply was cut there: {ran} "
+                           "command(s) ran, the rest was dropped unread and no text after it reached the "
+                           "user. The result(s) follow.")
 
     def __init__(self, test_suite_mode: bool):
         self.previous_content_buffer = ""
@@ -109,7 +133,13 @@ class CommandProcessor:
         # The stop-and-wait command this reply dispatched last, None before the first: with
         # one pending, text and other calls cut the reply (FETCH_CUT_NOTE).
         self.fetch_pending: str | None = None
-        self.fetch_cut = False  # the reply was cut by that guard: the stored turn ends at the fetch
+        # The reply was cut right after its last call (the after-the-fetch, repeat and
+        # degenerate-value guards): the stored turn ends at that call, never at prose after it.
+        self.cut_after_last_call = False
+        # The call this reply dispatched last, as (name, params), and how many times in a row
+        # it was written — the repeat guard's memory.
+        self._last_call: tuple[str, tuple[str, ...]] | None = None
+        self._last_call_times = 0
         # When the turn this processor serves began, for a processor without a request
         # handler (the autonomous check sets it); see Commands.turn_started.
         self.turn_started: float | None = None
@@ -419,8 +449,12 @@ class CommandProcessor:
         self.commands_dispatched = 0
         self.reply_cut = False
         self.fetch_pending = None
-        self.fetch_cut = False
+        self.cut_after_last_call = False
+        self._last_call = None
+        self._last_call_times = 0
         self.unterminated_command_report = None
+        if hasattr(self.format, "rescued"):
+            self.format.rescued = 0   # the rescue counts per reply, and logs so
 
     # Runs on: command worker thread (called from Commands.background_command)
     def background_command_start(self):
@@ -433,9 +467,15 @@ class CommandProcessor:
         self.command_running_in_background = False
 
     def process_one_command(self, content: str, dialog_manager) -> str:
+        rescued_before = getattr(self.format, "rescued", 0)
         call, remainder = self.format.extract(content)
         if call is not None:
             command_name, params, display = call
+            rescued = getattr(self.format, "rescued", 0) > rescued_before
+            if rescued and self._cut_at_degenerate_values(command_name, params):
+                return ""
+            if self._cut_at_repeat(command_name, params, display):
+                return ""
             if self.fetch_pending and not self.commands.is_stop_and_wait(command_name):
                 self._cut_after_fetch(f"the call {self._label(command_name, display)}")
                 return ""
@@ -685,15 +725,54 @@ class CommandProcessor:
             return None
         return text
 
+    def _cut_at_repeat(self, command_name: str, params: list[str], display: str) -> bool:
+        """The repeat guard: True when this call is the one too many of a run of identical
+        calls — the reply is cut there and the call does not run."""
+        call = (command_name, tuple(params))
+        if call != self._last_call:
+            self._last_call, self._last_call_times = call, 1
+            return False
+        self._last_call_times += 1
+        times = self._last_call_times
+        stop_and_wait = self.commands.is_stop_and_wait(command_name)
+        if not stop_and_wait and times <= self.MAX_IDENTICAL_CALLS:
+            trace(f"The call {command_name} repeated: {times} in a row, within the allowance of {self.MAX_IDENTICAL_CALLS}")
+            return False
+        why = (f"the same {command_name} twice has one result" if stop_and_wait
+               else f"a reply runs one call at most {self.MAX_IDENTICAL_CALLS} times in a row")
+        label = self._label(command_name, display)
+        allowed = 1 if stop_and_wait else self.MAX_IDENTICAL_CALLS
+        note(f"Reply cut at the repeated call {label}: written {times} times in a row, {allowed} allowed "
+             f"— the repeat does not run, the rest is dropped unread")
+        self._cut_reply(self.REPEAT_CUT_NOTE.format(label=label, times=times, why=why, ran=self.commands_dispatched))
+        return True
+
+    def _cut_at_degenerate_values(self, command_name: str, params: list[str]) -> bool:
+        """The degenerate-value guard: True when the (rescued) call has values and every one
+        of them is punctuation alone — the reply is cut there and the call does not run."""
+        if not params or not all(self.DEGENERATE_VALUE_RE.match(value) for value in params):
+            return False
+        values = ", ".join(repr(value) for value in params)
+        note(f"Reply cut at a rescued {command_name} call whose every value is punctuation alone ({values}) "
+             f"— it does not run, the rest is dropped unread")
+        self._cut_reply(self.DEGENERATE_CUT_NOTE.format(name=command_name, values=values, ran=self.commands_dispatched))
+        return True
+
+    def _cut_reply(self, note_text: str):
+        """Stop reading the reply here, with the stored turn ending at the last call that ran
+        and the note ahead of the results in the follow-up round, which comes for the note
+        even when no call ran."""
+        self.reply_cut = True
+        self.cut_after_last_call = True
+        self.previous_content_buffer = ""
+        self.add_note(note_text)
+
     def _cut_after_fetch(self, dropped: str):
         """The reply went on after a stop-and-wait command: stop reading it here, run and show
         nothing more of it, and say so ahead of the fetch's result in the follow-up round."""
         info(f"Reply cut after the stop-and-wait command {self.fetch_pending}: {dropped} written before its "
              f"result existed — dropped unread")
-        self.reply_cut = True
-        self.fetch_cut = True
-        self.previous_content_buffer = ""
-        self.add_note(self.FETCH_CUT_NOTE.format(fetch=self.fetch_pending, dropped=dropped))
+        self._cut_reply(self.FETCH_CUT_NOTE.format(fetch=self.fetch_pending, dropped=dropped))
 
     def _partial_tail(self, buffer: str) -> int:
         """Where a possible start of a call or of a `<function_results` tag begins at the end
@@ -727,7 +806,7 @@ class CommandProcessor:
         """What the dialog stores of a reply it stopped reading (`reply_cut`): the text up to
         and including the last call that ran, every block closed, and never a results block
         the model wrote — so the follow-up round reads a reply of exactly the calls that ran."""
-        kept = self.format.cut(raw, self.commands_dispatched, after_last=self.fetch_cut)
+        kept = self.format.cut(raw, self.commands_dispatched, after_last=self.cut_after_last_call)
         if (at := kept.find(self.FABRICATED_RESULTS_OPEN)) >= 0:
             kept = kept[:at]
         return kept
