@@ -247,12 +247,11 @@ Let's be honest: an assistant that reads your mail, sees your photos and message
 The end game is 100% local. Keep already runs on local models and once the local SOTA models are good enough, we'll move to <i>local only</i>. Right now Fable from Anthropic is needed for a **<i>no-compromise solution</i>**.
 
 > [!IMPORTANT]
-> **Telemetry.** Keep sends usage events to PostHog (EU): a random install id, whether the install succeeded (or the
+> **Telemetry.** Keep sends usage events to the cloud: a random install id, whether the install succeeded (or the
 > step it failed in), the Keep version, which interface and integrations are in use, the names of the commands a turn ran — never their arguments —, prompt size, etc. For the
 > first 7 days after install the events also carry your queries and Keep's replies, so we can see where the first
 > steps trip people up; after that they never do. Vault secrets are placeholders in the transcript. Turn it all off
-> with `telemetry.enabled: false` in `config.yaml` (`KEEP_NO_TELEMETRY=1` on the install command writes that for you
-> and keeps the installer quiet too). To have your data deleted, send us the
+> with `telemetry.enabled: false` in `config.yaml`. To have your data deleted, send us the
 > `telemetry.id` from your `config.yaml`.
 <br>
 
