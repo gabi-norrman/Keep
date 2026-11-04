@@ -116,6 +116,24 @@ class TestSpreadsheet:
         assert document.text == "Item\tCost\nRent, flat\t12000" and not document.whole
         personal.export.assert_called_once_with(FILE, mime_type="text/csv")
 
+    def test_a_fallback_is_not_cached_so_the_api_is_tried_again_and_counts_once_enabled(self, cache_dir):
+        personal = _drive("Personal", SHEET, "Item,Cost\n")
+        personal.sheets_text.side_effect = ApiDisabled(403, "Google Sheets API has not been used in project 1")
+        files = DriveFiles([personal])
+        assert not files.document(FILE).whole and not list(cache_dir.glob("*.txt"))
+        personal.sheets_text.side_effect = None
+        document = files.document(FILE)
+        assert document.whole and not document.from_cache and personal.sheets_text.call_count == 2
+        assert files.document(FILE).from_cache, "the whole text is cached"
+
+    def test_a_cached_text_without_the_markers_is_read_again_not_served(self, cache_dir):
+        """A cache file written by an older run from the first-tab export must not hide the API."""
+        personal = _drive("Personal", SHEET)
+        cache_dir.mkdir()
+        (cache_dir / f"{FILE.lower()}-{int(SHEET.modified_ts)}.txt").write_text("Item,Cost\nRent,12000", encoding="utf-8")
+        document = DriveFiles([personal]).document(FILE)
+        assert document.whole and not document.from_cache and document.text.startswith("[sheet Budget]")
+
 
 @pytest.mark.unit
 class TestSearch:

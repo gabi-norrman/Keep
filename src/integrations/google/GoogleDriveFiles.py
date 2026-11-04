@@ -8,7 +8,8 @@ export of a large doc takes Google tens of seconds), and an edit gets a fresh ex
 older files of the id are deleted. A deck is read through the Slides API for its `[slide N]`
 markers and a spreadsheet through the Sheets API for every tab under a `[sheet <title>]` line;
 each falls back to the Drive export — the slides run together, the first tab alone — when its
-API is not enabled in the Cloud project."""
+API is not enabled in the Cloud project. A fallback result is never cached, and a cached text
+without the markers is not served, so enabling the API counts from the next read."""
 import csv
 import io
 import os
@@ -127,25 +128,32 @@ class DriveFiles:
         path = self._cache_path(file_id, head)
         cached = self._cached(path)
         if cached is not None:
-            trace(f"Google Drive: «{head.name}» served from the text cache ({len(cached)} chars)")
-            return Document(drive.account, file_id, head, cached, True)
+            document = Document(drive.account, file_id, head, cached, True)
+            if document.whole:
+                trace(f"Google Drive: «{head.name}» served from the text cache ({len(cached)} chars)")
+                return document
+            info(f"Google Drive: the cached text of «{head.name}» is a Drive export without the markers, reading it again")
         if head.is_presentation:
             try:
                 text = drive.slides_text(file_id)
-            except ApiDisabled:
-                info(f"Google Drive: the Slides API is not enabled, «{head.name}» is exported with its slides run together")
+            except ApiDisabled as e:
+                info(f"Google Drive: the Slides API is not enabled, «{head.name}» is exported with its slides run together — {e}")
                 text = drive.export(file_id)
         elif head.is_spreadsheet:
             try:
                 text = drive.sheets_text(file_id)
-            except ApiDisabled:
-                info(f"Google Drive: the Sheets API is not enabled, only the first tab of «{head.name}» is exported")
+            except ApiDisabled as e:
+                info(f"Google Drive: the Sheets API is not enabled, only the first tab of «{head.name}» is exported — {e}")
                 text = csv_rows(drive.export(file_id, mime_type=CSV_MIME_TYPE))
         else:
             text = drive.export(file_id)
+        document = Document(drive.account, file_id, head, text, False)
         info(f"Google Drive: «{head.name}» ({head.kind}, {drive.account}) read, {len(text):,} chars")
-        self._cache(path, file_id, text)
-        return Document(drive.account, file_id, head, text, False)
+        if document.whole:
+            self._cache(path, file_id, text)
+        else:
+            trace(f"Google Drive: the export of «{head.name}» is not cached, so the API is tried on the next read")
+        return document
 
     @staticmethod
     def _cache_path(file_id: str, head: DocHead) -> Path:
