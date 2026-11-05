@@ -52,7 +52,7 @@ class IncomingMessage:
 @dataclass(frozen=True)
 class Progress:
     """What the assistant is doing while nothing user-visible has been produced yet."""
-    phase: str                  # "waiting" | "prefill" | "thinking" | "commands"
+    phase: str                  # "waiting" | "prefill" | "queued" | "thinking" | "commands"
     thinking_text: str = ""     # the <thinking> block so far (the TUI shows it; Telegram does not)
     output_tokens: int = 0      # running output-token estimate ("Thinking (↓ 1.2k tokens)…")
     elapsed: float = 0.0        # seconds in the current phase (since the LLM call went out,
@@ -72,6 +72,7 @@ def describe_rate(tokens_per_second: float) -> str:
 
 PHASE_WAITING = "waiting"       # an LLM call is out and nothing has come back yet
 PHASE_PREFILL = "prefill"       # a local model is still prefilling the prompt (no token yet)
+PHASE_QUEUED = "queued"         # a local server is generating another request's reply first
 PHASE_THINKING = "thinking"     # the LLM is in its <thinking> block
 PHASE_COMMANDS = "commands"     # a command the LLM asked for is running
 

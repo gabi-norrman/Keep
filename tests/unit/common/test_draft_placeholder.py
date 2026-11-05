@@ -14,6 +14,7 @@ class TestIsDraftPlaceholder:
         "Thinking (↓ 1.2k tokens · 45 t/s)…\n `█`",
         "Prefilling (43%)…\n <code>█</code>", "Prefilling (43% · 1.5k t/s)…\n `░`",
         "Running command…\n `█`", "Running commands…\n <code>░</code>",
+        "Waiting in queue…\n `█`",
         "`⠋`", "Thinking…\n ⠹",
     ])
     def test_a_frame_with_or_without_its_phase_line_is_a_placeholder(self, text):

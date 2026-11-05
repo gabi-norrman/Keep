@@ -31,15 +31,15 @@ from assistant.SystemNote import system_note
 from assistant.integration.Integration import Integration
 from common import ConfigStore
 from common.ConfigManager import config
-from common.DraftPlaceholder import (COMMAND_LABEL, COMMANDS_LABEL, PREFILL_LABEL, SPINNER_FRAMES_BRAILLE,
-                                     SPINNER_FRAMES_C64, THINKING_LABEL)
+from common.DraftPlaceholder import (COMMAND_LABEL, COMMANDS_LABEL, PREFILL_LABEL, QUEUED_LABEL,
+                                     SPINNER_FRAMES_BRAILLE, SPINNER_FRAMES_C64, THINKING_LABEL)
 from common.Mp4Metadata import mp4_display_size, mp4_duration_seconds, mp4_is_rotated
 from common.VideoRotation import bake_rotation
 from common.logging import error, fine, info, note, trace
 from interfaces.chat import FallbackNotice, RichText
 from interfaces.chat.ChatTransport import ChatTransport
 from interfaces.chat.ChatTypes import (DECISION_APPROVE, DECISION_CANCEL, DECISION_DENY, KIND_DOCUMENT, KIND_PHOTO,
-                                       KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE, PHASE_COMMANDS, PHASE_PREFILL,
+                                       KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE, PHASE_COMMANDS, PHASE_PREFILL, PHASE_QUEUED,
                                        PHASE_THINKING, Attachment, IncomingMessage, Progress, describe_rate)
 
 # Telegram's Bot API refuses to serve files above this size to bots.
@@ -128,6 +128,8 @@ class TelegramDraft:
         elif progress.phase == PHASE_PREFILL:
             detail = f"{progress.prefill:.0f}%" + (f" · {describe_rate(progress.rate)}" if progress.rate > 0 else "")
             display = f"{PREFILL_LABEL} ({detail})…\n {frame}"
+        elif progress.phase == PHASE_QUEUED:
+            display = f"{QUEUED_LABEL}…\n {frame}"
         elif progress.phase == PHASE_COMMANDS:
             display = f"{self.COMMANDS_PREFIX if progress.commands > 1 else self.COMMAND_PREFIX} {frame}"
         else:

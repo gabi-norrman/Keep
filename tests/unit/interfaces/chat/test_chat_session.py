@@ -12,7 +12,7 @@ from assistant.AssistantEvents import (CommandRan, Done, Notice, RoundEnd, Think
 from interfaces.chat.ChatHub import ChatHub
 from interfaces.chat.ChatSession import ChatSession, _Request
 from interfaces.chat.ChatTypes import (KIND_DOCUMENT, KIND_PHOTO, KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE,
-                                       PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING, PHASE_WAITING, Attachment,
+                                       PHASE_COMMANDS, PHASE_PREFILL, PHASE_QUEUED, PHASE_THINKING, PHASE_WAITING, Attachment,
                                        IncomingMessage)
 
 from .fakes import FakeAssistant, FakeStream, FakeTransport, wait_until
@@ -169,6 +169,20 @@ class TestProgress:
             run_reply(session, hub, [(0.05, Token("Hi")), RoundEnd(), None])
         first = transport.drafts[0].progress[0]
         assert first.phase == PHASE_PREFILL and first.prefill == 43.0
+
+    def test_waiting_reads_as_queued_while_the_local_server_generates_another_reply(self, session, hub, transport):
+        # The memory curation on a ds4 server: its prefill ended minutes ago, the bar would sit
+        # at 99 — the line says queued instead, once in the log.
+        from assistant.llm.PrefillTracker import PrefillTracker
+        session.SPINNER_TICK_SECONDS = 0.01
+        with patch.object(PrefillTracker, "currently_queued", return_value=True), \
+             patch.object(PrefillTracker, "current_progress", return_value=99.0), \
+             patch("interfaces.chat.ChatSession.info") as log:
+            run_reply(session, hub, [(0.05, Token("Hi")), RoundEnd(), None])
+        progress = transport.drafts[0].progress
+        assert all(p.phase == PHASE_QUEUED for p in progress) and len(progress) >= 2
+        assert progress[0].prefill == 0.0 and progress[0].rate == 0.0
+        assert len([c for c in log.call_args_list if "queued" in c.args[0]]) == 1
 
     @pytest.mark.parametrize("pct", [0.0, 100.0])
     def test_prefill_yields_to_thinking_and_reads_as_waiting_at_either_end(self, session, hub, transport, pct):

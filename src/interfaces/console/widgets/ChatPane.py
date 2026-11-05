@@ -46,8 +46,8 @@ from common.logging import info, trace
 from common.vault.Redactor import Redactor
 from common.vault.Vault import Vault
 from interfaces.chat import FallbackNotice
-from interfaces.chat.ChatTypes import (DECISION_APPROVE, DECISION_DENY, PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING,
-                                       Progress, describe_rate)
+from interfaces.chat.ChatTypes import (DECISION_APPROVE, DECISION_DENY, PHASE_COMMANDS, PHASE_PREFILL, PHASE_QUEUED,
+                                       PHASE_THINKING, Progress, describe_rate)
 from interfaces.console import Theme
 from interfaces.console.SystemEvents import CLASS_DESCRIPTION
 from interfaces.console.framework.Pictures import Picture
@@ -789,6 +789,8 @@ class ChatPane:
             label = "Running commands…" if p.commands > 1 else "Running command…"
         elif p.phase == PHASE_PREFILL:
             label = "Prefilling…"
+        elif p.phase == PHASE_QUEUED:
+            label = "Waiting in queue…"
         else:
             label = "Thinking…"
         spans = [StyledSpan(text=label, bold=True)]

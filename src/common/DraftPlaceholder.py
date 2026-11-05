@@ -20,7 +20,8 @@ THINKING_LABEL = "Thinking"
 PREFILL_LABEL = "Prefilling"
 COMMAND_LABEL = "Running command"
 COMMANDS_LABEL = "Running commands"
-PHASE_LABELS = (THINKING_LABEL, PREFILL_LABEL, COMMAND_LABEL, COMMANDS_LABEL)
+QUEUED_LABEL = "Waiting in queue"
+PHASE_LABELS = (THINKING_LABEL, PREFILL_LABEL, QUEUED_LABEL, COMMAND_LABEL, COMMANDS_LABEL)
 
 _MARKUP = re.compile(r"</?code>|`")
 _PHASE_LINE = re.compile(r"^(?:" + "|".join(re.escape(label) for label in PHASE_LABELS) + r")(?: \([^)]*\))?…$")

@@ -28,7 +28,7 @@ from common.vault.Redactor import Redactor
 from common.vault.Vault import Vault
 from interfaces.chat import MediaIntake, RichText
 from interfaces.chat.ChatTypes import (KIND_DOCUMENT, KIND_PHOTO, KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE,
-                                       PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING, PHASE_WAITING, Attachment,
+                                       PHASE_COMMANDS, PHASE_PREFILL, PHASE_QUEUED, PHASE_THINKING, PHASE_WAITING, Attachment,
                                        IncomingMessage, Progress)
 
 
@@ -576,9 +576,10 @@ class ChatSession:
         token_count = 0
         thinking_rate = TokenRate()
         thinking_from = 0   # the output-token estimate when the thinking block opened
+        queued_logged = False   # the queue wait is logged once per reply
 
         def progress():
-            nonlocal tick
+            nonlocal tick, queued_logged
             if not spinner_mode:
                 return
             tick += 1
@@ -596,12 +597,21 @@ class ChatSession:
                 # Until the first token a local model is prefilling the prompt; a local server
                 # serves one request at a time, so whatever it is prefilling is what this reply
                 # waits for. Plain waiting at both ends: 0% (the server hasn't logged the workload
-                # yet, so there is nothing to draw) and 100% (a full KV-cache hit).
-                pct = PrefillTracker.current_progress()
-                prefilling = pct is not None and 0.0 < pct < 100.0
-                phase, elapsed = (PHASE_PREFILL if prefilling else PHASE_WAITING), now - max(round_start, since)
-                prefill = pct if prefilling else 0.0
-                rate = (PrefillTracker.current_rate() or 0.0) if prefilling else 0.0
+                # yet, so there is nothing to draw) and 100% (a full KV-cache hit). When the server
+                # is instead generating another request's reply (the memory curation, a photo
+                # description), the line says so: a bar would sit at 99 for minutes.
+                elapsed = now - max(round_start, since)
+                if PrefillTracker.currently_queued():
+                    phase = PHASE_QUEUED
+                    if not queued_logged:
+                        queued_logged = True
+                        info(f"{prefix}: the reply is queued behind another request the local server is generating")
+                else:
+                    pct = PrefillTracker.current_progress()
+                    prefilling = pct is not None and 0.0 < pct < 100.0
+                    phase = PHASE_PREFILL if prefilling else PHASE_WAITING
+                    prefill = pct if prefilling else 0.0
+                    rate = (PrefillTracker.current_rate() or 0.0) if prefilling else 0.0
             draft.show_progress(Progress(phase=phase, thinking_text=thinking_text, output_tokens=token_count,
                                          elapsed=elapsed, tick=tick, commands=running, prefill=prefill, rate=rate))
 

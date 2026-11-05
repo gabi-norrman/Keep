@@ -4,7 +4,7 @@ import io
 import pytest
 from PIL import Image
 
-from interfaces.chat.ChatTypes import PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING, PHASE_WAITING, Progress
+from interfaces.chat.ChatTypes import PHASE_COMMANDS, PHASE_PREFILL, PHASE_QUEUED, PHASE_THINKING, PHASE_WAITING, Progress
 from interfaces.console.framework.Pictures import Picture
 from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.widgets.ChatPane import (BULLET, KIND_ASSISTANT, KIND_DIFF, KIND_NOTICE, KIND_SECRET, KIND_SYSTEM,
@@ -515,6 +515,14 @@ class TestTranscript:
         assert draw(pane, screen)[2].endswith(" (↓ 300 tokens · 45 t/s)")
         pane.set_working(Progress(phase=PHASE_THINKING, output_tokens=300, elapsed=1.0, rate=0.0))
         assert draw(pane, screen)[2].endswith(" (↓ 300 tokens)")
+
+    def test_working_line_says_queued_without_a_bar(self, pane, screen):
+        pane.add_user("hi")
+        pane.set_working(Progress(phase=PHASE_QUEUED, elapsed=30.0))
+        line = draw(pane, screen)[2]
+        assert line.startswith(BULLET + "Waiting in queue…")
+        assert line.endswith(" (30s)")
+        assert "█" not in line and "░" not in line, "no bar: nothing is prefilling"
 
     def test_working_line_names_the_running_commands(self, pane, screen):
         pane.add_user("hi")
