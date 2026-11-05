@@ -190,6 +190,7 @@ class TestSystemMonitorUpdateMetrics:
             mock_vm = Mock()
             mock_vm.total = 16 * 1024 ** 3
             mock_vm.used = 8 * 1024 ** 3
+            mock_vm.available = 6 * 1024 ** 3
             mock_vm.percent = 50.0
             mock.virtual_memory.return_value = mock_vm
             yield mock
@@ -212,6 +213,7 @@ class TestSystemMonitorUpdateMetrics:
 
         assert console.system_total_memory_gb == 16.0
         assert console.system_used_memory_gb == 8.0
+        assert console.system_available_memory_gb == 6.0
 
     def test_sets_process_metrics(self, mock_psutil, mock_config):
         from common.SystemMonitor import SystemMonitor
@@ -245,6 +247,7 @@ class TestSystemMonitorSlowMetricCadence:
             mock_vm = Mock()
             mock_vm.total = 0
             mock_vm.used = 0
+            mock_vm.available = 0
             mock_vm.percent = 0
             mock.virtual_memory.return_value = mock_vm
             yield mock

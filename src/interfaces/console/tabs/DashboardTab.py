@@ -446,6 +446,7 @@ class DashboardTab(TabView):
     # Apple Silicon junction temps: throttling starts ~100-105°C, so sustained
     # readings near 95°C mean the warm room is eating all thermal headroom.
     TEMP_WARN_C = 75.0
+    MEMORY_WARN_AVAILABLE_GB = 2.0   # an absolute floor: a share of RAM means little on a large machine
     TEMP_BAD_C = 95.0
     TEMP_SCALE_MAX_C = 110.0
 
@@ -887,7 +888,8 @@ class DashboardTab(TabView):
             row("Processed photos", f"{console.photos_indexed}/{console.photos_total}", photos_frac, photos_frac < 0.9),
             row("Voice cache", f"{console.voice_cache_size_gb:.1f}/{console.voice_cache_max_gb:.1f} GB", voice_frac, voice_frac >= 0.8),
             row("Database", f"{console.db_size_gb:.1f}/1 GB", db_frac, db_frac >= 0.8),
-            row("Total memory", f"{console.system_used_memory_gb:.1f}/{console.system_total_memory_gb:.1f} GB", total_mem_frac, total_mem_frac >= 0.8),
+            row("Total memory", f"{console.system_used_memory_gb:.1f}/{console.system_total_memory_gb:.1f} GB", total_mem_frac,
+                console.system_total_memory_gb > 0 and console.system_available_memory_gb < self.MEMORY_WARN_AVAILABLE_GB),
             row("Keep memory", f"{console.process_memory_gb:.1f} GB", proc_mem_frac, proc_mem_frac >= 0.8),
             row("Keep CPU", f"{console.process_cpu_percent:.0f}%", proc_cpu_frac, proc_cpu_frac >= 0.8),
             row("Total CPU", f"{console.system_cpu_percent:.0f}%", sys_cpu_frac, sys_cpu_frac >= 0.8),

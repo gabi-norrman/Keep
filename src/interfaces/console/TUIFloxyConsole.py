@@ -87,6 +87,7 @@ class TUIFloxyConsole(AssistantObserver):
 
         self.system_total_memory_gb = 0.0
         self.system_used_memory_gb = 0.0
+        self.system_available_memory_gb = 0.0
         self.process_memory_gb = 0.0
         self.process_cpu_percent = 0.0
         self.system_cpu_percent = 0.0

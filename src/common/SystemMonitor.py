@@ -64,6 +64,7 @@ class SystemMonitor:
         vm = psutil.virtual_memory()
         self.tui_console.system_total_memory_gb = vm.total / (1024 ** 3)
         self.tui_console.system_used_memory_gb = vm.used / (1024 ** 3)
+        self.tui_console.system_available_memory_gb = vm.available / (1024 ** 3)
 
         self.tui_console.process_memory_gb = self._process.memory_info().rss / (1024 ** 3)
 
