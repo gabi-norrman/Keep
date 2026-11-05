@@ -285,9 +285,9 @@ class TestExecuteActionFrameRouting:
         wa = make_wa()
         wa._tab = SimpleNamespace()
         wa._browse_snapshot_frame_ids = [None]
-        # meta, scroll, click point (none: covered), JS click
+        # meta, scroll, click point (no box), JS click
         with patch.object(WebAccess, '_evaluate',
-                          new=AsyncMock(side_effect=[self.META, None, None, True])) as main_eval, \
+                          new=AsyncMock(side_effect=[self.META, None, {'reason': 'no box'}, True])) as main_eval, \
                 patch.object(WebAccess, '_async_eval_in_frame_target', new=AsyncMock()) as frame_eval:
             assert run(wa._async_execute_action(0, None)) is None
         assert main_eval.await_count == 4
@@ -323,6 +323,95 @@ class TestExecuteActionFrameRouting:
         # meta, scroll, click point (the page's context went away mid-lookup), JS click
         main_eval = AsyncMock(side_effect=[self.META, None, ProtocolException('context destroyed'), True])
         with patch.object(WebAccess, '_evaluate', new=main_eval), \
+                patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()) as mouse:
+            assert run(wa._async_execute_action(0, None)) is None
+        mouse.assert_not_awaited()
+        assert 'click()' in main_eval.await_args_list[-1].args[1]
+
+    COVERED = {'reason': 'covered', 'hit': 'aside#usercentrics-cmp-ui', 'shadow': True}
+
+    @staticmethod
+    def covered_wa():
+        wa = make_wa()
+        wa._tab = SimpleNamespace()
+        wa._browse_snapshot_frame_ids = [None]
+        wa._UNCOVER_STEP = 0.0  # no real waiting for the banner to close
+        return wa
+
+    def test_covered_element_gets_a_consent_pass_and_then_a_real_click(self):
+        # A consent wall mounted after browse_open's pass (fedex.com, #82): answered on
+        # the spot, and the click lands on the element it uncovered.
+        wa = self.covered_wa()
+        # meta, scroll, click point (covered), location.href, click point again
+        main_eval = AsyncMock(side_effect=[self.META, None, self.COVERED,
+                                           'https://parcels.example/track', {'x': 40.0, 'y': 20.0}])
+        consent = AsyncMock(return_value={'clicked': 1, 'removed': 0})
+        with patch.object(WebAccess, '_evaluate', new=main_eval), \
+                patch.object(WebAccess, '_async_remove_cookies_banner', new=consent), \
+                patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()) as mouse:
+            assert run(wa._async_execute_action(0, None)) is None
+        consent.assert_awaited_once()
+        mouse.assert_awaited_once_with(40.0, 20.0)
+
+    def test_covered_element_with_no_banner_to_answer_falls_back_to_js_click(self):
+        wa = self.covered_wa()
+        main_eval = AsyncMock(side_effect=[self.META, None, self.COVERED,
+                                           'https://parcels.example/track', True])
+        consent = AsyncMock(return_value={'clicked': 0, 'removed': 0})
+        with patch.object(WebAccess, '_evaluate', new=main_eval), \
+                patch.object(WebAccess, '_async_remove_cookies_banner', new=consent), \
+                patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()) as mouse:
+            assert run(wa._async_execute_action(0, None)) is None
+        consent.assert_awaited_once()
+        mouse.assert_not_awaited()
+        assert 'click()' in main_eval.await_args_list[-1].args[1]
+
+    def test_covered_element_on_an_auth_page_gets_no_consent_pass(self):
+        # a stray consent click on a login flow submits it, so the wall stays
+        wa = self.covered_wa()
+        main_eval = AsyncMock(side_effect=[self.META, None, self.COVERED,
+                                           'https://id.example/signin?next=/track', True])
+        consent = AsyncMock(return_value={'clicked': 1, 'removed': 0})
+        with patch.object(WebAccess, '_evaluate', new=main_eval), \
+                patch.object(WebAccess, '_async_remove_cookies_banner', new=consent), \
+                patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()) as mouse:
+            assert run(wa._async_execute_action(0, None)) is None
+        consent.assert_not_awaited()
+        mouse.assert_not_awaited()
+
+    def test_other_click_point_verdicts_skip_the_consent_pass(self):
+        wa = self.covered_wa()
+        main_eval = AsyncMock(side_effect=[self.META, None, {'reason': 'inside an iframe'}, True])
+        consent = AsyncMock(return_value={'clicked': 1, 'removed': 0})
+        with patch.object(WebAccess, '_evaluate', new=main_eval), \
+                patch.object(WebAccess, '_async_remove_cookies_banner', new=consent), \
+                patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()) as mouse:
+            assert run(wa._async_execute_action(0, None)) is None
+        consent.assert_not_awaited()
+        mouse.assert_not_awaited()
+        assert 'click()' in main_eval.await_args_list[-1].args[1]
+
+    def test_element_gone_after_the_consent_pass_reports_the_reload(self):
+        # fedex.com reloads the page once the wall is answered (#82): the index is stale
+        # because of the consent, and the LLM is told so rather than "element gone"
+        wa = self.covered_wa()
+        main_eval = AsyncMock(side_effect=[self.META, None, self.COVERED,
+                                           'https://parcels.example/track',
+                                           {'reason': 'element gone'}, False])
+        consent = AsyncMock(return_value={'clicked': 1, 'removed': 0})
+        with patch.object(WebAccess, '_evaluate', new=main_eval), \
+                patch.object(WebAccess, '_async_remove_cookies_banner', new=consent), \
+                patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()):
+            assert run(wa._async_execute_action(0, None)) == WebAccess.CONSENT_RELOAD_ERROR
+
+    def test_banner_that_stays_up_is_waited_for_then_given_up_on(self):
+        wa = self.covered_wa()
+        wa._UNCOVER_WAIT = 0.0
+        main_eval = AsyncMock(side_effect=[self.META, None, self.COVERED,
+                                           'https://parcels.example/track', self.COVERED, True])
+        consent = AsyncMock(return_value={'clicked': 1, 'removed': 0})
+        with patch.object(WebAccess, '_evaluate', new=main_eval), \
+                patch.object(WebAccess, '_async_remove_cookies_banner', new=consent), \
                 patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()) as mouse:
             assert run(wa._async_execute_action(0, None)) is None
         mouse.assert_not_awaited()

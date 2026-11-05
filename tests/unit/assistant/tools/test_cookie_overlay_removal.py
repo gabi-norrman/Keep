@@ -36,7 +36,7 @@ class El {
         this.parentElement = parent || null;
         this.children = (spec.children || []).map(c => new El(c, this));
         this.offsetParent = parent || null;
-        this.shadowRoot = null;
+        this.shadowRoot = spec.shadow ? new El(spec.shadow, null) : null;
     }
     get textContent() { return this.ownText + this.children.map(c => c.textContent).join(' '); }
     get innerText() { return this.textContent; }
@@ -68,8 +68,9 @@ class El {
         }
         this.parentElement = null;
     }
-    click() {}
+    click() { clicks.push(this.id || this.className); }
 }
+const clicks = [];
 
 const html = new El(SPEC, null);
 globalThis.document = {
@@ -90,6 +91,7 @@ console.log(JSON.stringify({
     result: result,
     ids: root ? [root, ...root.descendants()].map(e => e.id).filter(Boolean) : [],
     text: root ? root.textContent : '',
+    clicks: clicks,
 }));
 """
 
@@ -188,6 +190,39 @@ class TestConsentScriptKeepsTheDocument:
         content = {'tag': 'div', 'id': 'content', 'text': 'The lamp ships on Thursday. ' * 10}
         out = run_consent_script(page('', content, wall))
         assert out['ids'] == ['root', 'head', 'body', 'content']
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(NODE is None, reason="node is needed to run the consent script")
+class TestConsentScriptAnswersUsercentricsCmpUi:
+    """The newer Usercentrics layer (fedex.com, #82): an <aside> shadow host whose
+    overlay caught every real click. Only a button the layer shows is clicked."""
+
+    @staticmethod
+    def wall(*buttons):
+        return {'tag': 'aside', 'id': 'usercentrics-cmp-ui', 'shadow': {
+            'tag': 'div', 'id': 'cmp-wrapper', 'children': [
+                {'tag': 'div', 'id': 'uc-overlay', 'cls': 'overlay'}, *buttons]}}
+
+    def test_accept_all_is_preferred_when_shown(self):
+        accept = {'tag': 'button', 'id': 'accept', 'cls': 'uc-accept-button', 'rect': {'width': 200, 'height': 40}}
+        save = {'tag': 'button', 'id': 'save', 'cls': 'uc-save-button', 'rect': {'width': 200, 'height': 40}}
+        out = run_consent_script(page('', ORDER, self.wall(save, accept)))
+        assert out['clicks'] == ['accept']
+        assert out['result']['clicked'] == 1
+
+    def test_hidden_accept_all_yields_to_confirm_selection(self):
+        accept = {'tag': 'button', 'id': 'accept', 'cls': 'uc-accept-button'}
+        save = {'tag': 'button', 'id': 'save', 'cls': 'uc-save-button', 'rect': {'width': 200, 'height': 40}}
+        out = run_consent_script(page('', ORDER, self.wall(accept, save)))
+        assert out['clicks'] == ['save']
+
+    def test_a_layer_showing_no_button_is_left_alone(self):
+        accept = {'tag': 'button', 'id': 'accept', 'cls': 'uc-accept-button'}
+        out = run_consent_script(page('', ORDER, self.wall(accept)))
+        assert out['clicks'] == []
+        assert out['result']['clicked'] == 0
+        assert 'order' in out['ids']
 
 
 @pytest.mark.unit

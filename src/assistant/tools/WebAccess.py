@@ -1403,6 +1403,20 @@ class WebAccess(Integration):
             if (btn) { btn.click(); clicked++; }
         }
     } catch (e) {}
+    // Usercentrics' newer CMP (web.cmp.usercentrics.eu — fedex.com, 2026-11): an
+    // <aside id="usercentrics-cmp-ui"> shadow host whose overlay dims the whole page
+    // and catches every real click until the wall is answered (a JS click passes
+    // through it, which is how the old click "worked" there). Accept all when the
+    // layer shows that button, else confirm the default selection.
+    try {
+        const cmp = document.querySelector('#usercentrics-cmp-ui');
+        if (cmp && cmp.shadowRoot) {
+            const btn = ['#accept', '.uc-accept-button', '#save', '.uc-save-button']
+                .map(sel => cmp.shadowRoot.querySelector(sel))
+                .find(b => b && (b.offsetWidth || b.offsetHeight));
+            if (btn) { btn.click(); clicked++; }
+        }
+    } catch (e) {}
 
     // Pass 1 — click obvious accept buttons (collapsed from the old XPath loop)
     // Word boundaries + length cap prevent false-positive clicks on article links
@@ -4051,6 +4065,8 @@ class WebAccess(Integration):
             except Exception as e:
                 return f"click failed: {self._describe_error(e)}"
             if not clicked:
+                if self._click_answered_consent:
+                    return self.CONSENT_RELOAD_ERROR
                 return "element no longer in DOM"
             return None
 
@@ -4623,7 +4639,13 @@ class WebAccess(Integration):
                 if len(ops) > 1:
                     msg += (f"\nBatch stopped: executed {self._fmt_op_list(ops[:n])} before the "
                             f"failure; skipped {self._fmt_op_list(ops[n + 1:])}.")
-                return msg + "\n\n" + await self._async_take_snapshot()
+                if err == self.CONSENT_RELOAD_ERROR:
+                    # the page is reloading after the consent: snapshot it once it is back
+                    snapshot = await self._async_snapshot_after_action(mark, f"browse_act('{op_spec}')",
+                                                                       verdict=False)
+                else:
+                    snapshot = await self._async_take_snapshot()
+                return msg + "\n\n" + snapshot
 
             # A mid-batch navigation invalidates every remaining index — stop and
             # let the LLM re-aim against the fresh snapshot below.
@@ -4894,17 +4916,32 @@ class WebAccess(Integration):
 
     # The point a real mouse click on the element lands on: the centre of its box when
     # that lies in the viewport and nothing else is drawn over it (a cookie veil, a modal),
-    # else null. Only main-document elements: a frame's rect is in the frame's own
-    # coordinates, not the viewport's the click is dispatched in.
+    # else the reason it is not clickable and, when something covers it, what that is.
+    # Only main-document elements: a frame's rect is in the frame's own coordinates,
+    # not the viewport's the click is dispatched in.
     _CLICK_POINT_JS = """
 (function(e) {
-    if (!e || e.ownerDocument !== document) return null;
+    const describe = function(n) {
+        if (!n || !n.tagName) return String(n);
+        let s = n.tagName.toLowerCase();
+        if (n.id) s += '#' + n.id;
+        if (typeof n.className === 'string' && n.className.trim())
+            s += '.' + n.className.trim().split(/\\s+/).slice(0, 3).join('.');
+        return s;
+    };
+    if (!e) return {reason: 'element gone'};
+    if (e.ownerDocument !== document) return {reason: 'inside an iframe'};
     const r = e.getBoundingClientRect();
-    if (!r.width || !r.height) return null;
+    if (!r.width || !r.height) return {reason: 'no box (display:none or empty)'};
     const x = r.left + r.width / 2, y = r.top + r.height / 2;
-    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return null;
+    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight)
+        return {reason: 'centre outside the viewport', x: Math.round(x), y: Math.round(y),
+                viewport: window.innerWidth + 'x' + window.innerHeight};
     const hit = document.elementFromPoint(x, y);
-    if (!hit || !(e.contains(hit) || hit.contains(e))) return null;
+    if (!hit) return {reason: 'nothing at the point'};
+    if (!(e.contains(hit) || hit.contains(e)))
+        return {reason: 'covered', hit: describe(hit), target: describe(e),
+                shadow: !!hit.shadowRoot, inShadow: e.getRootNode() !== document};
     return {x: x, y: y};
 })"""
 
@@ -4913,13 +4950,17 @@ class WebAccess(Integration):
         mousemove before the press — what a bot score looks for in a form's submit),
         when its centre is visible on the main page. False means the caller should
         fall back to the JS click; the reason is in the log."""
-        try:
-            point = await self._evaluate(self._tab, f"({self._CLICK_POINT_JS})({find});")
-        except Exception as e:
-            trace(f"trusted click: click point lookup failed ({self._describe_error(e)}) — JS click")
-            return False
-        if not isinstance(point, dict):
-            trace("trusted click: element has no visible box or is covered — JS click")
+        self._click_answered_consent = False
+        point = await self._async_click_point(find)
+        if isinstance(point, dict) and point.get('reason') == 'covered':
+            # A consent wall that mounted after browse_open's pass (fedex.com's
+            # Usercentrics layer, #82) sits over the whole page: answer it and look again.
+            if await self._async_consent_pass_for_click(point):
+                point = await self._async_click_point_once_uncovered(find)
+        if not isinstance(point, dict) or 'reason' in point:
+            why = point.get('reason') if isinstance(point, dict) else f"unexpected result {point!r}"
+            detail = {k: v for k, v in point.items() if k != 'reason'} if isinstance(point, dict) else {}
+            trace(f"trusted click: {why}{' ' + str(detail) if detail else ''} — JS click")
             return False
         try:
             await self._async_dispatch_click_at(point['x'], point['y'])
@@ -4929,6 +4970,60 @@ class WebAccess(Integration):
             return False
         trace(f"trusted click at ({point['x']:g}, {point['y']:g})")
         return True
+
+    async def _async_click_point(self, find: str):
+        """The click-point verdict of _CLICK_POINT_JS for `find`, or None when the
+        lookup itself failed (logged)."""
+        try:
+            return await self._evaluate(self._tab, f"({self._CLICK_POINT_JS})({find});")
+        except Exception as e:
+            trace(f"trusted click: click point lookup failed ({self._describe_error(e)}) — JS click")
+            return None
+
+    _UNCOVER_WAIT = 1.5
+    _UNCOVER_STEP = 0.1
+    # Set by the consent pass a trusted click runs; a click that then finds its element
+    # gone reports the page's reaction to the consent rather than a stale index.
+    _click_answered_consent = False
+    CONSENT_RELOAD_ERROR = ("a consent banner covering the page was answered first and the page "
+                            "re-rendered, so the index no longer applies — re-aim with the fresh "
+                            "snapshot below")
+
+    async def _async_click_point_once_uncovered(self, find: str):
+        """The click point looked up again after a consent pass, waiting out the
+        banner's closing (Usercentrics still covers the page 6 ms after the click)
+        up to _UNCOVER_WAIT; the last verdict when it never clears."""
+        deadline = time.monotonic() + self._UNCOVER_WAIT
+        while True:
+            await asyncio.sleep(self._UNCOVER_STEP)
+            point = await self._async_click_point(find)
+            if not (isinstance(point, dict) and point.get('reason') == 'covered'):
+                return point
+            if time.monotonic() >= deadline:
+                trace(f"trusted click: still covered by {point.get('hit')} {self._UNCOVER_WAIT}s "
+                      f"after the consent pass")
+                return point
+
+    async def _async_consent_pass_for_click(self, point: dict) -> bool:
+        """One consent pass because `point` says something covers the click target;
+        True when it answered a banner, so the point is worth looking up again."""
+        try:
+            url = await self._evaluate(self._tab, "location.href")
+        except Exception:
+            url = ''
+        url = url if isinstance(url, str) else ''
+        if self._is_auth_url(url):
+            trace(f"trusted click: covered by {point.get('hit')} on an auth URL — no consent pass")
+            return False
+        result = await self._async_remove_cookies_banner(self._tab, url)
+        clicked, removed = result.get('clicked', 0), result.get('removed', 0)
+        if clicked or removed:
+            info(f"trusted click: covered by {point.get('hit')} — consent pass clicked={clicked} "
+                 f"removed={removed}, looking up the click point again")
+            self._click_answered_consent = True
+            return True
+        trace(f"trusted click: covered by {point.get('hit')} — the consent pass matched nothing")
+        return False
 
     async def _async_dispatch_click_at(self, x: float, y: float) -> None:
         """One real left click at viewport coordinates via Input.dispatchMouseEvent on
