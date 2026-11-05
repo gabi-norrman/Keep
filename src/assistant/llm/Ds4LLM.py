@@ -349,6 +349,7 @@ class Ds4LLM(ChatGPTLLM):
                           f"already reported from the {made_from[0]}")
                     return
                 made_from.append(source)
+            self.record_cache_hit(cached, prompt_tokens)
             self._report_cache(messages, cached, prompt_tokens, effort)
 
         def early(cached: int, remaining: int):

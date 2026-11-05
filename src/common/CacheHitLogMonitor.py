@@ -11,8 +11,12 @@ from common.Paths import LOG_DIR
 
 
 class CacheHitLogMonitor:
-    """The median prompt-cache hit percentage of a day's Claude requests, per day, from the server
+    """The median prompt-cache hit percentage of a day's LLM requests, per day, from the server
     log, for the DashboardTab's per-day cache chart.
+
+    Every backend that knows its cache hit writes the same line shape — Claude its own, ds4 and
+    Ollama through `AbstractLLM.record_cache_hit` — so a day's median is over the requests of
+    whatever models served it.
 
     The median, not the mean: a few misses a day are normal — the first request after a prompt
     change, an idle gap past the cache TTL, a toolkit load — and on a day of twenty restarts
@@ -34,10 +38,11 @@ class CacheHitLogMonitor:
     CHUNK_BYTES = 4 * 1024 * 1024
     CHUNK_PAUSE = 0.005         # a breath between chunks so the GIL goes round while a run is live
     # `… Claude cache: 1200 read, 0 created (0 5m + 0 1h), 300 uncached (total 1500, 80% cached)`
-    # — the line's timestamp wrapped in colour codes, so the date is found, not positioned.
-    # Claude's lines only: Ollama logs a `% cached` of its own that the live chart leaves out too.
-    NEEDLE = b"Claude cache: "
-    LINE_RE = re.compile(rb"(\d{4}-\d{2}-\d{2}) \d\d:\d\d:\d\d.*?Claude cache: .*?, (\d+)% cached\)")
+    # `… DS4 cache: 1200 read, 300 uncached (total 1500, 80% cached)`
+    # — the line's timestamp wrapped in colour codes, so the date is found, not positioned. The
+    # `<n> read,` keeps out the other lines that say `cache:` (ds4's traces, the voice cache).
+    NEEDLE = b"cache: "
+    LINE_RE = re.compile(rb"(\d{4}-\d{2}-\d{2}) \d\d:\d\d:\d\d.*?cache: \d+ read, .*?\(total \d+, (\d+)% cached\)")
 
     def __init__(self, dashboard_tab, scan_interval: float = SCAN_INTERVAL):
         self._dashboard_tab = dashboard_tab

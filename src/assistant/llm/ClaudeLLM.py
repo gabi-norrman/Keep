@@ -506,8 +506,7 @@ class ClaudeLLM(AbstractLLM):
             trace(f"Claude cache: {cache_read} read, {cache_created} created "
                   f"({created_5m} 5m + {created_1h} 1h), {input_tokens} uncached "
                   f"(total {total}, {pct}% cached)")
-            from common.TTFTMonitor import TTFTMonitor
-            TTFTMonitor.get_instance().record_cache_pct(pct)
+            self.record_cache_hit(cache_read, total, log=False)
             messages = getattr(self, '_cache_messages', None)
             ttl = getattr(self, 'history_cache_ttl', None)
             if messages is not None:

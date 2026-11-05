@@ -699,19 +699,14 @@ class DashboardTab(TabView):
 
     TTFT_SMART_COLOR = Theme.COLOR_CYAN
     TTFT_FAST_COLOR = Theme.COLOR_PURPLE
+    CACHE_OTHER_COLOR = Theme.COLOR_GREEN
 
     def _draw_ttft_charts_row(self, screen: TUIScreen, columns: List[Tuple[int, int]], y: int, chart_height: int):
         (ttft_x, ttft_w), (daily_x, daily_w), (cache_x, cache_w) = columns
         monitor = TTFTMonitor.get_instance()
         self._draw_ttft_chart(screen, ttft_x, y, ttft_w, chart_height, monitor)
         self._draw_cache_daily_chart(screen, daily_x, y, daily_w, chart_height)
-
-        cache_data = monitor.cache_pct
-        cache_value = f"{cache_data[-1]}%" if cache_data else ""
-        self._draw_bar_chart(screen, cache_x, y, cache_w, chart_height,
-                             cache_data, Theme.COLOR_GREEN,
-                             "KV-Cache Hit %", cache_value,
-                             max_value=100.0, y_axis_format=self._format_pct)
+        self._draw_cache_chart(screen, cache_x, y, cache_w, chart_height, monitor)
 
     def _draw_ttft_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int, monitor: TTFTMonitor):
         """Both models in one chart: a column per request in the order they came, the smart
@@ -726,8 +721,32 @@ class DashboardTab(TabView):
         self._draw_bar_chart(screen, x, y, width, chart_h, values, colors[-1] if colors else self.TTFT_SMART_COLOR,
                              label, value, max_value=self._ttft_max(values), y_axis_format=self._format_seconds,
                              colors=colors)
-        legend = [(short, color) for short, color in ((monitor.smart_model_short, self.TTFT_SMART_COLOR),
-                                                      (monitor.fast_model_short, self.TTFT_FAST_COLOR)) if short]
+        self._write_chart_legend(screen, x, y, width, label, value, self._tier_legend(monitor))
+
+    def _draw_cache_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int, monitor: TTFTMonitor):
+        """A column per request whose backend reported its prompt-cache hit — Claude, ds4 or
+        Ollama — in the order they came, coloured by model like the TTFT chart; a model that is
+        neither tier (the curator, vision, a background job) is green, with an "other" legend."""
+        tiers = {monitor.smart_model: self.TTFT_SMART_COLOR, monitor.fast_model: self.TTFT_FAST_COLOR}
+        samples = list(monitor.cache_samples)
+        values = [pct for _, pct in samples]
+        colors = [tiers.get(model, self.CACHE_OTHER_COLOR) for model, _ in samples]
+        value = f"{values[-1]}%" if values else ""
+        label = "KV-Cache Hit %"
+        self._draw_bar_chart(screen, x, y, width, chart_h, values, colors[-1] if colors else self.CACHE_OTHER_COLOR,
+                             label, value, max_value=100.0, y_axis_format=self._format_pct, colors=colors)
+        legend = self._tier_legend(monitor)
+        if any(model not in tiers for model, _ in samples):
+            legend.append(("other", self.CACHE_OTHER_COLOR))
+        self._write_chart_legend(screen, x, y, width, label, value, legend)
+
+    def _tier_legend(self, monitor: TTFTMonitor) -> List[Tuple[str, object]]:
+        return [(short, color) for short, color in ((monitor.smart_model_short, self.TTFT_SMART_COLOR),
+                                                    (monitor.fast_model_short, self.TTFT_FAST_COLOR)) if short]
+
+    @staticmethod
+    def _write_chart_legend(screen: TUIScreen, x: int, y: int, width: int, label: str, value: str, legend: list):
+        """The legend in a chart's title strip, between the label and the value."""
         legend_x = x + 2 + display_width(label) + 2
         legend_w = x + width - 2 - legend_x - (display_width(value) + 2 if value else 0)
         if legend and legend_w > 0:

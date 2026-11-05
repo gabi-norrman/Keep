@@ -108,6 +108,21 @@ class AbstractLLM(ABC):
         evicts another's (ds4, Ollama); None for a provider whose cache is keyed by content."""
         return None
 
+    def record_cache_hit(self, cached_tokens: int, prompt_tokens: int, log: bool = True):
+        """A request's prompt-cache hit, for the dashboard: the live chart gets it at once and,
+        with `log`, the `<name> cache: … read, … (total N, P% cached)` line the per-day chart's
+        log scan (`CacheHitLogMonitor`) reads is written. Claude passes `log=False` — its own
+        line is of that shape and carries the cache-write split besides."""
+        if prompt_tokens <= 0:
+            trace(f"{self.name()} cache: no prompt tokens reported, nothing to chart")
+            return
+        pct = round(cached_tokens / prompt_tokens * 100)
+        if log:
+            trace(f"{self.name()} cache: {cached_tokens} read, {prompt_tokens - cached_tokens} uncached "
+                  f"(total {prompt_tokens}, {pct}% cached)")
+        from common.TTFTMonitor import TTFTMonitor
+        TTFTMonitor.get_instance().record_cache_pct(getattr(self, 'model', '') or '', pct)
+
     def report_cache_usage(self, messages: list[dict], cached_tokens: int, prompt_tokens: int,
                            note: str | None = None):
         """A request the server answered, with its own count of the prompt tokens it read back

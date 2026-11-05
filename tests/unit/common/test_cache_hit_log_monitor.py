@@ -41,6 +41,12 @@ def make_monitor(tmp_path, monkeypatch, **overrides):
     return CacheHitLogMonitor(tab, scan_interval=0), tab, log
 
 
+def monitor_take(tmp_path, monkeypatch, lines) -> dict:
+    monitor, _, _ = make_monitor(tmp_path, monkeypatch)
+    monitor._take(lines)
+    return dict(monitor._histograms)
+
+
 def scan(monitor):
     monitor._scan(threading.Event())
 
@@ -51,6 +57,20 @@ class TestTheLogLine:
         monitor, _, _ = make_monitor(tmp_path, monkeypatch)
         assert monitor._take([log_line("2026-03-05", 80), *OTHER_LINES.split(b"\n")]) == 1
         assert dict(monitor._histograms) == {date(2026, 3, 5): histogram(80)}
+
+    def test_a_local_backends_line_counts_like_claudes(self, tmp_path, monkeypatch):
+        """ds4 and Ollama write their hit through AbstractLLM.record_cache_hit; the scan reads
+        it beside Claude's own line and leaves out ds4's other `cache:` traces."""
+        from assistant.llm.AbstractLLM import AbstractLLM
+        llm = Mock(spec=AbstractLLM)
+        llm.name.return_value, llm.model = "DS4", "deepseek-v4"
+        written = []
+        monkeypatch.setattr("assistant.llm.AbstractLLM.trace", written.append)
+        monkeypatch.setattr("common.TTFTMonitor.TTFTMonitor.get_instance", staticmethod(Mock))
+        AbstractLLM.record_cache_hit(llm, 900, 1000)
+        stamp = "I│2026-03-05 09:40:17.000 │ main │ "
+        lines = [f"{stamp}{written[0]}".encode(), f"{stamp}DS4 cache: the usage says 9/10 cached".encode()]
+        assert monitor_take(tmp_path, monkeypatch, lines) == {date(2026, 3, 5): histogram(90)}
 
     def test_a_cache_line_of_another_shape_is_skipped_not_fatal(self, tmp_path, monkeypatch):
         monitor, _, _ = make_monitor(tmp_path, monkeypatch)

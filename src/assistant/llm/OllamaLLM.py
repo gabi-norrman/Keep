@@ -510,6 +510,7 @@ class OllamaLLM(AbstractLLM):
             cache_pct = (used / total * 100) if total else 0
             prompt_tps = remaining / prompt_dur_s if prompt_dur_s else 0
             self._prefill.observe_rate(remaining, prompt_dur_s)
+            self.record_cache_hit(used, total)
             if messages is not None:
                 self.report_cache_usage(messages, used, total)
             if rendered_prefix_stats:
