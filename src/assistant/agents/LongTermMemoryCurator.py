@@ -139,7 +139,8 @@ line of its own.
 The commands:
 - `save_watch("name", \"\"\"note\"\"\", "due", "every")` — a new item, or the new note of the item with that name;
   the note in a triple-quoted block; `due` as YYYY-MM-DD, optional; `every` how often the AI must check it ("1d",
-  "weekly"), optional — omitted, both are kept as they were. Never `checked_watch`: only a real check stamps it
+  "weekly"), optional — omitted, both are kept as they were. A note longer than {WATCH_WORD_LIMIT} words is refused
+  and the item keeps its old note. Never `checked_watch`: only a real check stamps it
 - `delete_watch("name", "outcome")` — the item is over
 - `save_procedure("name", "when to load it, one line", \"\"\"the full text\"\"\")` — a NEW procedure; the text in a
   triple-quoted block
@@ -685,6 +686,7 @@ class LongTermMemoryCurator:
             .replace("{INTERACTION_HISTORY}", interaction_history) \
             .replace("{CALENDAR}", calendar_data) \
             .replace("{WORD_LIMIT}", str(MEMORY_WORD_LIMIT)) \
+            .replace("{WATCH_WORD_LIMIT}", str(WatchList.NOTE_WORD_LIMIT)) \
             .replace("{PERIOD}", period_text) \
             .replace("{STT_NOTE}", STT_NOTE if voice_enabled else "") \
             .replace("{TIPS}", self._tips_prompt())

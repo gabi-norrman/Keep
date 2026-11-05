@@ -570,3 +570,30 @@ class TestIndexExcerpt:
     def test_a_bare_date_reached_today_reads_due_today_with_no_time(self, wl, log):
         WatchList.save("Plumber", "x", TODAY.isoformat(), wl, log)
         assert "(due today)" in self._lines(wl)["plumber"]
+
+
+@pytest.mark.unit
+class TestNoteWordLimit:
+    def test_an_oversized_save_is_refused_and_the_old_note_stays(self, wl, log, monkeypatch):
+        monkeypatch.setattr(WatchList, "NOTE_WORD_LIMIT", 10)
+        WatchList.run("save_watch", ["Parcel", "order 4711, courier, evening"], wl, log)
+        failure = WatchList.run("save_watch", ["Parcel", " ".join(["word"] * 40)], wl, log)
+        assert failure.startswith("save_watch failed")
+        assert "40" in failure and "10" in failure
+        assert "75%" in failure  # 40 words down to 10 is a 75% cut
+        assert WatchList.get("Parcel", wl).note == "order 4711, courier, evening"
+        assert log_texts(log) == []
+
+    def test_an_oversized_new_item_is_not_created(self, wl, log, monkeypatch):
+        monkeypatch.setattr(WatchList, "NOTE_WORD_LIMIT", 10)
+        assert WatchList.run("save_watch", ["Parcel", " ".join(["word"] * 11)], wl, log)
+        assert WatchList.get("Parcel", wl) is None
+
+    def test_the_cut_is_rounded_up_so_condensing_by_it_fits(self, wl, log, monkeypatch):
+        monkeypatch.setattr(WatchList, "NOTE_WORD_LIMIT", 10)
+        failure = WatchList.run("save_watch", ["Parcel", " ".join(["word"] * 13)], wl, log)
+        assert "24%" in failure  # 3 of 13 words is 23.1%; 23% of 13 leaves 10.01 words
+
+    def test_a_note_at_the_limit_is_saved(self, wl, log, monkeypatch):
+        monkeypatch.setattr(WatchList, "NOTE_WORD_LIMIT", 10)
+        assert WatchList.run("save_watch", ["Parcel", " ".join(["word"] * 10)], wl, log) == ""

@@ -8,7 +8,8 @@ HH:MM: a check wakes you at that minute with the item, Night mode or not, and th
 every check until you look at it — `checked_watch`, a `save_watch` with a new due or `delete_watch`; optional. `every`
 is how often the item must be checked ("1d", "6h", "20m"); optional — leave it out for an item that only waits for its
 due date. Cadence checks pause while Night mode is on and resume in the morning; a due time is the way to be woken
-at a clock time during the night. The note runs to as many lines as it needs:
+at a clock time during the night. The note runs to as many lines as it needs, up to 500 words — a longer one
+is refused:
 `save_watch("sofa-delivery", """...""", "2026-11-08")`, `save_watch("water-meter", """...""", "2026-10-17 17:00")`,
 `save_watch("festival-tickets", """...""", "", "1d")`.
 

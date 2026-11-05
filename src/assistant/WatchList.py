@@ -28,6 +28,7 @@ line per item); `load_watch` returns whole items (`load`); the curator, which wo
 whole list, gets `render`, and the autonomous check `render_due` — the items whose poll is due.
 The TUI's Watch list tab draws the items themselves (`items`).
 """
+import math
 import re
 import threading
 import time
@@ -52,6 +53,9 @@ NOTHING_DUE = "No item is due for a poll."
 HEADER_PREFIX = "# Watch item: "
 # How much of an item's note its index line carries.
 INDEX_NOTE_CHARS = 48
+# The longest note a save may write (about 3 KB of text): a note is the item's current state, and one
+# that keeps every past finding grows by each check and is rewritten whole on every save.
+NOTE_WORD_LIMIT = 500
 
 lock = threading.RLock()
 
@@ -429,6 +433,14 @@ def run(command: str, args: list[str], directory: Path = None, log_dir: Path = N
     if command == "save_watch":
         if len(args) < 2 or not args[1]:
             return "save_watch failed: expected 'name, note, due, every' parameters"
+        if (words := len(args[1].split())) > NOTE_WORD_LIMIT:
+            cut = math.ceil((words - NOTE_WORD_LIMIT) * 100 / words)
+            kept = "the item keeps its previous note" if get(args[0], directory) else "the item was not created"
+            info(f"Watch list: save of '{slug(args[0]) or args[0]}' refused — note is {words} words, "
+                 f"limit {NOTE_WORD_LIMIT}")
+            return (f"save_watch failed: this note is too large — {words} words, and a watch item's note may "
+                    f"be at most {NOTE_WORD_LIMIT} words. Nothing was saved, {kept}. Condense it by at least "
+                    f"{cut}% and save it again.")
         if save(args[0], args[1], args[2] if len(args) > 2 else None, directory, log_dir,
                 every=args[3] if len(args) > 3 else None, looked=looked) is None:
             return "save_watch failed: the name must contain letters or digits"
