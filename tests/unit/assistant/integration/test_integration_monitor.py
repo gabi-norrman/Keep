@@ -674,7 +674,7 @@ class TestRestartWaitsForTheFeed:
             feeds.return_value.runner.return_value = runner
             result = mock_config.restart("Rebuildable")
         feeds.return_value.runner.assert_called_with("Rebuildable feed")
-        assert order == [("wait", IntegrationMonitor.FEED_OPEN_TIMEOUT), "check"]
+        assert order == [("wait", IntegrationMonitor.READY_TIMEOUT), "check"]
         assert result["status"]["state"] == "ok"
 
     def test_a_feed_still_opening_is_checked_anyway(self, mock_config):
@@ -696,6 +696,29 @@ class TestRestartWaitsForTheFeed:
         with patch("assistant.integration.IntegrationMonitor.Feeds.get_instance") as feeds:
             mock_config.restart("Rebuildable")
         feeds.return_value.runner.assert_not_called()
+
+    def test_an_integration_starting_on_its_own_thread_is_checked_once_ready(self, mock_config):
+        """Web Access's Chrome comes up on a loop thread after the constructor returns."""
+        RebuildableIntegration.reset_instance()
+        mock_config.register_class(RebuildableIntegration)
+        RebuildableIntegration.healthy = False
+
+        def comes_up(self, timeout):
+            assert timeout > 0
+            self._healthy = True
+            return True
+
+        with patch.object(RebuildableIntegration, "wait_ready", autospec=True, side_effect=comes_up):
+            result = mock_config.restart("Rebuildable")
+        assert result["status"]["state"] == "ok"
+
+    def test_an_integration_that_never_comes_up_is_checked_anyway(self, mock_config):
+        RebuildableIntegration.reset_instance()
+        mock_config.register_class(RebuildableIntegration)
+        RebuildableIntegration.healthy = False
+        with patch.object(RebuildableIntegration, "wait_ready", return_value=False):
+            result = mock_config.restart("Rebuildable")
+        assert result["status"]["state"] == "warning"
 
 
 class TestDescribeAll:

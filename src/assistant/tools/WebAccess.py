@@ -175,6 +175,11 @@ class WebAccess(Integration):
             return self._driver_ready.is_set()
         return self._driver_ready.is_set() and self._browser is not None
 
+    def wait_ready(self, timeout: float) -> bool:
+        """Chrome starts on the loop thread after the constructor returns; ready once that
+        attempt has finished, either way."""
+        return self._driver_ready.wait(timeout)
+
     # Gap between the two nodriver.start() attempts in _async_initialize_driver.
     # Without this, both retries hit the same back-pressure window from the dying
     # Chrome process tree and fail with "Failed to connect to browser".

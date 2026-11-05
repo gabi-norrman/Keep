@@ -136,6 +136,14 @@ class Integration(SingletonMixin, ABC):
         May raise an exception on failure — the monitor will catch it."""
         ...
 
+    def wait_ready(self, timeout: float) -> bool:
+        """Block until a freshly started instance can answer `check_health` truthfully, or
+        `timeout` runs out; True when it can. A restart checks health the moment the start
+        hook returns, and an integration that comes up on a thread of its own (Web Access's
+        Chrome) would otherwise report a warning that stands until the monitor's next cycle,
+        15 minutes later. Ready on construction by default."""
+        return True
+
     def missing_config_keys(self) -> List[str]:
         """The config_keys that config.yaml does not set (absent or empty) — what the
         monitor's NOT_CONFIGURED verdict rests on, for a caller that wants the list."""

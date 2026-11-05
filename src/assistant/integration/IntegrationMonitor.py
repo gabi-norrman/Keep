@@ -278,7 +278,7 @@ class IntegrationMonitor:
             self._integrations.pop(integration.name, None)
         rebuilt = self.register_class(cls, start)
         if rebuilt.state not in (IntegrationState.NOT_CONFIGURED, IntegrationState.DISABLED, IntegrationState.NEEDS_2FA):
-            self._await_feed_open(rebuilt)
+            self._await_ready(rebuilt)
             self._check_integration(rebuilt)
         info(f"Integration '{rebuilt.name}' restarted: {rebuilt.state.value}"
              + (f" ({rebuilt.last_error})" if rebuilt.last_error else ""))
@@ -307,30 +307,37 @@ class IntegrationMonitor:
         info(f"Starting integration {integration.name} in place...")
         if record is not None and record[1] is not None:
             record[1](integration)
-        self._await_feed_open(integration)
+        self._await_ready(integration)
         self._check_integration(integration)
         info(f"Integration '{integration.name}' started in place: {integration.state.value}"
              + (f" ({integration.last_error})" if integration.last_error else ""))
         self.notify()
         return {"restartable": record is not None, "status": self._status(integration)}
 
-    def _await_feed_open(self, integration: Integration):
-        """A Feed's start hook only spawns its thread; the connection its health check reads
-        is built by open_feed on that thread. Checked a millisecond later the restart
-        reported "Health check returned False" beside a live feed for the next 15 minutes,
-        and the LLM read that as a login that had not landed."""
-        if not isinstance(integration, Feed):
-            return
-        runner = Feeds.get_instance().runner(integration.feed_name)
-        if runner is None:
-            trace(f"Integration '{integration.name}': no feed runner to wait for")
-            return
+    def _await_ready(self, integration: Integration):
+        """A start hook often only spawns a thread: a Feed's connection is built by open_feed
+        on the runner's thread, Web Access's Chrome on its loop thread. Checked a millisecond
+        later the restart reported "Health check returned False" beside a live integration
+        for the next 15 minutes, and the LLM investigated that as a real fault."""
         started = time.time()
-        if runner.wait_opened(self.FEED_OPEN_TIMEOUT):
-            trace(f"Integration '{integration.name}': feed opened after {time.time() - started:.1f}s, checking health")
+        if isinstance(integration, Feed):
+            runner = Feeds.get_instance().runner(integration.feed_name)
+            if runner is None:
+                trace(f"Integration '{integration.name}': no feed runner to wait for")
+            elif not runner.wait_opened(self.READY_TIMEOUT):
+                info(f"Integration '{integration.name}': feed still opening after {self.READY_TIMEOUT}s, "
+                     "checking health anyway")
+                return
+        remaining = max(0.0, self.READY_TIMEOUT - (time.time() - started))
+        try:
+            ready = integration.wait_ready(remaining)
+        except Exception as exc:
+            error(f"Integration '{integration.name}': wait_ready raised {type(exc).__name__}: {exc}")
+            return
+        if ready:
+            trace(f"Integration '{integration.name}': ready after {time.time() - started:.1f}s, checking health")
         else:
-            info(f"Integration '{integration.name}': feed still opening after {self.FEED_OPEN_TIMEOUT}s, "
-                 "checking health anyway")
+            info(f"Integration '{integration.name}': still starting after {self.READY_TIMEOUT}s, checking health anyway")
 
     def _snapshot(self) -> List[Integration]:
         with self._lock:
@@ -361,7 +368,7 @@ class IntegrationMonitor:
             self._thread = None
 
     STARTUP_GRACE_PERIOD = 10  # seconds, let integrations finish connecting
-    FEED_OPEN_TIMEOUT = 15     # seconds a restart waits for a feed's open_feed before the health check
+    READY_TIMEOUT = 15         # seconds a restart waits for the integration to come up before the health check
 
     def _run_loop(self):
         if self._stop_event.wait(self.STARTUP_GRACE_PERIOD):
