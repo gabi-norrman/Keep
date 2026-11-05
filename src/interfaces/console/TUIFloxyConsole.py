@@ -103,8 +103,9 @@ class TUIFloxyConsole(AssistantObserver):
 
         self.scene = Scene()
         self.intro = StartupIntro(self.scene)
+        self.chat_pane = chat_pane if chat_pane is not None else ChatPane()
         self.navigator = TabNavigator([
-            HomeTab(self, chat_pane if chat_pane is not None else ChatPane(), self.intro),
+            HomeTab(self, self.chat_pane, self.intro),
             DashboardTab(self),
             TabGroup("Memory", [
                 BankTab(),
@@ -149,6 +150,13 @@ class TUIFloxyConsole(AssistantObserver):
     def on_first_token(self, seconds: float, from_cache: bool):
         self.time_to_first_token = seconds
         self.llm_from_cache = from_cache
+
+    def on_cache_break(self, report):
+        """The Home tab's debug row for a cache miss: the report under a header naming the
+        model and the time. Stored whatever the debug toggle says, so Ctrl+D reveals it after
+        the fact."""
+        stamp = time.strftime("%H:%M:%S", time.localtime(report.timestamp))
+        self.chat_pane.add_debug_diff(report.text(), header=f"Cache break · {report.model} · {stamp}")
 
     def on_reply_started(self, seconds_after_first_token: float):
         self.time_to_user_reply = seconds_after_first_token

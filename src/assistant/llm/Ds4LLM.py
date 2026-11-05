@@ -293,6 +293,23 @@ class Ds4LLM(ChatGPTLLM):
              f"| {time.monotonic() - started:.2f}s")
         return usage.prompt_tokens - (cached or 0)
 
+    def cache_scope(self) -> str | None:
+        return f"ds4 {self.base_url}"
+
+    def _report_cache(self, messages: list[dict], usage, effort: str):
+        """The reply's usage against the prompt, for the cache-break report. The server renders
+        past turns by the reasoning effort, so an effort other than the previous request's is
+        the note the report falls back on when the prompt text is unchanged."""
+        details = getattr(usage, 'prompt_tokens_details', None) if usage is not None else None
+        cached = getattr(details, 'cached_tokens', None) if details is not None else None
+        if cached is None:
+            return
+        previous, self._last_effort = getattr(self, '_last_effort', None), effort
+        note = None
+        if previous is not None and previous != effort:
+            note = f"the reasoning effort changed from {previous} to {effort}, which re-renders the past turns"
+        self.report_cache_usage(messages, cached, usage.prompt_tokens, note=note)
+
     # --- the DSML side ----------------------------------------------------------------------
 
     @staticmethod
@@ -432,6 +449,7 @@ class Ds4LLM(ChatGPTLLM):
             yield tail
         self._remember(reply + tail, reasoning, verbatim)
         prefilled = self._log_usage(usage, started, len(reasoning))
+        self._report_cache(messages, usage, self._effort_for(thinking))
         if prefilled is not None and first_token_at is not None:
             # The time to the first token is the prefill plus one decode step (and any wait in
             # the server's queue, which only makes the next bar a little slow).
@@ -466,6 +484,7 @@ class Ds4LLM(ChatGPTLLM):
         if reasoning:
             fine(f"ds4 thought:\n{reasoning.strip()}")
         self._log_usage(getattr(response, 'usage', None), started, len(reasoning))
+        self._report_cache(messages, getattr(response, 'usage', None), self._effort_for(thinking))
         calls = getattr(message, 'tool_calls', None) or []
         content, withheld = self._split_at_sentinel(message.content or "")
         rendered = self._rendered_calls(calls)
@@ -541,6 +560,7 @@ class Ds4LLM(ChatGPTLLM):
             self._prefill.end(token)
             slot.release()
         self._log_usage(usage, started, reasoning_chars)
+        self._report_cache(messages, usage, self.reasoning_effort())
         return "".join(chunks)
 
 

@@ -93,6 +93,7 @@ class Entry:
     header: Optional[str] = None      # dim line above the body (who, when) for history entries
     detail: Optional[str] = None      # command echoes: the dim "(done after 4s, …)" note after the body
     history: bool = False             # a `HistoryFeed` backfill row, not something this console produced live
+    debug: bool = False               # a diagnostic row (a cache-break report): drawn only with show_debug on
     picture: Optional[Picture] = None  # media: the photo itself (or a video's poster frame), when it decoded
     _layout: Optional[tuple] = field(default=None, repr=False, compare=False)
 
@@ -333,6 +334,11 @@ class ChatPane:
 
     def add_notice(self, html: str) -> Entry:
         return self._add(Entry(KIND_NOTICE, TypewriterText(html, reveal=False)))
+
+    def add_debug_diff(self, text: str, header: str) -> Entry:
+        """A diagnostic row (a cache-break report) under a dim header: its -/+ lines are
+        drawn as a diff, and the row shows only while show_debug is on."""
+        return self._add(Entry(KIND_DIFF, TypewriterText(text, reveal=False), header=header, debug=True))
 
     def add_media(self, label: str, caption: str, size: int, data: Optional[bytes] = None) -> Entry:
         """A photo or video the assistant sent: the picture (`data`, the photo or a video's
@@ -581,7 +587,7 @@ class ChatPane:
 
     def _draw_transcript(self, screen: TUIScreen, frame: int, x: int, y: int, width: int, rows: int):
         content_w = max(1, width - 3)   # bullet indent and the scrollbar column
-        entries = [e for e in self.entries if self.show_debug or e.kind != KIND_THINKING]
+        entries = [e for e in self.entries if self.show_debug or not (e.kind == KIND_THINKING or e.debug)]
         image_rows = max(self.IMAGE_ROWS_MIN, min(self.IMAGE_ROWS_MAX, rows // self.IMAGE_ROWS))
         lines = self._layout(entries, content_w, image_rows)
         total = len(lines)

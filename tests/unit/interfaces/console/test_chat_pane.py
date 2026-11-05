@@ -1265,3 +1265,21 @@ class TestOpenLink:
         draw(pane, screen)
         pane.handle_input('\x0f')
         assert opened == ["https://console.example/keys"]
+
+
+@pytest.mark.unit
+class TestDebugDiffRow:
+    def test_a_cache_break_row_shows_only_with_debug_on_and_draws_its_diff(self, pane, screen):
+        pane.add_debug_diff("Cache break: the prompt changed at line 3.\n-the car is driving\n+the car is parked",
+                            header="Cache break · DS4 · 10:00:00")
+        pane.add_assistant("hello", final=True)
+        assert draw(pane, screen)[0] == BULLET + "hello"
+        pane.show_debug = True
+        lines = draw(pane, screen)
+        assert lines[0] == BULLET + "Cache break · DS4 · 10:00:00"
+        assert lines[1].strip() == "Cache break: the prompt changed at line 3."
+        assert lines[2].strip() == "- the car is driving"
+        assert screen.next_frame[2][len(BULLET) + 2].style.fg == COLOR_REMOVED
+        assert lines[3].strip() == "+ the car is parked"
+        assert screen.next_frame[3][len(BULLET) + 2].style.fg == COLOR_ADDED
+        assert lines[5] == BULLET + "hello"

@@ -98,3 +98,20 @@ class TestObserverHub:
         hub.clear()
         hub.on_tokens("x")
         assert log == []
+
+
+@pytest.mark.unit
+class TestCacheBreakFanOut:
+    def test_a_cache_break_reaches_every_subscriber(self):
+        class Listener(AssistantObserver):
+            def __init__(self):
+                self.seen = []
+
+            def on_cache_break(self, report):
+                self.seen.append(report)
+
+        hub, a, b = ObserverHub(), Listener(), Listener()
+        hub.subscribe(a)
+        hub.subscribe(b)
+        hub.on_cache_break("report")
+        assert a.seen == ["report"] and b.seen == ["report"]

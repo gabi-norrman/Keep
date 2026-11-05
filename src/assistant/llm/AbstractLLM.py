@@ -103,6 +103,29 @@ class AbstractLLM(ABC):
             return text.replace(cls.CACHE_BREAKPOINT_MARKER, "")
         return text
 
+    def cache_scope(self) -> str | None:
+        """The single-context server this backend's prompt cache lives on, when one request
+        evicts another's (ds4, Ollama); None for a provider whose cache is keyed by content."""
+        return None
+
+    def report_cache_usage(self, messages: list[dict], cached_tokens: int, prompt_tokens: int,
+                           note: str | None = None):
+        """A request the server answered, with its own count of the prompt tokens it read back
+        from its cache: the CacheBreakTracker of this instance explains a miss (the Home tab's
+        debug row, the log). `note` is what the backend knows about the request beyond the
+        prompt text. The tracker is made on first use — a backend need not call this
+        constructor."""
+        try:
+            tracker = self.__dict__.get('_cache_breaks')
+            if tracker is None:
+                from .CacheBreakTracker import CacheBreakTracker
+                tracker = self._cache_breaks = CacheBreakTracker(self.name(), scope=self.cache_scope())
+            return tracker.record(messages, cached_tokens, prompt_tokens, note_text=note)
+        except Exception as e:
+            # A diagnostic: it runs inside the request, before the first token, and must never fail it.
+            error(f"{self.name()} cache-break report failed: {e}")
+            return None
+
     def _ensure_initialized(self):
         """Verify the client has been initialized."""
         if not self.client:

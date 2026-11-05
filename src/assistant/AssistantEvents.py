@@ -133,6 +133,12 @@ class AssistantObserver:
     def on_command_notification(self, text: str):
         """Human-readable description of a command that just ran."""
 
+    # --- prompt cache ----------------------------------------------------------------
+    def on_cache_break(self, report):
+        """An LLM request read back much less of its prompt from the server's cache than the
+        request before it sent: a `CacheBreak` (assistant.llm.CacheBreakTracker) saying which
+        line first differs, or why else — the Home tab's debug row."""
+
     # --- outposts / server audio -----------------------------------------------------
     def on_outpost_latency(self, addr, rtt_ms: float):
         pass
@@ -232,6 +238,9 @@ class ObserverHub(AssistantObserver):
 
     def on_command_notification(self, text: str):
         self._emit("on_command_notification", text)
+
+    def on_cache_break(self, report):
+        self._emit("on_cache_break", report)
 
     def on_outpost_latency(self, addr, rtt_ms: float):
         self._emit("on_outpost_latency", addr, rtt_ms)

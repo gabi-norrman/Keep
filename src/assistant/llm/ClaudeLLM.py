@@ -404,6 +404,7 @@ class ClaudeLLM(AbstractLLM):
                           follow_up: bool = False) -> dict:
         """Build common API call parameters."""
         full = Thinking.of(thinking).full   # MORE is an ordinary request here: effort is high regardless
+        self._cache_messages = messages     # what _log_cache_usage reports against the usage
         system_message, anthropic_messages = self._convert_messages(messages)
 
         if system_message and self.prompt_cache:
@@ -507,6 +508,12 @@ class ClaudeLLM(AbstractLLM):
                   f"(total {total}, {pct}% cached)")
             from common.TTFTMonitor import TTFTMonitor
             TTFTMonitor.get_instance().record_cache_pct(pct)
+            messages = getattr(self, '_cache_messages', None)
+            ttl = getattr(self, 'history_cache_ttl', None)
+            if messages is not None:
+                self.report_cache_usage(messages, cache_read, total,
+                                        note=ttl and f"a breakpoint's entry lives {ttl} ({self.FOLLOW_UP_CACHE_TTL} "
+                                                     "for a follow-up tail) after its last use")
 
     def _log_output_tokens(self, usage):
         raw_output = getattr(usage, 'output_tokens', None)

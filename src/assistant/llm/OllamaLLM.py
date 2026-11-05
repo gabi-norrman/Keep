@@ -487,8 +487,11 @@ class OllamaLLM(AbstractLLM):
             info(f"Ollama rendered prompt match: first request ({len(rendered_prompt)} chars), no previous to compare")
             return rendered_prompt, None
 
+    def cache_scope(self) -> str | None:
+        return f"ollama {self.base_url}"
+
     def _log_metrics(self, data: dict, rendered_prefix_stats: tuple[int, int] | None = None,
-                     token: int | None = None):
+                     token: int | None = None, messages: list[dict] | None = None):
         prompt_tokens = data.get("prompt_eval_count", 0)
         prompt_dur_ns = data.get("prompt_eval_duration", 0)
         eval_count = data.get("eval_count", 0)
@@ -507,6 +510,8 @@ class OllamaLLM(AbstractLLM):
             cache_pct = (used / total * 100) if total else 0
             prompt_tps = remaining / prompt_dur_s if prompt_dur_s else 0
             self._prefill.observe_rate(remaining, prompt_dur_s)
+            if messages is not None:
+                self.report_cache_usage(messages, used, total)
             if rendered_prefix_stats:
                 rendered_shared, rendered_total = rendered_prefix_stats
                 rendered_pct = (rendered_shared / rendered_total * 100) if rendered_total else 0
@@ -590,7 +595,7 @@ class OllamaLLM(AbstractLLM):
                         trace("Ollama stream ended inside the thinking block — closing it")
                         yield "</thinking>"
                     self._check_unparsed_calls(content_seen)
-                    self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats, token=token)
+                    self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats, token=token, messages=messages)
                     OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
         finally:
             self._prefill.end(token)
@@ -650,7 +655,7 @@ class OllamaLLM(AbstractLLM):
             resp.raise_for_status()
 
             data = resp.json()
-            self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats, token=token)
+            self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats, token=token, messages=messages)
             OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
             return self._content_of(data)
         finally:
@@ -699,7 +704,7 @@ class OllamaLLM(AbstractLLM):
             resp.raise_for_status()
 
             data = resp.json()
-            self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats, token=token)
+            self._log_metrics(data, rendered_prefix_stats=rendered_prefix_stats, token=token, messages=processed)
             OllamaLLM._mark_request_completed(payload_str, rendered_prompt)
             return self._content_of(data)
         finally:
@@ -733,7 +738,7 @@ class OllamaLLM(AbstractLLM):
                     self._prefill.first_token(token)
                     chunks.append(content)
                 if data.get("done"):
-                    self._log_metrics(data, token=token)
+                    self._log_metrics(data, token=token, messages=messages)
                     break
             else:
                 raise RuntimeError("Ollama closed the stream before the response was done")

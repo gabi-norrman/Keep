@@ -1122,6 +1122,10 @@ class PromptManager:
         its window (MessageHistory.preload_source)."""
         self.message_history.add_command_result(result, cap=cap, source=source)
 
+    # The dump of the latest request sent, cited by a cache-break report (CacheBreakTracker);
+    # a request that overlaps another's may cite its neighbour's.
+    last_prompt_file: str | None = None
+
     @staticmethod
     def save_prompt_to_file(messages: list[dict]):
         """Save the full messages array sent to the LLM to log/prompts directory."""
@@ -1132,6 +1136,7 @@ class PromptManager:
             os.makedirs(PROMPTS_DIR, exist_ok=True)
             unique_id = str(uuid.uuid4())
             prompt_file = f"{PROMPTS_DIR}/{unique_id}.md"
+            PromptManager.last_prompt_file = prompt_file
 
             # The history holds real values (redaction happens at the LLM boundary), so the
             # dump is masked like every other log artefact.
