@@ -679,6 +679,7 @@ class CodeQualityMaintainer:
         self._thread = None
         self._last_run_date = None
         self._boot_commit = ""   # HEAD when this process started; the nightly update restarts once it differs
+        self._merged_tonight: list[str] = []   # the report lines of every PR the night merged, in order
 
     def start(self):
         self._boot_commit = self._head_commit()
@@ -778,6 +779,7 @@ class CodeQualityMaintainer:
     def _nightly_run(self, only):
         note(f"CodeQualityMaintainer: starting nightly run{f' ({only} only)' if only else ''}...")
         self._pull_current()
+        self._merged_tonight = []
         reports = {}
         steps = dict(zip(NIGHTLY_STEPS, [self._step_generate_tests,
                                          self._step_bug_analysis,
@@ -1037,13 +1039,14 @@ class CodeQualityMaintainer:
 
     def _step_auto_merge(self) -> str:
         """Last step of the night, so the test-only PRs the earlier steps opened are merged with it.
-        Plain code, no Claude Code run: a PR qualifies when every path it touches is under tests/."""
+        Plain code, no Claude Code run: a PR qualifies when every path it touches is under tests/.
+        The report lists every PR the night merged, the test generation's own included."""
         info("CodeQualityMaintainer: auto-merge of test-only PRs...")
         merged, skipped = self._merge_test_prs()
-        if merged is None:
+        if merged is None and not self._merged_tonight:
             return ""
         return "\n\n".join(f"## {heading}\n\n" + ("\n".join(lines) or "None.")
-                           for heading, lines in (("Merged PRs", merged), ("Skipped PRs", skipped)))
+                           for heading, lines in (("Merged PRs", self._merged_tonight), ("Skipped PRs", skipped)))
 
     def _merge_test_prs(self) -> tuple[list[str] | None, list[str]]:
         """Merges every open PR of a trusted author that touches nothing outside tests/ and returns
@@ -1085,6 +1088,7 @@ class CodeQualityMaintainer:
                 else:
                     info(f"CodeQualityMaintainer: merged PR #{number} ({title})")
                     merged.append(f"- #{number} {title}")
+                    self._merged_tonight.append(merged[-1])
         finally:
             self._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
         info(f"CodeQualityMaintainer: auto-merge complete, {len(merged)} merged, {len(skipped)} skipped.")

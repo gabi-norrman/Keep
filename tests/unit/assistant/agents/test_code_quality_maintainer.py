@@ -473,6 +473,23 @@ class TestStepAutoMerge:
             maintainer._step_auto_merge()
         assert self._merges(gh) == []
 
+    def test_the_report_lists_what_the_test_generation_merged_earlier_in_the_night(self, gh, maintainer):
+        """The test PR is merged right after it is opened, long before the auto-merge step runs; the
+        night's end still lists it, so one section holds every merge of the night."""
+        with patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7]):
+            maintainer._merge_test_prs()
+        with patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[9]):
+            merged, skipped = maintainer._step_auto_merge().split("Skipped PRs")
+        assert "#7" in merged and "#9" in merged
+        assert len(self._merges(gh)) == 2, "the earlier merge is listed, not merged again"
+
+    def test_a_night_whose_only_merge_was_the_test_pr_still_reports_it(self, gh, maintainer):
+        with patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7]):
+            maintainer._merge_test_prs()
+        with patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[]):
+            report = maintainer._step_auto_merge()
+        assert "#7" in report.split("Skipped PRs")[0]
+
     @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7])
     def test_restores_the_starting_branch(self, mock_candidates, gh, maintainer):
         maintainer._step_auto_merge()
