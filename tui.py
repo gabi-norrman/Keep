@@ -27,7 +27,8 @@ def machine_name():
     return name or socket.gethostname().split(".")[0]
 
 
-# A local server is titled with the machine's name, so a tab running ./keep.sh over ssh says which machine it is on
+# The title until the server is reached: it then sends its own machine's name (TUIServer.title_sequence), which
+# also names a remote server given by address; a local one gets the same name here, before it is up
 HOST_NAME = machine_name() if HOST in LOOPBACK else HOST
 
 # Terminal escape sequences for cleanup

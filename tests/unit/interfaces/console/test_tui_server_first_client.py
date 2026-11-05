@@ -148,6 +148,14 @@ class TestFirstClient:
         first.close()
         second.close()
 
+    def test_the_setup_titles_the_tab_with_the_servers_machine_not_the_address_dialled(self, server):
+        with patch("interfaces.console.framework.TUIServer.machine_name", return_value="Marcus’s Mac\x07"):
+            client = self.connect(server)
+            self.wait_for_clients(server, 1)
+            data = self.drain(client).decode()
+        assert "\x1b]0;Keep - Marcus’s Mac\x07" in data   # the bell inside the name cannot end the title early
+        client.close()
+
 
 class TestTerminalProgram:
     """tui.py appends its TERM_PROGRAM to the dimension line; Terminal.app cannot draw the

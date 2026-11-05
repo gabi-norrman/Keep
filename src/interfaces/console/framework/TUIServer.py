@@ -1,9 +1,11 @@
 import re
 import select
 import socket
+import subprocess
 import threading
 import time
 import traceback
+from functools import cache
 from typing import Set, Optional, Callable, Dict
 
 from .TUIScreen import TUIScreen
@@ -15,6 +17,26 @@ ACCEPT_TIMEOUT = 1.0      # how long a stopping server waits for its accept loop
 FRAME_INTERVAL = 1 / 30   # the animation runs at 30 fps; a frame sleeps only what is left of its slot
 IDLE_INTERVAL = 1 / 5     # ...until the picture has stood still for IDLE_AFTER: then frames are drawn this often
 IDLE_AFTER = 1.0          # seconds of unchanged frames before the loop drops to the idle rate
+
+
+@cache
+def machine_name() -> str:
+    """The Mac's own name as Sharing shows it (`Marcus’s Mac Studio`), the short host name elsewhere."""
+    try:
+        name = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True,
+                              timeout=2).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        name = ""
+    name = name or socket.gethostname().split(".")[0]
+    info(f"TUI Server: terminal tabs are titled \"Keep - {name}\"")
+    return name
+
+
+def title_sequence() -> str:
+    """The terminal tab's title naming the server's machine, so a TUI of a remote server says which
+    machine it shows rather than the address tui.py was given."""
+    name = "".join(ch for ch in machine_name() if ch.isprintable())
+    return f"\x1b]0;Keep - {name}\x07"
 
 
 class TUIServer:
@@ -205,6 +227,7 @@ class TUIServer:
             setup = (
                 TUIScreen.BEGIN_SYNC +
                 TUIScreen.ENTER_ALT_SCREEN +
+                title_sequence() +
                 TUIScreen.PUSH_KEY_REPORTING +
                 TUIScreen.ENABLE_BRACKETED_PASTE +
                 TUIScreen.RESET + TUIScreen.BACKGROUND_SEQ + TUIScreen.CLEAR_SCREEN +
