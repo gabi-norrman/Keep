@@ -14,7 +14,7 @@ class TestWebAccess:
     """Tests for WebAccess link preservation logic (static methods only, no Chrome needed)"""
 
     def test_extract_text_with_links_preserves_links(self):
-        """Links should be preserved in <a href='...'>text</a> format"""
+        """A link to another site is [text](absolute url)"""
         html = """
         <html>
             <body>
@@ -24,7 +24,7 @@ class TestWebAccess:
         """
         result = WebAccess.extract_text_with_links(html, "https://test.com")
 
-        assert '<a href="https://example.com">this site</a>' in result
+        assert '[this site](https://example.com)' in result
         assert "Check out" in result
         assert "for more info." in result
 
@@ -40,8 +40,8 @@ class TestWebAccess:
         """
         result = WebAccess.extract_text_with_links(html, "https://example.com/page/")
 
-        assert '<a href="https://example.com/about">About</a>' in result
-        assert '<a href="https://example.com/page/contact.html">Contact</a>' in result
+        assert '[About](/about)' in result
+        assert '[Contact](/page/contact.html)' in result
 
     def test_extract_text_with_links_removes_navigation(self):
         """Navigation, header, footer elements should be removed"""
@@ -67,7 +67,7 @@ class TestWebAccess:
 
         # Content link should be present
         assert "Content Link" in result
-        assert '<a href="https://example.com/content-link">Content Link</a>' in result
+        assert '[Content Link](/content-link)' in result
 
         # Navigation, header, footer links should be removed
         assert "Nav Link" not in result
@@ -124,7 +124,7 @@ class TestWebAccess:
         assert "Description 3" in result
 
         # All links should be preserved
-        assert result.count('<a href=') == 3
+        assert result.count('](/') == 3
 
     def test_extract_text_with_links_skips_empty_links(self):
         """Links without text should be skipped"""
@@ -143,7 +143,7 @@ class TestWebAccess:
         assert "Valid Link" in result
         assert "Another Valid" in result
         # Only 2 links should be preserved (the ones with text)
-        assert result.count('<a href=') == 2
+        assert result.count('](/') == 2
 
     def test_extract_text_falls_back_to_body_when_main_is_small(self):
         """When <main> holds less than 2/3 of body text, fall back to <body>"""
@@ -187,10 +187,10 @@ class TestWebAccess:
         result = WebAccess.extract_text_with_links(html, "https://example.com")
 
         assert "Some text with" in result
-        assert '<a href="https://example.com/link1">a link</a>' in result
+        assert '[a link](/link1)' in result
         assert "inside." in result
         assert "More text with" in result
-        assert '<a href="https://example.com/link2">another link</a>' in result
+        assert '[another link](/link2)' in result
 
     def test_extract_text_with_links_strips_excessive_whitespace(self):
         """Should clean up excessive whitespace"""

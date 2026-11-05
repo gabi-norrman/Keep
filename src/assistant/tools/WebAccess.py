@@ -1623,6 +1623,36 @@ class WebAccess(Integration):
             return url
         return urlunparse(parsed._replace(query=urlencode(kept)))
 
+    # A link the LLM has no reason to follow: a wiki's section edit links and its
+    # template, file, category and project namespaces. A same-page anchor (a footnote,
+    # a table of contents entry) is caught without a pattern, by comparing the pages.
+    HOUSEKEEPING_LINK_PATTERNS = (
+        re.compile(r'[?&]action=edit\b'),
+        re.compile(r'/wiki/(?:Template|Special|Help|Wikipedia|File|Category|Portal|Talk)(?:_talk)?:'),
+    )
+
+    @staticmethod
+    def _origin(url: str) -> str:
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ''
+
+    @classmethod
+    def _is_housekeeping_link(cls, href: str, base_page: str) -> bool:
+        """True for an absolute link that only points within `base_page` (the page without
+        its fragment) or matches HOUSEKEEPING_LINK_PATTERNS."""
+        if urlunparse(urlparse(href)._replace(fragment='')) == base_page:
+            return True
+        return any(p.search(href) for p in cls.HOUSEKEEPING_LINK_PATTERNS)
+
+    @staticmethod
+    def render_link(href: str, text: str, base_origin: str) -> str:
+        """The link as the LLM reads it: `[text](url)`, the url a root-relative path when
+        the link stays on the page's own site — `open_url` and `browse_open` resolve such a
+        path against the page it came from."""
+        if base_origin and (href == base_origin or href.startswith(base_origin + '/')):
+            href = href[len(base_origin):] or '/'
+        return f'[{text}]({href})'
+
     @staticmethod
     def extract_text_with_links(html_content: str, base_url: str, *, visible_only: bool = False) -> str:
         """The readable text of a page. visible_only leaves out what the JSON payloads
@@ -1709,13 +1739,18 @@ class WebAccess(Integration):
 
         # A link rendered once: the second and later <a> to the same URL go in as their
         # text alone (a results page links each item from its image, its name and its
-        # price). The LLM has the URL from the first one.
+        # price). The LLM has the URL from the first one. A link that leads nowhere the
+        # LLM would go (a footnote anchor on the same page, a wiki's edit link) is its
+        # text alone too.
         seen_links: set[str] = set()
         repeated = 0
+        housekeeping = 0
+        base_page = urlunparse(urlparse(base_url)._replace(fragment=''))
+        base_origin = WebAccess._origin(base_url)
 
-        # Extract text while preserving <a> tags
+        # Extract text while keeping the links
         def extract_with_links(element) -> str:
-            nonlocal repeated
+            nonlocal repeated, housekeeping
             result = []
             for child in element.children:
                 if isinstance(child, Comment):
@@ -1725,16 +1760,18 @@ class WebAccess(Integration):
                     if text:
                         result.append(text)
                 elif child.name == 'a' and child.get('href'):
-                    # Preserve the <a> tag with href and text
                     link_text = child.get_text(strip=True)
                     if link_text:  # Only include links with text
                         href = child['href']
                         if href in seen_links:
                             repeated += 1
                             result.append(link_text)
+                        elif WebAccess._is_housekeeping_link(href, base_page):
+                            housekeeping += 1
+                            result.append(link_text)
                         else:
                             seen_links.add(href)
-                            result.append(f'<a href="{href}">{link_text}</a>')
+                            result.append(WebAccess.render_link(href, link_text, base_origin))
                 elif child.name in ['br']:
                     result.append('\n')
                 elif child.name in ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li',
@@ -1753,9 +1790,10 @@ class WebAccess(Integration):
             return ' '.join(result)
 
         text = extract_with_links(main_content)
-        if stripped or repeated:
+        if stripped or repeated or housekeeping:
             info(f"extract_text: {stripped} chars of tracking parameters stripped from links, "
-                 f"{repeated} repeated link(s) rendered as text on {base_url}")
+                 f"{repeated} repeated and {housekeeping} housekeeping link(s) rendered as text "
+                 f"on {base_url}")
         else:
             trace(f"extract_text: links clean on {base_url}, nothing stripped")
 
@@ -4390,7 +4428,7 @@ class WebAccess(Integration):
 
     def browse_open(self, url: str) -> str:
         """Open a URL in the browse session and return an interactive-element snapshot."""
-        url = self._normalize_url(url)
+        url = self._normalize_url(self._resolve_page_link(url))
         if not url:
             return "ERROR: no URL provided to browse_open."
         info(f"browse_open: {url}")
@@ -5222,6 +5260,7 @@ class WebAccess(Integration):
             return f"ERROR: could not read page: {e}"
 
         text = self.extract_text_with_links(page_source, url)
+        self._link_base_url = url
         iframe_text = await self._async_extract_iframe_texts(self._tab, url)
         if iframe_text:
             text = (text or '') + "\n\n" + iframe_text
@@ -5547,9 +5586,21 @@ class WebAccess(Integration):
         info(f"Page {page} of {len(pages)} ({len(pages[page - 1])} of {len(text)} chars) for {key}")
         return f"[Page {page} of {len(pages)} — {len(text)} chars in all]\n{pages[page - 1]}"
 
+    def _resolve_page_link(self, url: str) -> str:
+        """A root-relative path, as the extractor renders a same-site link, made absolute
+        against the page it was read from; any other URL as it is."""
+        url = (url or '').strip()
+        base = getattr(self, '_link_base_url', None)
+        if url.startswith('/') and not url.startswith('//') and base:
+            resolved = urljoin(base, url)
+            info(f"Link {url} resolved against {base} to {resolved}")
+            return resolved
+        return url
+
     def fetch_webpage(self, url: str, page=1) -> str:
         page = self._page_number(page)
-        key = (url or '').strip()
+        key = self._resolve_page_link(url)
+        url = key
         kept = self._kept_page_text(key) if page > 1 else None
         if kept is not None:
             info(f"Page {page} of {key} served from the kept text")
@@ -5559,6 +5610,7 @@ class WebAccess(Integration):
     def _fetch_webpage_text(self, url: str) -> str:
         try:
             url = self._normalize_url(url)
+            self._link_base_url = url
 
             info(f"Download content from {url}...")
 
