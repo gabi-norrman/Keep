@@ -702,6 +702,33 @@ class TestHandleBackgroundCommands:
         handler.request_context.note = None
         assert handler._turn_note(prompt_manager, byte_prefix_tail=False) is None
 
+    def test_a_photo_turn_states_the_photos_in_the_note(self, handler):
+        # The image blocks are never persisted, so the note the history keeps in front of the
+        # turn says the message carried photos and where they are — the next turn then knows a
+        # reply was grounded in something it can no longer see, and does not disown it.
+        prompt_manager = Mock()
+        prompt_manager.current_time_note.return_value = "(Current time: 14:40, Saturday, 2025-03-15)"
+        handler.request_context.images = [{"data": "abc", "media_type": "image/jpeg"},
+                                          {"data": "def", "media_type": "image/png"}]
+        with patch("assistant.RequestProcessor._save_image_to_log",
+                   side_effect=lambda block, rid, i: f"log/images/{rid}_{i}.jpg"):
+            blocks, paths = handler._build_image_blocks()
+        handler._image_blocks, handler._image_paths = blocks, paths
+        assert [b["source"]["data"] for b in blocks] == ["abc", "def"]
+        note = handler._turn_note(prompt_manager, byte_prefix_tail=False)
+        clock, photos = note.split("\n")
+        assert clock.startswith("(Current time")
+        assert "2 photos" in photos and all(path in photos for path in paths)
+        assert "this note" in photos
+
+        handler.request_context.images = [{"data": "abc", "media_type": "image/jpeg"}]
+        handler.request_context.note = "The next message is from Dave, who is not one of the household's owners."
+        with patch("assistant.RequestProcessor._save_image_to_log", return_value=None):
+            handler._image_blocks, handler._image_paths = handler._build_image_blocks()
+        lines = handler._turn_note(prompt_manager, byte_prefix_tail=False).split("\n")
+        assert lines[1].startswith("The next message is from Dave")
+        assert "a photo" in lines[2] and "saved" not in lines[2]
+
     def test_round_end_carries_the_rounds_raw_text(self, handler):
         """RoundEnd(raw) closes each follow-up round (the wire renderer turns it into \\x1e)"""
         handler.request_context.text_only = True
@@ -1678,6 +1705,7 @@ class TestPrepareContext:
     def test_images_build_content_blocks(self, full_handler):
         prompt_manager = Mock()
         prompt_manager.get_messages.return_value = []
+        prompt_manager.current_time_note.return_value = "(Current time: 14:40, Saturday, 2025-03-15)"
         full_handler.request_context.images = [
             {"data": "abc123", "media_type": "image/jpeg"}
         ]
@@ -1695,6 +1723,9 @@ class TestPrepareContext:
         assert reply[0]["source"]["data"] == "abc123"
         assert reply[1]["type"] == "text"
         assert reply[1]["text"] == "User: What is this?"
+        # The photo is sent once and never persisted: the note row the history keeps says so.
+        assert "a photo" in prompt_manager.get_messages.call_args.kwargs["time_note"]
+        assert full_handler.time_note == prompt_manager.get_messages.call_args.kwargs["time_note"]
 
 # ---------------------------------------------------------------------------
 # TestUpdateHistory

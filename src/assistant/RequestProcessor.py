@@ -136,6 +136,10 @@ class RequestProcessor:
     # exchange so the next request renders the same bytes. None otherwise.
     turn_timestamp: float | None = None
     time_note: str | None = None
+    # The photos of the request as content blocks and where they were saved, built by
+    # _prepare_llm_context before the note names them (_turn_note).
+    _image_blocks: list[dict] | None = None
+    _image_paths: list[str] | None = None
 
     # Used by _iter_until_killed to poll the kill flag while the TTS producer is blocked.
     KILL_POLL_INTERVAL = 0.5
@@ -588,7 +592,9 @@ class RequestProcessor:
         self._check_killed()
         if byte_prefix_tail:
             self.turn_timestamp = time.time()
-        if byte_prefix_tail or self.ctx.note:
+        if self.ctx.images:
+            self._image_blocks, self._image_paths = self._build_image_blocks()
+        if byte_prefix_tail or self.ctx.note or self.ctx.images:
             self.time_note = self._turn_note(prompt_manager, byte_prefix_tail)
         self.dialog_manager.messages = prompt_manager.get_messages(extended_thinking=use_prompt_hack,
                                                                    time_note=self.time_note,
@@ -621,20 +627,7 @@ class RequestProcessor:
                 messages[0] = {"role": "system", "content": heads_up + "\n\n---\n\n" + messages[0]["content"]}
 
         if self.ctx.images:
-            request_id = str(uuid.uuid4())[:8]
-            content_blocks = []
-            for i, img in enumerate(self.ctx.images):
-                content_blocks.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": img.get("media_type", "image/jpeg"),
-                        "data": img["data"],
-                    }
-                })
-                _save_image_to_log(content_blocks[-1], request_id, i)
-            content_blocks.append({"type": "text", "text": user_input_sent_to_ai})
-            self.dialog_manager.reply_to_llm = content_blocks
+            self.dialog_manager.reply_to_llm = self._image_blocks + [{"type": "text", "text": user_input_sent_to_ai}]
         else:
             self.dialog_manager.reply_to_llm = user_input_sent_to_ai
             # Key the response cache on the clean utterance — the same string stored as the
@@ -677,17 +670,47 @@ class RequestProcessor:
             time.sleep(0.01)
         trace(done_message)
 
+    def _build_image_blocks(self) -> tuple[list[dict], list[str]]:
+        """The request's photos as image content blocks, each saved under log/images/ — the
+        blocks go in front of the query text, the paths into the turn note."""
+        request_id = str(uuid.uuid4())[:8]
+        blocks, paths = [], []
+        for i, img in enumerate(self.ctx.images):
+            blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.get("media_type", "image/jpeg"),
+                    "data": img["data"],
+                }
+            })
+            path = _save_image_to_log(blocks[-1], request_id, i)
+            if path:
+                paths.append(path)
+        return blocks, paths
+
+    def _photo_note(self) -> str:
+        """The fact that the message carried photos, for the turn note: the history keeps a
+        photo turn as its text alone (the image blocks are never persisted), so without it
+        the next turn sees a reply grounded in nothing — and has disowned a correct one as
+        invented (the noscapine retraction, 2026-11-04)."""
+        count = len(self.ctx.images)
+        photos = "a photo" if count == 1 else f"{count} photos"
+        saved = f", saved as {' and '.join(self._image_paths)}" if self._image_paths else ""
+        them = "it" if count == 1 else "them"
+        return f"The message carries {photos}{saved}. A past turn keeps {them} only as this note."
+
     def _turn_note(self, prompt_manager, byte_prefix_tail: bool) -> str | None:
         """The note row sent in front of the query: the clock on a byte-prefix request, and
-        under it the facts the chat layer states about the message (a guest, a group chat).
-        They stand in the note, not in the person's own text, so the LLM reads them as the
-        system's words and not as something the person wrote."""
+        under it the facts the chat layer states about the message (a guest, a group chat)
+        and the photos it carries. They stand in the note, not in the person's own text, so
+        the LLM reads them as the system's words and not as something the person wrote."""
         clock = prompt_manager.current_time_note(self.turn_timestamp) if byte_prefix_tail else None
-        facts = self.ctx.note
+        facts = [fact for fact in (self.ctx.note, self._photo_note() if self.ctx.images else None) if fact]
         if not facts:
             return clock
-        trace(f"Turn note carries the chat layer's facts about the message ({len(facts)} chars)")
-        return f"{clock or prompt_manager.current_time_note()}\n{facts}"
+        trace(f"Turn note carries {len(facts)} fact(s) about the message")
+        return "\n".join([clock or prompt_manager.current_time_note(), *facts])
 
     def _update_history(self, prompt_manager, already_reported: str | None) -> str:
         response_text = self._remove_thinking(self.dialog_manager.llm_response_raw)
