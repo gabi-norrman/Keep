@@ -9,10 +9,26 @@ import termios
 import tty
 import os
 import signal
+import subprocess
 import threading
 from shutil import get_terminal_size
 
 HOST = sys.argv[1] if len(sys.argv) > 1 else "localhost"   # tui.py <host> for a server on another machine
+LOOPBACK = ("localhost", "127.0.0.1", "::1")
+
+
+def machine_name():
+    """The Mac's own name as Sharing shows it (`Marcus’s Mac Studio`), the host name elsewhere."""
+    try:
+        name = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True,
+                              timeout=2).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        name = ""
+    return name or socket.gethostname().split(".")[0]
+
+
+# A local server is titled with the machine's name, so a tab running ./keep.sh over ssh says which machine it is on
+HOST_NAME = machine_name() if HOST in LOOPBACK else HOST
 
 # Terminal escape sequences for cleanup
 CSI = "\x1b["
@@ -22,7 +38,7 @@ DISABLE_BRACKETED_PASTE = f"{CSI}?2004l"
 EXIT_ALT_SCREEN = f"{CSI}?1049l"
 SHOW_CURSOR = f"{CSI}?25h"
 RESET = f"{CSI}0m"
-SET_TITLE = f"\x1b]0;Keep - {HOST}\x07"   # the terminal tab's title while the TUI runs
+SET_TITLE = f"\x1b]0;Keep - {HOST_NAME}\x07"   # the terminal tab's title while the TUI runs
 CLEAR_TITLE = "\x1b]0;\x07"                # an empty title hands the tab back to the shell's own naming
 PORT = 5151
 BYE = "\nDisconnected from the server — the server keeps running, only the TUI closed. Run ./keep.sh to reconnect. Run ./stop.sh to stop the server."
