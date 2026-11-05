@@ -1112,8 +1112,6 @@ class TestCmdSelfAnalysis:
                 f"AAM history must include full report, got: {history_content!r}"
             assert history_content.startswith("[Self-analysis complete]"), \
                 "prefix tag is what the LLM keys off to recognize the entry"
-            assert rows[0].kwargs.get("background") is True, \
-                "a report landing during a request is held until after its reply (#162)"
             mock_aam_instance.prompt_manager.update_history.assert_not_called()
 
     def test_cost_analysis_is_delivered_like_a_self_analysis(self, commands_instance):

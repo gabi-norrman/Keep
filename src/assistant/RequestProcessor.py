@@ -287,7 +287,6 @@ class RequestProcessor:
         """Prepare the turn and return the event stream (a generator; nothing runs until
         it is iterated). Returns an empty iterator when the handler was killed already."""
         self.is_performing_request = True
-        self._history_request_started(prompt_manager)
         self.my_thread_name = threading.current_thread().name
         if self.turn_gate:
             self.turn_gate.begin_turn(self.request_data.args)
@@ -328,7 +327,6 @@ class RequestProcessor:
             if self.is_killed:
                 info("Request was killed before generation started; returning an empty stream.")
                 self._notify_autonomous_user_ended()
-                self._history_request_ended(prompt_manager)
                 return iter(())
 
             return self.generate_events(prompt_manager)
@@ -338,7 +336,6 @@ class RequestProcessor:
             # (Assistant._in_flight reads it: stuck true, it would refuse every guest turn).
             self.is_performing_request = False
             self._notify_autonomous_user_ended()
-            self._history_request_ended(prompt_manager)
             raise
 
     def _handle_first_audio_chunk(self, chunk_time: float):
@@ -1039,7 +1036,6 @@ class RequestProcessor:
             self.is_performing_request = False
             self._close_text_stream(self.dialog_manager.request_id)
             self._notify_autonomous_user_ended()
-            self._history_request_ended(prompt_manager)
             self._restore_outposts_if_muted()
 
     def _ensure_outposts_muted(self):
@@ -1064,23 +1060,6 @@ class RequestProcessor:
                 aam.notify_user_interaction_started()
         except Exception as e:
             trace(f"AutonomousActionManager start-notify failed (non-fatal): {e}")
-
-    # The history holds a background job's result while this request is in flight, so the
-    # result lands after the reply (MessageHistory.request_started). Paired like the
-    # autonomous notifies above: every path that ends the request calls the end.
-    @staticmethod
-    def _history_request_started(prompt_manager):
-        try:
-            prompt_manager.message_history.request_started()
-        except Exception as e:
-            trace(f"History request-start failed (non-fatal): {e}")
-
-    @staticmethod
-    def _history_request_ended(prompt_manager):
-        try:
-            prompt_manager.message_history.request_ended()
-        except Exception as e:
-            trace(f"History request-end failed (non-fatal): {e}")
 
     def _notify_autonomous_user_ended(self):
         try:
