@@ -83,6 +83,16 @@ def _folders() -> tuple[tuple[Path, bool], ...]:
     return tuple(out)
 
 
+def local_folder(folder: str) -> Path | None:
+    """The path of the local integration folder called *folder* (`schoolsoft` →
+    `~/KeepLocal/schoolsoft`), None when the name is one of the repository's own or no folder
+    has it — what tells a job on an install's own folders from a PR on the repository's."""
+    for path, local in _folders():
+        if path.name == folder:
+            return path if local else None
+    return None
+
+
 def files(name: str, local_only: bool = False) -> list[Path]:
     """`<folder>/<name>` of every integration folder that has one (`toolkit.md`,
     `config.example.yaml`, `requirements.txt`), the repository's first; with *local_only*,

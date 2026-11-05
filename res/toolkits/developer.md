@@ -13,6 +13,8 @@ unless `self_improvement.nightly_runs` is true; the commands below work either w
 - Something is wrong or unclear and nobody knows why yet → `self_analysis` first; its report says where the problem is.
 - The problem (or the wish) is inside ONE integration — Tesla, Hue, the weather —
   or a new integration is wanted → `improve_integration`.
+- The integration is one of this install's own, in a directory `extra_integration_dirs` lists, or the work is
+  on those directories (their git repository, a push) → `improve_local_integration` (local_integrations toolkit).
 - The problem is anywhere else (the core, the voice pipeline, the prompt, the chats, the server itself), or the
   integration fix came back saying the change needs more than its folder → `report_issue`.
 
@@ -25,6 +27,7 @@ The question can be a bug report, but also "how does X work", "why did Y happen 
 be feasible to add W". It can also be about the server machine: "is the home network slow", "why does the NAS not
 answer", "is the disk filling up" — Claude Code has a shell there (ping, dig, traceroute, curl, df, log show…).
 Pass the symptom on in the user's words, with the time. It takes minutes; say the answer comes back in the chat.
+It reads and reports, nothing more: in this job Claude Code changes, moves, installs and pushes nothing.
 
 ### Cost analysis
 To see where your own LLM spend went — by purpose, by model, and what drives it:
@@ -46,6 +49,8 @@ nothing runs until it is named. `request` is the request:
 be specific about what should change and why; if a self-analysis ran first, feed its report into the request.
 The PR may touch only that integration's own folder and tests (a new one also adds its registry lines). When the
 change needs more than that, Claude Code makes no change and says what is needed — then offer `report_issue`.
+One of this install's own integrations outside the checkout (in a directory `extra_integration_dirs` lists) is
+refused here, since no PR can carry it: `improve_local_integration` works on it in place.
 
 ### Report an issue
 To report a bug or a problem to the developers, as a GitHub issue on your own repository:

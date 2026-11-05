@@ -133,6 +133,18 @@ def test_a_config_gated_toolkit_follows_its_key_not_the_monitor():
 
 
 @pytest.mark.unit
+def test_the_local_integrations_toolkit_is_offered_by_the_listed_directories():
+    """`extra_integration_dirs` is a list: the toolkit is offered while it names a directory,
+    so an install without local folders never sees improve_local_integration."""
+    toolkit = Toolkits.by_name("local_integrations")
+    assert toolkit.requires == "extra_integration_dirs"
+    with _config(extra_integration_dirs=[]):
+        assert not toolkit.offered_by(FakeMonitor())
+    with _config(extra_integration_dirs=["~/KeepLocal"]):
+        assert toolkit.offered_by(FakeMonitor())
+
+
+@pytest.mark.unit
 def test_load_toolkit_of_a_config_gated_toolkit_names_the_key(commands):
     toolkit = next(t for t in Toolkits.TOOLKITS if t.requires)
     pm = Mock()

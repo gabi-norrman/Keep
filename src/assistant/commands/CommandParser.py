@@ -16,8 +16,10 @@ class CommandParser:
     # words before the request's first comma (prod, 2026-10-08: "Maciek asked at 10:46 on
     # Oct 8" was all Claude Code got). Unlike RAW_PARAM_COMMANDS the text is not JS, so
     # an apostrophe in it must not open a string for the paren matching.
-    # improve_integration splits its leading integration name off the payload itself.
-    FREE_TEXT_COMMANDS = {"self_improvement", "self_analysis", "improve_integration", "report_issue"}
+    # improve_integration and improve_local_integration split their leading integration name
+    # off the payload themselves.
+    FREE_TEXT_COMMANDS = {"self_improvement", "self_analysis", "improve_integration", "improve_local_integration",
+                          "report_issue"}
 
     # Commands whose arguments carry square brackets as syntax — a setting key's
     # list index (icloud.devices[0].id) or a regex character class ([Cc]omplete,

@@ -2,6 +2,7 @@ from datetime import date, datetime
 from unittest.mock import patch, Mock, MagicMock, call
 
 import pytest
+from pathlib import Path
 
 from common.ConfigManager import ConfigManager
 
@@ -657,6 +658,47 @@ class TestFixInput:
         assert "# Log Triage" in only_logs and "Bug Analysis" not in only_logs
         assert CodeQualityMaintainer.fix_input({}) == ""
         assert CodeQualityMaintainer.fix_input({"bugs": "", "logs": ""}) == ""
+
+
+@pytest.mark.unit
+class TestImproveLocalIntegration:
+    """The job on an install's own folders outside the checkout (#156): the run stays in the
+    checkout (CLAUDE.md applies) with the local directories added as writable, no PR."""
+
+    ROOTS = (Path("/home/marcus/KeepLocal"), Path("/home/marcus/KeepExtra"))
+
+    def _run(self, **kwargs):
+        calls = []
+
+        def fake(prompt, label, add_dirs=()):
+            calls.append((prompt, label, add_dirs))
+            return "Moved the folder.\nCommitted and pushed to forge.local."
+        with patch.object(CodeQualityMaintainer, "_run_claude", side_effect=fake):
+            report = CodeQualityMaintainer.improve_local_integration("push it to forge.local", self.ROOTS, **kwargs)
+        return report, calls[0]
+
+    def test_the_local_directories_are_writable_and_the_checkout_is_the_working_directory(self):
+        report, (prompt, _, add_dirs) = self._run()
+        assert add_dirs == self.ROOTS
+        assert all(str(root) in prompt for root in self.ROOTS)
+        assert "push it to forge.local" in prompt and report.startswith("Moved the folder.")
+
+    def test_the_prompt_names_the_folder_of_an_existing_local_integration(self):
+        _, (prompt, _, _) = self._run(name="Podcasts", folder="/home/marcus/KeepLocal/podcasts")
+        assert "/home/marcus/KeepLocal/podcasts" in prompt and "Podcasts" in prompt
+        assert "new folder" not in prompt
+
+    def test_a_new_local_integration_goes_into_the_first_directory(self):
+        _, (prompt, _, _) = self._run(name="Ring")
+        assert "Ring" in prompt and "new folder in /home/marcus/KeepLocal" in prompt
+
+    @patch.object(CodeQualityMaintainer, "_run_claude", side_effect=ClaudeNotLoggedInError())
+    def test_explains_missing_login_instead_of_raw_cli_text(self, mock_claude):
+        assert CodeQualityMaintainer.improve_local_integration("fix it", self.ROOTS) == NOT_LOGGED_IN_MESSAGE
+
+    @patch.object(CodeQualityMaintainer, "_run_claude", return_value="")
+    def test_no_output_is_said_so(self, mock_claude):
+        assert "no output" in CodeQualityMaintainer.improve_local_integration("fix it", self.ROOTS)
 
 
 @pytest.mark.unit

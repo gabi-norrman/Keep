@@ -20,7 +20,8 @@ enabled_integrations: []
 # src/integrations/: ~/KeepLocal/schoolsoft/ is found by listing ~/KeepLocal. Each folder has the same
 # pieces as one of the repository's (<Name>Integration.py, toolkit.md, config.example.yaml, requirements.txt …)
 # and is enabled the same way, by its name in enabled_integrations; a pull never touches it. A folder named
-# like one of the repository's is left out. Read at start: a change needs restart_server.
+# like one of the repository's is left out. Read at start: a change needs restart_server. The assistant works on
+# these folders with improve_local_integration (in place, no pull request: they are this install's own).
 extra_integration_dirs: []
 
 api_keys:

@@ -414,12 +414,46 @@ network, a device on it, disk space, updates, a service):
 {request}
 
 For the code: log/floxy.out has the server logs (huge — tail it or grep for the time in question).
-For the machine: use the shell, but only observe — change, install, restart or write nothing outside the repo.
+For the machine: use the shell, but only observe — change, install, restart or write nothing outside the repo,
+this install's own integration folders outside the checkout included (a change there is a job for
+improve_local_integration, not for this analysis: say so in the report instead of making it).
 Never put config.yaml, vault or ~/.claude contents in the report.
 
 Do a thorough analysis and provide a report with what you found.
 
 IMPORTANT: Your entire analysis must be in your final message. Do not ask follow-up questions or offer to implement changes. Keep the report concise — it will be read over a chat on a phone.
+"""
+
+LOCAL_INTEGRATION_PROMPT = """
+This is a request for work on this install's own local integrations: integration folders that live outside this
+checkout, in the directories config.yaml's `extra_integration_dirs` lists. A local folder is laid out like one of
+`src/integrations/` (the same pieces: `<Name>Integration.py`, `<Name>Commands.py`, `toolkit.md`,
+`config.example.yaml`, `requirements.txt` …) and the server imports it as `integrations.<folder>`, so what CLAUDE.md
+says about an integration folder applies to it — but the folders are the user's own, not part of this repository:
+no branch and no pull request is made for them, the user reviews the result in place.
+
+The local directories: {roots}
+{target}
+
+The request:
+
+{request}
+
+Rules:
+- Write only under the local directories above — never in this checkout, never anywhere else on the machine.
+- The directories are the user's own, so git on them is part of the job when the request asks for it: init a
+  repository, commit, add the remote the user names, push to it. Never push anywhere the user did not name.
+- A change that needs anything in this checkout (the core, a contract, one of the repository's integrations) cannot
+  be made here: make no change, and say in the report exactly what is needed, so the user can file it with
+  report_issue.
+- Read this checkout freely: the integration framework under src/assistant/integration/, the repository's folders
+  as examples, tests/unit/integrations/ as the pattern for a local folder's own tests (which stay in the folder),
+  log/floxy.out for what happened (huge — tail it or grep for the time in question).
+- Do not restart the server or install anything: the server keeps running the old code until the user restarts it.
+- Never put config.yaml, vault or ~/.claude contents in the report.
+
+IMPORTANT: Your entire report must be in your final message: what you changed (files, commits, pushes) and what you
+left undone with the reason. Do not ask follow-up questions. Keep it concise — it will be read over a chat on a phone.
 """
 
 COST_ANALYSIS_PROMPT = """
@@ -1097,7 +1131,10 @@ class CodeQualityMaintainer:
         return None
 
     @staticmethod
-    def _run_claude(prompt, label):
+    def _run_claude(prompt, label, add_dirs: tuple = ()):
+        """One `claude -p` run in the checkout. *add_dirs* are directories outside it the run
+        may read and write too (`--add-dir`): the local integration folders of a job on
+        them — the checkout stays the working directory, so CLAUDE.md is in force."""
         status = claude_status()
         if status.path is None:
             error(f"CodeQualityMaintainer [{label}] Claude Code CLI not found on this machine")
@@ -1109,6 +1146,9 @@ class CodeQualityMaintainer:
         trace(f"CodeQualityMaintainer [{label}] using Claude Code model {model}, {status.detail}")
         cmd = [status.path, "--permission-mode", "auto", "-p", prompt,
                "--output-format", "stream-json", "--verbose", "--model", model]
+        if add_dirs:
+            cmd += ["--add-dir", *map(str, add_dirs)]
+            trace(f"CodeQualityMaintainer [{label}] Claude Code may also write in {', '.join(map(str, add_dirs))}")
         process = subprocess.Popen(
             cmd, cwd=WORKING_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL, text=True, env=status.env()
@@ -1367,6 +1407,36 @@ class CodeQualityMaintainer:
         else:
             info("CodeQualityMaintainer: self-analysis produced no output, skipping email.")
         return result if result else "Self-analysis produced no output."
+
+    @staticmethod
+    def improve_local_integration(request: str, roots: tuple, name: Optional[str] = None,
+                                  folder: Optional[str] = None) -> str:
+        """Claude Code works on this install's own integration folders outside the checkout
+        (*roots*, the resolved `extra_integration_dirs`): on the local integration *name*
+        in *folder* (its path), on a new one called *name* (*folder* None — it goes into the
+        first directory), or, *name* None, on the directories themselves (a git repository
+        for them, say). No PR: the folders are the user's, so the run writes there — the
+        directories are passed as `--add-dir`, the checkout stays the working directory —
+        and the report is the result. Returns the report."""
+        if name is None:
+            target = "The work is on the directories themselves, no one integration in particular."
+        elif folder is None:
+            target = (f'No local integration is called "{name}": build it as a new folder in {roots[0]}, '
+                      f"named after its service, with the pieces an integration folder has.")
+        else:
+            target = f'The work is on the "{name}" integration, the folder {folder}.'
+        info(f"CodeQualityMaintainer: starting local integration work on "
+             f"{folder or (name and 'a new ' + name + ' folder') or 'the local directories'}...")
+        prompt = LOCAL_INTEGRATION_PROMPT.format(roots=", ".join(map(str, roots)), target=target, request=request)
+        trace(f"prompt: {prompt}")
+        try:
+            result = CodeQualityMaintainer._run_claude(prompt, "local-integration", add_dirs=tuple(roots))
+        except ClaudeUnavailableError as e:
+            return str(e)
+        if not result:
+            info("CodeQualityMaintainer: the local integration job produced no output")
+            return "The local integration job produced no output."
+        return result
 
     @staticmethod
     def analyze_cost(window: str) -> str:

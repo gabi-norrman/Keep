@@ -5,6 +5,7 @@ from collections import deque
 from unittest.mock import Mock, call, patch, MagicMock
 
 import pytest
+from pathlib import Path
 from datetime import datetime
 
 from assistant.ChannelProfile import profile_for
@@ -2531,12 +2532,103 @@ class TestCmdImproveIntegration:
             assert reply.startswith("improve_integration failed"), payload
             job.assert_not_called()
 
+    def test_a_local_integration_is_refused_since_no_pr_can_carry_it(self, commands_instance):
+        """#156: a folder outside the checkout (extra_integration_dirs) is not in the repository,
+        so the PR job would only fail or stray; the reply names the command that works in place."""
+        with patch("assistant.commands.Commands.IntegrationDirs.local_folder", return_value=Path("/tmp/KeepLocal/podcasts")):
+            reply, _, job = self._run(commands_instance, "Podcasts, retry a feed that times out", "podcasts")
+        job.assert_not_called()
+        assert reply.startswith("improve_integration failed") and "improve_local_integration" in reply
+
     def test_the_outcome_row_names_the_pr_under_the_jobs_own_tag(self):
         report = "Opened the PR.\n\nTesla: close the trunk once"
         pr = JobPullRequest(12, "https://github.com/example/keep/pull/12", "tesla-trunk")
         row = Commands._pr_outcome("Integration improvement", report, pr, sent=True)
         assert row.startswith("[Integration improvement complete]") and "PR #12" in row
         assert "https://github.com/example/keep/pull/12" in row
+
+
+@pytest.mark.unit
+class TestCmdImproveLocalIntegration:
+    """improve_local_integration(name, request): Claude Code works in place on this install's
+    own folders outside the checkout (#156) — on a local integration, a new one, or the
+    directories themselves — and never on one of the repository's."""
+
+    ROOTS = (Path("/home/marcus/KeepLocal"),)
+
+    @staticmethod
+    def _run(commands_instance, payload, folder=None, local=None, roots=ROOTS, resembling=()):
+        monitor = Mock()
+        monitor.folder_named.return_value = folder
+        monitor.resembling.return_value = list(resembling)
+        with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
+             patch("assistant.commands.Commands.IntegrationDirs") as dirs, \
+             patch.object(commands_instance, "fire_and_forget") as fire, \
+             patch.object(Commands, "_integration_monitor", staticmethod(lambda: monitor)):
+            mock_cqm.unavailable_reason.return_value = ""
+            mock_cqm.improve_local_integration.return_value = "done"
+            mock_cqm.first_line.side_effect = lambda text: text.splitlines()[0]
+            dirs.extra_roots.return_value = roots
+            dirs.local_folder.return_value = local
+            reply = commands_instance.cmd_improve_local_integration(payload)
+            if fire.called:
+                with patch("assistant.commands.Commands.notifier") as notifier, \
+                     patch("assistant.commands.Commands.system_note") as note:
+                    notifier.return_value.send_message.return_value = True
+                    notifier.return_value.markdown_to_html.side_effect = lambda t: t
+                    fire.call_args.args[0](None)
+                    return reply, mock_cqm.improve_local_integration, note
+        return reply, mock_cqm.improve_local_integration, None
+
+    def test_a_local_integration_is_worked_on_in_its_folder(self, commands_instance):
+        request = "the feed list is fetched twice an hour, once is enough"
+        reply, job, note = self._run(commands_instance, f'"Podcasts", "{request}"', folder="podcasts",
+                                     local=self.ROOTS[0] / "podcasts")
+        assert reply is None
+        job.assert_called_once_with(request, self.ROOTS, "Podcasts", str(self.ROOTS[0] / "podcasts"))
+        row = note.call_args.args[1]
+        assert row.startswith("[Local integration work complete]") and "restart_server" in row
+
+    def test_the_directories_themselves_are_the_target_by_all_or_by_their_name(self, commands_instance):
+        for name in ("all", "KeepLocal", "/home/marcus/KeepLocal"):
+            _, job, _ = self._run(commands_instance, f"{name}, init a git repository and push it to forge.local")
+            assert job.call_args.args == ("init a git repository and push it to forge.local", self.ROOTS), name
+
+    def test_an_unknown_name_is_a_new_local_integration(self, commands_instance):
+        _, job, _ = self._run(commands_instance, "Ring, build an integration for the Ring doorbell")
+        assert job.call_args.args == ("build an integration for the Ring doorbell", self.ROOTS, "Ring")
+
+    def test_one_of_the_repositorys_integrations_is_refused_towards_the_pr_command(self, commands_instance):
+        reply, job, _ = self._run(commands_instance, "Tesla, close the trunk once", folder="tesla", local=None)
+        job.assert_not_called()
+        assert reply.startswith("improve_local_integration failed") and "improve_integration" in reply
+
+    def test_a_name_resembling_an_integration_is_asked_back_instead_of_built(self, commands_instance):
+        reply, job, _ = self._run(commands_instance, "Podcast, retry the fetch", resembling=[("Podcasts", "podcasts")])
+        job.assert_not_called()
+        assert reply.startswith("improve_local_integration failed") and "Podcasts" in reply
+
+    def test_without_a_local_directory_nothing_runs(self, commands_instance):
+        reply, job, _ = self._run(commands_instance, "Podcasts, retry the fetch", folder="podcasts", roots=())
+        job.assert_not_called()
+        assert reply.startswith("improve_local_integration failed") and "extra_integration_dirs" in reply
+
+    def test_a_missing_name_or_request_is_refused_before_claude_code(self, commands_instance):
+        for payload in ("", "Podcasts", "Podcasts,   ", ", fix it"):
+            reply, job, _ = self._run(commands_instance, payload, folder="podcasts")
+            assert reply.startswith("improve_local_integration failed"), payload
+            job.assert_not_called()
+
+    def test_it_is_a_sensitive_command_and_free_text(self):
+        """The job edits code the server runs with no review step between, on a request the
+        assistant worded — the user sees and approves that text first (#156)."""
+        from assistant.commands.CommandParser import CommandParser
+        assert "improve_local_integration" in Commands.SENSITIVE_COMMANDS
+        assert "improve_local_integration" in CommandParser.FREE_TEXT_COMMANDS
+
+    def test_the_approval_title_names_the_target(self, commands_instance):
+        assert "Podcasts" in commands_instance.describe_improve_local_integration("Podcasts, retry the fetch")
+        assert "integrations" in commands_instance.describe_improve_local_integration("all, push it")
 
 
 @pytest.mark.unit

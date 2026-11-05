@@ -244,6 +244,11 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
                          "where your LLM costs went; read your own log, restart the server",
             ("self_analysis", "cost_analysis", "improve_integration", "report_issue", "try_pull_request", "pr_feedback",
              "server_logs", "restart_server")),
+    # `requires` reads the key as a truth value, so a non-empty list of directories offers the toolkit.
+    Toolkit("local_integrations", "work on this install's own integration folders outside the checkout: fix or "
+                                  "build one, or set up and push their git repository — no PR, in place",
+            ("improve_local_integration",), requires="extra_integration_dirs",
+            requires_note="this install has no local integration directory (extra_integration_dirs in config.yaml)"),
     Toolkit("self_improvement", "change any part of your own code base as a PR — a developer's install only",
             ("self_improvement",), requires="is_developer",
             requires_note="it is for a developer's install only; users work through the developer toolkit"),
@@ -257,7 +262,7 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
 INDEX_ORDER = ("home", "cameras", "web", "browser", "x", "email", "imessage", "whatsapp", "telegram", "music", "photos", "dropbox", "google_drive", "location", "calendar",
                "reminders", "weather", "timers", "watch", "cars", "husdata", "history", "vault", "setup", "developer",
                "homeclaw", "home_assistant",
-               "self_improvement", "voice")
+               "local_integrations", "self_improvement", "voice")
 
 TOOLKITS: tuple[Toolkit, ...] = assemble(CORE_TOOLKITS, discover(), INDEX_ORDER)
 trace(f"Toolkits: {len(CORE_TOOLKITS)} core, {len(TOOLKITS) - len(CORE_TOOLKITS)} from integration folders")

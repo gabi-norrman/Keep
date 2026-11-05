@@ -21,7 +21,7 @@ from assistant import Destinations, FirstRun, MemoryFile, Procedures, VoiceCandi
 from common.logging import trace, info, note, error, fine
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, IssueDraft, JobPullRequest
 from common.ConfigManager import ConfigManager
-from common import ConfigSchema, ConfigStore, FullDiskAccess, Watchdog
+from common import ConfigSchema, ConfigStore, FullDiskAccess, IntegrationDirs, Watchdog
 from common.ConfigStore import ConfigStoreError
 from common.DevelopmentConfig import PREPEND_USER_QUERY_KEY
 from assistant.ChannelProfile import AUTONOMOUS
@@ -116,7 +116,7 @@ class Commands:
     `approve_guarded_commands` is true.
     """
     SENSITIVE_COMMANDS = frozenset({"send_email", "restart_server", "try_pull_request",
-                                    "report_issue", "pr_feedback"})
+                                    "report_issue", "pr_feedback", "improve_local_integration"})
     # The browser actions that can submit a form or run a script on a site. Off by default
     # because a card per click would make a multi-step browsing task unusable and the
     # autonomous check, which has no approval channel, could not browse at all (PR #148).
@@ -997,10 +997,108 @@ class Commands:
                         f"list_integrations shows it (or by its folder); a new integration is built only under a "
                         f"name no existing integration resembles.")
             info(f"improve_integration: no integration named '{name}' and none resembling it — a new one")
+        elif IntegrationDirs.local_folder(folder) is not None:
+            # A local folder is outside the repository, so no PR can carry a change to it.
+            info(f"improve_integration: '{name}' is the local {folder} folder — a job for improve_local_integration")
+            return (f"improve_integration failed: '{name}' is a local integration of this install "
+                    f"({IntegrationDirs.local_folder(folder)}), outside Keep's repository, so no pull request can "
+                    f"change it. improve_local_integration works on it in place.")
         else:
             info(f"improve_integration: '{name}' is the {folder} folder")
         self._run_pr_job("Integration improvement",
                          lambda: CodeQualityMaintainer.improve_integration(name, folder, request))
+
+    LOCAL_WHOLE_NAMES = frozenset({"all", "*", "local", "directory", "directories"})
+
+    def cmd_improve_local_integration(self, parameter_string: str):
+        """`improve_local_integration(integration, request)`: Claude Code works on this
+        install's own integration folders outside the checkout (`extra_integration_dirs`) —
+        on the named local integration, on a new one, or, named `all` or by a directory,
+        on the directories themselves (a git repository for them, a push). No PR: the
+        folders are the user's, so the job writes and commits there and the report is the
+        result; the server runs the old code until restart_server. Sensitive, since it
+        edits code the server runs with no review step between: the user approves the
+        request text first (#156 — the assistant's own wording of a request is what Claude
+        Code gets)."""
+        reason = CodeQualityMaintainer.unavailable_reason()
+        if reason:
+            info(f"improve_local_integration not started: {reason}")
+            return reason
+        name, _, request = normalize_llm_escapes(parameter_string or "").partition(",")
+        name, request = name.strip().strip("\"'`"), request.strip().strip("\"'`")
+        if not name or not request:
+            return "improve_local_integration failed: expected 'integration name (or all), request' parameters"
+        roots = IntegrationDirs.extra_roots()
+        if not roots:
+            info("improve_local_integration not started: no local integration directory is configured")
+            return ("improve_local_integration failed: this install has no local integration directory "
+                    "(extra_integration_dirs in config.yaml lists none that exists)")
+        if name.lower() in self.LOCAL_WHOLE_NAMES or self._local_root_named(name, roots):
+            info(f"improve_local_integration: the work is on the local directories themselves ('{name}')")
+            job = lambda: CodeQualityMaintainer.improve_local_integration(request, roots)
+        else:
+            folder = self._integration_folder(name)
+            if folder is not None:
+                path = IntegrationDirs.local_folder(folder)
+                if path is None:
+                    info(f"improve_local_integration: '{name}' is the repository's {folder} folder, not a local one")
+                    return (f"improve_local_integration failed: '{name}' is part of Keep itself (the {folder} "
+                            f"folder), not a local integration of this install; improve_integration makes a "
+                            f"pull request for it.")
+                info(f"improve_local_integration: '{name}' is the local folder {path}")
+                job = lambda: CodeQualityMaintainer.improve_local_integration(request, roots, name, str(path))
+            else:
+                near = self._integrations_resembling(name)
+                if near:
+                    info(f"improve_local_integration: no integration named '{name}', but it resembles "
+                         f"{', '.join(n for n, _ in near)} — asking back instead of building a new one")
+                    options = ", ".join(f"'{n}' (the {f} folder)" if f else f"'{n}'" for n, f in near)
+                    return (f"improve_local_integration failed: no integration is named '{name}', but {options} "
+                            f"{'resembles' if len(near) == 1 else 'resemble'} it. Name the integration as "
+                            f"list_integrations shows it; a new local integration is built only under a name no "
+                            f"existing integration resembles.")
+                info(f"improve_local_integration: no integration named '{name}' — a new local one in {roots[0]}")
+                job = lambda: CodeQualityMaintainer.improve_local_integration(request, roots, name)
+        self._run_local_job(job)
+
+    @staticmethod
+    def _local_root_named(name: str, roots) -> bool:
+        """Whether *name* is one of the local directories: its path or its last name
+        ("KeepLocal", "~/KeepLocal")."""
+        wanted = os.path.expanduser(name.strip().rstrip("/"))
+        return any(wanted in (str(root), root.name) for root in roots)
+
+    LOCAL_JOB_LABEL = "Local integration work"
+
+    def _run_local_job(self, job: Callable[[], str]):
+        """Run a Claude Code job on the local integration folders in the background and
+        deliver its report: pushed to the chats, and summed up in the history as a system
+        row with its own time (as `_run_pr_job`), which also tells the LLM the server still
+        runs the old code — a changed folder is live after restart_server."""
+        label = self.LOCAL_JOB_LABEL
+
+        def _run_and_deliver(_params):
+            try:
+                report = job()
+                trace(f"Received {label.lower()} report from Code Quality Maintainer")
+                fine(f"Report: {report}")
+                sent = notifier().send_message(f"{label} report:\n\n{notifier().markdown_to_html(report)}")
+                system_note(label, self._local_outcome(report, sent), push=False)
+            except Exception as e:
+                error(f"{label} failed: {e}")
+
+        self.fire_and_forget(_run_and_deliver, None)
+
+    @classmethod
+    def _local_outcome(cls, report: str, sent: bool) -> str:
+        """The system row a finished local job leaves: the report's first line and the
+        restart the LLM should offer, since a local folder's code is imported at boot."""
+        delivery = "" if sent else f" ({NO_NOTIFICATION_CHANNEL})"
+        text = (f"[{cls.LOCAL_JOB_LABEL} complete]{delivery} {CodeQualityMaintainer.first_line(report)}\n"
+                f"The server runs the old code until restart_server; offer it when the report says code changed.")
+        if not sent:
+            text += f"\n\nReport:\n{report}"
+        return text
 
     def _integration_folder(self, name: str) -> Optional[str]:
         """The integration folder behind *name* (`src/integrations/<folder>/`), enabled or
@@ -2298,6 +2396,10 @@ class Commands:
     def describe_cost_analysis(self, p):          return "Analysing the LLM costs"
     def describe_self_improvement(self, p):       return "Running self-improvement"
     def describe_improve_integration(self, p):    return f"Working on the {self._first_argument(p)} integration"
+    def describe_improve_local_integration(self, p):
+        name = self._first_argument(p)
+        return "Working on the local integrations" if name.lower() in self.LOCAL_WHOLE_NAMES \
+            else f"Working on the local {name} integration"
     def describe_report_issue(self, p):           return "Reporting an issue to the developers"
     def describe_restart_server(self, p):         return "Restarting server"
     def describe_try_pull_request(self, p):       return f"Trying PR #{p.strip().lstrip('#').strip() or '?'}"

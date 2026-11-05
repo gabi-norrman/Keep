@@ -173,3 +173,15 @@ def test_a_local_folders_toolkit_is_discovered_after_the_repositorys(layout):
 
     assert [t.name for t in Toolkits.discover()] == ["tesla", "podcasts"]
     assert Toolkits.discover()[1].folder == "podcasts"
+
+
+def test_local_folder_is_the_path_of_a_local_one_and_none_for_the_repositorys(layout):
+    """What tells a job in place (improve_local_integration) from a PR (improve_integration)."""
+    tmp_path, listed = layout
+    local = tmp_path / "KeepLocal"
+    _folder(local, "podcasts")
+    listed.append(str(local))
+
+    assert IntegrationDirs.local_folder("podcasts") == local / "podcasts"
+    assert IntegrationDirs.local_folder("tesla") is None, "the repository's own"
+    assert IntegrationDirs.local_folder("ring") is None, "no folder of the name"
