@@ -27,10 +27,11 @@ BACKSPACE_KEYS = ('\x7f', '\x08', 'backspace')
 
 # Words in an action's outcome that colour it green (done) or yellow (still going); any
 # other outcome reads as a failure, in red.
-DONE_WORDS = ("success", "refreshed", "verified", "auto-detected", "connected")
+DONE_WORDS = ("success", "refreshed", "verified", "auto-detected", "connected", "signed in")
 BUSY_WORDS = ("verifying", "connecting", "waiting", "sending", "signing")
 
 CODE_LENGTH = 6
+VERIFY_POLL_SECONDS = 30    # the integration finishes the login on its own thread; poll for it
 STANDARD_ENTRY_HINT = "Enter submit  Esc cancel"
 PENDING = "–"
 
@@ -132,9 +133,28 @@ class AuthTab(IntegrationTab):
     def _check_auth_status(self):
         api = self._get_api()
         if api:
+            was = self.status
             self._auth_status = api.get_auth_status()
+            if self.status == "authenticated" and was != "authenticated" and self._busy(self._status_message):
+                # The login landed on the integration's own thread after the tab stopped waiting
+                info(f"{self.name} tab: signed in since the last check — closing the pending outcome")
+                self._status_message = "Signed in"
             self._on_status(api)
         self._last_check_time = time.time()
+
+    def _await_login(self, seconds: int = VERIFY_POLL_SECONDS) -> bool:
+        """Poll the status once a second until the account is signed in or `seconds` have
+        passed, counting them in the outcome; True when the login landed. The integration
+        processes a submitted code on its own thread, so the status is not final at once."""
+        for i in range(seconds):
+            time.sleep(1)
+            self._check_auth_status()
+            if self.status == "authenticated":
+                info(f"{self.name} tab: the login landed after {i + 1}s")
+                return True
+            self._status_message = f"Verifying 2FA code ({i + 1}s)..."
+        info(f"{self.name} tab: the login had not landed after {seconds}s")
+        return False
 
     def _check_auth_status_async(self):
         """Run _check_auth_status on a background thread, one at a time."""
@@ -255,11 +275,16 @@ class AuthTab(IntegrationTab):
         return self._status_message
 
     @staticmethod
-    def _outcome_color(outcome: str) -> Color:
+    def _busy(outcome: str) -> bool:
+        lowered = outcome.lower()
+        return not any(w in lowered for w in DONE_WORDS) and any(w in lowered for w in BUSY_WORDS)
+
+    @classmethod
+    def _outcome_color(cls, outcome: str) -> Color:
         lowered = outcome.lower()
         if any(w in lowered for w in DONE_WORDS):
             return Theme.COLOR_GREEN
-        if any(w in lowered for w in BUSY_WORDS):
+        if cls._busy(outcome):
             return Theme.COLOR_YELLOW
         return Theme.COLOR_RED
 

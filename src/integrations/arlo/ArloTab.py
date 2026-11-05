@@ -7,8 +7,6 @@ from interfaces.console.tabs.AuthTab import AuthTab, PENDING
 from interfaces.console.widgets.Board import SummaryTile, Table
 from integrations.arlo.ArloCameraIntegration import ArloCamera, ArloAuthenticationError
 
-VERIFY_POLL_SECONDS = 30   # pyaarlo processes the code on its own thread; poll for the login
-
 
 class ArloTab(AuthTab):
     """Arlo login with its 2FA, and the cameras the account has."""
@@ -66,13 +64,7 @@ class ArloTab(AuthTab):
     def _verify_code(self, api, code: str):
         api.tfa_handler.submit_code(code)
         self._status_message = "Verifying 2FA code..."
-        for i in range(VERIFY_POLL_SECONDS):
-            time.sleep(1)
-            self._check_auth_status()
-            if self.status == "authenticated":
-                break
-            self._status_message = f"Verifying 2FA code ({i + 1}s)..."
-        if self.status == "authenticated":
+        if self._await_login():
             self._status_message = "2FA verification successful!"
             self._check_health_now()
         else:

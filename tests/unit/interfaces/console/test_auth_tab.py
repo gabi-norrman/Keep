@@ -158,6 +158,39 @@ class TestActions:
         assert tab._auth_status == {"status": "error", "message": "not configured"}
         assert len(lines) == 1 and "not configured" in lines[0]
 
+    def test_the_wait_for_a_login_ends_when_it_lands(self, monkeypatch):
+        # The integration verifies the code on its own thread: the tab polls instead of looking once
+        monkeypatch.setattr(auth_tab_module.time, "sleep", lambda s: None)
+        tab = make_tab(status="error", message="2FA required")
+        verdicts = iter([{"status": "error", "message": "2FA required"}] * 2
+                        + [{"status": "authenticated", "message": "Connected"}])
+        tab._api.get_auth_status.side_effect = lambda: next(verdicts)
+        assert tab._await_login(seconds=10) is True
+        assert tab._api.get_auth_status.call_count == 3
+        assert tab.status == "authenticated"
+
+    def test_the_wait_for_a_login_gives_up_after_its_seconds_and_says_how_long_it_tried(self, monkeypatch):
+        monkeypatch.setattr(auth_tab_module.time, "sleep", lambda s: None)
+        tab = make_tab(status="error", message="2FA required")
+        assert tab._await_login(seconds=4) is False
+        assert tab._api.get_auth_status.call_count == 4
+        assert "4s" in tab._status_message
+
+    def test_a_login_that_lands_after_the_wait_closes_the_pending_outcome(self):
+        # The Ring tab kept "waiting for authentication..." although the doorbells were listed
+        tab = make_tab(status="error", message="2FA required")
+        tab._status_message = "2FA code submitted, waiting for authentication..."
+        tab._api.get_auth_status.return_value = {"status": "authenticated", "message": "Connected"}
+        tab._check_auth_status()
+        assert tab._outcome_color(tab._status_message) == COLOR_GREEN
+
+    def test_a_status_check_leaves_a_finished_outcome_alone(self):
+        tab = make_tab(status="error", message="2FA required")
+        tab._status_message = "Error: bad code"
+        tab._api.get_auth_status.return_value = {"status": "authenticated", "message": "Connected"}
+        tab._check_auth_status()
+        assert tab._status_message == "Error: bad code"
+
     def test_only_one_status_check_runs_at_a_time(self):
         tab = make_tab()
         started = []

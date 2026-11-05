@@ -52,8 +52,7 @@ class RingTab(AuthTab):
     def _verify_code(self, api, code: str):
         api.tfa_handler.submit_code(code)
         self._status_message = "Verifying 2FA code..."
-        self._check_auth_status()
-        if self.status == "authenticated":
+        if self._await_login():
             self._status_message = "2FA verification successful!"
             self._check_health_now()
         else:
