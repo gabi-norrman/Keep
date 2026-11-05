@@ -1,5 +1,7 @@
 You can access websites if needed. Use this command to get the contests of a website:
-`open_url(url: str)`
+`open_url(url: str, page: int = 1)`
+A long page comes in pages of about 15,000 characters, each headed with its number and the count; `page` is the one
+wanted, and a later page is a slice of the same read, not a new fetch.
 A page with a tab strip comes back with the open tab's panel and the names of the other tabs; the `browser`
 toolkit clicks one of those.
 

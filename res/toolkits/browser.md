@@ -46,7 +46,7 @@ with `browse_eval` — synthetic JS events are untrusted and most sites ignore t
 
 `browse_inspect(spec: str)` — read the underlying attributes of a snapshot element. `spec` is either:
     - `"3"` — discovery mode: every HTML attribute on element 3 plus its `outerHTML` and `textContent` (long
-      values truncated). Use this to see what's there.
+      values truncated).
     - `"3,href"` — targeted mode: the full untruncated value of that attribute. Special names: `outerHTML`,
       `innerHTML`, `textContent`, `value`.
 Read-only — no fresh snapshot. Use it when the snapshot label/href isn't enough (a custom-protocol URL like
@@ -82,8 +82,8 @@ not CSS pixels: the screenshot reply states the image size, the page size and th
 scroll offset to subtract. Returns what was hit plus a fresh snapshot. Prefer `browse_act` on a snapshot index
 whenever one exists.
 
-`browse_extract()` — the full readable text of the current page. Call it once you are on the page that holds the
-answer.
+`browse_extract(page: int = 1)` — the full readable text of the current page, paged like `open_url`. Call it
+once you are on the page that holds the answer.
 
 `browse_eval(js: str)` — run JavaScript in the browse session and get the result back as JSON. `js` is the source as
 written, nothing around it. The body may be a single expression or a block (use `return …` in a block). Strings stay
@@ -97,7 +97,7 @@ Avoid a stray `)` inside string literals — the command parser closes on the fi
 
 `browse_screenshot()` — capture a full-page PNG of the current browse session and save it under `log/screenshots/`.
 Returns the saved path AND the image itself, so you can inspect the page visually (layout, charts, images, anything
-text extraction loses). Requires an active browse session.
+text extraction loses).
 
 `send_screenshot(caption: str)` — deliver the most recent `browse_screenshot` to the user over Telegram with an
 optional caption. Only available when the user is on Telegram (not voice). Call `browse_screenshot` first so

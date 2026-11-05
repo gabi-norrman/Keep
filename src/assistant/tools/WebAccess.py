@@ -397,6 +397,7 @@ class WebAccess(Integration):
         self._network_log: list[dict] = []
         self._network_requests: dict[str, dict] = {}
         self._browse_pdf_text: Optional[str] = None  # cached extracted text when session is a PDF
+        self._page_texts: dict[str, str] = {}  # the long texts behind the last paged results
         self._last_screenshot_bytes: Optional[bytes] = None
         self._last_screenshot_path: Optional[str] = None
         self._browse_fail_streak = 0
@@ -5232,10 +5233,16 @@ class WebAccess(Integration):
             return "ERROR: page has no extractable text."
         return text
 
-    def browse_extract(self, _params=None) -> str:
-        """Return the full readable text of the current page."""
-        return self._run_browse_op("browse_extract", self._async_browse_extract(),
+    def browse_extract(self, page=None) -> str:
+        """The readable text of the current page, paged like fetch_webpage."""
+        page = self._page_number(page)
+        kept = self._kept_page_text("browse_extract") if page > 1 else None
+        if kept is not None:
+            info(f"browse_extract: page {page} served from the kept text")
+            return self._paged("browse_extract", kept, page)
+        text = self._run_browse_op("browse_extract", self._async_browse_extract(),
                                    "ERROR: extraction failed.")
+        return self._paged("browse_extract", text, page)
 
     _BROWSE_EVAL_MAX_CHARS = 8000
 
@@ -5490,7 +5497,66 @@ class WebAccess(Integration):
     # Public sync entry points
     # ------------------------------------------------------------------
 
-    def fetch_webpage(self, url: str) -> str:
+    # open_url and browse_extract hand a long page back in pages of this many chars, each
+    # headed with its number and the count (a page that fits comes back whole, no header).
+    # The text behind a split is kept so a later page is a slice of the same read, not a
+    # second fetch — the last few only, keyed by URL (browse_extract by the session).
+    PAGE_CHARS = 15000
+    _PAGE_TEXTS_KEPT = 8
+
+    @classmethod
+    def split_pages(cls, text: str) -> list[str]:
+        """The text cut into pages of at most PAGE_CHARS, on a line break where one falls in
+        the second half of the page."""
+        pages = []
+        while len(text) > cls.PAGE_CHARS:
+            cut = text.rfind('\n', cls.PAGE_CHARS // 2, cls.PAGE_CHARS)
+            if cut < 0:
+                cut = cls.PAGE_CHARS
+            pages.append(text[:cut])
+            text = text[cut:].lstrip('\n')
+        pages.append(text)
+        return pages
+
+    @staticmethod
+    def _page_number(value) -> int:
+        """The page a command asked for — 1 unless the parameter is a whole number."""
+        try:
+            return max(1, int(str(value or '').strip()))
+        except ValueError:
+            return 1
+
+    def _kept_page_text(self, key: str) -> Optional[str]:
+        return getattr(self, '_page_texts', {}).get(key)
+
+    def _paged(self, key: str, text: str, page: int) -> str:
+        """`text` as the page asked for. A text that fits in one page is returned as it is;
+        a longer one is kept under `key` and the page comes with a header."""
+        pages = self.split_pages(text)
+        if len(pages) == 1:
+            return text
+        if not hasattr(self, '_page_texts'):
+            self._page_texts = {}
+        self._page_texts.pop(key, None)
+        self._page_texts[key] = text
+        while len(self._page_texts) > self._PAGE_TEXTS_KEPT:
+            del self._page_texts[next(iter(self._page_texts))]
+        if page > len(pages):
+            info(f"Page {page} asked of {key}, which has {len(pages)} pages")
+            return f"ERROR: the page has {len(pages)} pages, there is no page {page}."
+        info(f"Page {page} of {len(pages)} ({len(pages[page - 1])} of {len(text)} chars) for {key}")
+        return f"[Page {page} of {len(pages)} — {len(text)} chars in all]\n{pages[page - 1]}"
+
+    def fetch_webpage(self, url: str, page=1) -> str:
+        page = self._page_number(page)
+        key = (url or '').strip()
+        kept = self._kept_page_text(key) if page > 1 else None
+        if kept is not None:
+            info(f"Page {page} of {key} served from the kept text")
+            return self._paged(key, kept, page)
+        return self._paged(key, self._fetch_webpage_text(url), page)
+
+    def _fetch_webpage_text(self, url: str) -> str:
         try:
             url = self._normalize_url(url)
 

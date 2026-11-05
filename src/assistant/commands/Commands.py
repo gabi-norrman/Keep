@@ -142,7 +142,7 @@ class Commands:
         "send_email", "dim", "search_history", "show_history",
         "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
         "vault_request", "config_set", "load_toolkit", "pr_feedback", "server_logs",
-        "load_watch", "save_watch", "delete_watch",
+        "load_watch", "save_watch", "delete_watch", "open_url",
         "load_procedure", "save_procedure", "delete_procedure", "post_message", "name_voice",
         "create_event", "delete_event", "move_event", "load_calendar", "fetch_camera_images", "car_navigate",
     })
@@ -482,8 +482,18 @@ class Commands:
             return parsed
         return None
 
-    def cmd_open_url(self, parameter_string: str):
-        self.background_command(self.web_access.fetch_webpage, parameter_string, lane=self.BROWSER_LANE)
+    def cmd_open_url(self, *args: str):
+        url, page = self._url_and_page(args)
+        self.background_command(lambda u: self.web_access.fetch_webpage(u, page), url, lane=self.BROWSER_LANE)
+
+    @staticmethod
+    def _url_and_page(args: tuple[str, ...]) -> tuple[str, int]:
+        """`open_url(url)` or `open_url(url, page)`: only a trailing whole number is the page —
+        an unquoted URL with a comma of its own arrives split and is joined back."""
+        args = [a.strip() for a in args]
+        if len(args) >= 2 and args[-1].isdigit():
+            return ",".join(args[:-1]), int(args[-1])
+        return ",".join(args), 1
 
     def cmd_google(self, parameter_string: str):
         self.background_command(self.web_access.search, parameter_string)
@@ -2313,7 +2323,9 @@ class Commands:
 
     def describe_home_automation_logs(self, p):   return "Reading home automation logs"
     def describe_server_logs(self, p):            return "Reading server logs"
-    def describe_open_url(self, p):               return f"Reading {self._short_url(p)}"
+    def describe_open_url(self, p, params=None):
+        url, page = self._url_and_page(tuple(params) if params else (p,))
+        return f"Reading {self._short_url(url)}" + (f", page {page}" if page > 1 else "")
     def describe_google(self, p):                 return f"Searching for {p.strip()}"
     def describe_browse_open(self, p):            return f"Browsing {self._short_url(p)}"
     def describe_browse_eval(self, p):            return "Inspecting the page"

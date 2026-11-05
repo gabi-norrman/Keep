@@ -821,9 +821,30 @@ class TestCmdEmailCommands:
 
 class TestCmdWebAccess:
     def test_open_url(self, commands_instance):
-        with patch.object(commands_instance, 'background_command') as mock_bg:
+        with patch.object(commands_instance, 'background_command') as mock_bg, \
+                patch.object(commands_instance.web_access, 'fetch_webpage') as fetch:
             commands_instance.cmd_open_url("https://example.com")
-            mock_bg.assert_called_once_with(commands_instance.web_access.fetch_webpage, "https://example.com", lane=Commands.BROWSER_LANE)
+            fn, url = mock_bg.call_args.args
+            assert url == "https://example.com" and mock_bg.call_args.kwargs == {"lane": Commands.BROWSER_LANE}
+            fn(url)
+            fetch.assert_called_once_with("https://example.com", 1)
+
+    def test_open_url_page_is_a_trailing_whole_number(self, commands_instance):
+        with patch.object(commands_instance, 'background_command') as mock_bg, \
+                patch.object(commands_instance.web_access, 'fetch_webpage') as fetch:
+            commands_instance.cmd_open_url("https://example.com/changelog", "3")
+            fn, url = mock_bg.call_args.args
+            fn(url)
+            fetch.assert_called_once_with("https://example.com/changelog", 3)
+
+    def test_open_url_joins_a_comma_split_url_back(self, commands_instance):
+        # An unquoted URL with a comma arrives split; only a bare trailing whole number is a page.
+        assert Commands._url_and_page(("https://maps.example/@57.7", "11.9")) == ("https://maps.example/@57.7,11.9", 1)
+        assert Commands._url_and_page(("https://shop.example/?ids=1", "2", "3")) == ("https://shop.example/?ids=1,2", 3)
+
+    def test_describe_open_url_names_the_page(self, commands_instance):
+        assert commands_instance.describe_open_url("https://example.com, 2", ["https://example.com", "2"]).endswith("page 2")
+        assert "page" not in commands_instance.describe_open_url("https://example.com", ["https://example.com"])
 
     def test_google(self, commands_instance):
         with patch.object(commands_instance, 'background_command') as mock_bg:
