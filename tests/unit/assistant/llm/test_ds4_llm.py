@@ -391,6 +391,37 @@ class TestPrefillBar:
         assert Ds4LogFormat().progress(self.LOG) == (1700, 1763)
         assert Ds4LogFormat().progress(self.LOG.splitlines()[0]) is None
 
+    DONE = '1021 11:39:48 ds4-server: chat ctx=24576..26339:1763 TOOLS prompt done 19.102s\n'
+    NEXT = ('1021 11:40:02 ds4-server: chat ctx=0..7744:7744 prompt start\n'
+            '1021 11:40:09 ds4-server: chat ctx=0..7744:7744 prefill chunk 7744/7744 (100.0%) chunk=0.00 t/s avg=1100.00 t/s 7.040s\n')
+
+    def test_the_first_prompt_done_after_the_prompt_start_closes_the_prefill_and_says_where(self):
+        assert Ds4LogFormat().done(self.LOG) is None
+        assert Ds4LogFormat().done(self.LOG + self.DONE) == len(self.LOG + self.DONE)
+        assert Ds4LogFormat().done(self.LOG + self.DONE + self.NEXT) == len(self.LOG + self.DONE), "the next request's start changes nothing"
+        assert Ds4LogFormat().done(self.DONE) is None, "no start in the read: nothing to attribute the done to"
+
+    def test_the_done_line_carries_the_prefill_seconds(self):
+        assert Ds4LogFormat().duration(self.LOG + self.DONE) == 19.102
+        assert Ds4LogFormat().duration(self.LOG) is None
+
+    def test_only_the_request_the_window_opens_with_is_read(self):
+        # The next request's lines may already be in the window at the done-time read.
+        fmt = Ds4LogFormat()
+        text = self.LOG + self.DONE + self.NEXT
+        assert fmt.work(text) == (24576, 1763)
+        assert fmt.progress(text) == (1700, 1763)
+        assert fmt.duration(text) == 19.102
+
+    def test_skip_drops_the_sections_of_the_requests_ahead(self):
+        fmt = Ds4LogFormat()
+        tail = self.LOG.splitlines(keepends=True)[-1] + self.DONE   # the request ahead's last lines
+        assert fmt.skip(tail + self.NEXT, 1) == self.NEXT
+        assert fmt.skip(self.NEXT, 0) == self.NEXT
+        assert fmt.skip(tail, 1) == ''
+        assert fmt.skip(tail + self.NEXT, 2) == '', "the second request ahead has not finished in the window yet"
+        assert fmt.work(fmt.skip(tail + self.NEXT, 1)) == (0, 7744)
+
     def test_a_streamed_request_is_bracketed_and_the_first_delta_ends_the_prefill(self):
         llm, create = _llm_with_stream([_chunk(reasoning="hm"), _chunk(content="Hi."), _chunk(choices=False)])
         order = []
@@ -424,14 +455,22 @@ class TestPrefillBar:
         begin.assert_called_once()
         end.assert_called_once_with(3)
 
-    def test_the_usage_teaches_the_rate_from_the_uncached_tokens_over_the_time_to_the_first_token(self):
+    def test_the_usage_teaches_the_rate_from_the_uncached_tokens_over_the_logged_prefill_time(self):
         usage = SimpleNamespace(prompt_tokens=5000, completion_tokens=3,
                                 prompt_tokens_details=SimpleNamespace(cached_tokens=4000))
         llm, _ = _llm_with_stream([_chunk(content="Hi."), _chunk(choices=False, usage=usage)])
-        with patch.object(Ds4LLM._prefill, 'observe_rate') as observe:
+        with patch.object(Ds4LLM._prefill, 'prefill_seconds', return_value=2.0), \
+             patch.object(Ds4LLM._prefill, 'observe_rate') as observe:
             _stream(llm)
-        (tokens, seconds), _ = observe.call_args
-        assert tokens == 1000 and 0 <= seconds < 5
+        observe.assert_called_once_with(1000, 2.0)
+
+    def test_an_unknown_prefill_time_means_no_rate_lesson(self):
+        usage = SimpleNamespace(prompt_tokens=5000, completion_tokens=3, prompt_tokens_details=None)
+        llm, _ = _llm_with_stream([_chunk(content="Hi."), _chunk(choices=False, usage=usage)])
+        with patch.object(Ds4LLM._prefill, 'prefill_seconds', return_value=None), \
+             patch.object(Ds4LLM._prefill, 'observe_rate') as observe:
+            _stream(llm)
+        observe.assert_not_called()
 
     def test_no_usage_means_no_rate_lesson(self):
         llm, _ = _llm_with_stream([_chunk(content="Hi."), _chunk(choices=False)])

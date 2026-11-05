@@ -9,19 +9,31 @@ tracker at the log (`use_log`, a local file or one read over ssh when the server
 machine), and brackets each request with `begin` / `first_token` / `end`.
 
 The estimate: 0 until the start line is read (nothing to draw), 100 at once on a full cache hit,
-the engine's own progress lines when it logs them, and otherwise elapsed time against a rolling
-prefill rate (`observe_rate` refines it after each reply) — capped at 99 until the first token
-confirms the prefill is over. The rate shown beside the bar (`rate`) is measured from the
-progress lines when the engine logs them, else that rolling estimate. Each server runs one
-request at a time, but ours overlap: a pre-heat fired at the end of one turn is often still
-prefilling when the next user request goes out, and the first-run pipeline or the autonomous
-check may hold the server while the user asks.
+the engine's own progress lines when it logs them, and otherwise the time since the workload
+line was read against a rolling prefill rate (`observe_rate` refines it after each reply, from
+the prefill time the log reports — `prefill_seconds`) — capped at 99 until the first token
+confirms the prefill is over, or the log does (`LogFormat.done`: a non-streamed request, the
+memory curation say, sends no token until its whole reply is written). The clock and the rate
+both start at the workload line, never at the send: the wait behind the request ahead is not
+prefill, and counted as such it ran the bar up to 99 before the engine's first progress line
+pulled it back, and taught the rate single digits. The rate shown beside the bar (`rate`) is
+measured from the progress lines when the engine logs them, else that rolling estimate. Each
+server runs one request at a time, but ours overlap: a pre-heat fired at the end of one turn is
+often still prefilling when the next user request goes out, and the first-run pipeline or the
+autonomous check may hold the server while the user asks.
 So the tracker keeps every request in flight, in the order they were sent — the order the server
 takes them in — and the bar follows the first one that has no token yet: that is the request the
 server is prefilling, or will prefill next, and whatever it is, it is what the user's reply is
 waiting for (a request queued behind another's generation reads 0 until its own workload line
-appears). `PrefillTracker.current_progress()` is what the interfaces poll: the backend with a
-user request in flight, else any backend with a request.
+appears). A request's view of the log opens where the log ended when it was sent, so the lines
+the request ahead logged after that land in it: each prefill that ends inside a later request's
+window is counted on that request (`preceding_done`), and `LogFormat.skip` drops that many
+finished sections before its lines are read — else the bar showed the earlier request's final
+progress line as this one's. `PrefillTracker.current_progress()` is what the interfaces poll: the backend with a
+user request in flight, else any backend with a request. `currently_queued()` is the other
+thing a reply can be stuck on: the server generating the reply of the request ahead — the memory
+curation's for minutes, a photo description's until it stands down — so the UIs say "queued"
+instead of showing a bar at 99.
 """
 import os
 import re
@@ -143,6 +155,23 @@ class LogFormat(ABC):
     def progress(self, text: str) -> tuple[int, int] | None:
         """(processed, total) of the latest progress line in `text`, None when there is none."""
 
+    def done(self, text: str) -> int | None:
+        """The index just past the line saying the prefill of the request `text` opens with is
+        over, None while there is none — the one view into a non-streamed request, which says
+        nothing on the wire until its whole reply is done. None for an engine whose log has no
+        such line: its bar then waits for the first token as before."""
+        return None
+
+    def duration(self, text: str) -> float | None:
+        """The prefill seconds the done line reports, None when the engine's log does not say."""
+        return None
+
+    def skip(self, text: str, requests: int) -> str:
+        """`text` without the sections of the `requests` earlier requests whose prefills ended
+        inside it, '' when fewer have ended there yet. An engine whose log has no done line
+        cannot tell the sections apart and hands the text back whole."""
+        return text
+
 
 @dataclass
 class _Request:
@@ -152,10 +181,20 @@ class _Request:
     start_ts: float
     anchor: int | None         # log EOF when the request was sent; None = log unreachable for it
     first_token: bool = False
+    first_token_ts: float = 0.0
+    done: bool = False                        # the log said its prefill is over (a non-streamed request)
+    duration: float | None = None             # the prefill seconds the done line reported
     work: tuple[int, int] | None = None       # (cached, remaining) once the workload line is logged
+    work_ts: float = 0.0                      # when that line was read: the start of the clock
     progress: tuple[int, int] | None = None   # (processed, total) of the latest progress line
     progress_ts: float = 0.0                  # when that line was read
     read_ts: float = 0.0
+    preceding_done: int = 0                   # earlier requests whose prefill ended inside this one's window
+
+    @property
+    def generating(self) -> bool:
+        """Past its prefill: the server is writing its reply."""
+        return self.first_token or self.done
 
 
 class PrefillTracker:
@@ -203,15 +242,54 @@ class PrefillTracker:
         with self._lock:
             request = self._find(token)
             if request is not None and not request.first_token:
-                request.first_token = True
+                request.first_token, request.first_token_ts = True, time.monotonic()
+                if not request.done:
+                    self._prefill_over(request)
                 trace(f"{self.label} prefill: first token received (prefill #{token} complete).")
 
+    def _prefill_over(self, request: _Request, done_offset: int | None = None):
+        """Under the lock, once per request, when its prefill is seen to be over: the requests
+        sent while it was still prefilling have its done line inside their own windows and must
+        skip it to reach their lines. `done_offset`, the byte the done line ends at when the
+        log showed it, tells which of them; a first token gives no offset, and the line is
+        taken to precede every request in flight behind it — it was logged before the token
+        was sent, so a request squeezed in between is the one in a thousand this gets wrong."""
+        later = self._requests[self._requests.index(request) + 1:]
+        for r in later:
+            if done_offset is None or r.anchor is None or r.anchor < done_offset:
+                r.preceding_done += 1
+
     def end(self, token: int | None):
-        """The request is over; the next one in line, if any, is what the bar follows."""
+        """The request is over; the next one in line, if any, is what the bar follows. A request
+        that sent no token and whose done line no poll saw (a non-streamed one with nothing
+        waiting behind it) is read once more now, so the requests behind it learn to skip it."""
         with self._lock:
             request = self._find(token)
-            if request is not None:
+        if request is None:
+            return
+        if not request.generating:
+            self._poll(request, force=True)
+        with self._lock:
+            if request in self._requests:
                 self._requests.remove(request)
+
+    def prefill_seconds(self, token: int | None) -> float | None:
+        """How long the request's prefill took, for `observe_rate`: what the log's done line says
+        (read now), else the time from its workload line to its first token; None when neither
+        is known. Never the time since the request was sent — that counts the wait behind the
+        request ahead, and a rate from it dragged the estimate down to single digits."""
+        with self._lock:
+            request = self._find(token)
+        if request is None:
+            return None
+        self._poll(request, force=True)
+        with self._lock:
+            if request.duration:
+                return request.duration
+            if request.first_token_ts and request.work_ts:
+                return request.first_token_ts - request.work_ts
+        trace(f"{self.label} prefill: #{token}'s duration unknown — no done line, no workload line; the rate estimate stands.")
+        return None
 
     def observe_rate(self, tokens: int, seconds: float):
         """Refine the prefill-rate estimate (EMA) from a finished request. Near-full cache hits
@@ -237,9 +315,9 @@ class PrefillTracker:
         return any(r.interactive for r in self._requests)
 
     def _head(self) -> _Request | None:
-        """The request the server is on: the first in line without a token."""
+        """The request the server is on: the first in line that is not past its prefill."""
         with self._lock:
-            return next((r for r in self._requests if not r.first_token), None)
+            return next((r for r in self._requests if not r.generating), None)
 
     def progress(self) -> float | None:
         """Estimated prefill completion (0-100) of the request the server is on, None when no
@@ -250,6 +328,8 @@ class PrefillTracker:
         if head is None:
             return 100.0
         work, progress = self._poll(head)
+        if head.done:
+            return 100.0   # the log said so: the server is generating the reply
         if work is None:
             return 0.0   # the server has not logged the workload yet — nothing to draw
         _cached, remaining = work
@@ -261,7 +341,7 @@ class PrefillTracker:
         eta = remaining / self.tps if self.tps > 0 else 0.0
         if eta <= 0:
             return 99.0
-        return min(99.0, (time.monotonic() - head.start_ts) / eta * 100.0)
+        return min(99.0, (time.monotonic() - head.work_ts) / eta * 100.0)
 
     def rate(self) -> float:
         """The prefill rate in tokens/s: measured from the engine's progress lines when the
@@ -270,8 +350,8 @@ class PrefillTracker:
         if head is None:
             return self.tps
         _work, progress = self._poll(head)
-        if progress and progress[0] > 0 and head.progress_ts > head.start_ts:
-            return progress[0] / (head.progress_ts - head.start_ts)
+        if progress and progress[0] > 0 and head.progress_ts > head.work_ts:
+            return progress[0] / (head.progress_ts - head.work_ts)
         return self.tps
 
     def _find(self, token: int | None) -> _Request | None:
@@ -285,24 +365,47 @@ class PrefillTracker:
             due = force or now - request.read_ts >= self.POLL_INTERVAL_S
             if due:
                 request.read_ts = now
-            anchor, work, progress = request.anchor, request.work, request.progress
+            anchor, work, progress, skip = request.anchor, request.work, request.progress, request.preceding_done
         if not due or anchor is None:
             return work, progress
-        text = self.log.read_from(anchor) if self.log is not None else None
-        if not text:
+        raw = self.log.read_from(anchor) if self.log is not None else None
+        if not raw:
             return work, progress
+        text = self.format.skip(raw, skip) if skip else raw
         try:
             new_work = work or self.format.work(text)
             new_progress = self.format.progress(text) or progress
+            done_at = None if request.done else self.format.done(text)
+            duration = self.format.duration(text) if done_at is not None else None
         except Exception as e:
             trace(f"{self.label} prefill: log lines not understood ({e})")
             return work, progress
         with self._lock:
-            if request.work is None:
-                request.work = new_work
+            if request.work is None and new_work is not None:
+                request.work, request.work_ts = new_work, now
             if new_progress is not None and new_progress != request.progress:
                 request.progress, request.progress_ts = new_progress, now
+            if done_at is not None and not request.done:
+                request.done, request.duration = True, duration
+                if not request.first_token:
+                    done_offset = anchor + len(raw[:len(raw) - len(text) + done_at].encode())
+                    self._prefill_over(request, done_offset)
+                trace(f"{self.label} prefill: the log says #{request.token}'s prompt is done — the server is "
+                      f"generating its reply{' (non-streamed: no token tells us)' if not request.first_token else ''}.")
             return request.work, request.progress
+
+    def queued(self) -> bool:
+        """Whether the newest user request waits for the server to finish generating another
+        request's reply — a non-streamed call such as the memory curation, a background photo
+        description standing down. False while the server is prefilling (the bar's business)
+        or on the user request itself."""
+        with self._lock:
+            mine = next((r for r in reversed(self._requests) if r.interactive), None)
+            ahead = self._requests[0] if mine is not None and self._requests[0] is not mine else None
+        if ahead is None:
+            return False
+        self._poll(ahead)
+        return ahead.generating
 
     @classmethod
     def _busy(cls) -> "PrefillTracker | None":
@@ -324,6 +427,12 @@ class PrefillTracker:
         """The prefill rate (tokens/s) of what a user is waiting for, None when idle."""
         tracker = cls._busy()
         return tracker.rate() if tracker is not None else None
+
+    @classmethod
+    def currently_queued(cls) -> bool:
+        """Whether the user's reply waits for the server to finish another request's reply (see `queued`)."""
+        tracker = cls._busy()
+        return tracker.queued() if tracker is not None else False
 
 
 def parse_last(pattern: str, text: str) -> tuple[int, int] | None:

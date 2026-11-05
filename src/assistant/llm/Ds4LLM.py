@@ -82,7 +82,7 @@ over ssh to `ds4.ssh_host` (default: the base_url host) when the server is on an
 The log says the workload at once (`prompt start` with `ctx=cached..total:remaining`) but logs a
 chunk line only at the backend's chunk boundaries — a cold 26k prompt logs its first at 93%, 16 s
 in —, so the bar is mostly the time estimate, refined after each reply from the usage (prompt
-tokens minus the cached ones over the time to the first token).
+tokens minus the cached ones) over the prefill time the `prompt done` line reports.
 """
 import json
 import re
@@ -112,14 +112,50 @@ class Ds4LogFormat(LogFormat):
     (`ctx=cached..total:remaining`) — then logs a chunk line at each backend chunk boundary, its
     numbers relative to the cached part —
     ds4-server: chat ctx=0..26339:26339 TOOLS prefill chunk 24576/26339 (93.3%) chunk=0.00 t/s avg=1518.73 t/s 16.182s
-    — and closes with `prompt done`. A KV restore from disk logs the same chunk line under another phase name.
+    — and closes with `prompt done 19.102s`, the prefill's seconds. A KV restore from disk logs
+    the same chunk line under another phase name. The server is on one request at a time, so a
+    request's lines are the section from the first `prompt start` of its window (the tracker
+    has skipped the requests ahead) to the first `prompt done` after it.
     """
+    _START, _DONE = 'prompt start', 'prompt done'
+
+    def _section(self, text: str) -> tuple[str, int | None]:
+        """The lines of the request the text opens with, and the index past its done line
+        when that is logged."""
+        start = text.find(self._START)
+        if start < 0:
+            return '', None
+        start = text.rfind('\n', 0, start) + 1
+        done = text.find(self._DONE, start)
+        if done < 0:
+            return text[start:], None
+        end = text.find('\n', done)
+        end = len(text) if end < 0 else end + 1
+        return text[start:end], end
+
     def work(self, text: str) -> tuple[int, int] | None:
-        match = re.search(r'ctx=(\d+)\.\.(\d+):(\d+)[^\n]*prompt start', text)
+        match = re.search(r'ctx=(\d+)\.\.(\d+):(\d+)[^\n]*prompt start', self._section(text)[0])
         return (int(match.group(1)), int(match.group(3))) if match else None
 
     def progress(self, text: str) -> tuple[int, int] | None:
-        return parse_last(r' chunk (\d+)/(\d+) \(', text)
+        return parse_last(r' chunk (\d+)/(\d+) \(', self._section(text)[0])
+
+    def done(self, text: str) -> int | None:
+        return self._section(text)[1]
+
+    def duration(self, text: str) -> float | None:
+        match = re.search(r'prompt done (\d+(?:\.\d+)?)s', self._section(text)[0])
+        return float(match.group(1)) if match else None
+
+    def skip(self, text: str, requests: int) -> str:
+        pos = 0
+        for _ in range(requests):
+            done = text.find(self._DONE, pos)
+            if done < 0:
+                return ''
+            newline = text.find('\n', done)
+            pos = len(text) if newline < 0 else newline + 1
+        return text[pos:]
 
 
 class Ds4LLM(ChatGPTLLM):
@@ -395,9 +431,9 @@ class Ds4LLM(ChatGPTLLM):
         self._last_stop_reason = None
         response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=True))
         in_thinking, reasoning, usage = False, "", None
-        first_token_at: float | None = None
         reply, pending, withheld = "", "", ""  # text yielded; text held for a split opener; the block text
         calls: dict[int, _ToolCall] = {}
+        prefilling = True
         for chunk in response:
             if getattr(chunk, 'usage', None) is not None:
                 usage = chunk.usage
@@ -406,9 +442,9 @@ class Ds4LLM(ChatGPTLLM):
             if chunk.choices[0].finish_reason:
                 self._note_stop(chunk.choices[0].finish_reason)
             delta = chunk.choices[0].delta
-            if first_token_at is None and (delta.content or getattr(delta, 'reasoning_content', None)
-                                           or getattr(delta, 'tool_calls', None)):
-                first_token_at = time.monotonic()
+            if prefilling and (delta.content or getattr(delta, 'reasoning_content', None)
+                               or getattr(delta, 'tool_calls', None)):
+                prefilling = False
                 self._prefill.first_token(token)
             thought = getattr(delta, 'reasoning_content', None)
             if thought:
@@ -450,10 +486,10 @@ class Ds4LLM(ChatGPTLLM):
         self._remember(reply + tail, reasoning, verbatim)
         prefilled = self._log_usage(usage, started, len(reasoning))
         self._report_cache(messages, usage, self._effort_for(thinking))
-        if prefilled is not None and first_token_at is not None:
-            # The time to the first token is the prefill plus one decode step (and any wait in
-            # the server's queue, which only makes the next bar a little slow).
-            self._prefill.observe_rate(prefilled, first_token_at - started)
+        if prefilled is not None:
+            seconds = self._prefill.prefill_seconds(token)
+            if seconds:
+                self._prefill.observe_rate(prefilled, seconds)
 
     @staticmethod
     def _hold_opener_prefix(text: str) -> tuple[str, str]:

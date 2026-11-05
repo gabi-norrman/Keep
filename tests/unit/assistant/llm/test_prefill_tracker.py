@@ -10,13 +10,30 @@ from assistant.llm.PrefillTracker import LogFormat, LogSource, PrefillTracker, p
 
 
 class _ToyFormat(LogFormat):
-    """A toy server log: `work <cached> <remaining>` opens a request, `step <done> <total>` is a progress line."""
+    """A toy server log: `work <cached> <remaining>` opens a request, `step <done> <total>` is a progress
+    line, `finished [<seconds>s]` says the request the server is on is past its prefill."""
     def work(self, text):
         match = re.search(r'work (\d+) (\d+)', text)
         return (int(match.group(1)), int(match.group(2))) if match else None
 
     def progress(self, text):
         return parse_last(r'step (\d+) (\d+)', text)
+
+    def done(self, text):
+        at = text.find('finished')
+        return None if at < 0 else text.find('\n', at) + 1
+
+    def duration(self, text):
+        match = re.search(r'finished (\d+\.\d+)s', text)
+        return float(match.group(1)) if match else None
+
+    def skip(self, text, requests):
+        for _ in range(requests):
+            at = self.done(text)
+            if at is None:
+                return ''
+            text = text[at:]
+        return text
 
 
 def _ssh_result(returncode=0, stdout='', stderr=''):
@@ -65,14 +82,26 @@ class TestEstimate:
     def test_the_clock_against_the_rate_estimates_the_rest(self, tracker, log_path):
         token = tracker.begin()
         _append(log_path, "work 0 1000\n")           # 1000 tokens at 1000 t/s: a 1 s eta
-        tracker._find(token).start_ts = time.monotonic() - 0.5
+        tracker.work(token, force=True)
+        tracker._find(token).work_ts = time.monotonic() - 0.5
         assert 40.0 < tracker.progress() < 60.0
+        tracker.end(token)
+
+    def test_the_clock_starts_at_the_workload_line_not_at_the_send(self, tracker, log_path):
+        # A request sent while the server is busy waits before its prefill starts; counted as
+        # prefill, that wait ran the bar up to 99 and the engine's first progress line then
+        # pulled it back.
+        token = tracker.begin()
+        tracker._find(token).start_ts = time.monotonic() - 9999   # a long wait behind another request
+        _append(log_path, "work 0 1000\n")
+        assert tracker.progress() < 10.0
         tracker.end(token)
 
     def test_the_servers_progress_lines_win_over_the_clock(self, tracker, log_path):
         token = tracker.begin()
         _append(log_path, "work 0 2000\nstep 500 2000\nstep 1000 2000\n")
-        tracker._find(token).start_ts = time.monotonic() - 9999   # the clock alone would say 99
+        tracker.work(token, force=True)
+        tracker._find(token).work_ts = time.monotonic() - 9999   # the clock alone would say 99
         assert tracker.progress() == pytest.approx(50.0)
         tracker.end(token)
 
@@ -82,7 +111,7 @@ class TestEstimate:
         _append(log_path, "work 0 2000\n")
         assert tracker.rate() == 1000.0                     # nothing measured yet: the rolling estimate
         _append(log_path, "step 500 2000\n")
-        tracker._find(token).start_ts = time.monotonic() - 2.0
+        tracker._find(token).work_ts = time.monotonic() - 2.0
         tracker.work(token, force=True)                      # read the progress line now
         assert 200.0 < tracker.rate() < 300.0               # 500 tokens in ~2 s, from the line's read time
         assert PrefillTracker.current_rate() == tracker.rate()
@@ -91,9 +120,23 @@ class TestEstimate:
     def test_capped_at_99_until_the_first_token(self, tracker, log_path):
         token = tracker.begin()
         _append(log_path, "work 0 1000\n")
-        tracker._find(token).start_ts = time.monotonic() - 9999
+        tracker.work(token, force=True)
+        tracker._find(token).work_ts = time.monotonic() - 9999
         assert tracker.progress() == 99.0
         tracker.first_token(token)
+        assert tracker.progress() == 100.0
+        tracker.end(token)
+
+    def test_the_log_saying_the_prompt_is_done_ends_the_prefill_without_a_token(self, tracker, log_path):
+        # A non-streamed request (the memory curation) sends nothing until its whole reply is
+        # written, so the log is the only thing that can take the bar off 99.
+        token = tracker.begin()
+        _append(log_path, "work 0 1000\n")
+        tracker.work(token, force=True)
+        tracker._find(token).work_ts = time.monotonic() - 9999
+        assert tracker.progress() == 99.0
+        _append(log_path, "finished\n")
+        tracker._find(token).read_ts = 0.0
         assert tracker.progress() == 100.0
         tracker.end(token)
 
@@ -117,7 +160,8 @@ class TestQueue:
         with patch.object(tracker.log, 'size', return_value=0):
             pre_heat = tracker.begin(interactive=False)
         user = tracker.begin()
-        tracker._find(pre_heat).start_ts = time.monotonic() - 9999
+        tracker.work(pre_heat, force=True)
+        tracker._find(pre_heat).work_ts = time.monotonic() - 9999
         assert tracker.progress() == 99.0, "the pre-heat's prefill is what the server is doing"
         tracker.first_token(user)
         assert tracker.progress() == 99.0, "a token the queued request cannot have had changes nothing"
@@ -135,6 +179,32 @@ class TestQueue:
         assert tracker.progress() == 100.0
         tracker.end(user)
         assert tracker.progress() is None
+
+    def test_a_reply_queued_behind_a_generating_request_reads_as_queued(self, tracker, log_path):
+        # The memory curation holds the server for minutes after its prefill; a user turn that
+        # arrives meanwhile waits for that generation, not for any prefill.
+        log_path.write_text("work 0 1000\n")
+        with patch.object(tracker.log, 'size', return_value=0):
+            curation = tracker.begin()
+        assert not tracker.queued(), "the curation itself waits for nothing"
+        user = tracker.begin()
+        assert not tracker.queued(), "the request ahead is still prefilling: that is the bar's business"
+        _append(log_path, "finished\n")
+        tracker._find(curation).read_ts = 0.0
+        assert tracker.queued() and PrefillTracker.currently_queued()
+        assert tracker.progress() == 0.0, "the curation's done line is not the user's: nothing of theirs is logged yet"
+        tracker.end(curation)
+        assert not tracker.queued()
+        tracker.end(user)
+        assert not PrefillTracker.currently_queued()
+
+    def test_a_background_request_past_its_first_token_queues_the_user_too(self, tracker):
+        photo = tracker.begin(interactive=False)
+        tracker.first_token(photo)
+        user = tracker.begin()
+        assert tracker.queued()
+        tracker.end(photo)
+        tracker.end(user)
 
     def test_current_progress_is_the_interactive_requests_across_backends(self, tracker, tmp_path):
         other = PrefillTracker("Other", _ToyFormat(), seed_tps=1000.0)
@@ -158,10 +228,73 @@ class TestRate:
         tracker.observe_rate(558, 1.0)
         assert tracker.tps == pytest.approx(0.5 * 1000.0 + 0.5 * 558.0)
 
+    def test_the_prefill_seconds_are_the_done_lines_else_the_clock_from_the_workload_line(self, tracker, log_path):
+        # Never the time since the send: a request that waited behind another's reply taught
+        # the estimate 1.5 t/s that way.
+        token = tracker.begin()
+        tracker._find(token).start_ts = time.monotonic() - 9999
+        _append(log_path, "work 0 1000\nfinished 2.5s\n")
+        assert tracker.prefill_seconds(token) == 2.5
+        tracker.end(token)
+
+        token = tracker.begin()
+        tracker._find(token).start_ts = time.monotonic() - 9999
+        _append(log_path, "work 0 1000\n")
+        tracker.work(token, force=True)
+        tracker._find(token).work_ts = time.monotonic() - 3.0
+        tracker.first_token(token)
+        assert tracker.prefill_seconds(token) == pytest.approx(3.0, abs=0.2)
+        tracker.end(token)
+
+        token = tracker.begin()
+        tracker.first_token(token)
+        assert tracker.prefill_seconds(token) is None, "no workload line read: nothing to measure from"
+        tracker.end(token)
+
     def test_a_near_full_cache_hit_teaches_nothing(self, tracker):
         tracker.observe_rate(100, 0.01)
         tracker.observe_rate(500, 0.0)
         assert tracker.tps == 1000.0
+
+
+class TestWindow:
+    """A request's view of the log opens at the log's end when it was sent, so the lines the
+    request ahead logs after that land in it and must be skipped."""
+
+    def test_the_request_ahead_finishing_in_the_window_is_skipped_after_its_first_token(self, tracker, log_path):
+        ahead = tracker.begin()
+        _append(log_path, "work 0 1000\n")
+        mine = tracker.begin()                                 # sent while the one ahead prefills
+        _append(log_path, "step 1000 1000\nfinished 1.0s\n")   # the one ahead's last lines
+        tracker.first_token(ahead)
+        assert tracker.progress() == 0.0, "the one ahead's 100% line is not mine; my workload is not logged yet"
+        _append(log_path, "work 0 4000\nstep 1000 4000\n")
+        tracker._find(mine).read_ts = 0.0
+        assert tracker.progress() == pytest.approx(25.0)
+        _append(log_path, "finished 4.0s\n")
+        tracker._find(mine).read_ts = 0.0
+        assert tracker.progress() == 100.0
+        assert tracker.prefill_seconds(mine) == 4.0
+        tracker.end(ahead)
+        tracker.end(mine)
+
+    def test_a_done_line_the_log_showed_is_skipped_only_by_the_requests_sent_before_it(self, tracker, log_path):
+        # A non-streamed request ahead never sends a token: its done line is seen by a poll,
+        # and the log's offset says which later requests have it in their window.
+        ahead = tracker.begin()
+        _append(log_path, "work 0 1000\n")
+        before = tracker.begin()
+        _append(log_path, "finished 1.0s\n")
+        after = tracker.begin()
+        assert tracker.queued() is True                         # the poll of the one ahead sees its done line
+        tracker.end(ahead)
+        _append(log_path, "work 0 4000\nstep 1000 4000\n")
+        assert tracker.progress() == pytest.approx(25.0), "the request sent before the done line skips it"
+        _append(log_path, "finished 4.0s\n")
+        tracker.end(before)                                     # non-streamed, never polled for its done line: the end reads it
+        _append(log_path, "work 0 2000\nstep 1000 2000\n")
+        assert tracker.progress() == pytest.approx(50.0), "the request sent after it skips only the one in between"
+        tracker.end(after)
 
 
 class TestPolling:
@@ -267,7 +400,7 @@ class TestMeasuredRate:
         tracker.work(token, force=True)
         request = tracker._find(token)
         first_seen = request.progress_ts
-        request.start_ts = first_seen - 2.0
+        request.work_ts = first_seen - 2.0
         assert tracker.rate() == pytest.approx(250.0)
 
         request.read_ts = 0.0   # the next poll slot has come; the log has nothing new
