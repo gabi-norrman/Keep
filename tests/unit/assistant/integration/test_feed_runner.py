@@ -378,6 +378,45 @@ class TestResume:
         runner._load_cursor()
         assert runner.status()["remaining"] == 2
 
+    def test_the_feed_is_handed_the_horizon_the_runner_settles_on(self, floxy_db):
+        # a first run: the configured one; a restart with a shorter backfill_months: the
+        # persisted one, since a horizon only moves back — what an iMessage read filters by
+        feed = ScriptedFeed([[HORIZON + 1]])
+        run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
+        assert feed.horizon_ts == HORIZON
+        feed = ScriptedFeed([[HORIZON + 1]])
+        run(FeedRunner(feed, RecordingHistory(), HORIZON + SECONDS_PER_MONTH, db=floxy_db), feed)
+        assert feed.horizon_ts == HORIZON
+
+    def test_a_cursor_of_an_older_generation_catches_up_again_from_the_stored_horizon(self, floxy_db):
+        # the row was written when the cursor meant something else: the catch-up starts over at
+        # the horizon the row holds (older than the configured one), what is stored dedupes
+        older = HORIZON - SECONDS_PER_MONTH
+        floxy_db.save_feed("Scripted", cursor="2", horizon=older, last_entry_ts=HORIZON + 20,
+                           gap_until=HORIZON, resume_cursor="3")
+        feed = ScriptedFeed([[HORIZON + 10, HORIZON + 20], [HORIZON + 30]])
+        feed.cursor_generation = 1
+        runner = run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
+        assert feed.calls[0] == (0, True)
+        assert feed.horizon_ts == older
+        assert runner.status()["stored"] == 3
+        row = floxy_db.get_feed("Scripted")
+        assert (row["generation"], row["cursor"], row["horizon"]) == (1, "2", older)
+        assert (row["gap_until"], row["resume_cursor"]) == (None, None)
+
+    def test_a_cursor_of_the_feeds_generation_is_resumed(self, floxy_db):
+        floxy_db.save_feed("Scripted", cursor="1", horizon=HORIZON, generation=1)
+        feed = ScriptedFeed([[HORIZON + 10], [HORIZON + 20]])
+        feed.cursor_generation = 1
+        run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
+        assert feed.calls[0] == (1, True)
+
+    def test_a_first_run_stores_the_feeds_generation(self, floxy_db):
+        feed = ScriptedFeed([[HORIZON + 10]])
+        feed.cursor_generation = 2
+        run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
+        assert floxy_db.get_feed("Scripted")["generation"] == 2
+
     def test_horizon_moved_further_back_restarts_from_the_new_horizon(self, floxy_db):
         floxy_db.save_feed("Scripted", cursor="2", horizon=HORIZON)
         feed = ScriptedFeed([[HORIZON + 1], [HORIZON + 2]])

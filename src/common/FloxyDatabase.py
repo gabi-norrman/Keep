@@ -263,6 +263,7 @@ class FloxyDatabase:
                     gap_until REAL,
                     resume_cursor TEXT,
                     gap_covered_until REAL,
+                    generation INTEGER NOT NULL DEFAULT 0,
                     updated_at REAL NOT NULL
                 )
             ''')
@@ -276,6 +277,10 @@ class FloxyDatabase:
                 cursor.execute('ALTER TABLE feeds ADD COLUMN gap_covered_until REAL')
                 note("Database migration: added 'gap_covered_until' column to feeds "
                      "(the newest entry stored before a horizon move-back; a gap read drops only up to it).")
+            if 'generation' not in feed_columns:
+                cursor.execute('ALTER TABLE feeds ADD COLUMN generation INTEGER NOT NULL DEFAULT 0')
+                note("Database migration: added 'generation' column to feeds (the version of the cursor's "
+                     "meaning; a feed whose cursor changed meaning catches up from the horizon once).")
             for column in ('entries', 'total'):
                 # counted from the history since 2026-09: a lifetime counter drifted on purges and
                 # started at 0 for rows older than the feeds table
@@ -618,7 +623,7 @@ class FloxyDatabase:
     # --- feeds: FeedRunner's cursor per feed name ---
 
     _FEED_COLUMNS = ("cursor", "horizon", "live_since", "last_entry_ts", "gap_until", "resume_cursor",
-                     "gap_covered_until")
+                     "gap_covered_until", "generation")
 
     def get_feed(self, name: str) -> dict | None:
         with self.lock:

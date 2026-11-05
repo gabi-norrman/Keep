@@ -32,6 +32,16 @@ class Feed(ABC):
     poll_interval: float = 5.0          # seconds between fetches once the feed is live
     default_backfill_months: int = 1    # horizon when feeds.<slug>.backfill_months is not set
     item_noun: str = "items"            # plural, what the dashboard counts: "4202 messages"
+    # The version of what the cursor means. A feed bumps it when a stored cursor no longer
+    # says what it said when it was written (iMessage: a ROWID that once meant "everything
+    # below is read", now "everything below dated in the horizon"); the runner then catches
+    # up from the horizon once more, the history's dedup dropping what is already stored.
+    cursor_generation: int = 0
+    # The runner's horizon, set before `initial_cursor` and kept current — the persisted one
+    # after a restart, since a horizon only moves back. A feed whose cursor is not in time
+    # order (an iMessage ROWID: Messages in iCloud writes the history in any order) keeps
+    # the items from before it out of `fetch` and `remaining`.
+    horizon_ts: Optional[float] = None
 
     @property
     @abstractmethod

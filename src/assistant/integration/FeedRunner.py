@@ -51,6 +51,7 @@ class FeedRunner:
         self._feed = feed
         self._history = message_history
         self._horizon_ts = horizon_ts
+        feed.horizon_ts = horizon_ts
         self._db = db
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -315,7 +316,21 @@ class FeedRunner:
             note(f"Feed '{self.name}': first run, catching up from "
                  f"{time.strftime('%Y-%m-%d', time.localtime(self._horizon_ts))} (cursor={cursor}"
                  f"{f', {self._stored} rows already in the history' if self._stored else ''})")
-            self._database().save_feed(self.name, cursor=cursor, horizon=self._horizon_ts)
+            self._database().save_feed(self.name, cursor=cursor, horizon=self._horizon_ts,
+                                       generation=self._feed.cursor_generation)
+        elif (row.get("generation") or 0) < self._feed.cursor_generation:
+            # the stored position was written under an older meaning of the cursor: start the
+            # catch-up over from the horizon it was read with; what is stored dedupes
+            horizon = row["horizon"] if row["horizon"] is not None else self._horizon_ts
+            self._horizon_ts = min(horizon, self._horizon_ts)
+            cursor = self._feed.initial_cursor(self._horizon_ts)
+            note(f"Feed '{self.name}': the stored cursor={row['cursor']} is of generation "
+                 f"{row.get('generation') or 0}, the feed's is {self._feed.cursor_generation} — catching up again from "
+                 f"{time.strftime('%Y-%m-%d', time.localtime(self._horizon_ts))} (cursor={cursor}, "
+                 f"{self._stored} rows already in the history)")
+            self._database().save_feed(self.name, cursor=cursor, horizon=self._horizon_ts,
+                                       generation=self._feed.cursor_generation,
+                                       gap_until=None, resume_cursor=None, gap_covered_until=None)
         else:
             cursor = row["cursor"]
             self._last_entry_ts = row["last_entry_ts"]
@@ -347,6 +362,7 @@ class FeedRunner:
                 gap = (f", mid-gap up to {time.strftime('%Y-%m-%d', time.localtime(self._gap_until))}"
                        if self._gap_until is not None else "")
                 info(f"Feed '{self.name}': resuming from cursor={cursor} ({self._stored} rows in the history{gap})")
+        self._feed.horizon_ts = self._horizon_ts
         with self._lock:
             self._cursor = cursor
             self._state = FeedState.CATCHING_UP

@@ -127,6 +127,7 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
     poll_interval = POLL_INTERVAL
     item_noun = "messages"
     default_backfill_months = 60    # five years: chat.db rows are cheap, no LLM call per message
+    cursor_generation = 1           # 1: a ROWID means "read" only for rows dated in the horizon
 
     def __init__(self):
         super().__init__()
@@ -214,19 +215,32 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
         return True
 
     def initial_cursor(self, horizon_ts: float) -> Optional[str]:
-        """The last ROWID from before the horizon, so the catch-up starts right after it."""
-        apple_ts = (horizon_ts - APPLE_EPOCH_OFFSET) * 1_000_000_000
+        """The ROWID just before the first message dated at or after the horizon (past every
+        row when there is none), so the catch-up starts right there. Not the last ROWID from
+        before the horizon: chat.db's ROWIDs are not in date order — Messages in iCloud
+        downloads the history in chunks, newest first, old, recent again — and on such a
+        library that ROWID sits near the end of the table and the catch-up skips years."""
+        self.horizon_ts = horizon_ts
         with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
-            row = conn.execute("SELECT COALESCE(MAX(ROWID), 0) FROM message WHERE date < ?",
-                               (int(apple_ts),)).fetchone()
-        fine(f"iMessage: initial ROWID {row[0]} (last message before "
-             f"{time.strftime('%Y-%m-%d', time.localtime(horizon_ts))})")
+            row = conn.execute("""
+                SELECT COALESCE((SELECT MIN(ROWID) - 1 FROM message WHERE date >= ?),
+                                (SELECT COALESCE(MAX(ROWID), 0) FROM message))
+            """, (self._horizon_apple_ts(),)).fetchone()
+        fine(f"iMessage: initial ROWID {row[0]} (just before the first message dated "
+             f"{time.strftime('%Y-%m-%d', time.localtime(horizon_ts))} or later)")
         return str(row[0])
+
+    def _horizon_apple_ts(self) -> int:
+        """The runner's horizon as chat.db stores dates (nanoseconds since 2001); 0 — every
+        row — when no runner has set one (the tests, a one-off read)."""
+        if self.horizon_ts is None:
+            return 0
+        return int((self.horizon_ts - APPLE_EPOCH_OFFSET) * 1_000_000_000)
 
     def remaining(self, cursor: Optional[str]) -> Optional[int]:
         with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
-            row = conn.execute("SELECT COUNT(*) FROM message WHERE ROWID > ? AND is_system_message = 0",
-                               (int(cursor or 0),)).fetchone()
+            row = conn.execute("SELECT COUNT(*) FROM message WHERE ROWID > ? AND date >= ? AND is_system_message = 0",
+                               (int(cursor or 0), self._horizon_apple_ts())).fetchone()
         return row[0]
 
     def fetch(self, cursor: Optional[str], backfill: bool) -> FeedBatch:
@@ -290,8 +304,10 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
             error(f"iMessage: failed to read scheduled messages: {e}")
 
     def _poll_new_messages(self, backfill: bool = False) -> list[FeedEntry]:
-        """The history entries for the chat.db rows after `_last_seen_rowid` (at most
-        FETCH_BATCH_SIZE of them); advances `_last_seen_rowid` past every row it read. With
+        """The history entries for the chat.db rows after `_last_seen_rowid` dated at or after
+        the horizon (at most FETCH_BATCH_SIZE of them); advances `_last_seen_rowid` past every
+        row it read. The date test is what keeps a row an iCloud sync writes late — a 2013
+        message at a fresh ROWID — from arriving as an "iMessage received" of today. With
         `backfill` (catching up on months of history) nothing reacts — no send-later tracking,
         media as placeholders instead of vision-LLM descriptions — except that a 2FA code
         still fresh enough to submit is forwarded."""
@@ -322,10 +338,11 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
                 LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
                 LEFT JOIN chat c ON cmj.chat_id = c.ROWID
                 WHERE m.ROWID > ?
+                  AND m.date >= ?
                   AND m.is_system_message = 0
                 ORDER BY m.ROWID
                 LIMIT ?
-            """, (self._last_seen_rowid, FETCH_BATCH_SIZE))
+            """, (self._last_seen_rowid, self._horizon_apple_ts(), FETCH_BATCH_SIZE))
 
             for (rowid, text, attributed_body, apple_ts, is_from_me, handle_id, chat_name,
                  schedule_type, schedule_state, chat_id) in cursor:

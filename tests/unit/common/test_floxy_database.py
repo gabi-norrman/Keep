@@ -936,3 +936,22 @@ def test_batch_insert_raises_on_a_database_error(floxy_db):
     floxy_db.db_path = str(pathlib.Path(floxy_db.db_path).parent / "missing" / "nowhere.db")
     with pytest.raises(sqlite3.Error):
         floxy_db.add_history_entries([("system", "a", 1.0, None)], "iMessage")
+
+
+@pytest.mark.unit
+def test_a_feeds_table_from_before_the_generation_column_reads_its_rows_as_generation_0(tmp_path):
+    # an install's feeds row written before the column: the runner must see generation 0, so
+    # a feed whose cursor changed meaning starts its catch-up over on the first boot after the upgrade
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE feeds (name TEXT PRIMARY KEY, cursor TEXT, horizon REAL, live_since REAL, "
+                     "last_entry_ts REAL, gap_until REAL, resume_cursor TEXT, gap_covered_until REAL, "
+                     "updated_at REAL NOT NULL)")
+        conn.execute("INSERT INTO feeds (name, cursor, horizon, updated_at) VALUES ('iMessage', '295651', 1.0, 2.0)")
+    db = FloxyDatabase.__new__(FloxyDatabase)
+    db.db_path = str(path)
+    db.lock = threading.Lock()
+    db._init_database()
+    assert db.get_feed("iMessage")["generation"] == 0
+    db.save_feed("iMessage", cursor="0", generation=1)
+    assert db.get_feed("iMessage")["generation"] == 1
