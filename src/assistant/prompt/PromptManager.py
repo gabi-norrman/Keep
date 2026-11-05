@@ -1115,12 +1115,14 @@ class PromptManager:
             messages = self._resolved_messages_locked()
         self._fire_prompt_callbacks(messages)
 
-    def add_command_result(self, result: str, cap: bool = True, source: str | None = None):
+    def add_command_result(self, result: str, cap: bool = True, source: str | None = None,
+                           background: bool = False):
         """Persist a command round's result so later turns still see it (no pre-heat:
         the follow-up round that consumes it starts right away). `cap=False` for a
         toolkit reference, which is stored whole; `source` stamps a preloaded one with
-        its window (MessageHistory.preload_source)."""
-        self.message_history.add_command_result(result, cap=cap, source=source)
+        its window (MessageHistory.preload_source); `background` is a job's result,
+        held while a request is in flight (MessageHistory.add_command_result)."""
+        self.message_history.add_command_result(result, cap=cap, source=source, background=background)
 
     # The dump of the latest request sent, cited by a cache-break report (CacheBreakTracker);
     # a request that overlaps another's may cite its neighbour's.

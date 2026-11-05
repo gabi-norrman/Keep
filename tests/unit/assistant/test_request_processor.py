@@ -1964,6 +1964,21 @@ class TestProcess:
 
         assert full_handler.is_performing_request is False
         ended.assert_called_once()
+        prompt_manager.message_history.request_ended.assert_called_once()
+
+    def test_the_history_knows_the_request_for_as_long_as_it_runs(self, full_handler):
+        """MessageHistory holds a background job's report while a request is in flight
+        (#162); the start and the end are paired on every path, the killed one included."""
+        full_handler.request_data = RequestData("GET", "/", {"query": "hi"}, {"Range": None, "X-Playback-Session-Id": None, "Icy-Metadata": None, "User-Agent": "test"})
+        full_handler.request_context = RequestContext.from_request_data(full_handler.request_data)
+        prompt_manager = Mock()
+        prompt_manager.prompt_touched_at = 0
+        full_handler.is_killed = True
+        with patch.object(full_handler, '_notify_autonomous_user_ended'):
+            full_handler.process(prompt_manager)
+        history = prompt_manager.message_history
+        history.request_started.assert_called_once()
+        history.request_ended.assert_called_once()
 
     def test_killed_returns_empty_response(self, full_handler):
         full_handler.is_killed = True

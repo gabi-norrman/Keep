@@ -962,10 +962,12 @@ class Commands:
                 sent = notifier().send_message(f"{title} report:\n\n{notifier().markdown_to_html(report)}")
                 aam = AutonomousActionManager.get_instance()
                 prompt_manager = aam.prompt_manager if aam else None
-                # "[Self-analysis complete]" is the tag the LLM keys off; keep it first.
+                # "[Self-analysis complete]" is the tag the LLM keys off; keep it first. The
+                # row is a background one: landing while a request is in flight it would
+                # render inside that request's user turn, ahead of a reply that never saw it.
                 delivery = "" if sent else f" ({NO_NOTIFICATION_CHANNEL})"
                 if prompt_manager is not None:
-                    prompt_manager.add_command_result(f"[{title} complete]{delivery}\n{report}")
+                    prompt_manager.add_command_result(f"[{title} complete]{delivery}\n{report}", background=True)
                 else:
                     info(f"{title}: no AutonomousActionManager yet, the report is not in the history")
             except Exception as e:

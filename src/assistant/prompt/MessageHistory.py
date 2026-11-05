@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from datetime import datetime
 from typing import Callable
@@ -140,6 +141,11 @@ class MessageHistory:
         # thing telling the LLM the section moved on from the system prompt's baseline, so
         # PromptManager drains this set before every send and puts one fresh note back.
         self.dropped_delta_sections: set[str] = set()
+        # The requests being served, and the background job results held until the last of
+        # them has persisted its reply (add_command_result's `background`).
+        self._in_flight = 0
+        self._held: list[tuple[float, str, bool, str | None]] = []
+        self._in_flight_lock = threading.Lock()
         self._compressor = HistoryCompressor()
         self._load_history()
 
@@ -866,16 +872,60 @@ class MessageHistory:
         fine(f"MessageHistory: toolkits in the {window or 'any'} window: {sorted(loaded) or 'none'}")
         return loaded
 
-    def add_command_result(self, result: str, cap: bool = True, source: str | None = None):
+    # A background result is held no longer than this: a request that is still in flight
+    # after it has leaked its end (or is a very long one) gets the row the way it always did.
+    HOLD_LIMIT_SECONDS = 600
+
+    def request_started(self):
+        """A request is being served: a background job result persisted before its reply
+        lands is held (add_command_result's `background`), so the next turn reads the
+        reply first and the result after it — persisted between the two, the result would
+        render inside the user's turn, in front of a reply that never saw it (#162)."""
+        with self._in_flight_lock:
+            self._in_flight += 1
+            stale = [h for h in self._held if time.time() - h[0] > self.HOLD_LIMIT_SECONDS]
+            if stale:
+                info(f"MessageHistory: {len(stale)} background result(s) held over "
+                     f"{self.HOLD_LIMIT_SECONDS} s — the request end was lost; persisting them now")
+                self._held = [h for h in self._held if h not in stale]
+        for _, result, cap, source in stale:
+            self.add_command_result(result, cap=cap, source=source)
+
+    def request_ended(self):
+        """The request has persisted its reply (or died): once no request is in flight the
+        held background results land, dated after the reply."""
+        with self._in_flight_lock:
+            self._in_flight = max(0, self._in_flight - 1)
+            if self._in_flight:
+                trace(f"MessageHistory: {self._in_flight} request(s) still in flight, "
+                      f"{len(self._held)} background result(s) stay held")
+                return
+            held, self._held = self._held, []
+        if held:
+            info(f"MessageHistory: persisting {len(held)} background result(s) held during the request")
+        for _, result, cap, source in held:
+            self.add_command_result(result, cap=cap, source=source)
+
+    def add_command_result(self, result: str, cap: bool = True, source: str | None = None,
+                           background: bool = False):
         """Persist a command round's result (the `result: …` text the LLM was shown) as a
         `command` row, ordered after the newest row so it follows the assistant round that
         ran the command even when the reply was instant. `cap=False` stores it whole (a
         toolkit reference; the cap is for web pages and log dumps). `source` is the
         preload stamp (preload_source) of a row one window alone renders; a command row
-        never carries anything else there."""
+        never carries anything else there. `background` marks the result of a job that ran
+        outside any request (a self-analysis report): while a request is in flight it is
+        held and lands after that request's reply (request_ended)."""
         if not result or not result.strip():
             trace("MessageHistory: empty command result, nothing to persist")
             return
+        if background:
+            with self._in_flight_lock:
+                if self._in_flight:
+                    self._held.append((time.time(), result, cap, source))
+                    info(f"MessageHistory: background result ({len(result)} chars) held — "
+                         f"{self._in_flight} request(s) in flight, it lands after the reply")
+                    return
         if cap and len(result) > self.COMMAND_RESULT_CHARS:
             info(f"MessageHistory: command result truncated for history "
                  f"({len(result)} → {self.COMMAND_RESULT_CHARS} chars)")
