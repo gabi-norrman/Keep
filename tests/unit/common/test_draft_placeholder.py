@@ -16,13 +16,14 @@ class TestIsDraftPlaceholder:
         "Running command…\n `█`", "Running commands…\n <code>░</code>",
         "Waiting in queue…\n `█`",
         "`⠋`", "Thinking…\n ⠹",
+        "Thinking (↓ 1.2k tokens · 45 t/s)…", "Prefilling (43%)…", "Prefilling (43% · 1.5k t/s)…", "Thinking…",
     ])
-    def test_a_frame_with_or_without_its_phase_line_is_a_placeholder(self, text):
+    def test_a_frame_with_or_without_its_phase_line_or_a_phase_line_alone_is_a_placeholder(self, text):
         assert is_draft_placeholder(text) is True
 
     @pytest.mark.parametrize("text", [
         "", "   ", "\n", None,
-        "Hi there", "█ nope", "`█` and then some", "Thinking…",
+        "Hi there", "█ nope", "`█` and then some", "Thinking", "Thinking (43%)… and more",
         "Any line over it…\n `█`", "Thinking…\n `█`\n Done", "Thinking (unclosed…\n `█`",
         "code: `x`",
     ])

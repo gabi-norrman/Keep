@@ -1183,10 +1183,19 @@ class TestTelegramDraft:
         d.show_progress(Progress(PHASE_THINKING, output_tokens=20700))
         d.show_progress(Progress(PHASE_THINKING, output_tokens=0))
         d.show_progress(Progress(PHASE_WAITING))
-        assert t.texts[0].startswith("Thinking (↓ 123 tokens)…\n")
-        assert t.texts[1].startswith("Thinking (↓ 20.7k tokens)…\n")
+        # A counting label is its own sign of life and gets no cursor; the bare one does.
+        assert t.texts[0] == "Thinking (↓ 123 tokens)…"
+        assert t.texts[1] == "Thinking (↓ 20.7k tokens)…"
         assert t.texts[2].startswith("Thinking…\n")
+        assert t.texts[2].split("\n")[1].strip() in d.SPINNER_FRAMES
         assert t.texts[3] in d.SPINNER_FRAMES
+
+    def test_an_unchanged_counting_label_is_not_edited_again(self):
+        t, d = self._draft()
+        d.show_progress(Progress(PHASE_THINKING, output_tokens=123))
+        d.show_progress(Progress(PHASE_THINKING, output_tokens=123))
+        d.show_progress(Progress(PHASE_THINKING, output_tokens=124))
+        assert len(t.texts) == 2
 
     def test_queued_label_stands_over_the_frame(self):
         t, d = self._draft()
@@ -1196,14 +1205,14 @@ class TestTelegramDraft:
     def test_prefill_label_carries_the_percentage(self):
         t, d = self._draft()
         d.show_progress(Progress(PHASE_PREFILL, prefill=42.6))
-        assert t.texts[0].startswith("Prefilling (43%)…\n")
+        assert t.texts[0] == "Prefilling (43%)…"
 
     def test_labels_carry_the_token_rate_when_there_is_one(self):
         t, d = self._draft()
         d.show_progress(Progress(PHASE_PREFILL, prefill=42.6, rate=1480.0))
         d.show_progress(Progress(PHASE_THINKING, output_tokens=123, rate=45.4))
-        assert t.texts[0].startswith("Prefilling (43% · 1.5k t/s)…\n")
-        assert t.texts[1].startswith("Thinking (↓ 123 tokens · 45 t/s)…\n")
+        assert t.texts[0] == "Prefilling (43% · 1.5k t/s)…"
+        assert t.texts[1] == "Thinking (↓ 123 tokens · 45 t/s)…"
 
     def test_running_command_label(self):
         t, d = self._draft()

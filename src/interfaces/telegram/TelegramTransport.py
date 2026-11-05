@@ -123,17 +123,25 @@ class TelegramDraft:
             return
         frame = self.SPINNER_FRAMES[self._frame % len(self.SPINNER_FRAMES)]
         self._frame += 1
-        if progress.phase == PHASE_THINKING:
-            display = f"{self._thinking_label(progress.output_tokens, progress.rate)} {frame}"
+        # A label with a moving detail (the token count, the prefill percentage) is its own sign
+        # of life, so it stands alone; the cursor blinks only under a label that would otherwise
+        # sit still.
+        if progress.phase == PHASE_THINKING and progress.output_tokens > 0:
+            display = self._thinking_label(progress.output_tokens, progress.rate).rstrip("\n")
+        elif progress.phase == PHASE_THINKING:
+            display = f"{self.THINKING_PREFIX} {frame}"
         elif progress.phase == PHASE_PREFILL:
             detail = f"{progress.prefill:.0f}%" + (f" · {describe_rate(progress.rate)}" if progress.rate > 0 else "")
-            display = f"{PREFILL_LABEL} ({detail})…\n {frame}"
+            display = f"{PREFILL_LABEL} ({detail})…"
         elif progress.phase == PHASE_QUEUED:
             display = f"{QUEUED_LABEL}…\n {frame}"
         elif progress.phase == PHASE_COMMANDS:
             display = f"{self.COMMANDS_PREFIX if progress.commands > 1 else self.COMMAND_PREFIX} {frame}"
         else:
             display = frame
+        if display == self._last_delivered:
+            trace(f"Telegram [{self._chat_id}]: progress unchanged, edit skipped")
+            return
         self._deliver(display, is_final=False)
 
     def update(self, html: str) -> bool:

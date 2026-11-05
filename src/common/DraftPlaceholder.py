@@ -29,13 +29,14 @@ _PHASE_LINE = re.compile(r"^(?:" + "|".join(re.escape(label) for label in PHASE_
 
 def is_draft_placeholder(text: str) -> bool:
     """True when *text* is nothing but a draft's placeholder: spinner frames, with or without a
-    phase line over them, in the HTML the transport sends or the Markdown Telethon reads back."""
+    phase line over them, or a phase line alone (a label with a live count has no frame under
+    it), in the HTML the transport sends or the Markdown Telethon reads back."""
     if not text:
         return False
     lines = [line.strip() for line in _MARKUP.sub("", text).splitlines() if line.strip()]
     if not lines:
         return False
-    *labels, frames = lines
-    if not all(ch in SPINNER_FRAME_CHARS or ch.isspace() for ch in frames):
-        return False
+    *labels, last = lines
+    if not all(ch in SPINNER_FRAME_CHARS or ch.isspace() for ch in last):
+        labels = lines
     return all(_PHASE_LINE.match(label) for label in labels)
