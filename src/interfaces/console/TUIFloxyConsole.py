@@ -153,10 +153,8 @@ class TUIFloxyConsole(AssistantObserver):
 
     def on_cache_break(self, report):
         """The Home tab's debug row for a cache miss: the report under a header naming the
-        model and the time. Stored whatever the debug toggle says, so Ctrl+D reveals it after
-        the fact."""
-        stamp = time.strftime("%H:%M:%S", time.localtime(report.timestamp))
-        self.chat_pane.add_debug_diff(report.text(), header=f"Cache break · {report.model} · {stamp}")
+        model. Stored whatever the debug toggle says, so Ctrl+D reveals it after the fact."""
+        self.chat_pane.add_debug_diff(report.text(), header=f"Cache break · {report.model}")
 
     def on_reply_started(self, seconds_after_first_token: float):
         self.time_to_user_reply = seconds_after_first_token
