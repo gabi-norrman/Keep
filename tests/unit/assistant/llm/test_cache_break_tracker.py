@@ -25,6 +25,7 @@ def recorder():
 def fresh(monkeypatch):
     monkeypatch.setattr(PromptManager, "last_prompt_file", None)
     CacheBreakTracker._last_requester.clear()
+    CacheBreakTracker._shared.clear()
 
 
 def prompt(lines: int, changed: dict[int, str] = {}) -> list[dict]:
@@ -61,8 +62,7 @@ class TestCacheBreakTracker:
         assert recorder.reports == [report]
         assert report.first_diff_line == 32
         assert report.read_line == 36
-        assert report.cause == ("The cache covered the prompt to about line 36 of 102; the prompt changed at "
-                                "line 32, so the change broke it.")
+        assert report.cause == "Cache broken at line 32: it covered the prompt to about line 36 of 102"
         assert report.dump == "log/prompts/abc.md"
         assert report.diff.split("\n") == ["  line 29 of the prompt", "-line 30 of the prompt",
                                             "+the car is parked", "  line 31 of the prompt"]
@@ -72,8 +72,7 @@ class TestCacheBreakTracker:
         tracker = CacheBreakTracker("DS4")
         tracker.record(prompt(100), cached_tokens=0, prompt_tokens=1000)
         report = tracker.record(prompt(100, {7: "changed"}), cached_tokens=0, prompt_tokens=1000)
-        assert report.cause == ("Nothing was read back; the prompt changed at line 9 of 102, so the cache could "
-                                "not reach past it.")
+        assert report.cause == "Cache miss: the prompt changed at line 9 of 102"
 
     def test_an_unchanged_prefix_blames_the_other_user_of_a_single_context_server(self, recorder):
         chat = CacheBreakTracker("DS4", scope="ds4 http://127.0.0.1:8000/v1")
@@ -83,17 +82,25 @@ class TestCacheBreakTracker:
         report = chat.record(prompt(101), cached_tokens=100, prompt_tokens=1010)
         assert report.first_diff_line is None
         assert report.diff == ""
-        assert "DS4 (check) used the server in between" in report.cause
-        assert "did not break it" in report.cause
+        assert report.cause == "DS4 (check) used the server in between"
 
     def test_an_unchanged_prefix_with_nobody_else_falls_back_to_the_backend_note_or_expiry(self, recorder):
         tracker = CacheBreakTracker("Claude")
         tracker.record(prompt(100), cached_tokens=0, prompt_tokens=1000)
         report = tracker.record(prompt(101), cached_tokens=100, prompt_tokens=1010, note_text="the TTL ran out")
-        assert "the TTL ran out" in report.cause
+        assert report.cause == "The TTL ran out"
         tracker.record(prompt(102), cached_tokens=0, prompt_tokens=1000)
         report = tracker.record(prompt(103), cached_tokens=100, prompt_tokens=1010)
-        assert "expired or was evicted" in report.cause
+        assert report.cause == "Cache entry expired or evicted"
+
+    def test_nothing_read_back_blames_a_change_anywhere_in_the_prompt(self, recorder):
+        """ds4 drops its whole live context on a mid-prompt change: a section landing at line
+        281 of 1064 left 0 of 17778 tokens read back, and the change is the cause, not an expiry."""
+        tracker = CacheBreakTracker("DS4")
+        tracker.record(prompt(100), cached_tokens=0, prompt_tokens=1000)
+        report = tracker.record(prompt(100, {60: "a section landed here"}), cached_tokens=0, prompt_tokens=1000)
+        assert report.cause == "Cache miss: the prompt changed at line 62 of 102"
+        assert "+a section landed here" in report.diff
 
     def test_a_change_after_the_read_stopped_is_not_blamed(self, recorder):
         tracker = CacheBreakTracker("Claude")
@@ -101,7 +108,7 @@ class TestCacheBreakTracker:
         report = tracker.record(prompt(100, {90: "late change"}), cached_tokens=100, prompt_tokens=1000)
         assert report.first_diff_line == 92
         assert report.diff == ""
-        assert "did not break it" in report.cause
+        assert report.cause == "Cache entry expired or evicted", "a change past the read is not the cause"
 
     def test_a_long_change_is_cut_and_counted(self, recorder):
         tracker = CacheBreakTracker("Claude")
@@ -148,27 +155,43 @@ class TestCacheBreakText:
                             diff="-old\n+new", seconds_since_previous=200, dump="log/prompts/x.md")
         text = report.text()
         assert text.splitlines()[0].startswith("100/1000 tokens read back (10%)")
-        assert "3 min before" in text
+        assert "3min before" in text
         assert "log/prompts/x.md" not in text   # the dump is for the log line, the header names the model
         assert text.endswith("-old\n+new")
 
 
+def _backend(name: str = "Claude"):
+    from assistant.llm.AbstractLLM import AbstractLLM
+
+    class Backend(AbstractLLM):
+        def __init__(self):
+            pass
+
+        def name(self):
+            return name
+
+    Backend.__abstractmethods__ = frozenset()   # the request methods play no part here
+    return Backend()
+
+
 @pytest.mark.unit
-class TestReportCacheUsageGuard:
+class TestReportCacheUsage:
+    def test_a_new_instance_compares_against_what_the_previous_one_sent(self, recorder):
+        """The chat path builds fresh LLM instances for every request and every follow-up
+        round; the server's cache does not, so a miss on the second instance is a break."""
+        _backend().report_cache_usage(prompt(100), cached_tokens=0, prompt_tokens=1000)
+        report = _backend().report_cache_usage(prompt(100), cached_tokens=30, prompt_tokens=1000)
+        assert report is not None
+        assert recorder.reports == [report]
+
+    def test_a_different_backend_name_is_tracked_apart(self, recorder):
+        _backend("Claude").report_cache_usage(prompt(100), cached_tokens=0, prompt_tokens=1000)
+        assert _backend("DS4").report_cache_usage(prompt(100), cached_tokens=0, prompt_tokens=1000) is None
+        assert recorder.reports == []
+
     def test_a_failing_tracker_never_fails_the_request(self, monkeypatch):
         """The report runs inside the request, before the first token: a bug in it is logged, not raised."""
-        from assistant.llm.AbstractLLM import AbstractLLM
-
-        class Backend(AbstractLLM):
-            def __init__(self):
-                pass
-
-            def name(self):
-                return "Claude"
-
-        Backend.__abstractmethods__ = frozenset()   # the request methods play no part here
-
         monkeypatch.setattr(CacheBreakTracker, "record", lambda *a, **k: (_ for _ in ()).throw(ValueError("boom")))
-        backend = Backend()
+        backend = _backend()
         assert backend.report_cache_usage(prompt(3), cached_tokens=0, prompt_tokens=30) is None
         assert backend.report_cache_usage(prompt(3), cached_tokens=0, prompt_tokens=30) is None

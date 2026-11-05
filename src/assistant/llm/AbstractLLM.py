@@ -111,15 +111,14 @@ class AbstractLLM(ABC):
     def report_cache_usage(self, messages: list[dict], cached_tokens: int, prompt_tokens: int,
                            note: str | None = None):
         """A request the server answered, with its own count of the prompt tokens it read back
-        from its cache: the CacheBreakTracker of this instance explains a miss (the Home tab's
-        debug row, the log). `note` is what the backend knows about the request beyond the
-        prompt text. The tracker is made on first use — a backend need not call this
-        constructor."""
+        from its cache: the CacheBreakTracker of this backend name explains a miss (the Home
+        tab's debug row, the log). `note` is what the backend knows about the request beyond
+        the prompt text. The tracker is shared by every instance of the name on the server
+        (`CacheBreakTracker.shared`) — a request's dialog manager, and its LLM instances with
+        it, is new for every round, while the server's cache remembers what the last one sent."""
         try:
-            tracker = self.__dict__.get('_cache_breaks')
-            if tracker is None:
-                from .CacheBreakTracker import CacheBreakTracker
-                tracker = self._cache_breaks = CacheBreakTracker(self.name(), scope=self.cache_scope())
+            from .CacheBreakTracker import CacheBreakTracker
+            tracker = CacheBreakTracker.shared(self.name(), scope=self.cache_scope())
             return tracker.record(messages, cached_tokens, prompt_tokens, note_text=note)
         except Exception as e:
             # A diagnostic: it runs inside the request, before the first token, and must never fail it.

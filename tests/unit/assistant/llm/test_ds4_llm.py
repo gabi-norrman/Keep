@@ -455,6 +455,33 @@ class TestPrefillBar:
         begin.assert_called_once()
         end.assert_called_once_with(3)
 
+    def test_the_cache_report_is_made_from_the_workload_line_before_the_reply(self):
+        """The tracker reads the server's workload line as the prefill starts: the report runs
+        then, from its callback, and the usage at the end of the stream adds no second one."""
+        usage = SimpleNamespace(prompt_tokens=5000, completion_tokens=3,
+                                prompt_tokens_details=SimpleNamespace(cached_tokens=4000))
+        llm, _ = _llm_with_stream([_chunk(content="Hi."), _chunk(choices=False, usage=usage)])
+        reports = []
+
+        def begin(interactive=True, on_work=None):
+            on_work(4000, 1000)    # the line read on the first poll, cached..total:remaining
+            return 7
+
+        with patch.object(Ds4LLM._prefill, 'begin', side_effect=begin), patch.object(Ds4LLM._prefill, 'end'), \
+             patch.object(llm, 'report_cache_usage', side_effect=lambda m, c, t, note=None: reports.append((c, t))):
+            _stream(llm)
+        assert reports == [(4000, 5000)]
+
+    def test_the_cache_report_falls_back_to_the_usage_when_the_log_said_nothing(self):
+        usage = SimpleNamespace(prompt_tokens=5000, completion_tokens=3,
+                                prompt_tokens_details=SimpleNamespace(cached_tokens=4000))
+        llm, _ = _llm_with_stream([_chunk(content="Hi."), _chunk(choices=False, usage=usage)])
+        reports = []
+        with patch.object(Ds4LLM._prefill, 'begin', return_value=7), patch.object(Ds4LLM._prefill, 'end'), \
+             patch.object(llm, 'report_cache_usage', side_effect=lambda m, c, t, note=None: reports.append((c, t))):
+            _stream(llm)
+        assert reports == [(4000, 5000)]
+
     def test_the_usage_teaches_the_rate_from_the_uncached_tokens_over_the_logged_prefill_time(self):
         usage = SimpleNamespace(prompt_tokens=5000, completion_tokens=3,
                                 prompt_tokens_details=SimpleNamespace(cached_tokens=4000))

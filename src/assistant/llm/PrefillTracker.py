@@ -43,6 +43,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Callable
 
 from common.logging import info, trace
 
@@ -186,6 +187,7 @@ class _Request:
     duration: float | None = None             # the prefill seconds the done line reported
     work: tuple[int, int] | None = None       # (cached, remaining) once the workload line is logged
     work_ts: float = 0.0                      # when that line was read: the start of the clock
+    on_work: "Callable[[int, int], None] | None" = None   # told (cached, remaining) once, when that line is read
     progress: tuple[int, int] | None = None   # (processed, total) of the latest progress line
     progress_ts: float = 0.0                  # when that line was read
     read_ts: float = 0.0
@@ -220,8 +222,12 @@ class PrefillTracker:
         self.log = source
         info(f"{self.label} prefill diagnostics: reading {source.describe()}.")
 
-    def begin(self, interactive: bool = True) -> int:
-        """Register a request about to be sent and hand back its token."""
+    def begin(self, interactive: bool = True, on_work: Callable[[int, int], None] | None = None) -> int:
+        """Register a request about to be sent and hand back its token. `on_work` is told the
+        request's (cached, remaining) tokens once, from whichever poll first reads its workload
+        line — the backend's cache-break report, made while the bar is still drawn rather than
+        after the reply. It runs on the polling thread (a chat UI's tick, the dashboard's
+        frame, the backend's forced read) and never on a request whose log is unreachable."""
         # The anchor is fetched before taking the lock: over ssh it can take a moment and the
         # progress polls must not block on it. The scan from it stays non-destructive, so every
         # poll and the done-time read see the same lines.
@@ -231,7 +237,7 @@ class PrefillTracker:
         with self._lock:
             self._last_token += 1
             token = self._last_token
-            self._requests.append(_Request(token, interactive, time.monotonic(), anchor))
+            self._requests.append(_Request(token, interactive, time.monotonic(), anchor, on_work=on_work))
             queued = len(self._requests) - 1
         trace(f"{self.label} prefill: started (#{token}, {'user request' if interactive else 'background'}"
               f"{f', {queued} ahead of it' if queued else ''}).")
@@ -380,9 +386,11 @@ class PrefillTracker:
         except Exception as e:
             trace(f"{self.label} prefill: log lines not understood ({e})")
             return work, progress
+        on_work = None
         with self._lock:
             if request.work is None and new_work is not None:
                 request.work, request.work_ts = new_work, now
+                on_work, request.on_work = request.on_work, None
             if new_progress is not None and new_progress != request.progress:
                 request.progress, request.progress_ts = new_progress, now
             if done_at is not None and not request.done:
@@ -392,7 +400,13 @@ class PrefillTracker:
                     self._prefill_over(request, done_offset)
                 trace(f"{self.label} prefill: the log says #{request.token}'s prompt is done — the server is "
                       f"generating its reply{' (non-streamed: no token tells us)' if not request.first_token else ''}.")
-            return request.work, request.progress
+            work, progress = request.work, request.progress
+        if on_work is not None:
+            try:
+                on_work(*work)
+            except Exception as e:
+                trace(f"{self.label} prefill: #{request.token}'s workload callback failed ({e})")
+        return work, progress
 
     def queued(self) -> bool:
         """Whether the newest user request waits for the server to finish generating another

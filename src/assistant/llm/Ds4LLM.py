@@ -86,6 +86,7 @@ tokens minus the cached ones) over the prefill time the `prompt done` line repor
 """
 import json
 import re
+import threading
 import time
 from types import SimpleNamespace
 from typing import Generator
@@ -332,19 +333,46 @@ class Ds4LLM(ChatGPTLLM):
     def cache_scope(self) -> str | None:
         return f"ds4 {self.base_url}"
 
-    def _report_cache(self, messages: list[dict], usage, effort: str):
-        """The reply's usage against the prompt, for the cache-break report. The server renders
+    def _cache_report(self, messages: list[dict], effort: str):
+        """One request's cache-break report, made once: early, from the workload line the
+        server logs as the prefill starts — the Home tab's row then lands while the bar is
+        still drawn — or, when the log is unreachable, at the end from the reply's usage.
+        (early, late): `early` is the tracker's `on_work` callback, `late` takes the usage and
+        reports only when `early` never ran. The two can race on a poll that finishes as the
+        stream ends, hence the lock."""
+        lock, made_from = threading.Lock(), []
+
+        def once(cached: int, prompt_tokens: int, source: str):
+            with lock:
+                if made_from:
+                    trace(f"ds4 cache: the {source} says {cached}/{prompt_tokens} cached — "
+                          f"already reported from the {made_from[0]}")
+                    return
+                made_from.append(source)
+            self._report_cache(messages, cached, prompt_tokens, effort)
+
+        def early(cached: int, remaining: int):
+            once(cached, cached + remaining, "workload line")
+
+        def late(usage):
+            details = getattr(usage, 'prompt_tokens_details', None) if usage is not None else None
+            cached = getattr(details, 'cached_tokens', None) if details is not None else None
+            if cached is None:
+                trace("ds4 cache: the reply carries no cached-token count — no report")
+                return
+            once(cached, usage.prompt_tokens, "usage")
+
+        return early, late
+
+    def _report_cache(self, messages: list[dict], cached: int, prompt_tokens: int, effort: str):
+        """The cached tokens against the prompt, for the cache-break report. The server renders
         past turns by the reasoning effort, so an effort other than the previous request's is
         the note the report falls back on when the prompt text is unchanged."""
-        details = getattr(usage, 'prompt_tokens_details', None) if usage is not None else None
-        cached = getattr(details, 'cached_tokens', None) if details is not None else None
-        if cached is None:
-            return
         previous, self._last_effort = getattr(self, '_last_effort', None), effort
         note = None
         if previous is not None and previous != effort:
             note = f"the reasoning effort changed from {previous} to {effort}, which re-renders the past turns"
-        self.report_cache_usage(messages, cached, usage.prompt_tokens, note=note)
+        self.report_cache_usage(messages, cached, prompt_tokens, note=note)
 
     # --- the DSML side ----------------------------------------------------------------------
 
@@ -420,14 +448,16 @@ class Ds4LLM(ChatGPTLLM):
         self._ensure_initialized()
         started = time.monotonic()
         Ds4LLM._slot.interactive_begin()
-        token = self._prefill.begin()
+        early, late = self._cache_report(messages, self._effort_for(thinking))
+        token = self._prefill.begin(on_work=early)
         try:
-            yield from self._stream(messages, thinking, started, token)
+            yield from self._stream(messages, thinking, started, token, late)
         finally:
             self._prefill.end(token)
             Ds4LLM._slot.interactive_end()
 
-    def _stream(self, messages: list[dict], thinking: Thinking | bool, started: float, token: int | None) -> Generator[str, None, None]:
+    def _stream(self, messages: list[dict], thinking: Thinking | bool, started: float, token: int | None,
+                report_cache) -> Generator[str, None, None]:
         self._last_stop_reason = None
         response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=True))
         in_thinking, reasoning, usage = False, "", None
@@ -485,7 +515,7 @@ class Ds4LLM(ChatGPTLLM):
             yield tail
         self._remember(reply + tail, reasoning, verbatim)
         prefilled = self._log_usage(usage, started, len(reasoning))
-        self._report_cache(messages, usage, self._effort_for(thinking))
+        report_cache(usage)
         if prefilled is not None:
             seconds = self._prefill.prefill_seconds(token)
             if seconds:
@@ -507,7 +537,8 @@ class Ds4LLM(ChatGPTLLM):
         self._ensure_initialized()
         started = time.monotonic()
         Ds4LLM._slot.interactive_begin()
-        token = self._prefill.begin()
+        early, late = self._cache_report(messages, self._effort_for(thinking))
+        token = self._prefill.begin(on_work=early)
         self._last_stop_reason = None
         try:
             response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=False))
@@ -520,7 +551,7 @@ class Ds4LLM(ChatGPTLLM):
         if reasoning:
             fine(f"ds4 thought:\n{reasoning.strip()}")
         self._log_usage(getattr(response, 'usage', None), started, len(reasoning))
-        self._report_cache(messages, getattr(response, 'usage', None), self._effort_for(thinking))
+        late(getattr(response, 'usage', None))
         calls = getattr(message, 'tool_calls', None) or []
         content, withheld = self._split_at_sentinel(message.content or "")
         rendered = self._rendered_calls(calls)
@@ -555,7 +586,8 @@ class Ds4LLM(ChatGPTLLM):
         slot = Ds4LLM._slot
         slot.acquire(self.background_idle_seconds())
         started = time.monotonic()
-        token = self._prefill.begin(interactive=False)
+        early, late = self._cache_report(messages, self.reasoning_effort())
+        token = self._prefill.begin(interactive=False, on_work=early)
         chunks: list[str] = []
         reasoning_chars, usage = 0, None
         try:
@@ -596,7 +628,7 @@ class Ds4LLM(ChatGPTLLM):
             self._prefill.end(token)
             slot.release()
         self._log_usage(usage, started, reasoning_chars)
-        self._report_cache(messages, usage, self.reasoning_effort())
+        late(usage)
         return "".join(chunks)
 
 

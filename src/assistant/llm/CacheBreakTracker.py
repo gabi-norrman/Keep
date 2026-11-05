@@ -1,8 +1,10 @@
 """Explains a prompt-cache miss: the first line of the prompt that differs from the previous request's, as a diff, beside where the server stopped reading.
 
 Every backend hands the tracker the messages it sent and the server's own count of the
-prompt tokens it read back from its cache (`AbstractLLM.report_cache_usage`). The tracker
-keeps the previous request's prompt as lines and a break is when the cache read back less
+prompt tokens it read back from its cache (`AbstractLLM.report_cache_usage`). One tracker
+serves every instance of a backend name on a server (`shared`), since the chat path builds
+fresh LLM instances for every request and every follow-up round and the server's cache
+knows nothing of that. The tracker keeps the previous request's prompt as lines and a break is when the cache read back less
 than THRESHOLD percent of the previous prompt — a flat share of the current prompt misfires on
 an ordinary follow-up round, whose new command result is uncached by rights.
 
@@ -65,21 +67,34 @@ class CacheBreak:
     def _ago(self) -> str:
         seconds = self.seconds_since_previous
         if seconds < 90:
-            return f"{seconds:.0f} s before"
+            return f"{seconds:.0f}s before"
         if seconds < 5400:
-            return f"{seconds / 60:.0f} min before"
-        return f"{seconds / 3600:.1f} h before"
+            return f"{seconds / 60:.0f}min before"
+        return f"{seconds / 3600:.1f}h before"
 
 
 class CacheBreakTracker:
-    """One per LLM instance: the previous prompt it sent, and the verdict on each new one."""
+    """One per backend name and server: the previous prompt sent under that name, and the
+    verdict on each new one."""
 
-    _last_requester: dict[str, str] = {}    # single-context server → the instance that used it last
+    _last_requester: dict[str, str] = {}    # single-context server → the name that used it last
+    _shared: dict[tuple[str, str | None], "CacheBreakTracker"] = {}
 
     def __init__(self, name: str, scope: str | None = None):
         self.name = name
         self.scope = scope
         self._previous: tuple[list[str], int, float] | None = None
+
+    @classmethod
+    def shared(cls, name: str, scope: str | None = None) -> "CacheBreakTracker":
+        """The tracker of this backend name on this server, made on first use. Instances come
+        and go with the dialog managers; what the server was last sent under the name does not."""
+        key = (name, scope)
+        tracker = cls._shared.get(key)
+        if tracker is None:
+            tracker = cls._shared[key] = cls(name, scope)
+            trace(f"{name} cache: tracking the prompts sent{f' to {scope}' if scope else ''}")
+        return tracker
 
     @staticmethod
     def flatten(messages: list[dict]) -> list[str]:
@@ -111,7 +126,7 @@ class CacheBreakTracker:
             if other == self.name:
                 other = None
         if previous is None:
-            trace(f"{self.name} cache: first request of this instance — nothing to compare the prompt against")
+            trace(f"{self.name} cache: first request under this name — nothing to compare the prompt against")
             return None
         if prompt_tokens <= 0:
             return None
@@ -135,25 +150,22 @@ class CacheBreakTracker:
         read_line = max(1, round(cached_tokens / prompt_tokens * len(lines)))
         slack = max(READ_SLACK_LINES, round(len(lines) * READ_SLACK))
         diff = ""
-        covered = (f"the cache covered the prompt to about line {read_line} of {len(lines)}" if cached_tokens
-                   else "nothing was read back")
-        if first is not None and first + 1 <= read_line + slack:
-            cause = (f"{covered}; the prompt changed at line {first + 1} of {len(lines)}, so the cache could not "
-                     f"reach past it." if not cached_tokens else
-                     f"{covered}; the prompt changed at line {first + 1}, so the change broke it.")
-            cause = cause[0].upper() + cause[1:]
+        # Nothing read back and the text changed: the change is the cause wherever it is — a
+        # change before the first breakpoint, or on ds4 anywhere, leaves nothing to reuse. A
+        # partial read blames a change only up to where the read stopped.
+        if first is not None and (not cached_tokens or first + 1 <= read_line + slack):
+            cause = (f"Cache miss: the prompt changed at line {first + 1} of {len(lines)}" if not cached_tokens else
+                     f"Cache broken at line {first + 1}: it covered the prompt to about line {read_line} of {len(lines)}")
             diff = self._diff(previous_lines, lines, first)
         else:
-            where = (f"the first difference is at line {first + 1}" if first is not None
-                     else "the previous prompt is a prefix of this one")
-            reasons = [f"{covered} and the text is unchanged up to there ({where}), so the text did not break it"]
+            reasons = []
             if other:
                 reasons.append(f"{other} used the server in between")
             if note_text:
                 reasons.append(note_text)
-            if not other and not note_text:
-                reasons.append("the cache entry expired or was evicted")
-            cause = "; ".join(reasons) + "."
+            if not reasons:
+                reasons.append("cache entry expired or evicted")
+            cause = "; ".join(reasons)
             cause = cause[0].upper() + cause[1:]
         from assistant.prompt.PromptManager import PromptManager
         return CacheBreak(model=self.name, cached_tokens=cached_tokens, prompt_tokens=prompt_tokens,

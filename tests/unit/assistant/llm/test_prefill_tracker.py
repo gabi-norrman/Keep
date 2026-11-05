@@ -319,6 +319,28 @@ class TestPolling:
         assert tracker.work(token, force=True) == (0, 1000)
         tracker.end(token)
 
+    def test_the_workload_line_is_told_once_to_the_callback(self, tracker, log_path):
+        """The backend's cache-break report runs on the first poll that reads the line, so the
+        Home tab's row lands while the bar is drawn; later polls keep the latched line to themselves."""
+        told = []
+        token = tracker.begin(on_work=lambda cached, remaining: told.append((cached, remaining)))
+        assert tracker.work(token, force=True) is None and told == []
+        _append(log_path, "work 300 700\n")
+        assert tracker.work(token, force=True) == (300, 700)
+        tracker.work(token, force=True)
+        tracker.progress()
+        assert told == [(300, 700)]
+        tracker.end(token)
+
+    def test_a_failing_workload_callback_costs_nothing_but_itself(self, tracker, log_path):
+        def boom(cached, remaining):
+            raise RuntimeError("boom")
+        token = tracker.begin(on_work=boom)
+        _append(log_path, "work 0 1000\n")
+        assert tracker.work(token, force=True) == (0, 1000)
+        assert tracker.progress() is not None
+        tracker.end(token)
+
     def test_log_reads_run_outside_the_lock(self, tracker, log_path):
         # first_token takes the lock per streamed token and the TUI per frame; a read over ssh
         # can take seconds, so it must never run under it.
