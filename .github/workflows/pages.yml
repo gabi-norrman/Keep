@@ -32,9 +32,10 @@ jobs:
       - run: |
           cat > _site/index.html <<'EOF'
           <!doctype html><meta charset="utf-8"><title>Keep</title>
+          <meta name="color-scheme" content="light dark">
           <meta http-equiv="refresh" content="0; url=https://github.com/maciekd/Keep">
           <link rel="canonical" href="https://github.com/maciekd/Keep">
-          <a href="https://github.com/maciekd/Keep">github.com/maciekd/Keep</a>
+          <script>location.replace("https://github.com/maciekd/Keep")</script>
           EOF
       - uses: actions/upload-pages-artifact@v3
         with:
