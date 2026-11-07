@@ -1,9 +1,10 @@
-"""The rescue: a call the model writes as an `<invoke>` block under another format still runs,
+"""The rescue: a call the model writes as an `<invoke>` or a DSML block under another format still runs,
 and the stored turn carries it in the active syntax."""
 import pytest
 
 from assistant.commands.CommandProcessor import CommandProcessor
 from assistant.commands.formats.CommandFormats import CommandFormats
+from assistant.commands.formats import DsmlFormat as dsml
 from assistant.commands.formats.DsmlFormat import DsmlFormat
 from assistant.commands.formats.InvokeFormat import InvokeFormat, OPEN, CLOSE, INVOKE_OPEN, INVOKE_CLOSE, render_call
 from assistant.commands.formats.KeepFormat import KeepFormat
@@ -25,9 +26,22 @@ def bare(name: str, *pairs: tuple[str, str]) -> str:
     return "\n".join(lines)
 
 
+def dsml_block(name: str, *pairs: tuple[str, str]) -> str:
+    return dsml.render_call(name, [(k, v, True) for k, v in pairs])
+
+
+# The shapes V4.1 Flash wrote on the ds4 host on 2026-11-07 (the argument as a second attribute,
+# a self-closed invoke, no closer; then a closer and a stray parameter closer in the body).
+DSML_SLIP_UNCLOSED = (f'{dsml.OPEN}\n{dsml.INVOKE_OPEN} name="load_toolkit" name="developer" />\n\n'
+                      f'{dsml.OPEN}\n{dsml.INVOKE_OPEN} name="load_toolkit" name="history" />')
+DSML_SLIP_CLOSED = (f'{dsml.OPEN}\n{dsml.INVOKE_OPEN} name="load_toolkit" name="developer">\n\n'
+                    f'{dsml.PARAMETER_CLOSE}\n{dsml.INVOKE_CLOSE}\n{dsml.CLOSE}')
+
+
 @pytest.fixture
 def fmt():
-    return RescueFormat(KeepFormat(NAMES), InvokeFormat(NAMES, table=TABLE, variadic=VARIADIC))
+    return RescueFormat(KeepFormat(NAMES), [InvokeFormat(NAMES, table=TABLE, variadic=VARIADIC),
+                                            DsmlFormat(NAMES, table=TABLE, variadic=VARIADIC)])
 
 
 @pytest.fixture
@@ -51,28 +65,23 @@ def stream(processor, chunks):
 
 
 class TestWrapping:
-    def test_the_processor_reads_through_the_rescue_under_every_format_but_invoke(self):
-        for primary in (KeepFormat, DsmlFormat):
+    def test_the_processor_reads_through_the_rescue_under_every_format_with_the_rescues_it_is_not(self):
+        for primary, rescues in ((KeepFormat, {InvokeFormat, DsmlFormat}), (DsmlFormat, {InvokeFormat}),
+                                 (InvokeFormat, {DsmlFormat})):
             CommandFormats.set_active(primary)
             try:
                 processor = CommandProcessor(test_suite_mode=True)
                 assert isinstance(processor.format, RescueFormat) and isinstance(processor.format.primary, primary)
+                assert {type(r) for r in processor.format.rescues} == rescues
                 processor.kill()
             finally:
                 CommandFormats.reset()
-        CommandFormats.set_active(InvokeFormat)
-        try:
-            processor = CommandProcessor(test_suite_mode=True)
-            assert isinstance(processor.format, InvokeFormat)
-            processor.kill()
-        finally:
-            CommandFormats.reset()
 
     def test_the_wrapper_shares_the_command_list_so_a_name_added_later_is_known_to_both(self):
         names = ["turn_on"]
         fmt = RescueFormat.wrap(KeepFormat(names))
         names.append("dim")
-        assert fmt.rescue.possible_commands is names and fmt.primary.possible_commands is names
+        assert all(r.possible_commands is names for r in fmt.rescues) and fmt.primary.possible_commands is names
 
 
 class TestStreaming:
@@ -122,6 +131,28 @@ class TestStreaming:
         assert processor.calls == []
         assert processor.take_unterminated_command_report().startswith("dim was not run")
 
+    def test_the_dsml_production_reply_with_no_closer_runs_both_loads_once_the_stream_ends(self, processor):
+        out = stream(processor, list(DSML_SLIP_UNCLOSED))
+        assert processor.calls == [("load_toolkit", ["developer"]), ("load_toolkit", ["history"])]
+        assert "DSML" not in out and processor.format.rescued == 2
+
+    def test_the_dsml_production_reply_with_the_argument_in_the_tag_runs_the_call(self, processor):
+        out = stream(processor, ["Loading. ", DSML_SLIP_CLOSED])
+        assert processor.calls == [("load_toolkit", ["developer"])]
+        assert out.strip() == "Loading." and processor.format.rescued == 1
+
+    def test_a_well_formed_dsml_block_under_keep_runs_and_shows_nothing(self, processor):
+        out = stream(processor, list("Sure.\n" + dsml_block("dim", ("dim_percentage", "40"), ("light_name", "Lamp"))))
+        assert processor.calls == [("dim", ["Lamp", "40"])]
+        assert out.strip() == "Sure." and processor.format.rescued == 1
+
+    def test_a_dsml_block_the_stream_ended_inside_is_reported_as_unterminated(self, processor):
+        dm = type("DM", (), {"is_killed": False})()
+        processor.process(f'{dsml.OPEN}\n{dsml.INVOKE_OPEN} name="dim">\n{dsml.PARAMETER_OPEN} name="light_name" string="true">La', dm)
+        processor.flush_buffer(dm)
+        assert processor.calls == []
+        assert processor.take_unterminated_command_report().startswith("dim was not run")
+
 
 class TestRewritten:
     def test_the_bare_block_becomes_keep_text_that_keep_reads_to_the_same_call(self, fmt):
@@ -160,6 +191,18 @@ class TestRewritten:
         assert fmt.rewritten(raw) is raw
         assert fmt.extract_all(raw) == [("remember", ["the model once wrote " + bare("dim", ("light_name", "x"))])]
 
+    def test_the_dsml_production_replies_are_stored_as_keep_calls(self, fmt):
+        stored = fmt.rewritten("Checking.\n" + DSML_SLIP_UNCLOSED)
+        assert "DSML" not in stored and stored.startswith("Checking.\n")
+        assert KeepFormat(NAMES).extract_all(stored) == [("load_toolkit", ["developer"]), ("load_toolkit", ["history"])]
+        stored = fmt.rewritten(DSML_SLIP_CLOSED + "\nFair cop.")
+        assert "DSML" not in stored and stored.endswith("\nFair cop.")
+        assert KeepFormat(NAMES).extract_all(stored) == [("load_toolkit", ["developer"])]
+
+    def test_a_dsml_json_list_value_becomes_keep_variadic_values(self, fmt):
+        stored = fmt.rewritten(dsml.render_call("load_toolkit", [("name", '["email", "web"]', False)]))
+        assert KeepFormat(NAMES).extract_all(stored) == [("load_toolkit", ["email", "web"])]
+
     def test_the_invoke_format_itself_stores_the_turn_as_written(self):
         raw = block("dim", ("light_name", "Lamp"), ("dim_percentage", "40"))
         assert InvokeFormat(NAMES, table=TABLE, variadic=VARIADIC).rewritten(raw) is raw
@@ -168,6 +211,10 @@ class TestRewritten:
 class TestWholeText:
     def test_extract_all_reads_both_syntaxes_in_text_order(self, fmt):
         text = 'turn_on("Hall") ' + bare("dim", ("light_name", "Hall"), ("dim_percentage", "20")) + ' restart_server()'
+        assert fmt.extract_all(text) == [("turn_on", ["Hall"]), ("dim", ["Hall", "20"]), ("restart_server", [])]
+
+    def test_extract_all_reads_all_three_syntaxes_in_text_order(self, fmt):
+        text = 'turn_on("Hall") ' + dsml_block("dim", ("light_name", "Hall"), ("dim_percentage", "20")) + ' ' + bare("restart_server")
         assert fmt.extract_all(text) == [("turn_on", ["Hall"]), ("dim", ["Hall", "20"]), ("restart_server", [])]
 
     def test_cut_keeps_the_first_calls_across_both_syntaxes(self, fmt):

@@ -23,9 +23,11 @@ tool, so the model writes every call as text in the prompt's syntax and the comm
 reads it from the content. Whatever the format, the model may still write a DSML block
 (`DsmlFormat`, the V4.1 spelling); with no tool declared ds4-server leaves it in the content,
 and the stream withholds it from the first DSML sentinel on and releases it whole at the end,
-as written, for the processor — which reads it under a `command_format: dsml` tier. Should the
-server hand back parsed `tool_calls` all the same, they are written back as call text in the
-active format and yielded.
+as written, for the processor — which reads it under any format, as the DSML rescue of
+`RescueFormat` (the slips of 2026-11-07 included), and stores the turn in the prompt's syntax.
+Should the server hand back parsed `tool_calls` all the same — it does read a well-formed block
+whether or not a tool is declared —, they are written back as call text in the active format
+and yielded.
 
 No tool, on purpose (2026-10-22). One
 declared tool — Ollama's static `load_toolkit`, which Ollama needs to parse calls at all —
@@ -63,7 +65,10 @@ each, since the effort changes how the history renders — filled 16 GB in ~60 s
 launcher's 64 GB holds ~250. The two fixes are complementary, not alternatives: the replay keeps
 the live context through a run of rounds, the disk cache brings a turn after another prompt
 back — a new user turn after an unrelated request restored all but 44 tokens of a 19k-token
-history (2026-10-22, the cache freshly emptied).
+history (2026-10-22, the cache freshly emptied). The server's eviction knows no age, so a
+checkpoint nothing uses again stays until the budget is full and then outlives every fresh one
+(`Ds4DiskCacheSweeper` has the numbers): the first client of the process starts the hourly
+sweep that removes the entries unused for `ds4.kv_disk_max_age_hours`.
 
 Background work (photo indexing, `background=True`): the server serves one request at a time,
 so an image call goes through the single-slot gate every Ds4LLM shares (`BackgroundSlot`,
@@ -98,6 +103,7 @@ from openai import OpenAI
 from .AbstractLLM import LLMPreempted, Thinking
 from .BackgroundSlot import BackgroundSlot
 from .ChatGPTLLM import ChatGPTLLM
+from .Ds4DiskCacheSweeper import Ds4DiskCacheSweeper
 from .Ds4Replay import ReplayStore, replay
 from .PrefillTracker import LogFormat, PrefillTracker, is_local_host, parse_last
 from assistant.commands.formats import DsmlFormat as dsml
@@ -204,6 +210,7 @@ class Ds4LLM(ChatGPTLLM):
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url,
                              timeout=httpx.Timeout(None, connect=self.CONNECT_TIMEOUT_S))
         trace(f"ds4 client: no read timeout, {self.CONNECT_TIMEOUT_S:.0f} s to connect")
+        Ds4DiskCacheSweeper.start_once(server_is_local=is_local_host(urlparse(self.base_url).hostname))
 
     def _note_stop(self, finish_reason: str | None):
         """Keep the reply's stop reason where `last_stop_reason` reads it, in Anthropic's spelling
@@ -435,7 +442,7 @@ class Ds4LLM(ChatGPTLLM):
             trace(f"ds4: a DSML block released whole to the command parser ({withheld.count(dsml.OPEN)} opener(s))")
             return withheld
         note(f"ds4: the model wrote a DSML block although the prompt's syntax is {CommandFormats.active().name} "
-             f"(or the server handed back a call without a name); the command parser reads it as written "
+             f"(or the server handed back a call without a name); the rescue reads it as written "
              f"({withheld.count(dsml.OPEN)} opener(s))")
         return withheld
 

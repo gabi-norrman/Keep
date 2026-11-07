@@ -197,6 +197,46 @@ class TestParsing:
         assert fmt.unterminated("just text") is None
 
 
+class TestSlips:
+    """The shapes V4.1 Flash wrote on 2026-11-07 under Keep's syntax, read as the call it meant."""
+
+    def test_an_attribute_after_the_name_is_a_parameter_of_that_name(self, fmt):
+        text = f'{OPEN}\n{INVOKE_OPEN} name="load_toolkit" name="developer">\n{INVOKE_CLOSE}\n{CLOSE}'
+        assert fmt.extract(text)[0][:2] == ("load_toolkit", ["developer"])
+        text = f'{OPEN}\n{INVOKE_OPEN} name="dim" dim_percentage="40" light_name="Lamp">\n{INVOKE_CLOSE}\n{CLOSE}'
+        assert fmt.extract(text)[0][:2] == ("dim", ["Lamp", "40"])
+
+    def test_a_stray_parameter_closer_in_the_body_is_ignored(self, fmt):
+        text = f'{OPEN}\n{INVOKE_OPEN} name="load_toolkit" name="developer">\n\n{PARAMETER_CLOSE}\n{INVOKE_CLOSE}\n{CLOSE}'
+        assert fmt.extract(text)[0][:2] == ("load_toolkit", ["developer"])
+
+    def test_a_self_closed_invoke_is_a_complete_invoke(self, fmt):
+        text = f'{OPEN}\n{INVOKE_OPEN} name="restart_server" />\n{INVOKE_OPEN} name="load_toolkit" name="email" />\n{CLOSE}'
+        assert fmt.extract_all(text) == [("restart_server", []), ("load_toolkit", ["email"])]
+
+    def test_a_block_without_its_closer_is_complete_only_once_the_stream_has_ended(self, fmt):
+        text = f'{OPEN}\n{INVOKE_OPEN} name="load_toolkit" name="developer" />\n'
+        assert not fmt.complete(text, streaming=True)
+        assert fmt.complete(text, streaming=False)
+        assert fmt.extract(text)[0][:2] == ("load_toolkit", ["developer"]) and fmt.extract(text)[1] == ""
+
+    def test_an_unclosed_block_ends_at_the_next_opener(self, fmt):
+        text = (f'{OPEN}\n{INVOKE_OPEN} name="load_toolkit" name="developer" />\n\n'
+                f'{OPEN}\n{INVOKE_OPEN} name="load_toolkit" name="history" />')
+        assert fmt.call_end(text) == text.index(OPEN, 1)
+        assert fmt.extract_all(text) == [("load_toolkit", ["developer"]), ("load_toolkit", ["history"])]
+
+    def test_an_unclosed_block_whose_invoke_is_incomplete_is_still_unterminated(self, fmt):
+        text = f'{OPEN}\n{INVOKE_OPEN} name="dim">\n{PARAMETER_OPEN} name="light_name" string="true">La'
+        assert not fmt.complete(text, streaming=False) and fmt.unterminated(text) == "dim"
+
+    def test_blocks_give_the_named_values_and_the_span_of_each_block(self, fmt):
+        text = "x " + block("dim", ("dim_percentage", "40", False), ("light_name", "Lamp", True)) + " y"
+        [(start, end, invokes)] = fmt.blocks(text)
+        assert (start, text[end:]) == (2, " y")
+        assert invokes == [("dim", [("dim_percentage", "40"), ("light_name", "Lamp")])]
+
+
 class TestRenderToolCall:
     def test_a_parsed_tool_call_is_written_back_with_strings_raw_and_the_rest_as_json(self, fmt):
         text = render_tool_call("dim", '{"light_name": "Kitchen lamp", "dim_percentage": 40}')

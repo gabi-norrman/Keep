@@ -1,44 +1,49 @@
-"""The active command format with Claude's `<invoke>` block read beside it, so a call the model writes in its own trained shape under another syntax still runs.
+"""The active command format with the other models' native blocks read beside it, so a call the model writes in its own trained shape under another syntax still runs.
 
 Opus 5.5 writes a `<function_calls>` / `<invoke>` block now and then whatever syntax the
 prompt teaches: four of 428 replies under Keep's syntax on the production server between
 2026-10-18 and -21, each a whole, correct block and nothing else (Fable never did it once).
-Keep's parser saw no call in them, so the raw XML reached the chat, and the stored turn then
-showed the model its own `<invoke` on every later prompt — the loop that makes the drift
-recur. This format wraps the active one: a buffer is read by whichever of the two syntaxes
-opens a call first in it, a call the invoke syntax read is logged at NOTE level and runs like
-any other, and `rewritten` writes every such block back in the active syntax (its
-`render_tool_call`, the way `OllamaLLM` writes a server-parsed call) before the turn is
-stored, so the history holds nothing but the syntax the prompt teaches. The invoke format
-itself needs no rescue and `wrap` hands it back as it is. The fused spelling Opus wrote once
-(`<invoke_load_toolkit>`, 2026-10-22) is the invoke format's to read and is rescued the same way.
+DeepSeek V4.1 Flash did the same with its DSML block on the ds4 host on 2026-11-07: five
+replies in a row under Keep's syntax, each a DSML block, and not one call ran. Keep's parser
+saw no call in them, so the raw block reached the chat, and the stored turn then showed the
+model its own block on every later prompt — the loop that makes the drift recur. This format
+wraps the active one: a buffer is read by whichever syntax opens a call first in it, the
+active one or one of the rescues (`RESCUES`: Claude's invoke block, DeepSeek's DSML block),
+a call a rescue read is logged at NOTE level and runs like any other, and `rewritten` writes
+every such block back in the active syntax (its `render_tool_call`, the way `OllamaLLM`
+writes a server-parsed call) before the turn is stored, so the history holds nothing but the
+syntax the prompt teaches. A format that is itself one of the rescues keeps the others beside
+it (the invoke format reads DSML as its rescue, the DSML format the invoke block); the fused spelling Opus wrote once (`<invoke_load_toolkit>`, 2026-10-22) and the DSML
+slips of 2026-11-07 are each the rescue's own to read and are rescued the same way.
 """
 from typing import Iterator, Sequence
 
 from common.logging import info, note
 
 from .CommandFormat import CommandFormat
+from .DsmlFormat import DsmlFormat
 from .InvokeFormat import InvokeFormat
 from .Signatures import Declaration, Value
 
 
 class RescueFormat(CommandFormat):
-    """The active format, with the `<invoke>` syntax read as a fallback for the calls the
+    """The active format, with the other native syntaxes read as a fallback for the calls the
     model writes in that shape instead; the texts render in the active format alone."""
 
-    def __init__(self, primary: CommandFormat, rescue: InvokeFormat):
+    # The native block syntaxes a model slips into; each reads its own and offers `blocks`.
+    RESCUES: tuple[type[CommandFormat], ...] = (InvokeFormat, DsmlFormat)
+
+    def __init__(self, primary: CommandFormat, rescues: Sequence[CommandFormat]):
         super().__init__(primary.possible_commands)
         self.name = primary.name
         self.primary = primary
-        self.rescue = rescue
-        self.rescued = 0  # the calls read by the rescue syntax so far (one processor, one reply)
+        self.rescues = list(rescues)
+        self.rescued = 0  # the calls read by a rescue syntax so far (one processor, one reply)
 
     @classmethod
-    def wrap(cls, fmt: CommandFormat) -> CommandFormat:
-        """`fmt` with the rescue beside it — or `fmt` itself when it is the invoke format."""
-        if isinstance(fmt, InvokeFormat):
-            return fmt
-        return cls(fmt, InvokeFormat(fmt.possible_commands))
+    def wrap(cls, fmt: CommandFormat) -> "RescueFormat":
+        """`fmt` with the rescues it is not itself beside it."""
+        return cls(fmt, [rescue(fmt.possible_commands) for rescue in cls.RESCUES if not isinstance(fmt, rescue)])
 
     # --- rendering: the active format's ------------------------------------------------------
 
@@ -56,23 +61,29 @@ class RescueFormat(CommandFormat):
 
     # --- the stream: whichever syntax opens a call first reads it -----------------------------
 
+    @property
+    def _readers(self) -> list[CommandFormat]:
+        return [self.primary, *self.rescues]
+
     def _reader(self, buffer: str) -> CommandFormat:
         """The format whose call starts earliest in the buffer; the active one on a tie and
-        when neither opens a call."""
-        primary, rescue = self.primary.find_start(buffer), self.rescue.find_start(buffer)
-        if rescue >= 0 and (primary < 0 or rescue < primary):
-            return self.rescue
-        return self.primary
+        when none opens a call."""
+        reader, earliest = self.primary, self.primary.find_start(buffer)
+        for rescue in self.rescues:
+            start = rescue.find_start(buffer)
+            if start >= 0 and (earliest < 0 or start < earliest):
+                reader, earliest = rescue, start
+        return reader
 
     def is_possibly_command(self, buffer: str) -> bool:
-        return self.primary.is_possibly_command(buffer) or self.rescue.is_possibly_command(buffer)
+        return any(reader.is_possibly_command(buffer) for reader in self._readers)
 
     def find_start(self, buffer: str) -> int:
-        starts = [pos for pos in (self.primary.find_start(buffer), self.rescue.find_start(buffer)) if pos >= 0]
+        starts = [pos for reader in self._readers if (pos := reader.find_start(buffer)) >= 0]
         return min(starts) if starts else -1
 
     def partial_tail(self, buffer: str) -> int:
-        tails = [pos for pos in (self.primary.partial_tail(buffer), self.rescue.partial_tail(buffer)) if pos > 0]
+        tails = [pos for reader in self._readers if (pos := reader.partial_tail(buffer)) > 0]
         return min(tails) if tails else -1
 
     def complete(self, buffer: str, streaming: bool = False) -> bool:
@@ -81,9 +92,9 @@ class RescueFormat(CommandFormat):
     def extract(self, buffer: str) -> tuple[tuple[str, list[str], str] | None, str | None]:
         reader = self._reader(buffer)
         call, rest = reader.extract(buffer)
-        if reader is self.rescue and call is not None:
+        if reader is not self.primary and call is not None:
             self.rescued += 1
-            note(f"Rescued a {call[0]} call the model wrote as an <invoke> block under the {self.name} format "
+            note(f"Rescued a {call[0]} call the model wrote as a {reader.name} block under the {self.name} format "
                  f"— it runs as usual and is stored in {self.name} syntax (rescue #{self.rescued} of this reply)")
         return call, rest
 
@@ -91,7 +102,7 @@ class RescueFormat(CommandFormat):
         return self._reader(buffer).call_end(buffer)
 
     def unterminated(self, buffer: str) -> str | None:
-        return self.primary.unterminated(buffer) or self.rescue.unterminated(buffer)
+        return next((name for reader in self._readers if (name := reader.unterminated(buffer))), None)
 
     def _spans(self, text: str) -> Iterator[tuple[int, int, CommandFormat]]:
         """Every complete call block of the text in order, as `(start, end, the format that
@@ -114,18 +125,21 @@ class RescueFormat(CommandFormat):
         return self._reader(block)._cut_block(block, keep)
 
     def rewritten(self, text: str) -> str:
-        """The text with every block the rescue syntax read written in the active syntax, one
+        """The text with every block a rescue syntax read written in the active syntax, one
         call per line; a block of nothing (a closer nothing opened) is dropped."""
         out, at, blocks, calls = [], 0, 0, 0
         for start, end, reader in self._spans(text):
-            if reader is not self.rescue:
+            if reader is self.primary:
                 continue
-            invokes = [invoke for _, _, block in self.rescue.blocks(text[start:end]) for invoke in block]
-            out.append(text[at:start])
+            invokes = [invoke for _, _, block in reader.blocks(text[start:end]) for invoke in block]
+            # Two blocks with nothing between them (one never closed ends where the next opens)
+            # still stand one call per line.
+            out.append(text[at:start] or ("\n" if out else ""))
             out.append("\n".join(self.primary.render_tool_call(name, dict(arguments)) for name, arguments in invokes))
             at, blocks, calls = end, blocks + 1, calls + len(invokes)
         if not blocks:
             return text
         out.append(text[at:])
-        info(f"Stored turn rewritten: {blocks} <invoke> block(s) holding {calls} call(s) written in {self.name} syntax")
+        info(f"Stored turn rewritten: {blocks} {'/'.join(r.name for r in self.rescues)} block(s) holding {calls} call(s) "
+             f"written in {self.name} syntax")
         return "".join(out)

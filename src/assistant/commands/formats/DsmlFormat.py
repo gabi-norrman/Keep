@@ -16,6 +16,18 @@ back into, so the stream reaches the processor as this text. The instructions ar
 own `## Tools` text with Keep's paragraph in place of the schema listing: on ds4 the model also
 reads the server's block with the one tool Keep declares to have the calls parsed at all, so
 the paragraph says the tools in front of the prompt and the ones throughout it are one set.
+
+Under every other format this one is a rescue (`RescueFormat`): a block the model writes in
+this shape anyway is read by it, run, and stored in the active syntax. Three slips are read
+as the call the model meant, all from one Telegram dialog on the ds4 host on 2026-11-07, V4.1
+Flash under Keep's syntax, five replies in a row and not one call run: the argument written as
+a second attribute of the invoke tag, `invoke name="load_toolkit" name="developer"` (every
+attribute after the first is a string parameter of that name; a stray parameter closer
+without an opener in the body is ignored), the invoke self-closed with `/>`, and the block
+left without its `calls` closer — read once the stream has ended, up to the next opener or
+the end of the reply, when it holds a complete invoke. ds4-server itself read the one
+well-formed block of the five to a `load_toolkit` call with no arguments (its parser takes the
+first `name` attribute and no parameter element), which Keep cannot repair.
 """
 import json
 import re
@@ -37,7 +49,11 @@ PARAMETER_CLOSE = f"</{DSML} parameter>"
 # and that spelling itself as `&amp;lt;/｜DSML｜ parameter>`; other entities are left alone.
 _ESCAPED_CLOSE = "&lt;" + PARAMETER_CLOSE[1:]
 _ESCAPED_ESCAPE = "&amp;lt;" + PARAMETER_CLOSE[1:]
-_INVOKE_RE = re.compile(rf'{re.escape(INVOKE_OPEN)}\s+name="([^"]*)"\s*>(.*?){re.escape(INVOKE_CLOSE)}', re.S)
+# An invoke: the name, any further attributes (the slip that writes the argument there), then
+# either `/>` or a body up to the closer.
+_INVOKE_RE = re.compile(rf'{re.escape(INVOKE_OPEN)}\s+name="([^"]*)"((?:\s+[\w-]+="[^"]*")*)\s*'
+                        rf'(?:/>|>(.*?){re.escape(INVOKE_CLOSE)})', re.S)
+_ATTRIBUTE_RE = re.compile(r'([\w-]+)="([^"]*)"')
 _PARAMETER_RE = re.compile(rf'{re.escape(PARAMETER_OPEN)}\s+name="([^"]*)"(?:\s+string="(true|false)")?\s*>'
                            rf'(.*?){re.escape(PARAMETER_CLOSE)}', re.S)
 _INVOKE_NAME_RE = re.compile(rf'{re.escape(INVOKE_OPEN)}\s+name="([^"]*)"')
@@ -146,21 +162,49 @@ class DsmlFormat(NamedParameterFormat):
 
     # --- parsing ---------------------------------------------------------------------------
 
+    def _span(self, buffer: str, at: int = 0, closed_only: bool = False) -> tuple[int, int, int, int] | None:
+        """`(start, end, body start, body end)` of the first block from `at`: `end` is where
+        the text after the block begins. A block the model never closed ends at the next
+        opener or the end of the text, and counts only when its body holds a complete invoke
+        — unless `closed_only` (the stream may still grow). None when no block is complete."""
+        start = buffer.find(OPEN, at)
+        if start < 0:
+            return None
+        body = start + len(OPEN)
+        close = buffer.find(CLOSE, body)
+        if close >= 0:
+            return start, close + len(CLOSE), body, close
+        if closed_only:
+            return None
+        end = buffer.find(OPEN, body)
+        end = len(buffer) if end < 0 else end
+        if not _INVOKE_RE.search(buffer, body, end):
+            return None
+        trace(f"dsml format: a calls block without its closer, read up to {'the next opener' if end < len(buffer) else 'the end'}")
+        return start, end, body, end
+
+    def complete(self, buffer: str, streaming: bool = False) -> bool:
+        return self._span(buffer, closed_only=streaming) is not None
+
+    def call_end(self, buffer: str) -> int:
+        span = self._span(buffer)
+        return span[1] if span else -1
+
     def extract(self, buffer: str) -> tuple[tuple[str, list[str], str] | None, str | None]:
-        start = buffer.find(OPEN)
-        end = buffer.find(CLOSE, start) if start >= 0 else -1
-        if end < 0:
+        span = self._span(buffer)
+        if span is None:
             return None, None
-        invokes = self._invokes(buffer[start + len(OPEN):end])
+        start, end, body, body_end = span
+        invokes = self._invokes(buffer[body:body_end])
         if not invokes:
             trace(f"dsml format: a calls block without an invoke, dropped: {buffer[start:end]!r}")
-            return None, buffer[end + len(CLOSE):]
+            return None, buffer[end:]
         name, arguments = invokes[0]
         params = self._positional(name, self._values(name, arguments))
         # The further invokes of the block go back as blocks of their own, so the processor
         # reads them one by one from the rest.
         rest = "\n".join(render_call(n, self._renderable(n, a)) for n, a in invokes[1:])
-        return (name, params, ", ".join(params)), rest + buffer[end + len(CLOSE):]
+        return (name, params, ", ".join(params)), rest + buffer[end:]
 
     def unterminated(self, buffer: str) -> str | None:
         stripped = buffer.strip()
@@ -170,21 +214,38 @@ class DsmlFormat(NamedParameterFormat):
         return match.group(1).lower() if match else None
 
     def extract_all(self, text: str) -> list[tuple[str, list[str]]]:
+        return [(name, self._positional(name, self._values(name, arguments)))
+                for _, _, invokes in self._blocks(text) for name, arguments in invokes]
+
+    def blocks(self, text: str) -> list[tuple[int, int, list[tuple[str, list[tuple[str, str]]]]]]:
+        """Every block of the text in order as `(start, end, invokes)` — the invokes as
+        `(name, [(parameter, value)])` with the parameter names as the model wrote them and
+        each value as the positional text, so a caller may render the call in another syntax."""
+        return [(start, end, [(name, self._values(name, arguments)) for name, arguments in invokes])
+                for start, end, invokes in self._blocks(text)]
+
+    def _blocks(self, text: str) -> list[tuple[int, int, list[tuple[str, list[tuple[str, str, bool]]]]]]:
         found = []
         at = 0
-        while (start := text.find(OPEN, at)) >= 0 and (end := text.find(CLOSE, start)) >= 0:
-            for name, arguments in self._invokes(text[start + len(OPEN):end]):
-                found.append((name, self._positional(name, self._values(name, arguments))))
-            at = end + len(CLOSE)
+        while span := self._span(text, at):
+            start, end, body, body_end = span
+            found.append((start, end, self._invokes(text[body:body_end])))
+            at = end
         return found
 
     @staticmethod
     def _invokes(block: str) -> list[tuple[str, list[tuple[str, str, bool]]]]:
         """The `(name, [(parameter, value as written, is string)])` of every invoke in a
-        block, in order; `string="false"` is the one spelling that makes a value JSON."""
-        return [(m.group(1).lower(), [(p.group(1), p.group(3), p.group(2) != "false")
-                                      for p in _PARAMETER_RE.finditer(m.group(2))])
-                for m in _INVOKE_RE.finditer(block)]
+        block, in order; `string="false"` is the one spelling that makes a value JSON. An
+        attribute after the name is a string parameter the model wrote in the tag."""
+        found = []
+        for m in _INVOKE_RE.finditer(block):
+            arguments = [(key, value, True) for key, value in _ATTRIBUTE_RE.findall(m.group(2))]
+            if arguments:
+                trace(f"dsml format: {m.group(1)} has {len(arguments)} parameter(s) written as attributes of the invoke tag")
+            arguments += [(p.group(1), p.group(3), p.group(2) != "false") for p in _PARAMETER_RE.finditer(m.group(3) or "")]
+            found.append((m.group(1).lower(), arguments))
+        return found
 
     @staticmethod
     def _values(name: str, arguments: list[tuple[str, str, bool]]) -> list[tuple[str, str]]:
