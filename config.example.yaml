@@ -383,6 +383,10 @@ local_backend: none
 #                                  # defaults to the base_url host. Optional.
 #  background_idle_seconds: 20     # Photo indexing on ds4 runs only after this much quiet since the last
 #                                  # chat request; a user request arriving mid-image aborts the image
+#  kv_disk_dir: ~/.ds4/server-kv   # The server's --kv-disk-dir, when the server runs on this machine: an entry
+#  kv_disk_max_age_hours: 24       # nothing has used for this long is deleted (checked hourly), since the server
+#                                  # itself evicts by hits, never by age, and a full cache evicts the fresh
+#                                  # entries first. 0 turns the sweep off.
 
 # Where the //FP and //TP debug commands collect the latest conversations' audio as labelled
 # false/true wake-word positives. Optional — defaults to cache/stt_samples/{false-positive,en}.

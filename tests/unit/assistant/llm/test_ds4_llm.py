@@ -9,6 +9,7 @@ from assistant.commands.formats.CommandFormats import CommandFormats
 from assistant.commands.formats.DsmlFormat import DsmlFormat, OPEN
 from assistant.commands.formats.KeepFormat import KeepFormat
 from assistant.llm import create_llm, local_only_class, parse_llm_config, tier_api_key_name
+from assistant.llm.Ds4DiskCacheSweeper import Ds4DiskCacheSweeper
 from assistant.llm.Ds4LLM import Ds4LLM, Ds4LogFormat
 from assistant.llm.AbstractLLM import Thinking
 from assistant.llm.Ds4Replay import ReplayStore
@@ -64,7 +65,7 @@ def _dsml_active_and_a_memory_store():
     CommandFormats.set_active(DsmlFormat)
     Ds4LLM._replay_store = ReplayStore(None)
     saved_log, saved_tps = Ds4LLM._prefill.log, Ds4LLM._prefill.tps
-    with patch.object(LogSource, 'size', return_value=None):
+    with patch.object(LogSource, 'size', return_value=None), patch.object(Ds4DiskCacheSweeper, 'start_once'):
         yield
     CommandFormats.reset()
     Ds4LLM._replay_store = None

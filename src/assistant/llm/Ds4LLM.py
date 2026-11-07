@@ -65,7 +65,10 @@ each, since the effort changes how the history renders — filled 16 GB in ~60 s
 launcher's 64 GB holds ~250. The two fixes are complementary, not alternatives: the replay keeps
 the live context through a run of rounds, the disk cache brings a turn after another prompt
 back — a new user turn after an unrelated request restored all but 44 tokens of a 19k-token
-history (2026-10-22, the cache freshly emptied).
+history (2026-10-22, the cache freshly emptied). The server's eviction knows no age, so a
+checkpoint nothing uses again stays until the budget is full and then outlives every fresh one
+(`Ds4DiskCacheSweeper` has the numbers): the first client of the process starts the hourly
+sweep that removes the entries unused for `ds4.kv_disk_max_age_hours`.
 
 Background work (photo indexing, `background=True`): the server serves one request at a time,
 so an image call goes through the single-slot gate every Ds4LLM shares (`BackgroundSlot`,
@@ -100,6 +103,7 @@ from openai import OpenAI
 from .AbstractLLM import LLMPreempted, Thinking
 from .BackgroundSlot import BackgroundSlot
 from .ChatGPTLLM import ChatGPTLLM
+from .Ds4DiskCacheSweeper import Ds4DiskCacheSweeper
 from .Ds4Replay import ReplayStore, replay
 from .PrefillTracker import LogFormat, PrefillTracker, is_local_host, parse_last
 from assistant.commands.formats import DsmlFormat as dsml
@@ -206,6 +210,7 @@ class Ds4LLM(ChatGPTLLM):
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url,
                              timeout=httpx.Timeout(None, connect=self.CONNECT_TIMEOUT_S))
         trace(f"ds4 client: no read timeout, {self.CONNECT_TIMEOUT_S:.0f} s to connect")
+        Ds4DiskCacheSweeper.start_once(server_is_local=is_local_host(urlparse(self.base_url).hostname))
 
     def _note_stop(self, finish_reason: str | None):
         """Keep the reply's stop reason where `last_stop_reason` reads it, in Anthropic's spelling
