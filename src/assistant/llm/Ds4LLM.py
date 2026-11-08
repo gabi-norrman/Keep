@@ -70,6 +70,18 @@ checkpoint nothing uses again stays until the budget is full and then outlives e
 (`Ds4DiskCacheSweeper` has the numbers): the first client of the process starts the hourly
 sweep that removes the entries unused for `ds4.kv_disk_max_age_hours`.
 
+The third piece is the pre-heat (`pre_heat_cache`, fired by `PromptManager` through the launcher's
+callback whenever the byte prefix of the next request changes — a prompt rebuild, a section note,
+a finished turn): a streamed one-token request carrying the new prefix at the chat tier's effort,
+so the server prefills it while it is idle and the next user turn finds it as the live context
+and prefills its own tail alone. A user turn arriving meanwhile queues behind it at the server
+(one slot, FIFO) and continues from the checkpoint the pre-heat has built so far — the server
+advances its live checkpoint at every prefill chunk, so nothing is redone — which is why the
+pre-heat is never killed but gated as interactive, like Ollama's. It streams because during a
+prefill the server writes a client nothing but the SSE keepalive, and a failed keepalive write is
+the only way it notices a client that went away. One pre-heat at a time: a prompt arriving while
+one runs waits as the pending one, the latest only, and goes out when the running one ends.
+
 Background work (photo indexing, `background=True`): the server serves one request at a time,
 so an image call goes through the single-slot gate every Ds4LLM shares (`BackgroundSlot`,
 Ollama's): it waits until nothing interactive is in flight and the server has been idle
@@ -179,6 +191,11 @@ class Ds4LLM(ChatGPTLLM):
     # ds4-server's spellings, lowest first; "minimal" is the smallest non-zero level, "none" alone disables reasoning.
     REASONING_EFFORTS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
     _slot = BackgroundSlot("ds4")
+    # The pre-heat guard, shared by the tiers' instances like the slot (module docstring).
+    _pre_heat_lock = threading.Lock()
+    _pre_heat_in_flight = False
+    _pre_heat_pending: list[dict] | None = None
+    PRE_HEAT_MAX_TOKENS = 1
     _logged_configs: set[tuple[str, str]] = set()
     _replay_store: ReplayStore | None = None
     CONNECT_TIMEOUT_S = 5.0
@@ -312,6 +329,79 @@ class Ds4LLM(ChatGPTLLM):
         if cls._replay_store is None:
             cls._replay_store = ReplayStore()
         return cls._replay_store
+
+    def pre_heat_cache(self, messages: list[dict]):
+        """Prefill the prompt's new prefix in the background so the next turn finds it live
+        (module docstring). At most one in flight; a prompt arriving meanwhile replaces the
+        pending one and goes out when the running pre-heat ends."""
+        with Ds4LLM._pre_heat_lock:
+            if Ds4LLM._pre_heat_in_flight:
+                Ds4LLM._pre_heat_pending = messages
+                trace("ds4 pre-heat deferred: one is in flight — this prompt goes out when it ends")
+                return
+            Ds4LLM._pre_heat_in_flight = True
+        self._fire_pre_heat(messages)
+
+    def _fire_pre_heat(self, messages: list[dict]):
+        threading.Thread(target=self._run_pre_heat, args=(messages,), name="Ds4PreHeat", daemon=True).start()
+
+    def _run_pre_heat(self, messages: list[dict]):
+        try:
+            self._pre_heat(messages)
+        except Exception as e:
+            trace(f"ds4 pre-heat failed (non-critical): {e}")
+        finally:
+            self._finish_pre_heat()
+
+    def _finish_pre_heat(self):
+        """Release the guard, or hand it straight to the prompt deferred meanwhile."""
+        with Ds4LLM._pre_heat_lock:
+            pending, Ds4LLM._pre_heat_pending = Ds4LLM._pre_heat_pending, None
+            if pending is None:
+                Ds4LLM._pre_heat_in_flight = False
+        if pending is not None:
+            info("ds4 pre-heat: sending the prompt deferred meanwhile")
+            self._fire_pre_heat(pending)
+
+    def _pre_heat(self, messages: list[dict]):
+        """The request: the resolved messages as a real turn sends them (replayed assistant rows,
+        the chat tier's effort, no tool), streamed, one output token. The reply is dropped — it is
+        no turn, so neither the replay store nor the cache report sees it. Gated as interactive so
+        a photo-indexing request waits, and shown as background on the prefill bar."""
+        if self.client is None:
+            self.initialize()
+        if not any(m.get('role') == 'user' for m in messages):
+            # A prompt with no user turn yet: the stub stands after the shared system prefix,
+            # which is what the pre-heat is for; the real query displaces it at the tail.
+            messages = messages + [{'role': 'user', 'content': ' '}]
+        kwargs = self._request_kwargs(messages, Thinking.NORMAL, stream=True)
+        kwargs['max_tokens'] = self.PRE_HEAT_MAX_TOKENS
+        info(f"ds4 pre-heat: prefilling the prompt's new prefix ({len(messages)} messages, "
+             f"effort {kwargs['extra_body']['reasoning_effort']})...")
+        started = time.monotonic()
+        Ds4LLM._slot.interactive_begin()
+        token = self._prefill.begin(interactive=False)
+        try:
+            usage = None
+            for chunk in self.client.chat.completions.create(**kwargs):
+                if getattr(chunk, 'usage', None) is not None:
+                    usage = chunk.usage
+            # Read before `end` drops the request from the tracker.
+            seconds = self._prefill.prefill_seconds(token) if usage is not None else None
+        finally:
+            self._prefill.end(token)
+            Ds4LLM._slot.interactive_end()
+        elapsed = time.monotonic() - started
+        if usage is None:
+            info(f"ds4 pre-heat complete in {elapsed:.1f} s (the server reported no usage)")
+            return
+        details = getattr(usage, 'prompt_tokens_details', None)
+        cached = getattr(details, 'cached_tokens', None) if details is not None else None
+        prefilled = usage.prompt_tokens - (cached or 0)
+        info(f"ds4 pre-heat complete: {usage.prompt_tokens} tokens, {cached if cached is not None else '?'} cached, "
+             f"{prefilled} prefilled in {elapsed:.1f} s")
+        if seconds:
+            self._prefill.observe_rate(prefilled, seconds)
 
     def _request_kwargs(self, messages: list[dict], thinking: Thinking | bool, stream: bool) -> dict:
         messages = replay(self._convert_anthropic_content(messages), self.replay_store())

@@ -607,3 +607,114 @@ class TestCacheReportNote:
                 llm._report_cache([{'role': 'user', 'content': 'hi'}], 0, 10, effort)
         assert [note is None for note in notes] == [True, True, False, True]
         assert "medium" in notes[2] and "high" in notes[2]
+
+
+class _InlineThread:
+    """`threading.Thread` run on `start()`: a pre-heat completes inside the test."""
+
+    def __init__(self, target=None, args=(), **_):
+        self._target, self._args = target, args
+
+    def start(self):
+        self._target(*self._args)
+
+
+def _usage(prompt_tokens: int, cached: int | None):
+    details = SimpleNamespace(cached_tokens=cached) if cached is not None else None
+    return SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=1, prompt_tokens_details=details)
+
+
+SYSTEM_AND_TURN = [{'role': 'system', 'content': 'sys'},
+                   {'role': 'user', 'content': 'hello'},
+                   {'role': 'assistant', 'content': 'hi there'}]
+
+
+@pytest.mark.unit
+class TestPreHeat:
+    """The pre-heat: the prompt's new prefix prefilled in the background, as a real turn would
+    send it, one in flight at a time (module docstring)."""
+
+    @pytest.fixture(autouse=True)
+    def _inline_threads_and_a_clean_guard(self):
+        Ds4LLM._slot.reset()
+        Ds4LLM._pre_heat_in_flight, Ds4LLM._pre_heat_pending = False, None
+        with patch('assistant.llm.Ds4LLM.threading.Thread', _InlineThread):
+            yield
+        Ds4LLM._pre_heat_in_flight, Ds4LLM._pre_heat_pending = False, None
+        Ds4LLM._slot.reset()
+
+    def _pre_heat(self, llm, messages):
+        p1, p2 = _config({'ds4.reasoning_effort': 'medium'})
+        with p1, p2:
+            llm.pre_heat_cache(messages)
+
+    def test_the_request_is_streamed_at_the_chat_effort_for_one_token_and_no_tool(self):
+        llm, create = _llm_with_stream([_chunk(content="", usage=_usage(300, 200))])
+        self._pre_heat(llm, SYSTEM_AND_TURN)
+        kwargs = create.call_args.kwargs
+        assert kwargs['stream'] is True and kwargs['stream_options'] == {'include_usage': True}
+        assert kwargs['max_tokens'] == 1
+        assert kwargs['extra_body']['reasoning_effort'] == 'medium'
+        assert 'tools' not in kwargs
+        assert [m['role'] for m in kwargs['messages']] == ['system', 'user', 'assistant']
+
+    def test_a_prompt_without_a_user_turn_gets_a_stub_after_the_system_prefix(self):
+        llm, create = _llm_with_stream([_chunk(content="")])
+        self._pre_heat(llm, [{'role': 'system', 'content': 'sys'}])
+        roles = [m['role'] for m in create.call_args.kwargs['messages']]
+        assert roles == ['system', 'user']
+
+    def test_the_reply_is_no_turn_for_the_replay_store_or_the_cache_report(self):
+        llm, _ = _llm_with_stream([_chunk(content="ok", usage=_usage(300, 200))])
+        with patch.object(llm, 'report_cache_usage') as report, patch.object(llm, 'record_cache_hit') as hit:
+            self._pre_heat(llm, SYSTEM_AND_TURN)
+        assert Ds4LLM._replay_store.turns == {}
+        report.assert_not_called()
+        hit.assert_not_called()
+
+    def test_the_slot_is_held_as_interactive_during_the_request_and_released_after(self):
+        seen = []
+        llm, create = _llm_with_stream([])
+        create.side_effect = lambda **kw: seen.append(Ds4LLM._slot.interactive_active) or iter([_chunk(content="")])
+        self._pre_heat(llm, SYSTEM_AND_TURN)
+        assert seen == [1]
+        assert Ds4LLM._slot.interactive_active == 0
+        assert Ds4LLM._prefill._requests == []
+
+    def test_a_prompt_arriving_mid_pre_heat_waits_and_goes_out_after_the_latest_only(self):
+        llm, create = _llm_with_stream([])
+        later = [SYSTEM_AND_TURN + [{'role': 'user', 'content': 'again'}],
+                 SYSTEM_AND_TURN + [{'role': 'user', 'content': 'newest'}]]
+
+        def first_request(**kw):
+            for messages in later:
+                llm.pre_heat_cache(messages)
+            create.side_effect = lambda **kw: iter([_chunk(content="")])
+            return iter([_chunk(content="")])
+        create.side_effect = first_request
+        self._pre_heat(llm, SYSTEM_AND_TURN)
+        sent = [call.kwargs['messages'][-1]['content'] for call in create.call_args_list]
+        assert sent == ['hi there', 'newest']
+        assert Ds4LLM._pre_heat_in_flight is False and Ds4LLM._pre_heat_pending is None
+
+    def test_a_failed_request_releases_the_guard_and_the_slot(self):
+        llm, create = _llm_with_stream([])
+        create.side_effect = RuntimeError("connection refused")
+        self._pre_heat(llm, SYSTEM_AND_TURN)
+        assert Ds4LLM._pre_heat_in_flight is False
+        assert Ds4LLM._slot.interactive_active == 0
+        create.side_effect = lambda **kw: iter([_chunk(content="")])
+        self._pre_heat(llm, SYSTEM_AND_TURN)
+        assert create.call_count == 2
+
+    def test_an_uninitialized_client_is_initialized_first(self):
+        p1, p2 = _config({})
+        with p1, p2:
+            llm = Ds4LLM()
+        assert llm.client is None
+        client = MagicMock()
+        client.chat.completions.create.return_value = iter([_chunk(content="")])
+        with patch.object(llm, 'initialize', side_effect=lambda: setattr(llm, 'client', client)) as init:
+            self._pre_heat(llm, SYSTEM_AND_TURN)
+        init.assert_called_once()
+        client.chat.completions.create.assert_called_once()
