@@ -5,7 +5,9 @@ current, so `snapshot()` is a read from memory; the registries (areas, entities,
 the Assist exposure list come over the same socket and are refreshed on a registry event or
 after REGISTRY_TTL; the commands are `call_service` through a domain → service table; the
 health check is a `ping`. The event handler also queues the changes the dialog wants to know
-about (HomeAssistantModel.feed_entry) for `fetch`. An entity going `unavailable` is not queued
+about (HomeAssistantModel.feed_entry; the domains of `feed_domains`, by default the automations,
+scenes, scripts and persons, so the feed reads like Indigo's narrated log) for `fetch`. An entity
+going `unavailable` is not queued
 but held (`_Outage`): the snapshot keeps its last available state and `fetch` writes one row
 per device once the hold (UNAVAILABLE_HOLD_S) has run out; a recovery inside the hold is
 silent, worded only as the real change from the pre-outage state. `unknown` is held the same
@@ -28,8 +30,8 @@ from .EntityRules import EXCLUDE, INCLUDE, EntityRules, RuleError
 from .HomeAssistantClient import HAError, HomeAssistantClient, NotConnected
 from .HomeAssistantModel import (
     ACTION_DOMAINS, ASSISTANT, LIGHT_DOMAINS, UNAVAILABLE_HOLD_S, NameIndex, Registries, Unresolved, bridges_unknown,
-    build, domain_of, drop_reason, feed_entry, friendly_name, is_unavailable, is_unknown, outage_row, recovery_row,
-    state_time, tracks_availability)
+    build, domain_of, drop_reason, feed_domains, feed_entry, friendly_name, is_unavailable, is_unknown, outage_row,
+    recovery_row, state_time, tracks_availability)
 from assistant.integration.HomeAutomation import HomeAutomation, HomeSnapshot
 from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
 from assistant.integration.Integration import Integration
@@ -97,6 +99,8 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         self._users: dict[str, str] = {}
         self._live: "queue.Queue[FeedEntry]" = queue.Queue()
         self._outages: dict[str, _Outage] = {}          # entity_id → its current outage
+        self._feed_domains: tuple[str, ...] = ()
+        self._feed_domains_raw: object = ...            # the config value the tuple was parsed from
         self._known: dict[str, dict] = {}               # entity_id now `unknown` → its last known state
         self._recovered: list[tuple[str, float, Optional[float]]] = []   # (entity_id, when, outage since) awaiting a row
 
@@ -129,6 +133,18 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
     @property
     def exposed_only(self) -> bool:
         return bool(config.get("home_assistant.exposed_only", True))
+
+    @property
+    def feed_domains(self) -> tuple[str, ...]:
+        """`home_assistant.feed_domains` parsed (HomeAssistantModel.feed_domains), once per value
+        of the key — it is asked per event and the parse logs what it leaves out."""
+        raw = config.get("home_assistant.feed_domains", None)
+        if raw != self._feed_domains_raw:
+            self._feed_domains_raw = raw
+            self._feed_domains = feed_domains(raw)
+            info(f"Home Assistant: the feed follows {', '.join(self._feed_domains) or 'no domain'}"
+                 f"{'' if raw is not None else ' (the default)'}")
+        return self._feed_domains
 
     def check_health(self) -> bool:
         client = self.client()
@@ -264,7 +280,7 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
             old = self._outage_ended(entity_id, new)
             if old is None:
                 return
-        if old is not None and new is not None and bridges_unknown(entity_id, index):
+        if old is not None and new is not None and bridges_unknown(entity_id, index, self.feed_domains):
             if is_unknown(new) and not is_unknown(old):
                 with self._lock:
                     self._known[entity_id] = old
@@ -278,7 +294,7 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         context = (new or {}).get("context") or {}
         if context.get("user_id"):
             user = self._users.get(context["user_id"])
-        entry = feed_entry(old, new, index, user, registry_entry)
+        entry = feed_entry(old, new, index, user, registry_entry, self.feed_domains)
         if entry is not None:
             trace(f"Home Assistant event: {entry.content}")
             self._live.put(entry)
@@ -307,7 +323,7 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         return before
 
     def _outage_began(self, entity_id: str, before: dict, new: dict, index: NameIndex, registry_entry: Optional[dict]):
-        if not tracks_availability(entity_id, index, registry_entry):
+        if not tracks_availability(entity_id, index, registry_entry, self.feed_domains):
             trace(f"Home Assistant: {entity_id} unavailable — not an entity whose availability the feed follows")
             return
         with self._lock:

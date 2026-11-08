@@ -4,10 +4,12 @@ summary: "which Home Assistant entities you see: leave noisy ones out of the hou
 commands: [exclude_entities, include_entities, clear_entity_rule, entity_rules]
 ---
 ### What you see of Home Assistant
-The house data and the event feed hold the entities Home Assistant exposes to Assist (or, when `exposed_only` is
-off in config.yaml, every entity of a listed domain), never one Home Assistant hides or disables. On top of that
-come the owner's rules, which you keep: an exclude rule leaves the matching entities out of the house data, the
-event feed and the commands; an include rule keeps them in whatever Home Assistant hides and whatever
+The house data holds the entities Home Assistant exposes to Assist (or, when `exposed_only` is off in
+config.yaml, every entity of a listed domain), never one Home Assistant hides or disables. The event feed is
+narrower: of those entities only the domains `feed_domains` in config.yaml names make events — unset, the
+automations, scenes, scripts and persons, so a lamp switched by hand is in the house data but no event. On top
+of that come the owner's rules, which you keep: an exclude rule leaves the matching entities out of the house
+data, the event feed and the commands; an include rule keeps them in whatever Home Assistant hides and whatever
 `exposed_only` says. An include rule wins over an exclude rule. Home Assistant itself is never changed — an entity
 the owner wants recorded there stays enabled, Keep just stops reading it.
 

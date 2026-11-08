@@ -12,11 +12,15 @@ import requests
 from integrations.home_assistant.EntityRules import EntityRules
 from integrations.home_assistant.HomeAssistantClient import HAError, NotConnected
 from integrations.home_assistant.HomeAssistantIntegration import HomeAssistantIntegration, ERROR_LOG_LINES, REGISTRY_EVENTS, REGISTRY_TTL
+from integrations.home_assistant.HomeAssistantModel import SECTION_OF, TICKING_DOMAINS
 from assistant.integration.HomeAutomation import render
 
 MODULE = "integrations.home_assistant.HomeAssistantIntegration"
 DATA = Path(__file__).parents[2] / "data" / "home" / "ha"
 CONFIG = {"home_assistant.url": "http://ha.local:8123/", "home_assistant.token": "tok", "home_assistant.exposed_only": True}
+# Every domain the feed can follow — the scenarios below are about lamps, covers and doors, which the default
+# `feed_domains` (the house's doings and its people) leaves out.
+FED = [d for d in SECTION_OF if d not in TICKING_DOMAINS]
 
 
 class FakeClient:
@@ -285,7 +289,8 @@ class TestRules:
         assert integration._dirty is False
         assert integration.fetch(None, backfill=False).entries == []
 
-    def test_an_include_rule_shows_a_hidden_entity_and_its_changes(self, integration, fake):
+    def test_an_include_rule_shows_a_hidden_entity_and_its_changes(self, integration, fake, cfg):
+        cfg["home_assistant.feed_domains"] = FED
         integration.snapshot()
         reply = integration.include("binary_sensor.hidden_motion")
         assert "1 entity" in reply
@@ -473,7 +478,8 @@ class TestHealthAndErrorLog:
 
 @pytest.mark.unit
 class TestFeed:
-    def test_open_starts_the_client_and_fetch_drains_the_queue(self, integration, fake):
+    def test_open_starts_the_client_and_fetch_drains_the_queue(self, integration, fake, cfg):
+        cfg["home_assistant.feed_domains"] = FED
         assert integration.open_feed() is True
         assert fake.started == 1
         assert integration.fetch(None, backfill=False).entries == []
@@ -488,13 +494,15 @@ class TestFeed:
         assert batch.cursor is None and batch.exhausted
         assert integration.fetch(None, backfill=False).entries == []
 
-    def test_an_unknown_user_id_names_nobody(self, integration, fake):
+    def test_an_unknown_user_id_names_nobody(self, integration, fake, cfg):
+        cfg["home_assistant.feed_domains"] = FED
         integration.snapshot()
         fake.push("state_changed", {"entity_id": "light.hall", "old_state": state("light.hall", "off"),
                                     "new_state": state("light.hall", "on", user_id="ghost")})
         assert integration.fetch(None, backfill=False).entries[0].content == "Hall light [Hall] turned on"
 
-    def test_events_before_the_first_snapshot_use_the_friendly_name(self, integration, fake):
+    def test_events_before_the_first_snapshot_use_the_friendly_name(self, integration, fake, cfg):
+        cfg["home_assistant.feed_domains"] = FED
         integration.client()
         fake.push("state_changed", {"entity_id": "light.hall", "old_state": state("light.hall", "off"),
                                     "new_state": state("light.hall", "on", friendly_name="Hall light")})
@@ -506,6 +514,31 @@ class TestFeed:
         fake.push("state_changed", {"entity_id": "light.hall"})
         assert integration.fetch(None, backfill=False).entries == []
         assert isinstance(integration._live, queue.Queue)
+
+    def test_without_the_key_the_feed_tells_what_the_house_did_not_which_lamp_went_on(self, integration, fake, cfg):
+        """`feed_domains` unset reads like Indigo's narrated log: an automation triggered is a
+        row, a lamp switched by hand is in the house data but no row."""
+        assert "home_assistant.feed_domains" not in cfg
+        integration.snapshot()
+        fake.push("state_changed", {"entity_id": "light.hall", "old_state": state("light.hall", "off"),
+                                    "new_state": state("light.hall", "on", user_id="u1")})
+        fake.push("state_changed", {"entity_id": "automation.sunset_lights",
+                                    "old_state": state("automation.sunset_lights", "on", last_triggered="2026-09-14T18:45:00+00:00"),
+                                    "new_state": state("automation.sunset_lights", "on", last_triggered="2026-09-15T18:45:00+00:00")})
+        assert [e.content for e in integration.fetch(None, backfill=False).entries] == ["Sunset lights [automation] triggered"]
+        assert integration.snapshot().lights, "the lamp is still house data"
+
+    def test_a_changed_key_is_read_again_without_a_restart(self, integration, fake, cfg):
+        integration.snapshot()
+        lamp = {"entity_id": "light.hall", "old_state": state("light.hall", "off"), "new_state": state("light.hall", "on")}
+        fake.push("state_changed", lamp)
+        assert integration.fetch(None, backfill=False).entries == []
+        cfg["home_assistant.feed_domains"] = ["light"]
+        fake.push("state_changed", lamp)
+        assert [e.content for e in integration.fetch(None, backfill=False).entries] == ["Hall light [Hall] turned on"]
+        cfg["home_assistant.feed_domains"] = []
+        fake.push("state_changed", lamp)
+        assert integration.fetch(None, backfill=False).entries == [], "an empty list is a silent feed"
 
 
 T0 = 1789466400.0       # 2026-09-15T10:00:00+00:00, the fixture's clock
@@ -533,6 +566,10 @@ class TestAvailabilityHold:
     is nothing at all (plans/PROMPT_CHURN_PLAN.md, phase 3)."""
 
     HUB = ("light.hall", "light.kitchen_spots", "cover.blinds")
+
+    @pytest.fixture(autouse=True)
+    def lamps_fed(self, cfg):
+        cfg["home_assistant.feed_domains"] = FED
 
     @pytest.fixture
     def hub(self, integration, fake):
@@ -673,6 +710,10 @@ class TestUnknownGap:
 
     PEOPLE = {"person.marcus": "home", "person.charlotte": "home", "person.frances": "not_home",
               "person.ingeborg": "not_home"}
+
+    @pytest.fixture(autouse=True)
+    def doors_fed(self, cfg):
+        cfg["home_assistant.feed_domains"] = FED
 
     @pytest.fixture
     def household(self, integration, fake, cfg):

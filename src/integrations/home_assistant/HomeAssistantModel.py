@@ -12,7 +12,10 @@ words what follows it either; the integration compares it with the last known st
 `drop_reason` is the one gate on what the house data holds — the domain, the owner's rules
 (EntityRules), the registry's hidden and disabled flags, then Assist's exposure when
 `exposed_only` — and the integration asks it per event, so a tick of an entity the data never
-shows costs no rebuild."""
+shows costs no rebuild. The feed is narrower than the house data: `feeds_changes` wants an
+entity of a domain in `feed_domains` (the `home_assistant.feed_domains` key; by default the
+automations, scenes, scripts and persons — what a narrating automation log like Indigo's
+tells, not every lamp a hand switches), in the snapshot once there is one."""
 import difflib
 import re
 from dataclasses import dataclass, field
@@ -22,7 +25,7 @@ from typing import Optional
 from .EntityRules import EXCLUDE, INCLUDE, EntityRules
 from assistant.integration.HomeAutomation import Entity, HomeAutomation, HomeSnapshot
 from assistant.integration.Feed import FeedEntry
-from common.logging import trace
+from common.logging import info, trace
 
 LIGHT_DOMAINS = ("light", "switch", "fan", "cover", "lock")
 SENSOR_DOMAINS = ("sensor", "binary_sensor", "climate", "media_player", "weather")
@@ -30,6 +33,14 @@ VARIABLE_DOMAINS = ("input_boolean", "input_number", "input_select", "input_text
 ACTION_DOMAINS = ("scene", "script", "automation", "button", "input_button")
 SECTION_OF = {**{d: "lights" for d in LIGHT_DOMAINS}, **{d: "sensors" for d in SENSOR_DOMAINS},
               **{d: "variables" for d in VARIABLE_DOMAINS}, **{d: "actions" for d in ACTION_DOMAINS}}
+
+# The domains whose state changes are feed rows unless `home_assistant.feed_domains` says
+# otherwise: the house's own doings (an automation triggered, a scene activated, a script run)
+# and who came and went — the content of a narrated automation log. A lamp or a door sensor is
+# in the house data but makes no row until its domain is listed. The ticking domains are never
+# fed, listed or not: a sensor's every reading would be a row.
+DEFAULT_FEED_DOMAINS = ("automation", "scene", "script", "person")
+TICKING_DOMAINS = ("sensor", "climate", "media_player", "weather")
 
 # The voice assistant whose exposure list we read: Assist, the one HA's own LLM agents use.
 ASSISTANT = "conversation"
@@ -371,27 +382,54 @@ def is_unknown(state: Optional[dict]) -> bool:
     return state is not None and str(state.get("state")) == "unknown"
 
 
-def bridges_unknown(entity_id: str, index: NameIndex) -> bool:
+def feed_domains(configured) -> tuple[str, ...]:
+    """The domains the feed follows, from the `home_assistant.feed_domains` value: unset is
+    DEFAULT_FEED_DOMAINS, a list is taken as given minus what can never be fed — a ticking
+    domain or a name that is no listed domain at all — each of those logged and left out. An
+    empty list is a silent feed."""
+    if configured is None:
+        return DEFAULT_FEED_DOMAINS
+    if isinstance(configured, str):
+        configured = [configured]
+    kept, ignored = [], []
+    for name in configured:
+        domain = str(name).strip().lower()
+        if domain in SECTION_OF and domain not in TICKING_DOMAINS:
+            if domain not in kept:
+                kept.append(domain)
+        else:
+            ignored.append(domain)
+    if ignored:
+        info(f"Home Assistant: feed_domains names {', '.join(ignored)} — not a domain the feed can follow "
+             f"(a ticking sensor is never a row; the domains are {', '.join(d for d in SECTION_OF if d not in TICKING_DOMAINS)}), "
+             f"left out")
+    if not kept:
+        info("Home Assistant: feed_domains is empty — the feed stores nothing, the house data stays")
+    return tuple(kept)
+
+
+def bridges_unknown(entity_id: str, index: NameIndex, domains: tuple[str, ...] = DEFAULT_FEED_DOMAINS) -> bool:
     """Whether `unknown` is a gap in what is known about the entity rather than a state of its
     own, so the state after it is compared with the one before: every entity the dialog
     follows but the actions — a scene stands at `unknown` until its first activation, and an
     automation's rows come from `last_triggered`, not its state."""
-    return feeds_changes(entity_id, index) and domain_of(entity_id) not in ACTION_DOMAINS
+    return feeds_changes(entity_id, index, domains) and domain_of(entity_id) not in ACTION_DOMAINS
 
 
-def feeds_changes(entity_id: str, index: NameIndex) -> bool:
-    """Whether the dialog wants this entity's state changes at all: a listed domain that is not
-    a ticking sensor, and in the snapshot once there is one."""
+def feeds_changes(entity_id: str, index: NameIndex, domains: tuple[str, ...] = DEFAULT_FEED_DOMAINS) -> bool:
+    """Whether the dialog wants this entity's state changes at all: a domain in `domains`
+    (feed_domains) that is not a ticking sensor, and in the snapshot once there is one."""
     domain = domain_of(entity_id)
-    if domain in ("sensor", "climate", "media_player", "weather") or domain not in SECTION_OF:
+    if domain in TICKING_DOMAINS or domain not in SECTION_OF or domain not in domains:
         return False
     return not index or entity_id in index
 
 
-def tracks_availability(entity_id: str, index: NameIndex, entry: Optional[dict]) -> bool:
+def tracks_availability(entity_id: str, index: NameIndex, entry: Optional[dict],
+                        domains: tuple[str, ...] = DEFAULT_FEED_DOMAINS) -> bool:
     """Whether an outage of the entity is worth a row once it has lasted: one the dialog follows,
     not a button, not a diagnostic entity."""
-    if not feeds_changes(entity_id, index):
+    if not feeds_changes(entity_id, index, domains):
         return False
     if domain_of(entity_id) in AVAILABILITY_SILENT_DOMAINS:
         return False
@@ -399,23 +437,23 @@ def tracks_availability(entity_id: str, index: NameIndex, entry: Optional[dict])
 
 
 def feed_entry(old: Optional[dict], new: Optional[dict], index: NameIndex, user: Optional[str] = None,
-               entry: Optional[dict] = None) -> Optional[FeedEntry]:
+               entry: Optional[dict] = None, domains: tuple[str, ...] = DEFAULT_FEED_DOMAINS) -> Optional[FeedEntry]:
     """A state change as a history row, or None for one the dialog does not want: attribute-only
-    changes, numeric sensors ticking, entities outside the snapshot's lists, an entity
-    appearing or vanishing, a recovery from `unavailable` or `unknown` (the integration words
+    changes, numeric sensors ticking, a domain outside `domains` (feed_domains), entities outside
+    the snapshot's lists, an entity appearing or vanishing, a recovery from `unavailable` or `unknown` (the integration words
     that against the state before the gap), and `unavailable` itself on a button or a
     diagnostic entity (`entry`, the registry entry, when the caller has it)."""
     if old is None or new is None:
         return None
     entity_id = new["entity_id"]
     domain = domain_of(entity_id)
-    if not feeds_changes(entity_id, index):
+    if not feeds_changes(entity_id, index, domains):
         return None
     if is_unavailable(old):
         return None
-    if is_unknown(old) and bridges_unknown(entity_id, index):
+    if is_unknown(old) and bridges_unknown(entity_id, index, domains):
         return None
-    if is_unavailable(new) and not tracks_availability(entity_id, index, entry):
+    if is_unavailable(new) and not tracks_availability(entity_id, index, entry, domains):
         return None
     verb = _verb(domain, old, new)
     if verb is None:

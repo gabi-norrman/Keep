@@ -9,11 +9,14 @@ import pytest
 from assistant.integration.Feed import FeedEntry
 from integrations.home_assistant.EntityRules import EntityRules
 from integrations.home_assistant.HomeAssistantModel import (
-    NameIndex, Registries, Unresolved, area_of, bridges_unknown, build, drop_reason, feed_entry, format_value,
-    outage_row, recovery_row, should_expose, tracks_availability)
+    DEFAULT_FEED_DOMAINS, SECTION_OF, TICKING_DOMAINS, NameIndex, Registries, Unresolved, area_of, bridges_unknown,
+    build, drop_reason, feed_domains, feed_entry, format_value, outage_row, recovery_row, should_expose,
+    tracks_availability)
 from assistant.integration.HomeAutomation import render
 
 DATA = Path(__file__).parents[2] / "data" / "home" / "ha"
+# Every domain the feed can follow: the wording tests below are about the words, not the gate.
+ALL = tuple(d for d in SECTION_OF if d not in TICKING_DOMAINS)
 
 
 def load_house():
@@ -269,14 +272,14 @@ class TestFeedEntry:
         return build(*house, exposed_only=True)[1]
 
     def test_light_on_with_brightness_and_off(self, index):
-        entry = feed_entry(state("light.hall", "off"), state("light.hall", "on", brightness=128), index)
+        entry = feed_entry(state("light.hall", "off"), state("light.hall", "on", brightness=128), index, domains=ALL)
         assert isinstance(entry, FeedEntry)
         assert entry.content == "Hall light [Hall] turned on 50%"
         assert entry.timestamp == 1789466400.0     # 2026-09-15T10:00:00+00:00
-        assert feed_entry(state("light.hall", "on"), state("light.hall", "off"), index).content == "Hall light [Hall] turned off"
+        assert feed_entry(state("light.hall", "on"), state("light.hall", "off"), index, domains=ALL).content == "Hall light [Hall] turned off"
 
     def test_who_did_it(self, index):
-        entry = feed_entry(state("light.hall", "off"), state("light.hall", "on"), index, user="Marcus")
+        entry = feed_entry(state("light.hall", "off"), state("light.hall", "on"), index, user="Marcus", domains=ALL)
         assert entry.content == "Hall light [Hall] turned on by Marcus"
 
     @pytest.mark.parametrize("old, new, expected", [
@@ -300,7 +303,7 @@ class TestFeedEntry:
     ])
 
     def test_wording(self, index, old, new, expected):
-        assert feed_entry(old, new, index).content == expected
+        assert feed_entry(old, new, index, domains=ALL).content == expected
 
     @pytest.mark.parametrize("old, new, expected", [
         (state("switch.kitchen_spots_plug", "off"), state("switch.kitchen_spots_plug", "on"), "Kitchen spots switch [Kök] turned on"),
@@ -310,7 +313,7 @@ class TestFeedEntry:
         (state("automation.sunset_lights", "off"), state("automation.sunset_lights", "on"), "Sunset lights [automation] enabled"),
     ])
     def test_switch_lock_and_automation_wording(self, index, old, new, expected):
-        assert feed_entry(old, new, index).content == expected
+        assert feed_entry(old, new, index, domains=ALL).content == expected
 
     @pytest.mark.parametrize("old, new", [
         (state("light.hall", "on", brightness=100), state("light.hall", "on", brightness=200)),     # attributes only
@@ -326,50 +329,94 @@ class TestFeedEntry:
         (state("light.hall", "on"), None),                                                        # vanished
     ])
     def test_silence(self, index, old, new):
-        assert feed_entry(old, new, index) is None
+        assert feed_entry(old, new, index, domains=ALL) is None
 
     def test_a_recovery_from_unavailable_is_never_worded_as_an_action(self, index):
         """A hub that drops for half a minute takes every cover behind it through unavailable;
         the covers never moved, so "closed" would be a lie — the integration words a recovery
         against the pre-outage state instead."""
-        assert feed_entry(state("cover.blinds", "unavailable"), state("cover.blinds", "closed"), index) is None
-        assert feed_entry(state("light.hall", "unavailable"), state("light.hall", "on"), index) is None
+        assert feed_entry(state("cover.blinds", "unavailable"), state("cover.blinds", "closed"), index, domains=ALL) is None
+        assert feed_entry(state("light.hall", "unavailable"), state("light.hall", "on"), index, domains=ALL) is None
 
     def test_what_follows_unknown_is_never_worded_as_an_action(self, index):
         """A person whose trackers blip goes home → unknown → home (issue #140); the model
         alone cannot tell that from an arrival, so it leaves the state after `unknown` to the
         integration, which compares it with the last known one. A scene's `unknown` is its
         state until the first activation, so that one is still a row."""
-        assert feed_entry(state("person.marcus", "unknown"), state("person.marcus", "home"), index) is None
-        assert feed_entry(state("person.marcus", "unknown"), state("person.marcus", "not_home"), index) is None
+        assert feed_entry(state("person.marcus", "unknown"), state("person.marcus", "home"), index, domains=ALL) is None
+        assert feed_entry(state("person.marcus", "unknown"), state("person.marcus", "not_home"), index, domains=ALL) is None
         assert feed_entry(state("binary_sensor.front_door", "unknown"),
-                          state("binary_sensor.front_door", "off", device_class="door"), index) is None
+                          state("binary_sensor.front_door", "off", device_class="door"), index, domains=ALL) is None
         assert feed_entry(state("scene.movie_night", "unknown"),
-                          state("scene.movie_night", "2026-09-15T20:00:00+00:00"), index).content == "Movie night [scene] activated"
+                          state("scene.movie_night", "2026-09-15T20:00:00+00:00"), index, domains=ALL).content == "Movie night [scene] activated"
 
     def test_bridges_unknown_is_every_fed_entity_but_the_actions(self, index):
-        assert bridges_unknown("person.marcus", index) is True
-        assert bridges_unknown("binary_sensor.front_door", index) is True
-        assert bridges_unknown("scene.movie_night", index) is False
-        assert bridges_unknown("automation.sunset_lights", index) is False
-        assert bridges_unknown("sensor.kitchen_temperature", index) is False, "a sensor's changes are never rows"
-        assert bridges_unknown("person.charlotte", index) is False, "not in the snapshot"
+        assert bridges_unknown("person.marcus", index, ALL) is True
+        assert bridges_unknown("binary_sensor.front_door", index, ALL) is True
+        assert bridges_unknown("scene.movie_night", index, ALL) is False
+        assert bridges_unknown("automation.sunset_lights", index, ALL) is False
+        assert bridges_unknown("sensor.kitchen_temperature", index, ALL) is False, "a sensor's changes are never rows"
+        assert bridges_unknown("person.charlotte", index, ALL) is False, "not in the snapshot"
         assert bridges_unknown("person.charlotte", NameIndex()) is True, "everything is fed before the first snapshot"
 
     def test_a_button_or_a_diagnostic_entity_going_unavailable_is_silent(self, index):
-        assert feed_entry(state("button.reboot", "unknown"), state("button.reboot", "unavailable"), NameIndex()) is None
+        assert feed_entry(state("button.reboot", "unknown"), state("button.reboot", "unavailable"), NameIndex(), domains=ALL) is None
         assert feed_entry(state("input_button.ring", "2026-09-15T09:00:00+00:00"),
-                          state("input_button.ring", "unavailable"), NameIndex()) is None
+                          state("input_button.ring", "unavailable"), NameIndex(), domains=ALL) is None
         diagnostic = {"entity_category": "diagnostic"}
-        assert feed_entry(state("light.hall", "on"), state("light.hall", "unavailable"), index, entry=diagnostic) is None
-        assert feed_entry(state("light.hall", "on"), state("light.hall", "unavailable"), index, entry={}) is not None
+        assert feed_entry(state("light.hall", "on"), state("light.hall", "unavailable"), index, entry=diagnostic, domains=ALL) is None
+        assert feed_entry(state("light.hall", "on"), state("light.hall", "unavailable"), index, entry={}, domains=ALL) is not None
 
     def test_tracks_availability_follows_the_feed_rules(self, index):
-        assert tracks_availability("light.hall", index, {}) is True
-        assert tracks_availability("light.hall", index, {"entity_category": "config"}) is False
-        assert tracks_availability("button.reboot", NameIndex(), None) is False
-        assert tracks_availability("sensor.kitchen_temperature", index, {}) is False, "a sensor's changes are never rows"
-        assert tracks_availability("light.bedroom", index, {}) is False, "not in the snapshot"
+        assert tracks_availability("light.hall", index, {}, ALL) is True
+        assert tracks_availability("light.hall", index, {"entity_category": "config"}, ALL) is False
+        assert tracks_availability("button.reboot", NameIndex(), None, ALL) is False
+        assert tracks_availability("sensor.kitchen_temperature", index, {}, ALL) is False, "a sensor's changes are never rows"
+        assert tracks_availability("light.bedroom", index, {}, ALL) is False, "not in the snapshot"
+
+    
+    def test_the_default_feed_is_the_houses_doings_and_its_people_not_its_lamps(self, index):
+        """Unset, `feed_domains` reads like a narrated automation log: what the house did and
+        who came and went. A lamp, a cover or a door sensor is in the house data but no row."""
+        assert feed_entry(state("light.hall", "off"), state("light.hall", "on"), index) is None
+        assert feed_entry(state("cover.blinds", "closed"), state("cover.blinds", "open"), index) is None
+        assert feed_entry(state("binary_sensor.front_door", "off"),
+                          state("binary_sensor.front_door", "on", device_class="door"), index) is None
+        assert feed_entry(state("input_boolean.night", "off"), state("input_boolean.night", "on"), index) is None
+        assert feed_entry(state("automation.sunset_lights", "on", last_triggered="2026-09-14T18:45:00+00:00"),
+                          state("automation.sunset_lights", "on", last_triggered="2026-09-15T18:45:00+00:00"),
+                          index).content == "Sunset lights [automation] triggered"
+        assert feed_entry(state("scene.movie_night", "2026-09-14T20:00:00+00:00"),
+                          state("scene.movie_night", "2026-09-15T20:00:00+00:00"), index).content == "Movie night [scene] activated"
+        assert feed_entry(state("script.goodnight", "off", last_triggered=None),
+                          state("script.goodnight", "on", last_triggered="2026-09-15T22:00:00+00:00"),
+                          index).content == "Goodnight [script] ran"
+        assert feed_entry(state("person.marcus", "home"), state("person.marcus", "not_home"), index).content == "Marcus left home"
+
+    def test_a_listed_domain_is_fed_and_only_that_one(self, index):
+        assert feed_entry(state("light.hall", "off"), state("light.hall", "on"), index, domains=("light",)) is not None
+        assert feed_entry(state("cover.blinds", "closed"), state("cover.blinds", "open"), index, domains=("light",)) is None
+        assert feed_entry(state("person.marcus", "home"), state("person.marcus", "not_home"), index, domains=("light",)) is None, \
+            "a list replaces the default, it does not add to it"
+        assert feed_entry(state("person.marcus", "home"), state("person.marcus", "not_home"), index, domains=()) is None
+
+    def test_feed_domains_parses_the_config_value(self):
+        assert feed_domains(None) == DEFAULT_FEED_DOMAINS
+        assert feed_domains([]) == ()
+        assert feed_domains(["Light", "light", " cover "]) == ("light", "cover"), "case, spaces and duplicates go"
+        assert feed_domains(["light", "sensor", "climate", "camera", "no_such_domain"]) == ("light",), \
+            "a ticking domain and an unknown name are left out"
+        assert feed_domains("person") == ("person",), "one name need not be a list"
+        assert all(d in SECTION_OF and d not in TICKING_DOMAINS for d in DEFAULT_FEED_DOMAINS)
+
+    def test_tracks_availability_and_bridges_unknown_follow_the_domain_list(self, index):
+        assert tracks_availability("light.hall", index, {}) is False, "not fed by default"
+        assert tracks_availability("light.hall", index, {}, ("light",)) is True
+        assert tracks_availability("person.marcus", index, {}) is True
+        assert bridges_unknown("binary_sensor.front_door", index) is False, "not fed by default"
+        assert bridges_unknown("binary_sensor.front_door", index, ("binary_sensor",)) is True
+        assert bridges_unknown("person.marcus", index) is True
+        assert bridges_unknown("person.marcus", index, ()) is False
 
     def test_outage_and_recovery_rows_name_the_device_the_entities_and_the_time(self):
         since = 1789466400.0        # 2026-09-15T10:00:00+00:00
@@ -386,7 +433,8 @@ class TestFeedEntry:
         assert back.content != row.content, "a recovery reads differently from an outage"
 
     def test_an_entity_not_yet_indexed_uses_its_friendly_name_when_no_index(self):
-        entry = feed_entry(state("light.new", "off"), state("light.new", "on", friendly_name="New (lamp)"), NameIndex())
+        entry = feed_entry(state("light.new", "off"), state("light.new", "on", friendly_name="New (lamp)"), NameIndex(),
+                           domains=ALL)
         assert entry.content == "New [lamp] turned on"
 
     def test_a_trigger_is_stamped_with_last_updated_not_last_changed(self, index):
@@ -403,5 +451,5 @@ class TestFeedEntry:
         new = state("light.hall", "on")
         new["last_changed"] = "yesterday"
         new["last_updated"] = None
-        entry = feed_entry(state("light.hall", "off"), new, index)
+        entry = feed_entry(state("light.hall", "off"), new, index, domains=ALL)
         assert entry.timestamp > 1_700_000_000
