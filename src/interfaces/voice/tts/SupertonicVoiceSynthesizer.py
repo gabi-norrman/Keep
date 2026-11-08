@@ -10,6 +10,7 @@ from .VoiceSynthesizer import VoiceSynthesizer
 from assistant.integration.Integration import Integration
 from common.logging import error, info, trace
 from common.ConfigManager import config
+from common.Language import language_code
 
 
 class SupertonicVoiceSynthesizer(VoiceSynthesizer, Integration):
@@ -279,6 +280,21 @@ class SupertonicVoiceSynthesizer(VoiceSynthesizer, Integration):
         info(f"Supertonic: stripped unsupported character(s) {unsupported} from {text!r}")
         return cleaned
 
+    def _synthesis_language(self) -> str:
+        """The request's language when Supertonic speaks it (a Swedish request on an en-US
+        install), else the configured one — the model reads a text in the language it is told."""
+        if not self.request_language:
+            return self._lang
+        code = language_code(self.request_language)
+        try:
+            from supertonic.config import SUPPORTED_LANGUAGES
+        except ImportError:
+            return code
+        if code in SUPPORTED_LANGUAGES:
+            return code
+        trace(f"Supertonic does not speak request language {self.request_language!r} — using {self._lang!r}")
+        return self._lang
+
     def _synth_and_emit(self, text: str, tts, style, total_steps: int) -> None:
         text = self._strip_unsupported_chars(text.strip(), tts)
         if not text or not any(c.isalnum() for c in text):
@@ -288,7 +304,7 @@ class SupertonicVoiceSynthesizer(VoiceSynthesizer, Integration):
             t0 = time.time()
             wav, duration = tts.synthesize(
                 text=text,
-                lang=self._lang,
+                lang=self._synthesis_language(),
                 voice_style=style,
                 total_steps=total_steps,
                 speed=self._speed,
