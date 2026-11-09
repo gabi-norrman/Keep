@@ -263,6 +263,7 @@ class WebAccess(Integration):
     _PAGE_READY_TIMEOUT = 10.0      # cap on polling document.readyState
     _PAGE_QUIET_MS = 600            # DOM must be mutation-free this long to count as quiet
     _PAGE_QUIET_TIMEOUT = 2.0       # cap on waiting for DOM quiet (a spinner never goes quiet)
+    _FETCH_QUIET_TIMEOUT = 1.0      # the text fetch's cap on DOM quiet: a ticker or an ad rotation never goes quiet, and the text is in the DOM already
     _PAGE_READY_EVAL_TIMEOUT = 2.0  # cap on each individual in-page evaluate while polling
     _PAGE_READY_POLL = 0.2          # readyState / DOM-quiet polling interval
     # A quiet DOM is not a finished page: Apple's order page (2026-10-15) is a static
@@ -273,6 +274,8 @@ class WebAccess(Integration):
     _PAGE_NET_IDLE_TIMEOUT = 4.0    # cap on waiting for the network to go idle
     _PAGE_NET_STALE_S = 30.0        # an unanswered request older than this is a long-poll or a lost event, not pending
     _BLANK_REGRAB_WAIT_S = 2.0      # fetch_via_chrome: pause before re-reading a page that rendered no text
+    _SCROLL_LOAD_MAX_ROUNDS = 3     # fetch_via_chrome: jumps to the bottom while the page keeps growing
+    _SCROLL_LOAD_SETTLE_S = 0.3     # fetch_via_chrome: pause after a jump for the lazy content to append
 
     # Hard caps on individual CDP round-trips inside browse commands. A renderer
     # process swap (clicking into a Shopify checkout) or an OOPIF destroyed by
@@ -1556,10 +1559,13 @@ class WebAccess(Integration):
         """True for login/SSO flows, where the consent pass must be skipped."""
         return bool(url) and cls._AUTH_URL_RE.search(url) is not None
 
-    async def _async_settle_cookie_banner(self, tab: 'nodriver.Tab', url: str):
+    async def _async_settle_cookie_banner(self, tab: 'nodriver.Tab', url: str, retry: bool = True):
         """Accept/remove consent UI after page readiness, retrying once when the
         first pass matched nothing (consent SDKs mount asynchronously — the
-        banner may not be rendered yet right after readiness)."""
+        banner may not be rendered yet right after readiness). retry=False is
+        the text fetch's: a banner blocks a click in a browse session, but a
+        fetch only reads the DOM, where a late banner is a few lines of noise
+        and the second pass cost every clean page a second."""
         if self._is_auth_url(url):
             info(f"cookie consent: skipping consent pass on auth/login URL {url} "
                  f"(a stray click there submits the auth flow)")
@@ -1568,6 +1574,10 @@ class WebAccess(Integration):
         if result.get('clicked', 0) or result.get('removed', 0):
             info(f"cookie consent: clicked={result.get('clicked', 0)} "
                  f"removed={result.get('removed', 0)} on {url}")
+            self._trace_kept_consent_matches(result, url)
+            return
+        if not retry:
+            trace(f"cookie consent: nothing matched on {url} — no re-check for a text fetch")
             self._trace_kept_consent_matches(result, url)
             return
         trace(f"cookie consent: nothing matched on {url} — "
@@ -2046,7 +2056,8 @@ class WebAccess(Integration):
             await asyncio.sleep(0.25)
 
     async def _async_wait_for_page_ready(self, tab: 'nodriver.Tab', ready_timeout=None,
-                                         quiet_ms=None, quiet_timeout=None) -> str:
+                                         quiet_ms=None, quiet_timeout=None,
+                                         network: bool = True) -> str:
         """Soft readiness gate: wait for readyState, then for the DOM to go quiet.
 
         WAIT_READY: poll document.readyState until 'interactive'/'complete'.
@@ -2055,7 +2066,10 @@ class WebAccess(Integration):
         absent).
         WAIT_NETWORK: then until no captured XHR/fetch is in flight and none was
         sent or answered for _PAGE_NET_IDLE_MS — a quiet DOM may be a shell whose
-        data is still on its way (_async_wait_for_network_idle).
+        data is still on its way (_async_wait_for_network_idle). network=False
+        skips this stage: the text fetch has its own blank-shell safety net
+        (_async_regrab_if_blank) and a news front page prefetching an article
+        per link never goes idle, so the stage only ran to its cap there.
         Every cap is SOFT — on expiry or evaluate failure this logs and returns;
         it never raises, never stops the load, never reinits the driver. The
         return value is a status string for logging/tests only.
@@ -2067,6 +2081,12 @@ class WebAccess(Integration):
         async def ev(expr):
             return await self._cdp_wait_for(
                 self._evaluate(tab, expr), self._PAGE_READY_EVAL_TIMEOUT)
+
+        async def network_idle():
+            if network:
+                await self._async_wait_for_network_idle()
+            else:
+                fine("page-ready: network stage skipped (text fetch — the blank re-read covers a shell)")
 
         status = "ready"
         ready_deadline = time.time() + ready_timeout
@@ -2098,17 +2118,17 @@ class WebAccess(Integration):
                 fine("page-ready: __domMon absent — falling back to content-length stability")
                 remaining = max(1, int(quiet_deadline - time.time()))
                 await self._async_wait_for_dynamic_content(tab, timeout=remaining)
-                await self._async_wait_for_network_idle()
+                await network_idle()
                 return "fallback:no-dommon"
             if idle_ms >= quiet_ms:
                 fine(f"page-ready: DOM quiet for {int(idle_ms)}ms — {status}")
-                await self._async_wait_for_network_idle()
+                await network_idle()
                 return status
             await asyncio.sleep(self._PAGE_READY_POLL)
 
         trace(f"page-ready: DOM still mutating after {quiet_timeout}s — "
               "proceeding with the page as-is (soft cap)")
-        await self._async_wait_for_network_idle()
+        await network_idle()
         return "soft-timeout:quiet"
 
     async def _async_wait_for_network_idle(self, idle_ms=None, timeout=None) -> str:
@@ -2844,26 +2864,37 @@ class WebAccess(Integration):
         return None
 
     async def _async_scroll_to_load_content(self, tab: 'nodriver.Tab'):
-        """Scroll through the page to trigger lazy-loaded content."""
+        """Jump to the bottom of the page to trigger lazy-loaded content, and again only
+        while the jump made the page taller.
+
+        Was a walk of up to 15 viewports at 0.3 s each — 4.8 s on every long page
+        (gp.se's front page, prod 2026-11-09), lazy-loaded or not. What a text fetch
+        needs from scrolling is the "load more" sentinel at the bottom and whatever
+        a growing page appends; a page whose height does not move after one jump
+        has nothing more to load."""
         try:
             page_height = self._eval_number(await self._evaluate(tab, 'document.body.scrollHeight'))
             if page_height is None:
                 trace("Scroll-to-load skipped: document.body.scrollHeight did not evaluate "
                       "to a number (no <body>?)")
                 return
-            viewport_height = self._eval_number(await self._evaluate(tab, 'window.innerHeight')) or 800
-            position = 0
-            max_scrolls = 15
-            scrolls = 0
-            while position < page_height and scrolls < max_scrolls:
-                position += viewport_height
-                await tab.evaluate(f'window.scrollTo(0, {position});')
-                await asyncio.sleep(0.3)
+            rounds = 0
+            while rounds < self._SCROLL_LOAD_MAX_ROUNDS:
+                await tab.evaluate(f'window.scrollTo(0, {int(page_height)});')
+                await asyncio.sleep(self._SCROLL_LOAD_SETTLE_S)
+                rounds += 1
                 new_height = self._eval_number(
                     await self._evaluate(tab, 'document.body.scrollHeight')) or 0
-                if new_height > page_height:
-                    page_height = new_height
-                scrolls += 1
+                if new_height <= page_height:
+                    trace(f"Scroll-to-load: height steady at {int(page_height)}px after "
+                          f"{rounds} jump(s) to the bottom")
+                    break
+                trace(f"Scroll-to-load: page grew {int(page_height)} → {int(new_height)}px on jump "
+                      f"{rounds} — jumping again")
+                page_height = new_height
+            else:
+                trace(f"Scroll-to-load: page still growing after {rounds} jumps — stopping at "
+                      f"{int(page_height)}px")
             await tab.evaluate('window.scrollTo(0, 0);')
         except Exception as e:
             trace(f"Scroll-to-load failed: {e}")
@@ -2969,8 +3000,13 @@ class WebAccess(Integration):
                     note(f"Page load timeout for {url} on retry, stopping load and continuing...")
                     await self._async_safe_stop_page_load(tab)
 
-            await self._async_wait_for_page_ready(tab)
-            await self._async_settle_cookie_banner(tab, url)
+            # The fetch's gate is the browse session's minus the network stage and with a
+            # shorter DOM-quiet cap: gp.se's front page (prod 2026-11-09) spent 2 s + 4 s on
+            # both caps, 1 s on the consent re-check and 4.8 s scrolling for a page that
+            # arrived in under a second. A shell that rendered no text is re-read below.
+            await self._async_wait_for_page_ready(tab, quiet_timeout=self._FETCH_QUIET_TIMEOUT,
+                                                  network=False)
+            await self._async_settle_cookie_banner(tab, url, retry=False)
             await self._async_scroll_to_load_content(tab)
             return await self._async_regrab_if_blank(tab, url, await tab.get_content())
         except _BROWSER_DEAD_EXC as e:

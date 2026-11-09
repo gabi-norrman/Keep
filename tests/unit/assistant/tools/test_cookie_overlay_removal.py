@@ -239,15 +239,31 @@ class TestScrollToLoadEvalResult:
         tab.evaluate.assert_not_awaited()
         assert 'skipped' in trace.call_args.args[0]
 
-    def test_numeric_heights_still_scroll(self):
+    @staticmethod
+    def _scroll(heights):
         wa = WebAccess.__new__(WebAccess)
         tab = Mock()
         tab.evaluate = AsyncMock()
-        with patch.object(WebAccess, '_evaluate', new=AsyncMock(side_effect=[900, 800, 900, 900])), \
+        with patch.object(WebAccess, '_evaluate', new=AsyncMock(side_effect=heights)), \
                 patch('assistant.tools.WebAccess.asyncio.sleep', new=AsyncMock()):
             asyncio.run(wa._async_scroll_to_load_content(tab))
-        scrolled = [c.args[0] for c in tab.evaluate.await_args_list]
-        assert scrolled == ['window.scrollTo(0, 800);', 'window.scrollTo(0, 1600);', 'window.scrollTo(0, 0);']
+        return [c.args[0] for c in tab.evaluate.await_args_list]
+
+    def test_static_page_gets_one_jump_to_the_bottom(self):
+        # A page whose height does not move after the jump has nothing more to load:
+        # one jump, back to the top — not a walk of every viewport.
+        assert self._scroll([9000, 9000]) == ['window.scrollTo(0, 9000);', 'window.scrollTo(0, 0);']
+
+    def test_growing_page_is_jumped_again_until_it_stops(self):
+        assert self._scroll([900, 1800, 2400, 2400]) == [
+            'window.scrollTo(0, 900);', 'window.scrollTo(0, 1800);', 'window.scrollTo(0, 2400);',
+            'window.scrollTo(0, 0);']
+
+    def test_endless_page_stops_at_the_round_cap(self):
+        heights = [900 * (i + 1) for i in range(WebAccess._SCROLL_LOAD_MAX_ROUNDS + 5)]
+        scrolled = self._scroll(heights)
+        assert len(scrolled) == WebAccess._SCROLL_LOAD_MAX_ROUNDS + 1
+        assert scrolled[-1] == 'window.scrollTo(0, 0);'
 
     @pytest.mark.parametrize("value, expected", [(0, 0), (12.5, 12.5), (True, None), (None, None), ("9", None)])
     def test_eval_number(self, value, expected):
