@@ -132,8 +132,9 @@ class TelegramDraft:
         elif progress.phase == PHASE_THINKING:
             display = f"{self.THINKING_PREFIX} {frame}"
         elif progress.phase == PHASE_PREFILL:
-            # The bar stands where a percentage would: monospace, so the blocks line up.
-            bar = "".join(progress_bar(progress.prefill / 100.0, self.PREFILL_BAR_WIDTH))
+            # The bar stands where a percentage would: monospace, so the cells line up; whole
+            # cells in shade glyphs, which Telegram's clients join without seams.
+            bar = "".join(progress_bar(progress.prefill / 100.0, self.PREFILL_BAR_WIDTH, fine=False, full="▓"))
             detail = f"<code>{bar}</code>" + (f" · {describe_rate(progress.rate)}" if progress.rate > 0 else "")
             display = f"{PREFILL_LABEL} ({detail})…"
         elif progress.phase == PHASE_QUEUED:
