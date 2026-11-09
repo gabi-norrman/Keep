@@ -57,7 +57,9 @@ from .AbstractLLM import LLMPreempted, Thinking
 from .BackgroundSlot import BackgroundSlot
 from .ChatGPTLLM import ChatGPTLLM
 from .PrefillTracker import PrefillTracker
+from assistant.commands.formats import QwenFormat as qwen
 from assistant.commands.formats.CommandFormats import CommandFormats
+from assistant.commands.formats.KeepFormat import KeepFormat
 from common.ConfigManager import config
 from common.logging import error, info, trace, fine, note
 
@@ -201,6 +203,13 @@ class OpenAICompatibleLLM(ChatGPTLLM):
 
     def is_local(self) -> bool:
         return True
+
+    def default_command_format(self):
+        """Qwen's <tool_call> syntax for a Qwen model (what the family was trained on, and what
+        `OllamaLLM` writes for the same models), Keep's own call text for any other; the tier's
+        `command_format:` key wins over both. Read from the model name, so a model left to
+        `initialize` to discover is Keep's syntax until the server has been reached once."""
+        return qwen.QwenFormat if 'qwen' in (self.model or '').lower() else KeepFormat
 
     def prefers_prepended_user_query(self) -> bool:
         """A local server's prefix cache matches from byte 0: a query prepended to the system

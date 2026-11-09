@@ -112,6 +112,27 @@ class TestConfig:
         assert wrapped.prefers_query_as_own_turn() is False, "ds4's cold-anchor trick, not a generic server's"
 
 
+class TestCommandFormat:
+    def test_a_qwen_model_writes_qwen_syntax_and_any_other_keeps_own(self):
+        from assistant.commands.formats.KeepFormat import KeepFormat
+        from assistant.commands.formats.QwenFormat import QwenFormat
+        with _config({}):
+            assert OpenAICompatibleLLM(model='Qwen3.8-27B-oQ4e-mtp').command_format() is QwenFormat
+            assert OpenAICompatibleLLM(model='gemma-4-26b').command_format() is KeepFormat
+            assert OpenAICompatibleLLM().command_format() is KeepFormat, "no model name to read yet"
+            assert create_llm('OpenAICompatibleLLM', model='qwen3-27b').command_format() is QwenFormat
+
+    def test_the_tier_key_wins_over_the_model_name(self):
+        from assistant.commands.formats.KeepFormat import KeepFormat
+        with _config({}):
+            assert create_llm('OpenAICompatibleLLM', model='qwen3-27b', command_format='keep').command_format() is KeepFormat
+
+    def test_ds4_keeps_its_own_choice_whatever_the_model_is_called(self):
+        from assistant.commands.formats.KeepFormat import KeepFormat
+        with _config({}):
+            assert Ds4LLM(model='qwen3.8-flash-next').command_format() is KeepFormat
+
+
 class TestModelCheck:
     """`initialize` reads `GET /v1/models` once: the configured model is checked, an unset one
     becomes the first listed, and the server's context length is logged when it says."""

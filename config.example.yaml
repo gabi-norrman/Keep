@@ -398,7 +398,8 @@ local_backend: none
 #openai_compatible:
 #  base_url: http://127.0.0.1:8000/v1
 #  model: qwen3-27b                # An id or alias `GET /v1/models` on the server lists; unset, the first one it
-#                                  # lists. An `ai:` tier's `model:` wins.
+#                                  # lists. An `ai:` tier's `model:` wins. A model called qwen… writes its commands
+#                                  # in Qwen's syntax, any other in Keep's own (a tier's `command_format:` overrides).
 #  api_key: ""                     # Only for a server that wants one; most local servers take none.
 #  reasoning_effort: low           # How much the model reasons before a conversation turn: none, minimal, low,
 #                                  # medium, high, xhigh or max. The autonomous check gets one step more (medium
@@ -432,7 +433,8 @@ local_backend: none
 #                           # `invoke` (the <function_calls>/<invoke> block Claude was trained to write tool
 #                           # calls in; a Claude tier reads one it writes anyway, whatever the format). Unset,
 #                           # the LLM class decides — Keep's own for Claude, GPT, Gemini and ds4, Qwen's for
-#                           # Ollama; set it for an Ollama model that is not a Qwen, or to try a syntax
+#                           # Ollama and for a Qwen model on an OpenAI-compatible server; set it for an Ollama
+#                           # model that is not a Qwen, or to try a syntax
 #                           # (`invoke` on a Claude tier, say). The smart tier's
 #                           # format is the one every reply is parsed in and the prompt's command texts are
 #                           # rendered in; a name no format has is logged and ignored.
