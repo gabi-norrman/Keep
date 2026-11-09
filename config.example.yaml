@@ -341,8 +341,9 @@ wake_word_near_misses: [mission, missions, we shall]
 # code_quality, the Claude Code CLI) runs on the Ollama server of the `ollama:` section below,
 # on OllamaLLM's default model, qwen3.8:27b-mlx, whatever the `ai:` block says — a tier that
 # already names OllamaLLM keeps its `model:`. ds4: the same on the ds4-server of the `ds4:`
-# section. Videos are then left undescribed (no local backend has video input). The assistant
-# may flip it itself (config_set); takes effect on restart.
+# section. openai: the same on any OpenAI-compatible server — oMLX, llama.cpp — of the
+# `openai_compatible:` section. Videos are then left undescribed (no local backend has video
+# input). The assistant may flip it itself (config_set); takes effect on restart.
 local_backend: none
 
 # Ollama server used by every OllamaLLM tier. Optional — defaults to localhost.
@@ -388,6 +389,25 @@ local_backend: none
 #                                  # itself evicts by hits, never by age, and a full cache evicts the fresh
 #                                  # entries first. 0 turns the sweep off.
 
+# Any OpenAI-compatible local server used by every OpenAICompatibleLLM tier: oMLX (github.com/jundot/omlx)
+# or llama.cpp's server, say, serving one model on this machine or another on the LAN. The
+# chat's "Prefilling…" bar, the rate beside it and the cache report come from the progress the
+# server streams while it prefills (llama.cpp's `return_progress`, which oMLX speaks too), so
+# nothing but the address is needed. Optional — defaults to localhost:8000 and the first model
+# the server lists.
+#openai_compatible:
+#  base_url: http://127.0.0.1:8000/v1
+#  model: qwen3-27b                # An id or alias `GET /v1/models` on the server lists; unset, the first one it
+#                                  # lists. An `ai:` tier's `model:` wins.
+#  api_key: ""                     # Only for a server that wants one; most local servers take none.
+#  reasoning_effort: low           # How much the model reasons before a conversation turn: none, minimal, low,
+#                                  # medium, high, xhigh or max. The autonomous check gets one step more (medium
+#                                  # at least); the memory curator always gets high.
+#  return_progress: true           # Ask the server to stream its prefill progress (the bar's source). Set false
+#                                  # for a server that rejects the key; the bar then runs on a time estimate.
+#  background_idle_seconds: 20     # Photo indexing runs only after this much quiet since the last chat request;
+#                                  # a user request arriving mid-image aborts the image
+
 # Where the //FP and //TP debug commands collect the latest conversations' audio as labelled
 # false/true wake-word positives. Optional — defaults to cache/stt_samples/{false-positive,en}.
 #debug:
@@ -399,12 +419,13 @@ local_backend: none
 # Uncomment / edit to override per tier, e.g. to run everything on a local Ollama:
 #ai:
 #  fast:
-#    llm: OllamaLLM          # Class name from assistant/llm/ (OllamaLLM, Ds4LLM, ClaudeLLM, GeminiLLM, ChatGPTLLM, GrokLLM, OpenRouterLLM)
+#    llm: OllamaLLM          # Class name from assistant/llm/ (OllamaLLM, Ds4LLM, OpenAICompatibleLLM, ClaudeLLM, GeminiLLM, ChatGPTLLM, GrokLLM, OpenRouterLLM)
 #    # model: qwen3.8:27b-mlx   # Optional: override the LLM's default model
 #  smart:
 #    llm: OllamaLLM
 #    # model: qwen3.8:27b-mlx
 #    # llm: Ds4LLM             # or a local ds4-server (the `ds4:` section above); the model is the one it loaded
+#    # llm: OpenAICompatibleLLM  # or any OpenAI-compatible local server (the `openai_compatible:` section above)
 #    # command_format: qwen   # Optional, any tier: the syntax the model writes its commands in — `keep` (Keep's own
 #                           # call text, what GPT, Gemini and Ds4LLM use), `qwen` (the <tool_call> block Qwen was
 #                           # trained on, OllamaLLM's own choice), `dsml` (DeepSeek's block, which ds4 parses) or

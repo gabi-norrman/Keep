@@ -2,19 +2,13 @@
 
 ds4 (antirez's DwarfStar engine) serves one large open-weight model — DeepSeek V4.1 Flash by
 default — resident on this machine's GPU, at `ds4.base_url` (default http://127.0.0.1:8000/v1);
-`model` is the id the server loaded (`/v1/models`). The server takes no API key, so the client
-sends a placeholder and this backend is keyless for the setup code (`api_key_name()` is None,
-like Ollama).
-
-The model reasons server-side: the stream carries `reasoning_content` deltas, yielded here
-inside <thinking> tags so the command processor swallows and times them like a prompted
-thinking block. How much it reasons is `reasoning_effort`, from the request's `Thinking`:
-FULL (the memory curator) gets "high"; NORMAL (a conversation turn) the `ds4.reasoning_effort`
-key, default "low" so the turn answers in seconds; MORE (the autonomous check, which nobody
-waits on) one step above that key, "medium" at least — its prompt then shares the chat's
-cached prefix only up to the first assistant turn of the history, since the effort changes
-how the server renders past turns, and the check prefills the rest itself. "none" turns
-server-side reasoning off, and then the prompt's own <thinking> instruction applies instead.
+`model` is the id the server loaded (`/v1/models`). The OpenAI side — the client, the stream,
+the reasoning effort from the request's `Thinking` (`ds4.reasoning_effort` for a turn, default
+"low" so it answers in seconds), the metrics line, the cache report, the pre-heat and the
+single-slot gate — is `OpenAICompatibleLLM`, which this class is the ds4 flavour of: what is
+below is what ds4-server does differently from any other local server. The autonomous check's
+higher effort makes its prompt share the chat's cached prefix only up to the first assistant
+turn of the history, since the effort changes how the server renders past turns.
 
 Commands: the default format is Keep's own call text (`KeepFormat`), the best of the formats
 on the prompt test suite with V4.1 Flash (measured 2026-10-22: 96.1 / 97.2 % pass at effort
@@ -93,36 +87,29 @@ while the image reply decodes; during its prefill the server only writes a keepa
 5 s, so a kill that lands then takes up to that long.
 
 The "Prefilling…" bar: ds4 says nothing on the wire until the first token (its SSE keepalive is a
-bare comment), so the prefill progress is read from the server's log by the class's one
-`PrefillTracker`, as Ollama's is — `ds4.log_path` (default `~/Documents/ds4/ds4-server.log`),
-over ssh to `ds4.ssh_host` (default: the base_url host) when the server is on another machine.
+bare comment, and it knows no `return_progress`), so the prefill progress is read from the
+server's log by the class's one `PrefillTracker`, as Ollama's is — `ds4.log_path` (default
+`~/Documents/ds4/ds4-server.log`), over ssh to `ds4.ssh_host` (default: the base_url host) when
+the server is on another machine.
 The log says the workload at once (`prompt start` with `ctx=cached..total:remaining`) but logs a
 chunk line only at the backend's chunk boundaries — a cold 26k prompt logs its first at 93%, 16 s
 in —, so the bar is mostly the time estimate, refined after each reply from the usage (prompt
 tokens minus the cached ones) over the prefill time the `prompt done` line reports.
 """
-import json
 import re
 import threading
-import time
-from types import SimpleNamespace
-from typing import Generator
 from urllib.parse import urlparse
 
-import httpx
-from openai import OpenAI
-
-from .AbstractLLM import LLMPreempted, Thinking
-from .BackgroundSlot import BackgroundSlot
-from .ChatGPTLLM import ChatGPTLLM
 from .Ds4DiskCacheSweeper import Ds4DiskCacheSweeper
 from .Ds4Replay import ReplayStore, replay
+from .OpenAICompatibleLLM import OpenAICompatibleLLM, _Content
 from .PrefillTracker import LogFormat, PrefillTracker, is_local_host, parse_last
+from .BackgroundSlot import BackgroundSlot
 from assistant.commands.formats import DsmlFormat as dsml
 from assistant.commands.formats.CommandFormats import CommandFormats
 from assistant.commands.formats.KeepFormat import KeepFormat
 from common.ConfigManager import config
-from common.logging import info, trace, fine, note
+from common.logging import trace, note
 
 
 class Ds4LogFormat(LogFormat):
@@ -177,37 +164,68 @@ class Ds4LogFormat(LogFormat):
         return text[pos:]
 
 
-class Ds4LLM(ChatGPTLLM):
-    """A local ds4-server as an LLM backend, with DSML as the command format."""
+class _DsmlContent(_Content):
+    """The reply text up to the first DSML sentinel is visible; from there the content is
+    withheld, whole, for the end of the reply (module docstring). An opener split over two
+    deltas is still seen whole: a suffix that is a prefix of the opener is held back."""
 
+    def __init__(self):
+        self.pending = ""    # text held for a split opener
+        self.withheld = ""   # the block text, from the first sentinel on
+
+    def take(self, text: str) -> str:
+        if self.withheld:
+            self.withheld += text
+            return ""
+        visible, self.withheld = self.split(self.pending + text)
+        if self.withheld:
+            self.pending = ""
+            return visible
+        visible, self.pending = self._hold_opener_prefix(visible)
+        return visible
+
+    def flush(self) -> str:
+        pending, self.pending = self.pending, ""
+        return pending
+
+    @staticmethod
+    def split(text: str) -> tuple[str, str]:
+        """`text` cut before the first DSML opener: the reply text to show, and the block text
+        the server parses for us (empty when the text holds none)."""
+        at = text.find(dsml.OPEN)
+        return (text, "") if at < 0 else (text[:at], text[at:])
+
+    @staticmethod
+    def _hold_opener_prefix(text: str) -> tuple[str, str]:
+        for length in range(min(len(dsml.OPEN) - 1, len(text)), 0, -1):
+            if text.endswith(dsml.OPEN[:length]):
+                return text[:-length], text[-length:]
+        return text, ""
+
+
+class Ds4LLM(OpenAICompatibleLLM):
+    """A local ds4-server as an LLM backend: the OpenAI-compatible backend plus ds4's replay
+    of the history, its DSML block and its log-fed prefill bar."""
+
+    SECTION = 'ds4'
+    NAME = "DS4"
+    LABEL = "ds4"
     DEFAULT_MODEL = 'deepseek-v4.1-flash'
-    DEFAULT_BASE_URL = 'http://127.0.0.1:8000/v1'
     DEFAULT_LOG_PATH = '~/Documents/ds4/ds4-server.log'   # where the server's log goes on the host that runs it
+    RETURN_PROGRESS = False   # ds4-server streams no progress; the bar reads its log
     # Measured on V4.1 Flash, cold 24k–30k prompts, 2026-10-21; each reply's usage refines it.
     _prefill = PrefillTracker("ds4", Ds4LogFormat(), seed_tps=1400.0)
-    DEFAULT_REASONING_EFFORT = 'low'
-    THINKING_REASONING_EFFORT = 'high'   # Thinking.FULL
-    MORE_REASONING_EFFORT = 'medium'     # the floor of Thinking.MORE
     # ds4-server's spellings, lowest first; "minimal" is the smallest non-zero level, "none" alone disables reasoning.
     REASONING_EFFORTS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
     _slot = BackgroundSlot("ds4")
-    # The pre-heat guard, shared by the tiers' instances like the slot (module docstring).
     _pre_heat_lock = threading.Lock()
     _pre_heat_in_flight = False
     _pre_heat_pending: list[dict] | None = None
-    PRE_HEAT_MAX_TOKENS = 1
-    PRE_HEAT_READ_TIMEOUT_S = 600.0
-    _logged_configs: set[tuple[str, str]] = set()
+    _logged_configs: set[tuple[str | None, str]] = set()
+    _models_checked: set[tuple[str | None, str]] = set()
     _replay_store: ReplayStore | None = None
-    CONNECT_TIMEOUT_S = 5.0
 
-    def __init__(self, model: str | None = None, base_url: str | None = None):
-        """`model` is the tier's `model:` when it has one, else `ds4.model`, else the default."""
-        super().__init__(model=model or config.get('ds4.model', self.DEFAULT_MODEL), api_key_name='ds4',
-                         base_url=base_url or config.get('ds4.base_url', self.DEFAULT_BASE_URL))
-        if (self.model, self.base_url) not in Ds4LLM._logged_configs:
-            Ds4LLM._logged_configs.add((self.model, self.base_url))
-            info(f"Ds4LLM '{self.model}' using {self.base_url}, reasoning effort {self.reasoning_effort()}")
+    def _configure_prefill(self):
         Ds4LLM._configure_log_access(self.base_url)
 
     @classmethod
@@ -222,40 +240,8 @@ class Ds4LLM(ChatGPTLLM):
             cls._prefill.use_log(path, ssh_host=config.get('ds4.ssh_host', host))
 
     def initialize(self):
-        """No read timeout: a non-streamed reply says nothing until it is done, and the memory
-        curation (a whole bank rewritten at effort high, ~27 t/s) runs past the SDK's 600 s —
-        which then resent it, a fresh generation each time, to a server that serves one at a time."""
-        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url,
-                             timeout=httpx.Timeout(None, connect=self.CONNECT_TIMEOUT_S))
-        trace(f"ds4 client: no read timeout, {self.CONNECT_TIMEOUT_S:.0f} s to connect")
+        super().initialize()
         Ds4DiskCacheSweeper.start_once(server_is_local=is_local_host(urlparse(self.base_url).hostname))
-
-    def _note_stop(self, finish_reason: str | None):
-        """Keep the reply's stop reason where `last_stop_reason` reads it, in Anthropic's spelling
-        for a reply cut at the output cap (`length` → `max_tokens`), so the curator's check sees it."""
-        self._last_stop_reason = 'max_tokens' if finish_reason == 'length' else finish_reason
-        if self._last_stop_reason == 'max_tokens':
-            info("ds4: the reply was cut off at the output limit (finish_reason=length)")
-
-    @property
-    def api_key(self) -> str:
-        """ds4-server ignores the key, but the OpenAI client refuses to start without one."""
-        return 'ds4'
-
-    def api_key_name(self) -> None:
-        return None
-
-    def missing_api_key(self) -> None:
-        return None
-
-    def name(self) -> str:
-        return "DS4"
-
-    def display_model(self) -> str:
-        return self.model
-
-    def is_local(self) -> bool:
-        return True
 
     def default_command_format(self):
         """Keep's own call text: on V4.1 Flash it passed more of the prompt test suite than DSML,
@@ -277,24 +263,6 @@ class Ds4LLM(ChatGPTLLM):
         turn re-prefilled the whole prompt (`common=2` in ds4-server.log, 2026-10-20)."""
         return False
 
-    @classmethod
-    def reasoning_effort(cls) -> str:
-        """The effort of an ordinary request (thinking=False): `ds4.reasoning_effort`, or the
-        default; a spelling ds4 does not know falls back to the default and is logged."""
-        effort = str(config.get('ds4.reasoning_effort', cls.DEFAULT_REASONING_EFFORT)).lower()
-        if effort not in cls.REASONING_EFFORTS:
-            info(f"ds4.reasoning_effort '{effort}' is not one of {', '.join(cls.REASONING_EFFORTS)} — "
-                 f"using {cls.DEFAULT_REASONING_EFFORT}")
-            return cls.DEFAULT_REASONING_EFFORT
-        return effort
-
-    def supports_native_thinking(self) -> bool:
-        return True
-
-    def handles_thinking_internally(self) -> bool:
-        """The model reasons on its own unless the effort is "none"."""
-        return self.reasoning_effort() != 'none'
-
     def resumes_thinking_after_calls(self) -> bool:
         """Seen four times on prod (2026-11-05, 2026-11-08), always right after a call: the
         server routes only the first thinking block to `reasoning_content`, and its guard
@@ -309,25 +277,7 @@ class Ds4LLM(ChatGPTLLM):
         # (ds4-server log: `live kv cache miss ... common=<live - 20> reason=token-mismatch`).
         return True
 
-    def _effort_for(self, thinking: Thinking | bool) -> str:
-        """The server's effort for a request: FULL is high, NORMAL the config key, MORE one step
-        above the key and never below medium (max stays max)."""
-        thinking = Thinking.of(thinking)
-        if thinking.full:
-            return self.THINKING_REASONING_EFFORT
-        effort = self.reasoning_effort()
-        if thinking is Thinking.MORE:
-            levels = self.REASONING_EFFORTS
-            raised = levels[min(levels.index(effort) + 1, len(levels) - 1)]
-            return max(raised, self.MORE_REASONING_EFFORT, key=levels.index)
-        return effort
-
-    @classmethod
-    def background_idle_seconds(cls) -> float:
-        return float(config.get('ds4.background_idle_seconds', BackgroundSlot.DEFAULT_IDLE_S))
-
-    def background_wait_seconds(self) -> float:
-        return Ds4LLM._slot.wait_seconds()
+    # --- the replay ---------------------------------------------------------------------------
 
     @classmethod
     def replay_store(cls) -> ReplayStore:
@@ -337,201 +287,28 @@ class Ds4LLM(ChatGPTLLM):
             cls._replay_store = ReplayStore()
         return cls._replay_store
 
-    def pre_heat_cache(self, messages: list[dict]):
-        """Prefill the prompt's new prefix in the background so the next turn finds it live
-        (module docstring). At most one in flight; a prompt arriving meanwhile replaces the
-        pending one and goes out when the running pre-heat ends."""
-        with Ds4LLM._pre_heat_lock:
-            if Ds4LLM._pre_heat_in_flight:
-                Ds4LLM._pre_heat_pending = messages
-                trace("ds4 pre-heat deferred: one is in flight — this prompt goes out when it ends")
-                return
-            Ds4LLM._pre_heat_in_flight = True
-        self._fire_pre_heat(messages)
-
-    def _fire_pre_heat(self, messages: list[dict]):
-        threading.Thread(target=self._run_pre_heat, args=(messages,), name="Ds4PreHeat", daemon=True).start()
-
-    def _run_pre_heat(self, messages: list[dict]):
-        try:
-            self._pre_heat(messages)
-        except Exception as e:
-            trace(f"ds4 pre-heat failed (non-critical): {e}")
-        finally:
-            self._finish_pre_heat()
-
-    def _finish_pre_heat(self):
-        """Release the guard, or hand it straight to the prompt deferred meanwhile."""
-        with Ds4LLM._pre_heat_lock:
-            pending, Ds4LLM._pre_heat_pending = Ds4LLM._pre_heat_pending, None
-            if pending is None:
-                Ds4LLM._pre_heat_in_flight = False
-        if pending is not None:
-            info("ds4 pre-heat: sending the prompt deferred meanwhile")
-            self._fire_pre_heat(pending)
-
-    def _pre_heat(self, messages: list[dict]):
-        """The request: the resolved messages as a real turn sends them (replayed assistant rows,
-        the chat tier's effort, no tool), streamed, one output token. The reply is dropped — it is
-        no turn, so neither the replay store nor the cache report sees it. Gated as interactive so
-        a photo-indexing request waits, and shown as background on the prefill bar. Unlike a real
-        turn it has a read timeout (PRE_HEAT_READ_TIMEOUT_S, Ollama's): a half-open socket would
-        otherwise park every later pre-heat and the interactive slot for the life of the process."""
-        if self.client is None:
-            self.initialize()
-        client = self.client.with_options(
-            timeout=httpx.Timeout(self.PRE_HEAT_READ_TIMEOUT_S, connect=self.CONNECT_TIMEOUT_S))
-        if not any(m.get('role') == 'user' for m in messages):
-            # A prompt with no user turn yet: the stub stands after the shared system prefix,
-            # which is what the pre-heat is for; the real query displaces it at the tail.
-            messages = messages + [{'role': 'user', 'content': ' '}]
-        kwargs = self._request_kwargs(messages, Thinking.NORMAL, stream=True)
-        kwargs['max_tokens'] = self.PRE_HEAT_MAX_TOKENS
-        info(f"ds4 pre-heat: prefilling the prompt's new prefix ({len(messages)} messages, "
-             f"effort {kwargs['extra_body']['reasoning_effort']})...")
-        started = time.monotonic()
-        Ds4LLM._slot.interactive_begin()
-        token = self._prefill.begin(interactive=False)
-        try:
-            usage = None
-            for chunk in client.chat.completions.create(**kwargs):
-                if getattr(chunk, 'usage', None) is not None:
-                    usage = chunk.usage
-            # Read before `end` drops the request from the tracker.
-            seconds = self._prefill.prefill_seconds(token) if usage is not None else None
-        finally:
-            self._prefill.end(token)
-            Ds4LLM._slot.interactive_end()
-        elapsed = time.monotonic() - started
-        if usage is None:
-            info(f"ds4 pre-heat complete in {elapsed:.1f} s (the server reported no usage)")
-            return
-        details = getattr(usage, 'prompt_tokens_details', None)
-        cached = getattr(details, 'cached_tokens', None) if details is not None else None
-        prefilled = usage.prompt_tokens - (cached or 0)
-        info(f"ds4 pre-heat complete: {usage.prompt_tokens} tokens, {cached if cached is not None else '?'} cached, "
-             f"{prefilled} prefilled in {elapsed:.1f} s")
-        if seconds:
-            self._prefill.observe_rate(prefilled, seconds)
-
-    def _request_kwargs(self, messages: list[dict], thinking: Thinking | bool, stream: bool) -> dict:
-        messages = replay(self._convert_anthropic_content(messages), self.replay_store())
-        # No `tools`: see the module docstring — a declared tool costs the live cache and pulls the model's calls to it.
-        kwargs = dict(model=self.model, messages=messages, stream=stream,
-                      extra_body={'reasoning_effort': self._effort_for(thinking)})
-        if stream:
-            kwargs['stream_options'] = {'include_usage': True}
-        return kwargs
-
-    @staticmethod
-    def _log_usage(usage, started: float, reasoning_chars: int = 0) -> int | None:
-        """One line per request: prompt tokens with the server's cache hits, output tokens, time.
-        Returns the tokens the server prefilled (prompt minus cached), None when it said nothing."""
-        if usage is None:
-            trace("ds4: response carried no usage")
-            return None
-        details = getattr(usage, 'prompt_tokens_details', None)
-        cached = getattr(details, 'cached_tokens', None) if details is not None else None
-        cached_text = f", {cached} cached" if cached is not None else ""
-        thought = f", {reasoning_chars} reasoning chars" if reasoning_chars else ""
-        info(f"ds4 metrics: ↑ {usage.prompt_tokens} tokens{cached_text} | ↓ {usage.completion_tokens} tokens{thought} "
-             f"| {time.monotonic() - started:.2f}s")
-        return usage.prompt_tokens - (cached or 0)
-
-    def cache_scope(self) -> str | None:
-        return f"ds4 {self.base_url}"
-
-    def _cache_report(self, messages: list[dict], effort: str):
-        """One request's cache-break report, made once: early, from the workload line the
-        server logs as the prefill starts — the Home tab's row then lands while the bar is
-        still drawn — or, when the log is unreachable, at the end from the reply's usage.
-        (early, late): `early` is the tracker's `on_work` callback, `late` takes the usage and
-        reports only when `early` never ran. The two can race on a poll that finishes as the
-        stream ends, hence the lock."""
-        lock, made_from = threading.Lock(), []
-
-        def once(cached: int, prompt_tokens: int, source: str):
-            with lock:
-                if made_from:
-                    trace(f"ds4 cache: the {source} says {cached}/{prompt_tokens} cached — "
-                          f"already reported from the {made_from[0]}")
-                    return
-                made_from.append(source)
-            self.record_cache_hit(cached, prompt_tokens)
-            self._report_cache(messages, cached, prompt_tokens, effort)
-
-        def early(cached: int, remaining: int):
-            once(cached, cached + remaining, "workload line")
-
-        def late(usage):
-            details = getattr(usage, 'prompt_tokens_details', None) if usage is not None else None
-            cached = getattr(details, 'cached_tokens', None) if details is not None else None
-            if cached is None:
-                trace("ds4 cache: the reply carries no cached-token count — no report")
-                return
-            once(cached, usage.prompt_tokens, "usage")
-
-        return early, late
-
-    def _report_cache(self, messages: list[dict], cached: int, prompt_tokens: int, effort: str):
-        """The cached tokens against the prompt, for the cache-break report. The server renders
-        past turns by the reasoning effort, so an effort other than the previous request's is
-        the note the report falls back on when the prompt text is unchanged."""
-        previous, self._last_effort = getattr(self, '_last_effort', None), effort
-        note = None
-        if previous is not None and previous != effort:
-            note = f"the reasoning effort changed from {previous} to {effort}, which re-renders the past turns"
-        self.report_cache_usage(messages, cached, prompt_tokens, note=note)
-
-    # --- the DSML side ----------------------------------------------------------------------
-
-    @staticmethod
-    def _rendered_calls(calls) -> list[tuple[str, object]]:
-        """Parsed tool calls (the merged stream deltas, or a message's `tool_calls`) each
-        written back as call text in the active command format — DSML under a ds4 smart tier,
-        the smart tier's syntax otherwise, so the parser reads it — paired with the call; an
-        entry without a name is dropped."""
-        fmt = CommandFormats.active()
-        rendered = []
-        for call in calls:
-            function = getattr(call, 'function', None)
-            name = getattr(function, 'name', None)
-            if not name:
-                trace(f"ds4 tool call without a function name, dropped: {call!r}")
-                continue
-            arguments = getattr(function, 'arguments', None) or "{}"
-            trace(f"ds4 parsed a {name} call — written back as {fmt.name} call text")
-            rendered.append((fmt.render_tool_call(name, arguments), call))
-        return rendered
-
-    @staticmethod
-    def _tail(rendered: list[tuple[str, object]]) -> str:
-        return "\n".join(text for text, _ in rendered)
-
-    def _closing(self, reply: str, withheld: str, rendered: list[tuple[str, object]]) -> tuple[str, str]:
-        """What follows the reply text — the parsed calls as call text on a line of their own, or
-        the withheld block released as written — and the content as the model wrote it, for the
-        replay store (before a parsed call: the text the server kept, trailing whitespace trimmed)."""
-        if rendered:
-            tail = self._tail(rendered)
-            return ("\n" + tail if reply and not reply.endswith("\n") else tail), reply.rstrip()
-        released = self._release_withheld(withheld)
-        return released, reply + released
+    def _prepare_messages(self, messages: list[dict]) -> list[dict]:
+        return replay(messages, self.replay_store())
 
     def _remember(self, reply: str, reasoning: str, verbatim: str):
         """Give the replay store what the next request needs to send this reply back as the
         model wrote it: `reply` as Keep's history will hold it, the reasoning, the content."""
         self.replay_store().remember_reply(reply, reasoning, verbatim)
 
-    @staticmethod
-    def _split_at_sentinel(text: str) -> tuple[str, str]:
-        """`text` cut before the first DSML opener: the reply text to show, and the block text
-        the server parses for us (empty when the text holds none)."""
-        at = text.find(dsml.OPEN)
-        return (text, "") if at < 0 else (text[:at], text[at:])
+    # --- the DSML side ----------------------------------------------------------------------
+
+    def _content(self) -> _Content:
+        return _DsmlContent()
 
     @staticmethod
-    def _release_withheld(withheld: str) -> str:
+    def _split_at_sentinel(text: str) -> tuple[str, str]:
+        return _DsmlContent.split(text)
+
+    @staticmethod
+    def _hold_opener_prefix(text: str) -> tuple[str, str]:
+        return _DsmlContent._hold_opener_prefix(text)
+
+    def _release_withheld(self, withheld: str) -> str:
         """The content withheld from the DSML sentinel on, once the reply is complete and no
         parsed call was rendered in its place: the text as written — Keep's own parser then
         reads what it can. The caller passes it only in that case: a `tool_calls` delta
@@ -546,231 +323,3 @@ class Ds4LLM(ChatGPTLLM):
              f"(or the server handed back a call without a name); the rescue reads it as written "
              f"({withheld.count(dsml.OPEN)} opener(s))")
         return withheld
-
-    def create_streaming_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL,
-                                    volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:
-        """Reasoning deltas (`reasoning_content`) are yielded wrapped in <thinking> tags, the reply
-        text after them up to the first DSML sentinel; from there the content is withheld and
-        the `tool_calls` deltas (merged by index) are yielded as call text in the active format
-        at the end. The reply then goes to the replay store, and the stream's closing usage
-        chunk is logged."""
-        self._ensure_initialized()
-        started = time.monotonic()
-        Ds4LLM._slot.interactive_begin()
-        early, late = self._cache_report(messages, self._effort_for(thinking))
-        token = self._prefill.begin(on_work=early)
-        try:
-            yield from self._stream(messages, thinking, started, token, late)
-        finally:
-            self._prefill.end(token)
-            Ds4LLM._slot.interactive_end()
-
-    def _stream(self, messages: list[dict], thinking: Thinking | bool, started: float, token: int | None,
-                report_cache) -> Generator[str, None, None]:
-        self._last_stop_reason = None
-        response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=True))
-        in_thinking, reasoning, usage = False, "", None
-        reply, pending, withheld = "", "", ""  # text yielded; text held for a split opener; the block text
-        calls: dict[int, _ToolCall] = {}
-        prefilling = True
-        for chunk in response:
-            if getattr(chunk, 'usage', None) is not None:
-                usage = chunk.usage
-            if not chunk.choices:
-                continue
-            if chunk.choices[0].finish_reason:
-                self._note_stop(chunk.choices[0].finish_reason)
-            delta = chunk.choices[0].delta
-            if prefilling and (delta.content or getattr(delta, 'reasoning_content', None)
-                               or getattr(delta, 'tool_calls', None)):
-                prefilling = False
-                self._prefill.first_token(token)
-            thought = getattr(delta, 'reasoning_content', None)
-            if thought:
-                if not in_thinking:
-                    in_thinking = True
-                    yield "<thinking>"
-                reasoning += thought
-                yield thought
-            if delta.content:
-                if in_thinking:
-                    in_thinking = False
-                    yield "</thinking>"
-                if withheld:
-                    withheld += delta.content
-                else:
-                    visible, withheld = self._split_at_sentinel(pending + delta.content)
-                    if withheld:
-                        pending = ""
-                    else:
-                        visible, pending = self._hold_opener_prefix(visible)
-                    if visible:
-                        reply += visible
-                        yield visible
-            for entry in getattr(delta, 'tool_calls', None) or []:
-                index = getattr(entry, 'index', None) or 0
-                calls.setdefault(index, _ToolCall()).merge(entry)
-        if in_thinking:
-            trace("ds4 stream ended inside the thinking block — closing it")
-            yield "</thinking>"
-        if pending:
-            reply += pending
-            yield pending
-        if withheld:
-            trace(f"ds4 withheld {len(withheld)} chars of DSML text from the reply ({len(calls)} tool call(s) parsed)")
-        rendered = self._rendered_calls([calls[i] for i in sorted(calls)])
-        tail, verbatim = self._closing(reply, withheld, rendered)
-        if tail:
-            yield tail
-        self._remember(reply + tail, reasoning, verbatim)
-        prefilled = self._log_usage(usage, started, len(reasoning))
-        report_cache(usage)
-        if prefilled is not None:
-            seconds = self._prefill.prefill_seconds(token)
-            if seconds:
-                self._prefill.observe_rate(prefilled, seconds)
-
-    @staticmethod
-    def _hold_opener_prefix(text: str) -> tuple[str, str]:
-        """`text` with any suffix that is a prefix of the DSML opener held back, so an opener
-        split over two deltas is still seen whole: (to yield, to hold)."""
-        for length in range(min(len(dsml.OPEN) - 1, len(text)), 0, -1):
-            if text.endswith(dsml.OPEN[:length]):
-                return text[:-length], text[-length:]
-        return text, ""
-
-    def create_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL, volatile_tail: int = 0,
-                          follow_up: bool = False) -> str:
-        """The reply text, then every parsed tool call written back as DSML text; the model's
-        reasoning is logged, not returned."""
-        self._ensure_initialized()
-        started = time.monotonic()
-        Ds4LLM._slot.interactive_begin()
-        early, late = self._cache_report(messages, self._effort_for(thinking))
-        token = self._prefill.begin(on_work=early)
-        self._last_stop_reason = None
-        try:
-            response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=False))
-        finally:
-            self._prefill.end(token)
-            Ds4LLM._slot.interactive_end()
-        self._note_stop(response.choices[0].finish_reason)
-        message = response.choices[0].message
-        reasoning = getattr(message, 'reasoning_content', None) or ""
-        if reasoning:
-            fine(f"ds4 thought:\n{reasoning.strip()}")
-        self._log_usage(getattr(response, 'usage', None), started, len(reasoning))
-        late(getattr(response, 'usage', None))
-        calls = getattr(message, 'tool_calls', None) or []
-        content, withheld = self._split_at_sentinel(message.content or "")
-        rendered = self._rendered_calls(calls)
-        tail, verbatim = self._closing(content, withheld, rendered)
-        self._remember(content + tail, reasoning, verbatim)
-        return content + tail
-
-    # --- images -----------------------------------------------------------------------------
-
-    def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
-        """A background image request (photo indexing) goes through the slot gate over a raw
-        connection the gate can shut; an interactive one is the plain call, evicting any
-        background request first."""
-        if background:
-            return self._background_completion(self._image_messages(messages, images))
-        Ds4LLM._slot.interactive_begin()
-        try:
-            return super().create_completion_with_images(messages, images)
-        finally:
-            Ds4LLM._slot.interactive_end()
-
-    def _background_completion(self, messages: list[dict]) -> str:
-        """The abortable image request: waits for the idle slot, streams the answer over its
-        own connection (SSE, the OpenAI shape: `data: {chunk}` lines, `data: [DONE]` last, a
-        bare `: prefill` comment as the keepalive while the server prefills) and raises
-        LLMPreempted when a user request evicts it. No tool is declared: an image request
-        matches no live context anyway, and its reply is text."""
-        body = json.dumps({'model': self.model, 'messages': messages, 'stream': True,
-                           'stream_options': {'include_usage': True},
-                           'reasoning_effort': self.reasoning_effort()})
-        path = urlparse(self.base_url).path.rstrip('/') + '/chat/completions'
-        slot = Ds4LLM._slot
-        slot.acquire(self.background_idle_seconds())
-        started = time.monotonic()
-        early, late = self._cache_report(messages, self.reasoning_effort())
-        token = self._prefill.begin(interactive=False, on_work=early)
-        chunks: list[str] = []
-        reasoning_chars, usage = 0, None
-        try:
-            conn = slot.open_connection(self.base_url)
-            slot.register_connection(conn)
-            conn.request("POST", path, body=body, headers={"Content-Type": "application/json"})
-            resp = conn.getresponse()
-            if resp.status != 200:
-                raise RuntimeError(f"ds4 {path} returned {resp.status}: {resp.read(500)!r}")
-            for raw in iter(resp.readline, b""):
-                line = raw.strip()
-                if not line.startswith(b"data:"):
-                    continue    # the SSE keepalive comment, or a blank line
-                payload = line[5:].strip()
-                if payload == b"[DONE]":
-                    break
-                data = json.loads(payload)
-                if data.get('usage'):
-                    usage = _Usage(data['usage'])
-                for choice in data.get('choices') or []:
-                    delta = choice.get('delta') or {}
-                    if delta.get('reasoning_content'):
-                        self._prefill.first_token(token)
-                        reasoning_chars += len(delta['reasoning_content'])
-                    if delta.get('content'):
-                        self._prefill.first_token(token)
-                        chunks.append(delta['content'])
-            else:
-                raise RuntimeError("ds4 closed the stream before the response was done")
-            conn.close()
-        except LLMPreempted:
-            raise
-        except Exception:
-            if preempted := slot.preempted(len(chunks)):
-                raise preempted from None
-            raise
-        finally:
-            self._prefill.end(token)
-            slot.release()
-        self._log_usage(usage, started, reasoning_chars)
-        late(usage)
-        return "".join(chunks)
-
-
-class _Usage:
-    """The usage object of a raw SSE chunk in the SDK's attribute shape, for `_log_usage`."""
-
-    def __init__(self, data: dict):
-        self.prompt_tokens = data.get('prompt_tokens', 0)
-        self.completion_tokens = data.get('completion_tokens', 0)
-        details = data.get('prompt_tokens_details') or {}
-        self.prompt_tokens_details = SimpleNamespace(cached_tokens=details.get('cached_tokens'))
-
-
-class _ToolCall:
-    """One tool call assembled from stream deltas sharing an index: the name and id are set
-    once, the argument text is concatenated."""
-
-    def __init__(self):
-        self.id = None
-        self.function = _Function()
-
-    def merge(self, delta):
-        self.id = self.id or getattr(delta, 'id', None)
-        function = getattr(delta, 'function', None)
-        if function is not None:
-            self.function.name = self.function.name or getattr(function, 'name', None)
-            self.function.arguments += getattr(function, 'arguments', None) or ""
-
-    def __repr__(self):
-        return f"_ToolCall(id={self.id!r}, name={self.function.name!r}, arguments={self.function.arguments!r})"
-
-
-class _Function:
-    def __init__(self):
-        self.name = None
-        self.arguments = ""

@@ -435,3 +435,69 @@ class TestMeasuredRate:
         assert request.progress_ts > first_seen
         assert request.progress == (1500, 2000)
         tracker.end(token)
+
+
+class TestWireProgress:
+    """A server that streams its prefill progress (llama.cpp's `prompt_progress`, oMLX's too)
+    feeds the tracker through `report_progress` and needs no log."""
+
+    @pytest.fixture
+    def wire(self):
+        t = PrefillTracker("Wire", None, seed_tps=1000.0)
+        yield t
+        t._requests.clear()
+        PrefillTracker._trackers.remove(t)
+
+    def test_the_first_chunk_is_the_workload_and_the_bar_counts_the_uncached_part(self, wire):
+        token = wire.begin()
+        assert wire.progress() == 0.0, "nothing to draw before the server says anything"
+        wire.report_progress(token, total=5000, cache=4000, processed=4500, time_ms=250.0)
+        assert wire.work(token) == (4000, 1000)
+        assert wire.progress() == pytest.approx(50.0), "500 of the 1000 uncached tokens, not 4500 of 5000"
+        wire.report_progress(token, total=5000, cache=4000, processed=5000, time_ms=500.0)
+        assert wire.progress() == 99.0, "capped until the first token confirms the prefill is over"
+        wire.first_token(token)
+        assert wire.progress() == 100.0
+        wire.end(token)
+
+    def test_a_full_cache_hit_is_complete_at_once(self, wire):
+        token = wire.begin()
+        wire.report_progress(token, total=5000, cache=5000, processed=5000, time_ms=1.0)
+        assert wire.progress() == 100.0
+        wire.end(token)
+
+    def test_the_rate_and_the_duration_come_from_the_servers_clock(self, wire):
+        token = wire.begin()
+        wire.report_progress(token, total=5000, cache=4000, processed=4500, time_ms=250.0)
+        assert wire.rate() == pytest.approx(2000.0)             # 500 uncached tokens in 0.25 s
+        wire.report_progress(token, total=5000, cache=4000, processed=5000, time_ms=400.0)
+        wire.first_token(token)
+        assert wire.prefill_seconds(token) == pytest.approx(0.4), "the last chunk's time, not ours"
+        wire.end(token)
+
+    def test_the_workload_callback_runs_once_on_the_first_chunk(self, wire):
+        told = []
+        token = wire.begin(on_work=lambda cached, remaining: told.append((cached, remaining)))
+        wire.report_progress(token, total=5000, cache=4000, processed=4096)
+        wire.report_progress(token, total=5000, cache=4000, processed=5000)
+        assert told == [(4000, 1000)]
+        wire.end(token)
+
+    def test_a_chunk_for_a_request_no_longer_in_flight_is_ignored(self, wire):
+        token = wire.begin()
+        wire.end(token)
+        wire.report_progress(token, total=10, cache=0, processed=5)
+        assert wire.progress() is None
+
+    def test_the_bar_follows_the_request_the_server_is_on(self, wire):
+        # A pre-heat still prefilling when the user's request goes out: the user waits for it.
+        heat = wire.begin(interactive=False)
+        user = wire.begin()
+        wire.report_progress(heat, total=2000, cache=0, processed=1000, time_ms=1000.0)
+        assert wire.progress() == pytest.approx(50.0)
+        wire.first_token(heat)
+        assert wire.progress() == 0.0, "the user's request has not reported yet"
+        wire.report_progress(user, total=2100, cache=2000, processed=2050, time_ms=50.0)
+        assert wire.progress() == pytest.approx(50.0)
+        wire.end(heat)
+        wire.end(user)

@@ -87,7 +87,7 @@ class TestSetup:
     def test_the_openai_client_still_gets_a_key_and_the_configured_server(self):
         # The OpenAI SDK refuses to construct without a key; the server ignores whatever it is.
         p1, p2 = _config({'ds4.base_url': 'http://192.0.2.7:8000/v1'})
-        with p1, p2, patch('assistant.llm.Ds4LLM.OpenAI') as openai_cls:
+        with p1, p2, patch('assistant.llm.OpenAICompatibleLLM.OpenAI') as openai_cls:
             Ds4LLM().initialize()
         kwargs = openai_cls.call_args.kwargs
         assert kwargs['base_url'] == 'http://192.0.2.7:8000/v1'
@@ -96,7 +96,7 @@ class TestSetup:
     def test_the_client_never_gives_up_on_a_slow_reply(self):
         # A non-streamed curation says nothing for minutes; the SDK's 600 s read timeout resent it.
         p1, p2 = _config({})
-        with p1, p2, patch('assistant.llm.Ds4LLM.OpenAI') as openai_cls:
+        with p1, p2, patch('assistant.llm.OpenAICompatibleLLM.OpenAI') as openai_cls:
             Ds4LLM().initialize()
         timeout = openai_cls.call_args.kwargs['timeout']
         assert timeout.read is None and timeout.connect is not None
@@ -106,7 +106,7 @@ class TestSetup:
         # the same one that decides whether the server's log is a file here or an ssh read.
         for base_url, local in (('http://127.0.0.1:8000/v1', True), ('http://192.0.2.7:8000/v1', False)):
             p1, p2 = _config({'ds4.base_url': base_url})
-            with p1, p2, patch('assistant.llm.Ds4LLM.OpenAI'), patch.object(Ds4DiskCacheSweeper, 'start_once') as start_once:
+            with p1, p2, patch('assistant.llm.OpenAICompatibleLLM.OpenAI'), patch.object(Ds4DiskCacheSweeper, 'start_once') as start_once:
                 Ds4LLM().initialize()
             start_once.assert_called_once_with(server_is_local=local)
 

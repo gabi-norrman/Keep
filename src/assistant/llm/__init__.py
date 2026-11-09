@@ -74,13 +74,14 @@ def messages_contain_images(messages: list[dict]) -> bool:
 _LOCAL_ONLY_EXEMPT = {'code_quality'}
 _local_only_logged: set[str] = set()
 # The root `local_backend` key names a local server by its config section; each is one LLM class.
-LOCAL_BACKENDS = {'ollama': 'OllamaLLM', 'ds4': 'Ds4LLM'}
+LOCAL_BACKENDS = {'ollama': 'OllamaLLM', 'ds4': 'Ds4LLM', 'openai': 'OpenAICompatibleLLM'}
 _local_backend_warned: set[str] = set()
 
 
 def local_only_class() -> str | None:
     """The backend the root `local_backend` key routes every tier to: 'OllamaLLM' for `ollama`,
-    'Ds4LLM' for `ds4`, None for `none` (the default; `off`, false and empty mean the same — a
+    'Ds4LLM' for `ds4`, 'OpenAICompatibleLLM' for `openai` (any OpenAI-compatible server — oMLX,
+    llama.cpp), None for `none` (the default; `off`, false and empty mean the same — a
     bare `off` is YAML's false). A name no local backend has is logged once and means off, so a
     typo costs the switch, not the start."""
     value = config.get('local_backend', 'none')
@@ -106,7 +107,7 @@ def parse_llm_config(tier: str) -> tuple[str, str | None]:
     """Parse config for an LLM tier (e.g. 'fast', 'smart', 'cache_auditor'). Returns (class_name, model_or_None).
 
     With `local_backend` set every tier (except code_quality) runs on the one local backend it
-    names — `ollama` or `ds4` — regardless of its `ai.<tier>` block or cloud default: a tier already on that backend keeps its configured model, any other
+    names — `ollama`, `ds4` or `openai` — regardless of its `ai.<tier>` block or cloud default: a tier already on that backend keeps its configured model, any other
     tier falls back to the backend's default model — a cloud model name means nothing there."""
     llm, model = _configured_llm(tier)
     local = local_only_class()

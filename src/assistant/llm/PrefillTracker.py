@@ -1,12 +1,18 @@
 """Tracks how far a local model has got with a prompt's prefill, for the "Prefilling…" bar of the chat UIs.
 
-A local server (Ollama, ds4-server) says nothing on the wire until the first token, so the only
-view into a long prefill is its log file: one line at the start of the request says how much of
-the prompt the KV cache covered and how many tokens are left to prefill, and some engines log
-incremental progress after that. One `PrefillTracker` per backend class holds the state of the
-request in flight; the backend plugs in a `LogFormat` that reads its own log lines, points the
-tracker at the log (`use_log`, a local file or one read over ssh when the server is on another
-machine), and brackets each request with `begin` / `first_token` / `end`.
+One `PrefillTracker` per backend class holds the state of the requests in flight; the backend
+brackets each request with `begin` / `first_token` / `end` and feeds the tracker the prefill
+numbers from one of two sources. A server that streams them (llama.cpp's `return_progress`
+extension, which oMLX speaks too: `prompt_progress` chunks with the prompt's total, cached and
+processed tokens and the elapsed time) hands each chunk to `report_progress`, and needs no log.
+A server that says nothing on the wire until the first token (Ollama, ds4-server) leaves its
+log file as the only view into a long prefill: one line at the start of the request says how
+much of the prompt the KV cache covered and how many tokens are left to prefill, and some
+engines log incremental progress after that; the backend plugs in a `LogFormat` that reads its
+own log lines and points the tracker at the log (`use_log`, a local file or one read over ssh
+when the server is on another machine). Whichever the source, the request's state is the same
+— its workload (cached, remaining), its latest progress (processed, total), its prefill time —
+and so is everything below.
 
 The estimate: 0 until the start line is read (nothing to draw), 100 at once on a full cache hit,
 the engine's own progress lines when it logs them, and otherwise the time since the workload
@@ -184,7 +190,7 @@ class _Request:
     first_token: bool = False
     first_token_ts: float = 0.0
     done: bool = False                        # the log said its prefill is over (a non-streamed request)
-    duration: float | None = None             # the prefill seconds the done line reported
+    duration: float | None = None             # the prefill seconds the done line, or the latest progress chunk, reported
     work: tuple[int, int] | None = None       # (cached, remaining) once the workload line is logged
     work_ts: float = 0.0                      # when that line was read: the start of the clock
     on_work: "Callable[[int, int], None] | None" = None   # told (cached, remaining) once, when that line is read
@@ -204,9 +210,9 @@ class PrefillTracker:
     POLL_INTERVAL_S = 2.0   # log reads between polls: over ssh each is a round trip, and new lines are rare
     _trackers: list["PrefillTracker"] = []
 
-    def __init__(self, label: str, log_format: LogFormat, seed_tps: float):
+    def __init__(self, label: str, log_format: LogFormat | None, seed_tps: float):
         self.label = label
-        self.format = log_format
+        self.format = log_format   # None for a backend whose server streams its progress (`report_progress`)
         self.tps = seed_tps  # rolling estimate of the prefill rate, tokens/s; the seed stands until a reply refines it
         self.log: LogSource | None = None
         self._lock = threading.Lock()
@@ -252,6 +258,38 @@ class PrefillTracker:
                 if not request.done:
                     self._prefill_over(request)
                 trace(f"{self.label} prefill: first token received (prefill #{token} complete).")
+
+    def report_progress(self, token: int | None, total: int, cache: int, processed: int,
+                        time_ms: float | None = None):
+        """A progress chunk the server streamed for the request — llama.cpp's `prompt_progress`
+        (oMLX speaks it too): `total` prompt tokens, `cache` of them already in the KV cache,
+        `processed` so far (the cached ones included), `time_ms` since the prefill began. The
+        first chunk is the request's workload line — (cache, total - cache), the clock starts,
+        `on_work` is told —, every chunk its latest progress, counted on the uncached part as a
+        log's chunk lines are, and the chunk's elapsed time stands as the prefill's duration
+        until the next one, so `prefill_seconds` reads the server's own clock at the end."""
+        with self._lock:
+            request = self._find(token)
+            if request is None:
+                trace(f"{self.label} prefill: a progress chunk for a request no longer in flight (#{token}) — ignored")
+                return
+            now = time.monotonic()
+            on_work = None
+            remaining = max(total - cache, 0)
+            if request.work is None:
+                request.work, request.work_ts = (cache, remaining), now
+                on_work, request.on_work = request.on_work, None
+            request.progress, request.progress_ts = (max(processed - cache, 0), remaining), now
+            if time_ms is not None and time_ms > 0:
+                request.duration = time_ms / 1000.0
+            work = request.work
+        trace(f"{self.label} prefill: the server says #{token} is at {processed}/{total} tokens"
+              f" ({cache} cached{f', {time_ms / 1000.0:.1f} s' if time_ms else ''})")
+        if on_work is not None:
+            try:
+                on_work(*work)
+            except Exception as e:
+                trace(f"{self.label} prefill: #{token}'s workload callback failed ({e})")
 
     def _prefill_over(self, request: _Request, done_offset: int | None = None):
         """Under the lock, once per request, when its prefill is seen to be over: the requests
@@ -350,14 +388,18 @@ class PrefillTracker:
         return min(99.0, (time.monotonic() - head.work_ts) / eta * 100.0)
 
     def rate(self) -> float:
-        """The prefill rate in tokens/s: measured from the engine's progress lines when the
-        request the server is on has logged any, else the rolling estimate the bar runs on."""
+        """The prefill rate in tokens/s: measured from the engine's progress when the request
+        the server is on has reported any — over the server's own clock when its chunks carry
+        one, else ours —, else the rolling estimate the bar runs on."""
         head = self._head()
         if head is None:
             return self.tps
         _work, progress = self._poll(head)
-        if progress and progress[0] > 0 and head.progress_ts > head.work_ts:
-            return progress[0] / (head.progress_ts - head.work_ts)
+        if progress and progress[0] > 0:
+            if head.duration:
+                return progress[0] / head.duration
+            if head.progress_ts > head.work_ts:
+                return progress[0] / (head.progress_ts - head.work_ts)
         return self.tps
 
     def _find(self, token: int | None) -> _Request | None:
