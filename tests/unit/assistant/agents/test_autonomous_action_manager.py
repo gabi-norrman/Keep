@@ -1281,6 +1281,83 @@ class TestScheduledWakeupNote:
         assert "SCHEDULED WAKE-UP" not in saved["m"][-1]["content"]
 
 
+class TestRoundNote:
+    """A round of the check that got a command result leaves a `command` row in the history in
+    its place. Regression for 2026-11-09: the rounds were stored as back-to-back assistant rows,
+    the rendering coalesced them into one reply, and the model later read its own posted
+    heads-up as a reply that ran on past the fetch before any result existed — and retracted
+    real numbers as invented."""
+
+    @staticmethod
+    def two_round_check(first: str, second: str, executed: list[str]):
+        """A check whose first reply runs a command answered with a result and whose second
+        reply ends it; the history writes are recorded in order as (kind, text)."""
+        pm = make_mock_prompt_manager()
+        writes = []
+        pm.update_history.side_effect = lambda *a, **k: writes.append(("assistant", a[2]))
+        pm.add_command_result.side_effect = lambda text, **k: writes.append(("command", text))
+        mgr, mock_llm = make_manager(prompt_manager=pm)
+        mgr.test_mode = False
+        mock_llm.handles_thinking_internally.return_value = False
+        mock_llm.think_with_messages.side_effect = [first, second]
+
+        inst = Mock()
+        inst.command_queue = queue.Queue()
+        inst.command_being_processed = False
+        inst.command_running_in_background = False
+        inst.flush_buffer.return_value = None
+        inst.executed_commands = []
+
+        def process(text, _dialog):
+            if "load_toolkit" in text:
+                inst.command_reply = "result:\n# Toolkit: weather\nforecast 5°C, overcast"
+                inst.executed_commands.extend(executed)
+            return None
+
+        inst.command_reply = None
+        inst.process.side_effect = process
+        inst.clear_command_reply.side_effect = lambda: setattr(inst, "command_reply", None)
+        with patch('assistant.commands.CommandProcessor.CommandProcessor', return_value=inst):
+            mgr.activity_check()
+        return writes
+
+    def test_the_note_stands_between_the_two_replies_and_names_what_ran(self):
+        writes = self.two_round_check(
+            "<thinking>Monday, bike day</thinking>load_toolkit(weather)",
+            "post_message(owner, Dry ride this morning)\nNO",
+            ["load_toolkit(weather)"])
+
+        assert [kind for kind, _ in writes] == ["assistant", "command", "assistant"]
+        assert "load_toolkit(weather)" in writes[1][1]
+        assert "forecast" not in writes[1][1], "the note stands in for the result, it does not carry it"
+        assert "post_message" in writes[2][1]
+
+    def test_the_first_round_keeps_its_thinking_like_the_later_rounds(self):
+        writes = self.two_round_check(
+            "<thinking>Monday, bike day</thinking>load_toolkit(weather)",
+            "<thinking>dry</thinking>post_message(owner, Dry ride)\nNO",
+            ["load_toolkit(weather)"])
+
+        assert "bike day" in writes[0][1]
+        assert "dry" in writes[2][1]
+
+    def test_the_note_cuts_long_parameters_and_is_never_a_toolkit_load(self):
+        from assistant.commands.Toolkits import loaded_name
+        text = "Good morning, the forecast says it stays dry until the afternoon so the bike is fine"
+        note = AutonomousActionManager._round_note(["load_toolkit(weather)", f"post_message(owner, {text})"])
+
+        assert "load_toolkit(weather)" in note
+        assert "post_message(owner, Good morning" in note
+        assert text not in note
+        assert loaded_name(note) is None
+        assert loaded_name(AutonomousActionManager._round_note([])) is None
+
+    def test_a_round_whose_commands_all_failed_still_leaves_a_note(self):
+        """A command that returned an error is not in the processor's executed record, but
+        its error was the round's result and the next reply answered it."""
+        note = AutonomousActionManager._round_note([])
+        assert "Autonomous check" in note
+
 class TestDueWatcher:
     """A watch item's due time (or a cadence shorter than the periodic interval) wakes a check of
     its own, once per moment; what the LLM then does with the item is its own business, and an
@@ -1773,6 +1850,7 @@ class TestThinkingTagInstruction:
             inst.command_being_processed = False
             inst.command_running_in_background = False
             inst.command_reply = "result:\nclosed"
+            inst.executed_commands = ["door_state(garage)"]
             inst.clear_command_reply.side_effect = lambda: setattr(inst, "command_reply", None)
             inst.flush_buffer.return_value = None
             inst.process.return_value = None

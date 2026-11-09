@@ -539,6 +539,7 @@ class AutonomousActionManager:
 
             ran_commands = False
             follow_up_saved = False
+            noted = 0
             while not self.test_mode and (command_processor.command_running_in_background or
                                           command_processor.command_reply is not None):
                 ran_commands = True
@@ -582,7 +583,9 @@ class AutonomousActionManager:
                 # On subsequent iterations the previous iteration already wrote
                 # the current `result` via _save_autonomous_result_to_history.
                 if not follow_up_saved:
-                    self.clean_result_and_potentially_add_to_history(result)
+                    self._save_autonomous_result_to_history(result)
+                self._save_round_note(command_processor.executed_commands[noted:])
+                noted = len(command_processor.executed_commands)
 
                 info("Checking with AI again...")
                 start_time = time.time()
@@ -689,6 +692,35 @@ class AutonomousActionManager:
         if result_cleaned and not self._is_no(result_cleaned):
             self.prompt_manager.update_history(None, None, result_cleaned)
         return result_cleaned
+
+    ROUND_NOTE_PARAM_CHARS = 40
+
+    @classmethod
+    def _round_note(cls, executed: list[str]) -> str:
+        """The one line a round of the check leaves in the history in place of its result:
+        what ran (the processor's `name(params)` record, the parameters cut short) and that
+        the result came. Without it the history held the rounds as back-to-back assistant
+        rows, which the rendering coalesces into one reply that seems to run on past a fetch
+        before its result existed — on 2026-11-09 the model read its own posted heads-up
+        that way and retracted real weather numbers as invented. It never starts with a
+        toolkit header (`Toolkits.loaded_name`): a row that names a toolkit is not a load."""
+        calls = []
+        for call in executed:
+            name, _, params = call.partition("(")
+            params = params[:-1] if params.endswith(")") else params
+            if len(params) > cls.ROUND_NOTE_PARAM_CHARS:
+                params = params[:cls.ROUND_NOTE_PARAM_CHARS] + "…"
+            calls.append(f"{name}({params})" if params else name)
+        ran = ", ".join(calls) or "a command"
+        return (f"[Autonomous check: {ran} ran. The check received the result; "
+                f"it is not kept in the history.]")
+
+    def _save_round_note(self, executed: list[str]):
+        """A `command` row between this round's reply and the next one's, in place of the
+        result the check alone read (a user-side row, so the two replies stay separate turns)."""
+        note = self._round_note(executed)
+        info(f"Autonomous round left its note in the history: {note}")
+        self.prompt_manager.add_command_result(note)
 
     def _save_autonomous_result_to_history(self, result: str):
         thinking_match = re.search(r'<thinking>(.*?)</thinking>', result, flags=re.DOTALL)
