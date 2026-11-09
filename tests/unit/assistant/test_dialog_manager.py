@@ -50,6 +50,9 @@ class FakeCommandProcessor:
     def flush_buffer(self, dialog_manager):
         return None
 
+    def without_dropped_thinking(self, raw):
+        return raw
+
     def kill(self):
         self.killed = True
 

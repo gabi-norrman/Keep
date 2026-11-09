@@ -162,6 +162,9 @@ class VaultLLM(AbstractLLM):
     def handles_thinking_internally(self) -> bool:
         return self.llm.handles_thinking_internally()
 
+    def resumes_thinking_after_calls(self) -> bool:
+        return self.llm.resumes_thinking_after_calls()
+
     def supports_video(self) -> bool:
         return self.llm.supports_video()
 

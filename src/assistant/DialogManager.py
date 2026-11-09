@@ -399,7 +399,8 @@ class DialogManager:
         # The turn as the history keeps it: a call the model wrote in a foreign syntax and the
         # processor rescued is written in the active one, so the model never sees that shape
         # in its own past turns (the feedback loop that made Opus repeat it).
-        self.llm_response_raw = self.command_processor.format.rewritten(self.llm_response_raw)
+        self.llm_response_raw = self.command_processor.format.rewritten(
+            self.command_processor.without_dropped_thinking(self.llm_response_raw))
         self.messages.append({"role": "assistant", "content": self._turn_for_messages()})
 
     # What stands for an assistant turn that produced no text — the output cap spent on

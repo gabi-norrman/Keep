@@ -295,6 +295,12 @@ class Ds4LLM(ChatGPTLLM):
         """The model reasons on its own unless the effort is "none"."""
         return self.reasoning_effort() != 'none'
 
+    def resumes_thinking_after_calls(self) -> bool:
+        """Seen four times on prod (2026-11-05, 2026-11-08), always right after a call: the
+        server routes only the first thinking block to `reasoning_content`, and its guard
+        for a second one is armed only for a request that declares tools — Keep never does."""
+        return self.reasoning_effort() != 'none'
+
     def prefers_byte_prefix_tail(self) -> bool:
         # ds4 reuses its live context only for a prompt that extends it token for token (its
         # rewind is GLM-only). A trailing directive folded onto the last message is dropped when

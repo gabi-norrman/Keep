@@ -31,6 +31,9 @@ class CommandProcessor:
     THINKING_TAG_START = "<thinking>"
     THINKING_TAG_END = "</thinking>"
     THINKING_TAG_START_SPACED = "< thinking >"
+    # The close of a thinking block the model never opened in the stream (DeepSeek's own
+    # tag, written after a call when the server did not route the block as reasoning).
+    BARE_THINK_END = "</think>"
     UNTERMINATED_COMMAND_SHOWN_CHARS = 300
     # The runaway guard: a reply is read up to this many calls and the stream is dropped
     # there (2026-10-21: Opus wrote 51 history searches in one reply, a 660 KB result).
@@ -140,6 +143,13 @@ class CommandProcessor:
         # it was written — the repeat guard's memory.
         self._last_call: tuple[str, tuple[str, ...]] | None = None
         self._last_call_times = 0
+        # The post-call hold (AbstractLLM.resumes_thinking_after_calls): the text written
+        # after the last dispatched call, kept back until a bare </think> says it was
+        # reasoning — dropped, and nothing in it is parsed as a call — or the stream ends and
+        # it was the reply. None while no hold is on.
+        self._post_call_hold: str | None = None
+        # The spans dropped this round, as written, for `without_dropped_thinking`.
+        self.dropped_thinking: list[str] = []
         # When the turn this processor serves began, for a processor without a request
         # handler (the autonomous check sets it); see Commands.turn_started.
         self.turn_started: float | None = None
@@ -482,6 +492,10 @@ class CommandProcessor:
             self.invoke_command(command_name, params, dialog_manager)
             if self.commands.is_stop_and_wait(command_name):
                 self.fetch_pending = command_name
+            elif self._streaming and self._resumes_thinking(dialog_manager):
+                # Text after a stop-and-wait call cuts the reply unshown anyway (_released).
+                trace(f"Holding the text after {command_name} until a bare </think> or the end of the stream")
+                self._post_call_hold = ""
             return remainder
         if remainder is not None:
             info(f"A complete call block without a call in it — dropped, the reply goes on after it: {content[:80]!r}")
@@ -649,6 +663,10 @@ class CommandProcessor:
         return self._process_commands(filtered_content, dialog_manager)
 
     def _process_commands(self, content: str, dialog_manager) -> str | None:
+        if self._post_call_hold is not None:
+            content = self._through_hold(content)
+            if content is None:
+                return None
         self.previous_content_buffer += content
 
         self.debug(f"content: '{content}' previous_content_buffer: '{self.previous_content_buffer}'")
@@ -716,6 +734,55 @@ class CommandProcessor:
             p = self.previous_content_buffer
             self.previous_content_buffer = ""
             return self._released(p)
+
+    @staticmethod
+    def _resumes_thinking(dialog_manager) -> bool:
+        ai = getattr(dialog_manager, "ai", None)
+        resumes = getattr(ai, "resumes_thinking_after_calls", None)
+        return callable(resumes) and resumes() is True
+
+    def _through_hold(self, content: str) -> str | None:
+        """`content` added to the post-call hold: None while the hold goes on, or the text
+        that follows a bare </think> in it — the hold up to the tag was the model's reasoning
+        and is dropped, logged and remembered for the stored turn — with the hold over."""
+        self._post_call_hold += content
+        at = self._post_call_hold.find(self.BARE_THINK_END)
+        if at < 0:
+            return None
+        end = at + len(self.BARE_THINK_END)
+        held, self._post_call_hold = self._post_call_hold, None
+        # The whitespace between the call and the block stays: it separates the call from
+        # what follows, in the reply and in the stored turn.
+        lead = len(held) - len(held.lstrip())
+        dropped, rest = held[lead:end], held[:lead] + held[end:]
+        self.dropped_thinking.append(dropped)
+        note(f"A second thinking block after a call, closed with a bare </think>, dropped from the reply "
+             f"({len(dropped)} chars): {dropped[:120]!r}")
+        return rest
+
+    def _end_hold(self) -> str:
+        """The stream ended with the post-call hold on: what it holds is the reply — unless it
+        closes with the bare tag after all, in which case it was reasoning and is dropped."""
+        held, self._post_call_hold = self._post_call_hold, None
+        if (at := held.find(self.BARE_THINK_END)) >= 0:
+            lead = len(held) - len(held.lstrip())
+            end = at + len(self.BARE_THINK_END)
+            self.dropped_thinking.append(held[lead:end])
+            note(f"The reply ended in a second thinking block after a call — dropped ({at - lead} chars before the tag)")
+            return held[:lead] + held[end:]
+        if held.strip():
+            trace(f"The text held after the last call was the reply — released whole: {len(held)} chars")
+        return held
+
+    def without_dropped_thinking(self, raw: str) -> str:
+        """`raw` (the reply as received) without the thinking blocks the hold dropped, so the
+        stored turn never teaches the model the slip."""
+        for span in self.dropped_thinking:
+            if span in raw:
+                raw = raw.replace(span, "", 1)
+            else:
+                trace(f"A dropped thinking block is not in the raw reply as written ({len(span)} chars) — left")
+        return raw
 
     def _released(self, text: str) -> str | None:
         """`text` as the reply may show it: itself, or None when a stop-and-wait command is
@@ -815,11 +882,12 @@ class CommandProcessor:
         """Flush any remaining buffer content with strict (non-streaming) parsing.
         Called after the LLM stream ends so commands like set_volume(level: 5)
         that were held back during streaming get processed."""
-        if not self.previous_content_buffer and not self.thinking_buffer:
+        if not self.previous_content_buffer and not self.thinking_buffer and self._post_call_hold is None:
             return None
         self._streaming = False
         try:
-            flushed = self._process_commands("", dialog_manager)
+            held = self._end_hold() if self._post_call_hold is not None else ""
+            flushed = self._process_commands(held, dialog_manager)
         finally:
             self._streaming = True
         if flushed is None and self.previous_content_buffer:

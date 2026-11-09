@@ -216,6 +216,14 @@ class AbstractLLM(ABC):
         Opus 5 alike, so the fallback cannot help. Override in subclasses."""
         return False
 
+    def resumes_thinking_after_calls(self) -> bool:
+        """True when the model may go on reasoning in the content stream after it wrote a
+        command call, closing with a bare </think> it never opened (DeepSeek's interleaved
+        thinking: the chat template supplies the opener, so after a call the model writes
+        reasoning as if a new turn had begun). The command processor then holds the text
+        after a call until that tag or the end of the stream. Override in subclasses."""
+        return False
+
     def prefers_byte_prefix_tail(self) -> bool:
         """True when the backend's cache restores only at the end of the previous request, so
         every request must be a byte prefix of the next one: the trailing turn is sent exactly
