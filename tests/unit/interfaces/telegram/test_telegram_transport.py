@@ -1588,6 +1588,25 @@ class TestStatusLine:
 
 
 @pytest.mark.unit
+class TestDraftDelete:
+    @pytest.mark.asyncio
+    async def test_a_delete_that_fails_once_is_retried_and_succeeds(self, transport):
+        transport.DELETE_RETRY_SECONDS = 0
+        transport._application.bot.delete_message = AsyncMock(side_effect=[ConnectionError("reset"), None])
+        await transport._delete_message_async(111, 42)
+        assert transport._application.bot.delete_message.await_count == 2
+        assert all(c.kwargs == {"chat_id": 111, "message_id": 42}
+                   for c in transport._application.bot.delete_message.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_delete_that_fails_twice_is_given_up_without_raising(self, transport):
+        transport.DELETE_RETRY_SECONDS = 0
+        transport._application.bot.delete_message = AsyncMock(side_effect=ConnectionError("reset"))
+        await transport._delete_message_async(111, 42)
+        assert transport._application.bot.delete_message.await_count == 2
+
+
+@pytest.mark.unit
 class TestApprovals:
     @pytest.mark.asyncio
     async def test_prompt_has_keyboard_and_escaped_body(self, transport):

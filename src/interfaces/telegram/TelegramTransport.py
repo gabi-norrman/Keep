@@ -220,6 +220,7 @@ class TelegramTransport(Integration, ChatTransport):
     START_RETRY_BASE_SECONDS = 5
     START_RETRY_MAX_SECONDS = 300
     CALL_TIMEOUT_SECONDS = FLOOD_WAIT_MAX_SECONDS + 30
+    DELETE_RETRY_SECONDS = 1.0   # pause before the one retry of a failed message delete
     APPROVAL_PREFIX = "approval"
     SECRET_PREFIX = "secret"
     SECRET_INSTRUCTIONS = ("Send the value as your next message. Only the local server reads it and your message is "
@@ -1066,11 +1067,23 @@ class TelegramTransport(Integration, ChatTransport):
         self._schedule(self._delete_message_async(chat_id, message_id), "message delete")
 
     async def _delete_message_async(self, chat_id: int, message_id: int):
-        try:
-            await self._application.bot.delete_message(chat_id=chat_id, message_id=message_id)
-            trace(f"Telegram [{chat_id}]: deleted draft message {message_id}")
-        except Exception as e:
-            fine(f"Telegram [{chat_id}]: delete draft message {message_id} failed: {e}")
+        """Delete a message, retrying once after a pause: a delete is fire-and-forget, so a
+        transient connection error would otherwise leave the bubble (a spinner, a secret) in
+        the chat for good."""
+        for attempt in (1, 2):
+            try:
+                await self._application.bot.delete_message(chat_id=chat_id, message_id=message_id)
+                trace(f"Telegram [{chat_id}]: deleted draft message {message_id}"
+                      + (" on the second try" if attempt == 2 else ""))
+                return
+            except Exception as e:
+                if attempt == 1:
+                    fine(f"Telegram [{chat_id}]: delete draft message {message_id} failed, "
+                         f"retrying in {self.DELETE_RETRY_SECONDS}s: {e}")
+                    await asyncio.sleep(self.DELETE_RETRY_SECONDS)
+                else:
+                    info(f"Telegram [{chat_id}]: delete draft message {message_id} failed twice, "
+                         f"it stays in the chat: {e}")
 
     def _flood_wait_seconds(self, e: RetryAfter) -> float:
         """How long to sleep out a flood ban before retrying a final delivery."""
