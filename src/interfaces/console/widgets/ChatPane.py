@@ -42,6 +42,7 @@ from typing import Callable, List, NamedTuple, Optional
 
 from assistant.commands.CommandEcho import describe_duration
 from common import Browser
+from common.DraftPlaceholder import progress_bar
 from common.logging import info, trace
 from common.vault.Redactor import Redactor
 from common.vault.Vault import Vault
@@ -795,21 +796,12 @@ class ChatPane:
             label = "Thinking…"
         spans = [StyledSpan(text=label, bold=True)]
         if p.phase == PHASE_PREFILL:
-            filled, empty = self._bar(p.prefill / 100.0, self.PREFILL_BAR_WIDTH)
+            filled, empty = progress_bar(p.prefill / 100.0, self.PREFILL_BAR_WIDTH)
             spans.append(StyledSpan(text=" " + filled, fg=self.COLOR_WORKING))
             spans.append(StyledSpan(text=empty, fg=self.COLOR_DIM))
         if parts:
             spans.append(StyledSpan(text=f" ({' · '.join(parts)})", fg=self.COLOR_DIM))
         return spans
-
-    @staticmethod
-    def _bar(fraction: float, width: int) -> tuple[str, str]:
-        """A `width`-cell bar as (filled, empty) text: full blocks plus one eighth-block
-        for the remainder, the rest light shade — the Dashboard's bar glyphs."""
-        eighths = round(max(0.0, min(1.0, fraction)) * width * 8)
-        full, rem = divmod(eighths, 8)
-        filled = "█" * full + (" ▏▎▍▌▋▊▉"[rem] if rem and full < width else "")
-        return filled, "░" * (width - len(filled))
 
     def _span_fg(self, entry: Optional[Entry], span: StyledSpan) -> Color:
         if span.fg is not None:

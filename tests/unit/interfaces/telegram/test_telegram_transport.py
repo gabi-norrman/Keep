@@ -1202,16 +1202,31 @@ class TestTelegramDraft:
         d.show_progress(Progress(PHASE_QUEUED))
         assert t.texts[0].startswith("Waiting in queue…\n")
 
-    def test_prefill_label_carries_the_percentage(self):
+    def test_prefill_label_carries_a_bar_in_place_of_the_percentage(self):
+        from common.DraftPlaceholder import is_draft_placeholder
+        from interfaces.telegram.TelegramTransport import TelegramDraft
         t, d = self._draft()
         d.show_progress(Progress(PHASE_PREFILL, prefill=42.6))
-        assert t.texts[0] == "Prefilling (43%)…"
+        text = t.texts[0]
+        assert text.startswith("Prefilling (<code>") and text.endswith("</code>)…")
+        bar = text[len("Prefilling (<code>"):-len("</code>)…")]
+        assert len(bar) == TelegramDraft.PREFILL_BAR_WIDTH
+        assert bar.startswith("████") and not bar.startswith("█████"), "42.6% of 10 cells is four full blocks"
+        assert bar[4] in " ▏▎▍▌▋▊▉" and bar.endswith("░░░░░"), "an eighth-block remainder, then light shade"
+        assert "%" not in text
+        assert is_draft_placeholder(text), "the feed still tells the line from a message"
+
+    def test_prefill_bar_fills_with_the_progress(self):
+        from interfaces.telegram.TelegramTransport import TelegramDraft
+        t, d = self._draft()
+        d.show_progress(Progress(PHASE_PREFILL, prefill=100.0))
+        assert "█" * TelegramDraft.PREFILL_BAR_WIDTH in t.texts[0] and "░" not in t.texts[0]
 
     def test_labels_carry_the_token_rate_when_there_is_one(self):
         t, d = self._draft()
         d.show_progress(Progress(PHASE_PREFILL, prefill=42.6, rate=1480.0))
         d.show_progress(Progress(PHASE_THINKING, output_tokens=123, rate=45.4))
-        assert t.texts[0] == "Prefilling (43% · 1.5k t/s)…"
+        assert t.texts[0].endswith("</code> · 1.5k t/s)…")
         assert t.texts[1] == "Thinking (↓ 123 tokens · 45 t/s)…"
 
     def test_running_command_label(self):

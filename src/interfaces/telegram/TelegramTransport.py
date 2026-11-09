@@ -31,7 +31,7 @@ from assistant.SystemNote import system_note
 from assistant.integration.Integration import Integration
 from common import ConfigStore
 from common.ConfigManager import config
-from common.DraftPlaceholder import (COMMAND_LABEL, COMMANDS_LABEL, PREFILL_LABEL, QUEUED_LABEL,
+from common.DraftPlaceholder import (COMMAND_LABEL, COMMANDS_LABEL, PREFILL_LABEL, QUEUED_LABEL, progress_bar,
                                      SPINNER_FRAMES_BRAILLE, SPINNER_FRAMES_C64, THINKING_LABEL)
 from common.Mp4Metadata import mp4_display_size, mp4_duration_seconds, mp4_is_rotated
 from common.VideoRotation import bake_rotation
@@ -67,6 +67,7 @@ class TelegramDraft:
     # earn multi-minute flood bans (seen in prod: "Retry in 298 seconds").
     EDIT_INTERVAL_SLOW_SECONDS = 1.5
     EDIT_FAST_WINDOW_SECONDS = 30.0
+    PREFILL_BAR_WIDTH = 10     # cells of the prefill line's bar, in place of a percentage
     PROGRESS_INDICATOR_STYLE = "c64"
     # The frames and labels are common.DraftPlaceholder's, so the Telegram feed can tell another
     # Keep's draft bubble from a message. The off-frame must be a visible non-whitespace char —
@@ -131,7 +132,9 @@ class TelegramDraft:
         elif progress.phase == PHASE_THINKING:
             display = f"{self.THINKING_PREFIX} {frame}"
         elif progress.phase == PHASE_PREFILL:
-            detail = f"{progress.prefill:.0f}%" + (f" · {describe_rate(progress.rate)}" if progress.rate > 0 else "")
+            # The bar stands where a percentage would: monospace, so the blocks line up.
+            bar = "".join(progress_bar(progress.prefill / 100.0, self.PREFILL_BAR_WIDTH))
+            detail = f"<code>{bar}</code>" + (f" · {describe_rate(progress.rate)}" if progress.rate > 0 else "")
             display = f"{PREFILL_LABEL} ({detail})…"
         elif progress.phase == PHASE_QUEUED:
             display = f"{QUEUED_LABEL}…\n {frame}"

@@ -15,7 +15,7 @@ SPINNER_FRAMES_BRAILLE = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"
 SPINNER_FRAME_CHARS = frozenset(SPINNER_FRAMES_C64 + SPINNER_FRAMES_BRAILLE)
 
 # The line a draft puts over its frame while it waits for something in particular; a detail
-# in parentheses may follow ("Thinking (↓ 1.2k tokens · 45 t/s)…", "Prefilling (43%)…").
+# in parentheses may follow ("Thinking (↓ 1.2k tokens · 45 t/s)…", "Prefilling (████▌░░░░░)…").
 THINKING_LABEL = "Thinking"
 PREFILL_LABEL = "Prefilling"
 COMMAND_LABEL = "Running command"
@@ -24,6 +24,16 @@ QUEUED_LABEL = "Waiting in queue"
 PHASE_LABELS = (THINKING_LABEL, PREFILL_LABEL, QUEUED_LABEL, COMMAND_LABEL, COMMANDS_LABEL)
 
 _MARKUP = re.compile(r"</?code>|`")
+
+
+def progress_bar(fraction: float, width: int) -> tuple[str, str]:
+    """A `width`-cell bar as (filled, empty) text: full blocks plus one eighth-block for the
+    remainder, the rest light shade — the glyphs of the Dashboard's bars, the console's
+    working line and Telegram's prefill line."""
+    eighths = round(max(0.0, min(1.0, fraction)) * width * 8)
+    full, rem = divmod(eighths, 8)
+    filled = "█" * full + (" ▏▎▍▌▋▊▉"[rem] if rem and full < width else "")
+    return filled, "░" * (width - len(filled))
 _PHASE_LINE = re.compile(r"^(?:" + "|".join(re.escape(label) for label in PHASE_LABELS) + r")(?: \([^)]*\))?…$")
 
 
