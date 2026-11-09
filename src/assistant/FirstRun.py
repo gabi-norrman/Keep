@@ -48,7 +48,9 @@ step 4; the grant quits the terminal, so the user is on Telegram and `Notifier.o
 picks the attended chat). A Mac that had the grant all along (a developer's wipe, a reinstall)
 gets the shortcut quietly, with a history row: the brief is the opening there, and it sees the
 grant in the INTEGRATIONS section. The first probe waits `DESKTOP_SHORTCUT_FIRST_PROBE_SECONDS`
-for the interfaces to come up, so the turn follows the startup note.
+for the interfaces to come up, so the turn follows the startup note. Once setup is over (`in_ftue`
+false) the grant is no longer waited for: the shortcut is built without it and without the login
+item, and the stamp ends the probing (#167).
 """
 import json
 import os
@@ -269,6 +271,10 @@ DESKTOP_SHORTCUT_PROBE_SECONDS = 60   # how often the Full Disk Access probe ope
 DESKTOP_SHORTCUT_FIRST_PROBE_SECONDS = 15   # the first probe waits for the interfaces (Telegram) to come up
 DESKTOP_SHORTCUT_ROW = ("A Keep shortcut is now on the Desktop: double-clicking it opens the console in a terminal, "
                         "starting the server first when it is not running.")
+# The row of a shortcut built once setup ended without the grant: the user never asked for the
+# grant and is not told it is missing here — the INTEGRATIONS section said so throughout the setup.
+DESKTOP_SHORTCUT_WITHOUT_GRANT_ROW = DESKTOP_SHORTCUT_ROW + (
+    " The server does not start at login on its own; the user can ask for that.")
 # The system turn that opens the conversation once the grant is seen — the brief's step 4.
 FULL_DISK_ACCESS_TURN = (
     "Full Disk Access is granted and the server is up with it. A Keep shortcut (Keep.app) is now on the Desktop: "
@@ -466,7 +472,7 @@ class Pipeline:
         self._feeds = feeds
         self._path = path or STATE_FILE
         self._stop_event = threading.Event()
-        self._waiting_on: str | None = None     # the last wait reason traced, so a poll logs only a change
+        self._waiting_on: dict[str, str] = {}   # per source, the last wait reason traced: a poll logs only a change
         self._retry_at: float = 0.0             # monotonic: when an all-failed first curation may run again
         self._shortcut_probe_at: float = 0.0    # monotonic: when the Full Disk Access probe next runs
         self._thread = threading.Thread(target=self._run, name="first-run-pipeline", daemon=True)
@@ -521,29 +527,38 @@ class Pipeline:
         missing (`full_disk_access_awaited`, kept across the restart) opens the conversation with
         `FULL_DISK_ACCESS_TURN`, so the assistant tells the user at once; a grant that was there
         all along, or no chat to take the turn, leaves a system row instead — the brief is the
-        opening then. Returns whether the shortcut was built now."""
+        opening then. The grant is waited for only while setup is in progress: once it is over
+        (`in_ftue` false) the shortcut is built without it, the login item is not registered, and
+        the stamp ends the probing (#167). Returns whether the shortcut was built now."""
         if state.desktop_shortcut_at is not None:
             return False
         now = now if now is not None else time.monotonic()
         if now < self._shortcut_probe_at:
             return False
         self._shortcut_probe_at = now + DESKTOP_SHORTCUT_PROBE_SECONDS
-        if not FullDiskAccess.granted():
+        granted = FullDiskAccess.granted()
+        if not granted:
             if not state.full_disk_access_awaited:
                 state.full_disk_access_awaited = True
                 state.save(self._path)
                 info("First run: Full Disk Access is missing — the grant is part of this setup, the turn follows it")
-            self._waiting("Full Disk Access not granted yet — the Desktop shortcut waits")
-            return False
-        self._waiting_on = None
+            if in_ftue(state_path=self._path, verbose=False):
+                self._waiting("Full Disk Access not granted yet — the Desktop shortcut waits", source=self._SHORTCUT)
+                return False
+            note("First run: setup is over and Full Disk Access was never granted — the Desktop shortcut "
+                 "is built without it and the probing ends; the login item stays an opt-in")
+        self._waiting_on.pop(self._SHORTCUT, None)
         built = DesktopShortcut.ensure()
-        autostart = Autostart.enable() is None   # a failure is logged there; the setup goes on
+        autostart = granted and Autostart.enable() is None   # a failure is logged there; the setup goes on
         state.desktop_shortcut_at = time.time()
         state.save(self._path)
-        note(f"First run: Full Disk Access is granted — the Desktop shortcut {'is built' if built else 'could not be built'}"
-             f"{', the server starts at login' if autostart else ''}")
+        note(f"First run: the Desktop shortcut {'is built' if built else 'could not be built'}"
+             f"{' with Full Disk Access granted' if granted else ''}{', the server starts at login' if autostart else ''}")
         if not built:
             return False
+        if not granted:
+            self._row(DESKTOP_SHORTCUT_WITHOUT_GRANT_ROW)
+            return True
         suffix = AUTOSTART_NOTE if autostart else ""
         if not state.full_disk_access_awaited:
             info("First run: the grant was there from the start — no turn, the brief opens the conversation")
@@ -726,18 +741,21 @@ class Pipeline:
             self._feeds = Feeds.get_instance()
         return self._feeds.runner(name)
 
-    def _waiting(self, reason: str):
-        """Trace why the stage has not advanced — once per reason, not once per poll."""
-        if reason != self._waiting_on:
+    _STAGE = "stage"            # the `_waiting` sources: the stage's wait and the shortcut's are independent,
+    _SHORTCUT = "shortcut"      # so one does not make the other log again at every poll (#167)
+
+    def _waiting(self, reason: str, source: str = _STAGE):
+        """Trace why `source` has not advanced — once per reason, not once per poll."""
+        if reason != self._waiting_on.get(source):
             trace(f"First run: {reason}")
-            self._waiting_on = reason
+            self._waiting_on[source] = reason
 
     def _advance(self, state: State, stage: Stage, what: str, row: str, entered_at: float = None):
         """`what` is the log's technical line; `row` the plain-language system row the Home
         tab shows and the LLM reads. The pipeline never speaks as the assistant: a
         hard-coded first-person message has no way to carry its voice. `entered_at` backdates
         the stage to when its work really began."""
-        self._waiting_on = None
+        self._waiting_on.pop(self._STAGE, None)
         state.enter(stage, now=entered_at)
         state.save(self._path)
         note(f"First run: {what} → {stage.value}")

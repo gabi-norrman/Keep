@@ -726,3 +726,42 @@ class TestDesktopShortcut:
         state = env.state_at(Stage.DONE)
         shortcut.granted = True
         assert env.pipeline.desktop_shortcut(state, now=0.0) is True
+
+    def test_once_setup_is_over_the_shortcut_is_built_without_the_grant(self, env, shortcut):
+        # #167: the grant serves iMessage alone; an install that finished its setup without it
+        # must not probe chat.db every minute for the rest of its life, nor go without the shortcut.
+        env.enabled = ["Telegram", "Photos", "Google"]     # the threshold reached, no setup command recorded
+        state = env.state_at(Stage.SETUP)
+        assert env.pipeline.desktop_shortcut(state, now=0.0) is True
+        assert shortcut.ensure_calls == 1
+        saved = State.load(env.path)
+        assert saved.desktop_shortcut_at is not None
+        assert env.pipeline.desktop_shortcut(saved, now=FirstRun.DESKTOP_SHORTCUT_PROBE_SECONDS) is False
+        rows = _rows(env.history)
+        assert any("Desktop" in row for row in rows) and not any("Full Disk Access" in row for row in rows)
+        shortcut.chat.open_conversation.assert_not_called()
+
+    def test_the_login_item_is_not_registered_without_the_grant(self, env, shortcut):
+        env.enabled = ["Telegram", "Photos", "Google"]
+        state = env.state_at(Stage.SETUP)
+        assert env.pipeline.desktop_shortcut(state, now=0.0) is True
+        assert shortcut.enable_calls == 0
+
+    def test_a_setup_still_in_progress_keeps_waiting_for_the_grant(self, env, shortcut):
+        env.enabled = ["Telegram", "Photos", "Google"]
+        FirstRun.note_setup_activity()      # a setup command just ran: the user is mid-setup
+        state = env.state_at(Stage.SETUP)
+        assert env.pipeline.desktop_shortcut(state, now=0.0) is False
+        assert shortcut.ensure_calls == 0 and State.load(env.path).desktop_shortcut_at is None
+
+    def test_the_shortcut_wait_and_the_stage_wait_are_each_traced_once(self, env, shortcut, monkeypatch):
+        # #167: the two waits alternate on every poll; with one memory between them both logged again each time.
+        traced = []
+        monkeypatch.setattr(FirstRun, "trace", lambda message: traced.append(message))
+        env.enabled = []
+        state = env.state_at(Stage.SETUP)
+        for n in range(3):
+            env.pipeline.desktop_shortcut(state, now=n * FirstRun.DESKTOP_SHORTCUT_PROBE_SECONDS)
+            env.pipeline.tick(state)
+        waits = [m for m in traced if "Desktop shortcut waits" in m or "Photos integration" in m]
+        assert len(waits) == 2
