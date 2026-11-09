@@ -51,6 +51,33 @@ class TestConfig:
         assert _make_vs(language="en")._lang == "en"
 
 
+class TestRequestLanguage:
+    """The language a segment is synthesized in follows the request, not only the config."""
+
+    def _synth_langs(self, vs):
+        tts = MagicMock()
+        tts.synthesize.return_value = (np.zeros(441, dtype=np.float32), 0.01)
+        tts.model.text_processor.validate_text.return_value = (True, [])
+        vs.text_queue.put("Hej, världen.")
+        vs.text_queue.put(None)
+        with patch.object(vs, '_get_tts', return_value=(tts, MagicMock())):
+            vs._run_synthesis()
+        return {c.kwargs['lang'] for c in tts.synthesize.call_args_list}
+
+    def test_swedish_request_on_an_english_install_is_read_as_swedish(self):
+        vs = _make_vs(language="en-US")
+        vs.set_request_language("sv-SE")
+        assert self._synth_langs(vs) == {"sv"}
+
+    def test_without_a_request_language_the_configured_one_is_used(self):
+        assert self._synth_langs(_make_vs(language="sv-SE")) == {"sv"}
+
+    def test_a_request_language_supertonic_lacks_falls_back_to_the_configured_one(self):
+        vs = _make_vs(language="en-US")
+        vs.set_request_language("is-IS")
+        assert self._synth_langs(vs) == {"en"}
+
+
 class TestClauseBoundaryFlusher:
     def _pop(self, buffer):
         from interfaces.voice.tts.SupertonicVoiceSynthesizer import SupertonicVoiceSynthesizer
