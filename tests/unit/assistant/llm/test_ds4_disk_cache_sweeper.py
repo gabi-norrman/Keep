@@ -68,8 +68,6 @@ class TestSweep:
         with patch.object(Path, 'unlink', vanish):
             assert Ds4DiskCacheSweeper(tmp_path, max_age_hours=24).sweep(now=NOW) == 0
 
-    @pytest.mark.xfail(strict=True, reason="sweep() catches FileNotFoundError alone: any other OSError from unlink "
-                                           "aborts the whole sweep, so the entries after the stuck one are never removed")
     def test_an_entry_that_cannot_be_removed_does_not_shield_the_others(self, tmp_path):
         # One entry the process may not unlink (a stray root-owned file, a directory of that
         # name) comes back every hour; the sweep must still free the rest of the budget.

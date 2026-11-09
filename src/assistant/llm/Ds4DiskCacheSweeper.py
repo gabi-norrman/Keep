@@ -98,6 +98,9 @@ class Ds4DiskCacheSweeper:
                 entry.unlink()
             except FileNotFoundError:
                 continue   # the server evicted it between the listing and here
+            except OSError as e:
+                info(f"ds4 disk cache sweep: cannot remove {entry.name}: {e} — left for the next sweep")
+                continue
             removed += 1
             freed += stat.st_size
         if removed:
