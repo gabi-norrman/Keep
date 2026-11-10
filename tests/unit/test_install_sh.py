@@ -791,7 +791,7 @@ class TestSatelliteInstall:
         assert re.search(r'imessage_chat\.host\s+(\S+)', result.stdout).group(1) == address
         assert RemoteMessagesHost.RemoteMessagesHost(address, 'Zq4nB8cR2yH6sD0fG3jA7vK1mX5pL9wT').address == address, \
             "the server would not take the printed address"
-        assert '127.0.0.1' not in result.stdout
+        assert 'http://127.0.0.1:8901' in result.stdout, "a server on this same Mac is not told its address"
 
     @pytest.mark.parametrize('env', [{}, {'KEEP_ROLE': SATELLITE}], ids=['the bare command', 'with the switch'])
     def test_a_rerun_on_a_satellite_keeps_its_config_and_shows_the_pairing_again(self, harness, env):

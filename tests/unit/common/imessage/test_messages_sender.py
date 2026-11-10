@@ -76,10 +76,13 @@ class TestSend:
         with run(returncode=3, stdout="", stderr=""):
             assert "3" in MessagesSender().send("+12345678901", "hi").error
 
-    def test_timeout_returns_timeout_error(self):
+    def test_a_timeout_names_the_unanswered_automation_dialog(self):
+        """osascript hangs while macOS's consent dialog waits on a screen nobody looks at, so the
+        timeout is where a missing grant shows first — as a failure, never as the denial it is not yet."""
         with patch.object(module.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="osascript", timeout=15)):
             result = MessagesSender().send("+12345678901", "hi")
-        assert "timeout" in result.error
+        assert "Automation" in result.error and not result.unauthorized
+        assert not result.service
 
     def test_a_missing_osascript_is_an_error_value_not_an_exception(self):
         with patch.object(module.subprocess, "run", side_effect=FileNotFoundError("osascript")):

@@ -21,6 +21,12 @@ APPLESCRIPT_RESULT_IMESSAGE = "sent:imessage"
 APPLESCRIPT_RESULT_SMS = "sent:sms"
 APPLESCRIPT_RESULT_GROUP = "sent:group"
 UNAUTHORIZED_ERROR = "not authorized to control Messages (System Settings → Privacy & Security → Automation)"
+# osascript waits as long as macOS's consent dialog stays unanswered, so a first send on a Mac nobody
+# looks at ends here and not in UNAUTHORIZED_ERROR — the text is all the assistant has to tell the two apart.
+TIMEOUT_ERROR = (f"no answer from Messages within {APPLESCRIPT_TIMEOUT} s — at a first send this is usually macOS "
+                 "asking, on the screen of the Mac that holds this Messages account, whether Terminal may control "
+                 "Messages: somebody answers that dialog there (or allows it under System Settings → Privacy & "
+                 "Security → Automation), then the message is sent again. Otherwise Messages is slow or not open there")
 
 
 class MessagesSender:
@@ -151,8 +157,9 @@ class MessagesSender:
                 capture_output=True, text=True, timeout=APPLESCRIPT_TIMEOUT
             )
         except subprocess.TimeoutExpired:
-            error(f"iMessage send to {handle} timed out after {APPLESCRIPT_TIMEOUT}s")
-            return SendResult(error="timeout sending iMessage")
+            error(f"iMessage send to {handle} timed out after {APPLESCRIPT_TIMEOUT}s — an unanswered Automation "
+                  f"dialog on this Mac's screen (Terminal controlling Messages) is the usual cause at a first send")
+            return SendResult(error=TIMEOUT_ERROR)
         except Exception as e:
             error(f"iMessage send to {handle} raised: {e}")
             return SendResult(error=f"{e}")

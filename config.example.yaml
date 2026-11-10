@@ -165,7 +165,7 @@ telegram_bot:
 # 2. A macOS user whose Messages is signed in to iMessage with that Apple ID. One macOS user has one
 #    Messages login, so the account lives in one of three places:
 #    - Another macOS user on the server's Mac, with a Keep satellite in that user: host is
-#      http://127.0.0.1:8898. It runs only while that user is signed in — after a reboot somebody
+#      http://127.0.0.1:8898, never the Mac's name — such a satellite answers this Mac only. It runs only while that user is signed in — after a reboot somebody
 #      signs that user in once; switching back to the own account afterwards is fine — and while that
 #      user is switched away no typing dots are expected.
 #    - Another Mac, with a Keep satellite there: host is the address its installer prints
@@ -188,7 +188,11 @@ telegram_bot:
 #    entry ("imessage_chat.owners[0]", then [1] …; the same for guests and bots). config_set refuses
 #    all three lists, so nothing the assistant reads can make somebody an owner, or put a stranger on a
 #    list: whoever is listed is answered and is a post_message destination. Never state a handle; to
-#    add or change a person, ask for the entry with config_request.
+#    add or change a person, ask for the entry with config_request. A phone sends from its number or
+#    from the Apple ID's email, whichever its Messages settings start new conversations from, and a
+#    message from a handle that is not listed is never answered: ask an owner for both, one entry each
+#    with the same name, and when a first message gets no answer, the other handle is the first thing
+#    to check.
 # 6. config_set("interfaces.imessage.enabled", "true") and restart_server — the interfaces are read at
 #    startup. From then on restart_integration("iMessage Chat") is enough after a change of host or
 #    host_token; the lists, daily_limit, typing_dots and listen_in_groups are read live. list_integrations shows what is

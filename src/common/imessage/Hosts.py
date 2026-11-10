@@ -16,7 +16,7 @@ from common.logging import info
 HOST_KEY = "host"
 TOKEN_KEY = "host_token"
 LOCAL = "local"
-_LOOPBACK = ("localhost", "127.0.0.1", "::1")
+LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
 
 _local: Optional[LocalMessagesHost] = None
 
@@ -43,7 +43,7 @@ def account(section: str) -> str:
         host, port = (parts.hostname or "").lower(), parts.port
     except ValueError:
         return address.lower().rstrip("/")
-    return f"{parts.scheme.lower()}://{'loopback' if host in _LOOPBACK else host}:{port or ''}"
+    return f"{parts.scheme.lower()}://{'loopback' if host in LOOPBACK_NAMES else host}:{port or ''}"
 
 
 def same_account(section: str, other: str) -> bool:

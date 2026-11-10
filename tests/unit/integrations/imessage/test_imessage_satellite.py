@@ -187,6 +187,25 @@ class TestASatelliteThatCannotBeUsed:
 
 
 @pytest.mark.unit
+class TestASatelliteOnTheServersOwnMac:
+    """A satellite under another macOS user answers the loopback alone, so the Mac's name reaches nothing."""
+
+    AWAY = HostHealth(False, UNREACHABLE, "no connection (Connection refused)")
+
+    def test_an_unreachable_name_is_answered_with_the_loopback_on_the_same_port(self):
+        said = SatelliteHints.problem("http://keep-mini.local:8901", self.AWAY, "imessage_chat", "iMessage Chat")
+        assert "http://127.0.0.1:8901" in said and 'config_request("imessage_chat.host")' in said
+
+    @pytest.mark.parametrize("address", ["http://127.0.0.1:8901", "http://localhost:8901", "http://[::1]:8901"])
+    def test_an_address_that_is_the_loopback_already_is_not_sent_there_again(self, address):
+        said = SatelliteHints.problem(address, self.AWAY, "imessage_chat", "iMessage Chat")
+        assert "under another user" not in said
+
+    def test_a_problem_that_is_not_the_connection_does_not_question_the_address(self):
+        refused = HostHealth(False, REFUSED, "the satellite refused the token")
+        assert "127.0.0.1" not in SatelliteHints.problem("http://keep-mini.local:8901", refused, "imessage", "iMessage")
+
+
 class TestASatelliteThatWorksAndIsOutOfStep:
     def test_one_on_the_servers_commit_and_wire_is_simply_healthy(self, integration):
         assert integration.check_health() is True

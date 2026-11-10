@@ -1075,7 +1075,8 @@ satellite_summary() {
     note "The address is this Mac's own: the server runs on this Mac, under another user. For a server on"
     note "another Mac: imessage_satellite.lan_access: true in config.yaml, then start.sh."
   else
-    note "The address is this Mac's name or IP address on your network, and the port."
+    note "The address is this Mac's name or IP address on your network, and the port. For a server on this"
+    note "same Mac, under another user, it is http://127.0.0.1:$port instead."
   fi
   if [ -z "$token" ]; then
     warn "config.yaml holds no imessage_satellite.token: the satellite does not start without one (16+ random characters)."

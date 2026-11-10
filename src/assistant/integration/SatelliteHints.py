@@ -11,10 +11,11 @@ needed on the other one. `restart_server` is offered where the server is the one
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from common import Version
 from common.Paths import AISERVER_DIR
-from common.imessage import Satellite, Wire
+from common.imessage import Hosts, Satellite, Wire
 from common.imessage.MessagesHost import (BAD_ANSWER, HostHealth, NO_ACCESS, NO_DATABASE, NOT_CONFIGURED, REFUSED,
                                           SatelliteStatus, TYPING_NO_ACCESSIBILITY, TYPING_NO_MESSAGES,
                                           TYPING_NO_WINDOW, TYPING_NOT_ON_CONSOLE, TYPING_SCREEN_LOCKED)
@@ -58,6 +59,22 @@ def full_disk_access(address: str = "") -> str:
             "Terminal, accept macOS's offer to quit Terminal, then open Terminal again and run start.sh in the Keep "
             "folder (~/Keep/start.sh on a default install). show_full_disk_access_setting() and restart_server() "
             "act on the server's Mac and do not help here")
+
+
+def _same_mac(address: str, host_key: str) -> str:
+    """What to try when the satellite may be another user of the server's own Mac: such a satellite
+    answers the loopback alone, so the Mac's name or network address reaches nothing. Empty for an
+    address that already is the loopback."""
+    try:
+        parts = urlsplit(address)
+        host, port = (parts.hostname or "").lower(), parts.port
+    except ValueError:
+        host, port = "", None
+    if host in Hosts.LOOPBACK_NAMES:
+        return ""
+    return (f". A satellite under another user of this same Mac is reached at http://127.0.0.1:"
+            f"{port or Satellite.DEFAULT_PORT}, not by the Mac's name: the user types that with "
+            f'config_request("{host_key}")')
 
 
 def automation(address: str) -> str:
@@ -125,7 +142,7 @@ def problem(address: str, health: HostHealth, section: str, integration: str) ->
     return (f"the iMessage satellite at {address} does not answer ({health.detail}). Ask the user to check that Mac: "
             f"it is on and its user is logged in, Keep runs there (start.sh in its Keep folder), "
             f"{Satellite.LAN_ACCESS_KEY} is true when it is another Mac than the server's, and {host_key} "
-            f"is its address")
+            f"is its address{_same_mac(address, host_key)}")
 
 
 def warning(address: str, status: SatelliteStatus) -> str:
