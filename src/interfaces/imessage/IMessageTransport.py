@@ -6,11 +6,15 @@ turns the rows into `IncomingMessage`s; what the chat layer asks it to say goes 
 bubbles to the chat the message came from — the chat's guid, never a name looked up again.
 
 Who is served is the allowlist (`Allowlist`): a sender on no list is never a turn. A message
-in a 1:1 chat is always one; in a group only by the group wake rule the Telegram groups share
-(`assistant/GroupWake.py`) — a reply to one of the assistant's own bubbles, its name, or the
-message right after one of its own. Everything else that is said in a served chat is kept as
-a short backlog and put in front of the next turn there as context, marked untrusted: the
-assistant knows what the group was talking about, and a stranger's words are never a turn.
+in a 1:1 chat is always one. In a group the wake rule the Telegram groups share
+(`assistant/GroupWake.py`) says which messages are addressed to the assistant — a reply to one
+of its own bubbles, its name, or the message right after one of its own — and, while
+`imessage_chat.listen_in_groups` is on (the default), every other message of a listed person is
+a turn too, marked `overheard`: the assistant reads along and answers NO, which is never sent,
+unless it has a reason to speak. An overheard message never ends a reply in flight; it waits
+for it, like a guest's. Everything else that is said in a served chat (a stranger's words,
+another assistant's unaddressed ones, all of it with the key off) is kept as a short backlog and
+put in front of the next turn there as context, marked untrusted.
 
 Nothing somebody outside the household chose reaches the model as it was written
 (`Untrusted`): a group's name and a contact card's name are cut down to a plain short name, a
@@ -55,7 +59,8 @@ from common.imessage.MessagesHost import GroupChat, HostHealth, Message, Message
 from common.logging import error, info, note, trace
 from interfaces.chat import FallbackNotice
 from interfaces.chat.ChatTransport import ChatTransport
-from interfaces.chat.ChatTypes import KIND_PHOTO, KIND_REACTION, KIND_TEXT, Attachment, IncomingMessage, Progress
+from interfaces.chat.ChatTypes import (KIND_PHOTO, KIND_REACTION, KIND_TEXT, PHASE_COMMANDS, Attachment,
+                                       IncomingMessage, Progress)
 from interfaces.imessage import PlainText, Untrusted
 from interfaces.imessage.Allowlist import OWNERS_KEY, SECTION, Allowlist, Person, normalize
 from interfaces.imessage.ChatState import ChatState
@@ -64,6 +69,7 @@ NAME = "iMessage Chat"
 ENABLED_KEY = "interfaces.imessage.enabled"
 DAILY_LIMIT_KEY = f"{SECTION}.daily_limit"
 TYPING_DOTS_KEY = f"{SECTION}.typing_dots"
+LISTEN_KEY = f"{SECTION}.listen_in_groups"
 # How long a reply waits for the host to take the dots away before it is sent regardless: the
 # dots must not outlive the bubble, and must never hold it back for long.
 TYPING_OFF_WAIT = 2.0
@@ -142,6 +148,7 @@ class _Offer:
     person: Person
     name: str
     trusted: bool
+    overheard: bool = False     # a group message not addressed to the assistant, a turn by `listen_in_groups`
     carried: list = field(default_factory=list)     # the backlog lines the turn took with it
     at: float = 0.0             # when it was last handed over
     tries: int = 0              # how often it was turned away
@@ -153,11 +160,14 @@ class IMessageDraft:
 
     A bubble cannot be edited there, so nothing is shown before `finalize` sends it; a
     discarded draft never put anything in the chat. The typing dots go on at the first sign of
-    work and off when the draft ends, through `IMessageTransport.typing`."""
+    work and off when the draft ends, through `IMessageTransport.typing`. A *quiet* draft — of
+    a turn the assistant only overheard, which mostly ends in no bubble — shows them once a
+    command runs or the reply has words, so a group does not see dots for every message."""
 
-    def __init__(self, transport: "IMessageTransport", chat: str):
+    def __init__(self, transport: "IMessageTransport", chat: str, quiet: bool = False):
         self._transport = transport
         self._chat = chat
+        self._quiet = quiet
         self._typing = False
 
     def _working(self):
@@ -171,7 +181,8 @@ class IMessageDraft:
             self._transport.typing(self._chat, False)
 
     def show_progress(self, progress: Progress) -> None:
-        self._working()
+        if not self._quiet or progress.phase == PHASE_COMMANDS:
+            self._working()
 
     def update(self, html: str) -> bool:
         self._working()
@@ -244,6 +255,7 @@ class IMessageTransport(Integration, ChatTransport):
         self._bursts: dict[str, RateLimiter] = {}
         self._capped_noted: set[tuple[str, str]] = set()    # (recipient, day) whose daily cap was logged
         self._told_waiting: set[str] = set()        # chats told that their turn waits for the owner
+        self._overheard: set[str] = set()           # chats whose latest turn was overheard: its drafts are quiet
         self._send_lock = threading.Lock()
         self._typing_lock = threading.Lock()
         self._typing_lane: Optional[ThreadPoolExecutor] = None  # one thread: the host hears on and off in order
@@ -571,9 +583,10 @@ class IMessageTransport(Integration, ChatTransport):
         why = ""
         if message.is_group:
             why = self._wake.reason(chat, text, OWN, replies_to_own=message.reply_to_from_me)
-            if not why:
+            if not why and not self._listens(person, text):
                 self._remember(message, person, trusted)
                 return ROW
+        overheard = message.is_group and not why
         if now - message.timestamp > STALE_SECONDS:
             info(f"{where}: the message from {name} is {(now - message.timestamp) / 60:.0f} min old — "
                  f"no answer of its own, kept as context")
@@ -585,11 +598,12 @@ class IMessageTransport(Integration, ChatTransport):
         if not self._within_caps(person, trusted, chat, name):
             self._remember(message, person, trusted)
             return ROW
-        how = f"{HOW[why]} in the group '{self._chats[chat].title}'" if why else "wrote"
-        offer = _Offer(message, person, name, trusted)
-        if not trusted and any(held.message.chat_guid == chat for held in self._held):
-            info(f"{where}: {name} (guest) {how} while an earlier message of the chat waits for the busy "
-                 f"assistant — it waits behind that one")
+        how = (f"{HOW[why]} in the group '{self._chats[chat].title}'" if why
+               else f"wrote in the group '{self._chats[chat].title}' to nobody in particular" if overheard else "wrote")
+        offer = _Offer(message, person, name, trusted, overheard)
+        if (overheard or not trusted) and any(held.message.chat_guid == chat for held in self._held):
+            info(f"{where}: {name}{'' if trusted else ' (guest)'} {how} while an earlier message of the chat waits "
+                 f"for the busy assistant — it waits behind that one")
             self._hold(offer, now, turned_away=False)
             return HELD
         info(f"{where}: {name}{'' if trusted else ' (guest)'}{' (assistant)' if person.bot else ''} {how} — a turn")
@@ -600,6 +614,19 @@ class IMessageTransport(Integration, ChatTransport):
             info(f"{where}: the chat layer did not take the turn from {name} — kept as context")
             self._remember(message, person, trusted)
         return outcome
+
+    @staticmethod
+    def _listens(person: Person, text: str) -> bool:
+        """Whether a group message that is not addressed to the assistant is a turn all the
+        same (`imessage_chat.listen_in_groups`, on unless set to false; read at every message).
+        Never another assistant's — two that answer whatever is said would never stop — and
+        never one without words."""
+        if not text or person.bot:
+            return False
+        if not config.get(LISTEN_KEY, True):
+            trace(f"iMessage chat: {LISTEN_KEY} is off — only what is addressed to the assistant is a turn in a group")
+            return False
+        return True
 
     @staticmethod
     def _words(message: Message) -> str:
@@ -641,6 +668,11 @@ class IMessageTransport(Integration, ChatTransport):
         if self._hub is None:
             error(f"iMessage chat [{chat}]: no chat hub attached, the message from {name} is not a turn")
             return REFUSED
+        if offer.overheard and self._hub.replying(self, chat):
+            # An owner's new message ends the reply in flight. One that was only overheard must
+            # not: it waits for that reply, as a guest's does.
+            trace(f"iMessage chat [{chat}]: a reply is in flight — the overheard message from {name} waits for it")
+            return HELD
         images, notes = self._read_attachments(message)
         body = "\n".join(part for part in (self._words(message), *notes) if part)
         if not body and not images:
@@ -659,10 +691,11 @@ class IMessageTransport(Integration, ChatTransport):
             kind=KIND_PHOTO if images else KIND_TEXT, text=body, attachments=images,
             reply_to_text=quote or None, reply_to_bot=message.reply_to_from_me,
             chat_name=self._chats[chat].title if message.is_group and chat in self._chats else None,
-            guest=not offer.trusted, sender_is_bot=offer.person.bot,
+            guest=not offer.trusted, sender_is_bot=offer.person.bot, overheard=offer.overheard,
             context=self._backlog(chat, now, self._replied_to(message))))
         if taken:
             self._backlogs.pop(chat, None)      # the turn carried it
+            (self._overheard.add if offer.overheard else self._overheard.discard)(chat)
             return TURN
         self._offered.pop(key, None)
         with self._turned_lock:
@@ -699,7 +732,7 @@ class IMessageTransport(Integration, ChatTransport):
             self._held.remove(oldest)
             info(f"iMessage chat [{oldest.message.chat_guid}]: too many messages wait for the busy assistant — the "
                  f"oldest, from {oldest.name}, is kept as context instead")
-            self._remember(oldest.message, oldest.person, trusted=False)
+            self._remember(oldest.message, oldest.person, oldest.trusted)
 
     @staticmethod
     def _back_off(offer: _Offer, now: float):
@@ -734,7 +767,7 @@ class IMessageTransport(Integration, ChatTransport):
                 self._held.remove(offer)
                 why = "is from somebody no longer on the lists" if person is None else "waited too long for an answer of its own"
                 info(f"iMessage chat [{chat}]: the held message from {offer.name} {why} — kept as context")
-                self._remember(message, person, trusted=False)
+                self._remember(message, person, trusted=False if person is None else offer.trusted)
                 continue
             if now < offer.again_at:
                 continue
@@ -1368,7 +1401,7 @@ class IMessageTransport(Integration, ChatTransport):
         return self._cannot_carry(conversation, "a video", len(data), caption)
 
     def begin_draft(self, conversation) -> IMessageDraft:
-        return IMessageDraft(self, conversation)
+        return IMessageDraft(self, conversation, quiet=conversation in self._overheard)
 
     def reply_finished(self, conversation) -> None:
         self._told_waiting.discard(conversation)

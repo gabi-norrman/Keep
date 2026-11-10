@@ -516,6 +516,24 @@ class TestIntake:
         assert "not for sharing with the group" in note  # the privacy caution, as for a guest
         assert "disabled" not in note and note.endswith('Reply with "NO" if there is nothing to say.')
 
+    @pytest.mark.parametrize("guest", [False, True], ids=["owner", "guest"])
+    def test_an_overheard_group_message_is_told_apart_from_one_addressed_to_her(self, session, hub, transport, guest):
+        session.submit(msg(text="hello", chat_name="Family"))  # learn the group
+        addressed, _ = session._frame(msg(text="who cooks?", chat_name="Family", guest=guest), False)
+        overheard, suppress = session._frame(msg(text="who cooks?", chat_name="Family", guest=guest, overheard=True), False)
+        assert suppress is True and '"NO"' in overheard
+        assert "not addressed to you" in overheard and "not addressed to you" not in addressed
+        assert ("disabled" in overheard) is guest, "an overheard guest is still a guest"
+
+    def test_the_hub_says_which_conversation_has_a_reply_in_flight(self, hub, transport):
+        busy = hub.session_for(transport, 4711)
+        busy._request = object()
+        try:
+            assert hub.replying(transport, 4711) is True
+            assert hub.replying(transport, 4712) is False, "a conversation nobody wrote in"
+        finally:
+            busy._request = None
+
     def test_a_group_turn_may_stay_silent_with_no(self, session, hub, transport):
         session.submit(msg(text="hello", chat_name="Family"))  # learn the group
         _, suppress = session._frame(msg(text="hello", chat_name="Family"), False)

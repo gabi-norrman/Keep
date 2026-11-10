@@ -47,6 +47,9 @@ class IncomingMessage:
     chat_name: Optional[str] = None       # a group's title → RequestContext.location; None in a private chat
     guest: bool = False                   # the sender is not one of the household's owners
     sender_is_bot: bool = False           # the sender is another assistant (a Telegram bot)
+    # Said in a group without addressing the assistant, and handed over all the same by a transport
+    # that lets it read along (iMessage): the turn is told that staying quiet is the normal case.
+    overheard: bool = False
     # What was said in the chat and never became a turn, rendered by a transport that reads the
     # whole chat (iMessage): put in front of the query, outside the text that is screened, logged
     # and recorded as the sender's own words.

@@ -191,7 +191,7 @@ telegram_bot:
 #    add or change a person, ask for the entry with config_request.
 # 6. config_set("interfaces.imessage.enabled", "true") and restart_server — the interfaces are read at
 #    startup. From then on restart_integration("iMessage Chat") is enough after a change of host or
-#    host_token; the lists, daily_limit and typing_dots are read live. list_integrations shows what is
+#    host_token; the lists, daily_limit, typing_dots and listen_in_groups are read live. list_integrations shows what is
 #    missing or wrong, with the fix.
 # The account must be the chat's alone: while the iMessage Feed integration is enabled and imessage.host
 # names the same account as imessage_chat.host, the chat does not start and list_integrations says so.
@@ -202,9 +202,12 @@ telegram_bot:
 # SMS or RCS — an owner without an iPhone — is treated as a guest, since an SMS sender can be forged.
 # A guest is answered, but no command runs for them and nothing private is shared. A sender on no list
 # is never answered.
-# Where it answers: a message in a 1:1 chat always. In a group chat a reply to one of its own messages,
-# a message that says its name (wake_word, wake_word_aliases) and the message right after one of its
-# own; whatever else the group says is not answered and is read as context with the next answer. There
+# Where it answers: a message in a 1:1 chat always. In a group chat it reads along: every message of a
+# listed person is shown to it and it decides whether to answer — it stays quiet unless it is meant or
+# can help, so nobody has to say its name. With listen_in_groups: false it is shown only a reply to one
+# of its own messages, a message that says its name (wake_word, wake_word_aliases) and the message
+# right after one of its own; whatever else the group says is then read as context with the next
+# answer. Another assistant in a group (bots) always needs one of those three. There
 # is no list of groups: a group is served through the listed people in it, each with the rights they
 # have anywhere. Every person on the lists is a post_message destination by name. A group chat
 # becomes one once an owner has written in it over iMessage — anybody can put a listed number in a
@@ -257,6 +260,9 @@ imessage_chat:
   typing_dots: true                        # show the chat that a reply is being typed (see above: needs Accessibility
                                            # for Terminal on the Mac that holds the account). false: never. Read at
                                            # every reply; without the grant nothing is touched and nothing shows.
+  listen_in_groups: true                   # in a group chat every message of a listed person is shown to the
+                                           # assistant, which answers only when it has a reason to (one LLM call
+                                           # per message). false: only what is addressed to it (see above).
 
 # >> telegram_feed: src/integrations/telegram_feed/config.example.yaml
 

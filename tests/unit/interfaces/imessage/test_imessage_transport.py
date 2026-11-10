@@ -330,6 +330,103 @@ class TestTheGroupWakeRule:
         assert chat.turns[0].chat_name == "Charlotte, Marcus and 1 other"
 
 
+@pytest.fixture
+def listening(tmp_path):
+    """The chat as an install has it: `imessage_chat.listen_in_groups` on."""
+    with configured(listen=True):
+        chat = Chat(tmp_path)
+        chat.arrive()
+        yield chat
+        for transport in chat.built:
+            transport.stop()
+
+
+@pytest.mark.unit
+class TestReadingAlongInAGroup:
+    """With `imessage_chat.listen_in_groups` nobody has to say the assistant's name: what a listed
+    person writes in a group is a turn, marked as overheard unless the wake rule says it was
+    addressed to the assistant."""
+
+    def test_a_message_like_any_other_is_a_turn_marked_as_overheard(self, listening):
+        listening.arrive(text(101, "who is cooking tonight?", handle=CHARLOTTE, chat=FAMILY))
+        (turn,) = listening.turns
+        assert (turn.conversation, turn.sender, turn.guest, turn.overheard) == (FAMILY, "Charlotte", True, True)
+
+    def test_what_the_wake_rule_calls_addressed_is_not_overheard(self, listening):
+        listening.arrive(text(101, "Michelle, who is cooking tonight?", handle=CHARLOTTE, chat=FAMILY),
+                         own(102, "Marcus is."), text(103, "and the salad?", chat=FAMILY))
+        assert [turn.overheard for turn in listening.turns] == [False, False]
+
+    def test_a_message_in_a_chat_of_two_is_never_overheard(self, listening):
+        listening.arrive(text(101, "who is cooking tonight?", handle=CHARLOTTE))
+        assert [turn.overheard for turn in listening.turns] == [False]
+
+    def test_a_stranger_another_assistant_and_a_picture_without_words_are_still_only_context(self, listening):
+        picture = HostAttachment(40, "IMG_0001.jpg", "image/jpeg")
+        listening.arrive(text(101, "anyone home?", handle=STRANGER, chat=FAMILY),
+                         text(102, "same here", handle=BOBS_KEEP, chat=FAMILY),
+                         text(103, module.OBJECT_REPLACEMENT, handle=CHARLOTTE, chat=FAMILY, attachments=[picture]))
+        assert listening.turns == []
+
+    def test_the_key_is_the_one_config_yaml_spells_and_it_listens_without_it(self):
+        """A contract with config.yaml: `imessage_chat.listen_in_groups`, on unless set to false."""
+        assert module.LISTEN_KEY == "imessage_chat.listen_in_groups"
+        person = Mock(bot=False)
+        with patch.object(module.config, "get", side_effect=lambda key, default=None: default):
+            assert IMessageTransport._listens(person, "who is cooking?") is True
+
+    def test_an_owners_overheard_message_waits_for_the_reply_in_flight_instead_of_ending_it(self, listening):
+        listening.hub.busy = True
+        listening.arrive(text(101, "I can cook", chat=FAMILY))
+        assert listening.turns == [], "handed over, an owner's message would have ended the reply in flight"
+        listening.hub.busy = False
+        listening.clock.now += module.OFFER_AGAIN_MAX
+        listening.arrive()
+        assert [(turn.text, turn.guest, turn.overheard) for turn in listening.turns] == [("I can cook", False, True)]
+
+    def test_an_owners_message_addressed_to_it_is_never_held_back(self, listening):
+        listening.hub.busy = True
+        listening.arrive(text(101, "Michelle, stop", chat=FAMILY))
+        assert [turn.text for turn in listening.hub.accepted] == ["Michelle, stop"]
+
+    def test_overheard_messages_of_a_busy_chat_are_taken_in_the_order_they_were_written(self, listening):
+        listening.hub.busy = True
+        listening.arrive(text(101, "I can cook", chat=FAMILY))
+        listening.hub.busy = False
+        listening.arrive(text(102, "pasta again?", handle=CHARLOTTE, chat=FAMILY))
+        assert listening.turns == [], "the younger message went past the one that waits"
+        for _ in range(2):
+            listening.clock.now += module.OFFER_AGAIN_MAX
+            listening.arrive()
+        assert listening.hub.texts == ["I can cook", "pasta again?"]
+
+    def test_the_group_sees_no_dots_until_an_overheard_turn_has_something_to_say(self, listening):
+        listening.arrive(text(101, "who is cooking tonight?", handle=CHARLOTTE, chat=FAMILY))
+        silent = listening.transport.begin_draft(FAMILY)
+        silent.show_progress(Progress(phase="thinking"))
+        silent.discard()
+        assert dots_and_sends(listening.host) == []
+        speaking = listening.transport.begin_draft(FAMILY)
+        speaking.update("Marcus")
+        assert wait_until(lambda: dots_and_sends(listening.host) == [("typing", FAMILY, True)])
+        speaking.discard()
+
+    def test_a_command_an_overheard_turn_runs_shows_the_dots(self, listening):
+        listening.arrive(text(101, "it is freezing in here", chat=FAMILY))
+        draft = listening.transport.begin_draft(FAMILY)
+        draft.show_progress(Progress(phase="commands", commands=1))
+        assert wait_until(lambda: dots_and_sends(listening.host) == [("typing", FAMILY, True)])
+        draft.discard()
+
+    def test_a_turn_addressed_to_it_after_an_overheard_one_shows_the_dots_at_once(self, listening):
+        listening.arrive(text(101, "who is cooking tonight?", handle=CHARLOTTE, chat=FAMILY))
+        listening.arrive(text(102, "Michelle?", handle=CHARLOTTE, chat=FAMILY))
+        draft = listening.transport.begin_draft(FAMILY)
+        draft.show_progress(Progress(phase="thinking"))
+        assert wait_until(lambda: dots_and_sends(listening.host) == [("typing", FAMILY, True)])
+        draft.discard()
+
+
 @pytest.mark.unit
 class TestOtherAssistants:
     """iMessage marks no sender as a bot: `imessage_chat.bots` names the ones the owner knows, and

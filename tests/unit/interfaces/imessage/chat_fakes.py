@@ -21,10 +21,13 @@ LISTS = {
 
 
 @contextmanager
-def configured(owner_feed: bool = False, **values):
+def configured(owner_feed: bool = False, listen: bool = False, **values):
     """config.yaml with the cast on the lists; `values` (written `section__key`) on top. The
-    iMessage integration — the other consumer of a host — is off unless `owner_feed`."""
-    keys = {**LISTS, **{name.replace("__", "."): value for name, value in values.items()}}
+    iMessage integration — the other consumer of a host — is off unless `owner_feed`. In a
+    group only what is addressed to the assistant is a turn unless `listen`
+    (`imessage_chat.listen_in_groups`, which an install has on by default)."""
+    keys = {**LISTS, "imessage_chat.listen_in_groups": listen,
+            **{name.replace("__", "."): value for name, value in values.items()}}
     real = config.get
 
     def get(key, default=None):
@@ -65,6 +68,9 @@ class FakeHub:
         if self.taken:
             self.accepted.append(message)
         return self.taken
+
+    def replying(self, transport, conversation) -> bool:
+        return self.busy
 
     def record(self, transport, conversation, direction, text):
         self.recorded.append((conversation, direction, text))

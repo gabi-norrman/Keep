@@ -5,7 +5,9 @@ names it (the wake word or an alias, as a whole word), and the one that comes ri
 message of its own — people forget the name and the reply gesture when they answer. The rest
 is read as context. Two consumers decide by it: the Telegram feed (the owner's account sees
 the groups the bot is in; the bot itself is handed only the replies to its bubbles) and the
-iMessage chat transport (the assistant's own account sees every message, so it decides alone).
+iMessage chat transport (the assistant's own account sees every message, so it decides alone —
+and by default hands the rest over too, as overheard: there the rule says which turns are
+addressed to it, not which messages are turns).
 
 What is shared is the decision, not the platform: `reason` says why a message wakes, `brake`
 is the hourly cap that stops two assistants answering each other for ever, and `settle`

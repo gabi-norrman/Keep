@@ -124,6 +124,13 @@ class ChatHub(SingletonMixin):
         False when the session dropped it on the spot (`ChatSession.submit`)."""
         return self.session_for(transport, msg.conversation).submit(msg)
 
+    def replying(self, transport: ChatTransport, conversation) -> bool:
+        """Whether a reply is in flight in this conversation: a new message from an owner would
+        end it, so a transport holds back one that can wait."""
+        with self._lock:
+            session = self._sessions.get((transport, conversation))
+        return session is not None and session.busy
+
     def receive_chat_message(self, source: str, conversation: Any, sender: str, text: str, *,
                              guest: bool = False, sender_is_bot: bool = False,
                              chat_name: Optional[str] = None) -> bool:
