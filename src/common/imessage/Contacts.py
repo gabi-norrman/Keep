@@ -377,11 +377,33 @@ class Contacts:
         trace(f"iMessage: fallback lookup of '{name_lower}' → {reverse[name_lower]} ({reasons[name_lower]})")
         return reverse[name_lower]
 
+    @staticmethod
+    def _source_size(db_path: Path) -> int:
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+                return conn.execute("SELECT COUNT(*) FROM ZABCDRECORD").fetchone()[0]
+        except Exception as e:
+            fine(f"iMessage: could not count contact source {db_path.parent.name}: {e}")
+            return 0
+
+    @classmethod
+    def _by_precedence(cls, source_dbs: list[Path]) -> list[Path]:
+        """The sources with the owner's own address book first. macOS also syncs the lists of
+        other people here (a child's Family Sharing contacts) and nothing in a source says whose
+        it is — each has a "me" card — so the largest one is taken as the owner's."""
+        sizes = {db_path: cls._source_size(db_path) for db_path in source_dbs}
+        ordered = sorted(source_dbs, key=lambda db_path: (-sizes[db_path], db_path.parent.name))
+        if len(ordered) > 1:
+            fine("iMessage: contact sources by precedence: "
+                 + ", ".join(f"{db_path.parent.name} ({sizes[db_path]} cards)" for db_path in ordered))
+        return ordered
+
     def refresh(self):
-        """Build phone/email -> name cache by reading the macOS AddressBook SQLite databases directly."""
+        """Build phone/email -> name cache by reading the macOS AddressBook SQLite databases directly.
+        A handle on cards of several sources keeps the name of the first source in `_by_precedence`."""
         try:
             ab_root = self._address_book or ADDRESS_BOOK_DIR
-            source_dbs = list((ab_root / "Sources").glob("*/AddressBook-v22.abcddb"))
+            source_dbs = self._by_precedence(list((ab_root / "Sources").glob("*/AddressBook-v22.abcddb")))
             if not source_dbs:
                 trace("iMessage: no AddressBook source databases found")
                 self._contact_cache_time = time.time()
@@ -392,6 +414,7 @@ class Contacts:
             handle_to_full: dict[str, str] = {}
             cards: dict[tuple, tuple[str, set[str]]] = {}   # (source, card) → (full name, the keys of its handles)
             for db_path in source_dbs:
+                names: dict[str, str] = {}
                 try:
                     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
                         for card, first, middle, last, phone, label in conn.execute("""
@@ -403,10 +426,10 @@ class Contacts:
                             self._note_card(cards, (db_path, card), first, middle, last, phone)
                             normalized = normalize_phone(phone)
                             if normalized:
-                                cache[normalized] = first
+                                names[normalized] = first
                             suffix = phone_suffix(phone)
                             if suffix:
-                                cache[suffix] = first
+                                names[suffix] = first
                             for name_key in self._name_keys(first, last, middle):
                                 self._add_candidate(candidates, name_key, phone, label)
                             self._record_full_name(handle_to_full, first, last, phone, middle)
@@ -417,12 +440,18 @@ class Contacts:
                             WHERE r.ZFIRSTNAME IS NOT NULL AND e.ZADDRESS IS NOT NULL
                         """):
                             self._note_card(cards, (db_path, card), first, middle, last, email)
-                            cache[email.lower()] = first
+                            names[email.lower()] = first
                             for name_key in self._name_keys(first, last, middle):
                                 self._add_candidate(candidates, name_key, email)
                             self._record_full_name(handle_to_full, first, last, email, middle)
                 except Exception as e:
                     fine(f"iMessage: skipping contact source {db_path.parent.name}: {e}")
+                shadowed = 0
+                for handle, name in names.items():
+                    shadowed += cache.setdefault(handle, name) != name
+                if shadowed:
+                    fine(f"iMessage: contact source {db_path.parent.name}: {shadowed} handles keep the name "
+                         f"an earlier source gave them")
 
             reverse, reasons = self._rank_candidates(candidates)
             self._contact_cache = cache

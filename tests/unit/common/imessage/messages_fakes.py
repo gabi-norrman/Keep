@@ -70,12 +70,12 @@ class ChatDb:
         return self.execute("INSERT INTO message_attachment_join VALUES (?, ?)", (message, rowid))
 
 
-def address_book(root, people):
+def address_book(root, people, source="ABC"):
     """Write a minimal AddressBook-v22.abcddb under `root` and return the AddressBook folder;
     `people` are (first, last, phones, emails) — or (first, middle, last, phones, emails) — with
-    phones as (number, label) tuples."""
+    phones as (number, label) tuples. A second call with another `source` adds an account."""
     folder = root / "AddressBook"
-    db = folder / "Sources" / "ABC" / "AddressBook-v22.abcddb"
+    db = folder / "Sources" / source / "AddressBook-v22.abcddb"
     db.parent.mkdir(parents=True)
     with sqlite3.connect(db) as conn:
         conn.execute("CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT, ZMIDDLENAME TEXT, "

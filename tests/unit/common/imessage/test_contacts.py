@@ -228,6 +228,24 @@ class TestRefreshRanking:
         assert resolved.full_name == "Dave Berg Holm"
         assert resolved.name == "Dave", "the feed shows the first name for this handle"
 
+    @pytest.mark.parametrize("child_source", ["AAA", "ZZZ"])
+    def test_owners_address_book_names_a_handle_a_childs_list_also_holds(self, tmp_path, child_source):
+        """The child's source sorts before the owner's in one case and after it in the other."""
+        mobile = [("070-174 06 05", "_$!<Mobile>!$_")]
+        own = [("Marcus", "Berg", mobile, ["m@mlab.test"]), ("Alice", "Ek", [], ["alice@example.com"]),
+               ("Bob", "Jones", [("070-174 06 06", "_$!<Mobile>!$_")], [])]
+        child = [("Pappa", None, mobile, ["m@mlab.test"]), ("Farfar", None, [("070-174 06 09", "_$!<Mobile>!$_")], [])]
+        address_book(tmp_path, own, source="MMM")
+        folder = address_book(tmp_path, child, source=child_source)
+        database = Mock()
+        database.chat_activity.return_value = {}
+        c = Contacts(database, folder)
+        c.refresh()
+        assert c.name_for("+46701740605") == "Marcus"
+        assert c.name_for("m@mlab.test") == "Marcus"
+        assert c.full_name("0701740605") == "Marcus Berg"
+        assert c.name_for("0701740609") == "Farfar"
+
     def test_landline_first_on_card_still_resolves_to_mobile(self, tmp_path):
         people = [("Bob", "Jones", [("031-12 34 56", "_$!<Home>!$_"), ("070-174 06 05", "_$!<Mobile>!$_")], [])]
         resolved, c = self._resolve(tmp_path, people, {}, "Bob")
