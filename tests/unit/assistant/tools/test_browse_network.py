@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import AsyncMock, Mock, patch
 from nodriver import cdp
 
-from assistant.tools.WebAccess import WebAccess
+from assistant.tools.WebAccess import WebAccess, NETWORK_LOG_HEADER
 
 
 def bare_wa(session_url='https://shop.example/checkout'):
@@ -17,6 +17,7 @@ def bare_wa(session_url='https://shop.example/checkout'):
     wa._browse_session_url = session_url
     wa._network_log = []
     wa._network_requests = {}
+    wa._browse_cross_origin_frame_hosts = []
     return wa
 
 
@@ -438,3 +439,30 @@ class TestSessionLifecycle:
         assert cdp.network.RequestWillBeSent in listened
         assert cdp.network.LoadingFinished in listened
         assert wa._tab is popup
+
+
+@pytest.mark.unit
+class TestCrossOriginFramesAreOutsideTheCapture:
+    """What a payment provider's iframe sends never reaches the capture (the 2026-11 checkout:
+    "no request to the provider" was read as proof that Pay sent nothing) — the report names
+    the frames it cannot see, whether or not it has anything else to list."""
+
+    def test_an_empty_report_names_the_frames_it_cannot_see(self):
+        wa = bare_wa()
+        wa._browse_cross_origin_frame_hosts = ['checkout.pay.example', 'card.bank.example']
+        report = run(wa._async_browse_network('pay'))
+        assert 'checkout.pay.example' in report and 'card.bank.example' in report
+
+    def test_a_listing_names_them_too_and_still_opens_with_the_header_history_drops_it_by(self):
+        wa = bare_wa()
+        wa._browse_cross_origin_frame_hosts = ['checkout.pay.example']
+        conn = connection()
+        wa._on_network_request(request_event('1', 'https://shop.example/api/cart'), conn)
+        wa._on_network_response(response_event('1'), conn)
+        report = run(wa._async_browse_network(''))
+        assert report.startswith(NETWORK_LOG_HEADER)
+        assert 'shop.example/api/cart' in report and 'checkout.pay.example' in report
+
+    def test_a_page_without_cross_origin_frames_gets_no_such_line(self):
+        wa = bare_wa()
+        assert 'iframe' not in run(wa._async_browse_network(''))

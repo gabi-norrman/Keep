@@ -261,6 +261,44 @@ class TestSnapshotAfterAction:
         settle.assert_awaited_once()
         assert snapshots == ['S2'], "the page was read a second time"
 
+    def _after_frame_action(self, frame_before, frame_after):
+        wa = make_wa()
+        mark = {'sig': 'OLD', 'frame_id': 'FRAME', 'frame_sig': frame_before}
+        frame = AsyncMock(side_effect=frame_after) if isinstance(frame_after, Exception) \
+            else AsyncMock(return_value={'sig': frame_after})
+        p = tail_patches(['S1', 'S2'], ['OLD'])
+        with p[0], p[1], p[2], p[3], p[4], p[5], \
+                patch.object(WebAccess, '_async_eval_in_frame_target', new=frame):
+            return run(wa._async_snapshot_after_action(mark, "browse_act('3')"))
+
+    def test_an_iframe_that_reacted_is_not_flagged_though_the_page_around_it_stood_still(self):
+        # The 2026-11 Dintero checkout: "Bekräfta information" inside the payment frame
+        # worked, the shop page around it did not move, and the NOTE said nothing happened.
+        assert self._after_frame_action('f#10:1', 'f#40:7') == 'S1'
+
+    def test_an_iframe_that_stood_still_with_the_page_is_flagged(self):
+        # ...while a Pay button that swallowed the click is exactly what the NOTE is for.
+        result = self._after_frame_action('f#10:1', 'f#10:1')
+        assert result.startswith('NOTE: the page looks exactly')
+        assert result.endswith('\n\nS2')
+
+    @pytest.mark.parametrize("before, after", [
+        ('f#10:1', RuntimeError('target closed')),   # the frame navigated away or closed
+        (None, 'f#10:1'),                            # it could not be read before the action
+    ])
+    def test_an_iframe_that_cannot_be_compared_is_not_flagged(self, before, after):
+        assert self._after_frame_action(before, after) == 'S1'
+
+    def test_the_mark_of_an_action_inside_an_iframe_carries_the_frames_own_signature(self):
+        wa = make_wa()
+        frame = AsyncMock(return_value={'sig': 'f#10:1'})
+        with probes(probe(sig='MAIN')), patch.object(WebAccess, '_async_eval_in_frame_target', new=frame):
+            mark = run(wa._async_action_mark('FRAME'))
+            plain = run(wa._async_action_mark())
+        assert (mark['sig'], mark['frame_sig']) == ('MAIN', 'f#10:1')
+        assert frame.await_args.args[0] == 'FRAME'
+        assert 'frame_id' not in plain, "an action on the main page compares the main page alone"
+
     def test_no_mark_means_no_change_wait_no_settle_no_retry(self):
         wa = make_wa()
         p = tail_patches(['S1'], ['OLD'])
@@ -292,7 +330,7 @@ class TestBrowseActMarks:
         wa = make_wa()
         marks = []
 
-        async def mark(self):
+        async def mark(self, frame_id=None):
             marks.append(1)
             return {'sig': 'S'}
 

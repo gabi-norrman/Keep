@@ -238,6 +238,13 @@ class WebAccess(Integration):
         r'pass(?:word|wd|phrase|code)?|pwd|secret|token|credential|api[_-]?key|private|personnummer|'
         r'social[_-]?security|card[_-]?(?:number|num|no)|(?<![a-z])(?:pin|otp|cvv|cvc|ssn|tan)(?![a-z])', re.I)
     _NETWORK_SECRET_MASK = '•••'
+    # A field whose value stays out of the log, told by what the field calls itself (name, id,
+    # autocomplete, placeholder, aria-label): the vault masks only what it holds, and a card's
+    # expiry and security code are too short for it.
+    _FILL_SECRET_FIELD_RE = re.compile(
+        r'cc-|card|kortnummer|cvc|cvv|csc|expir|exp[-_ ]?(?:date|month|year)|utg[aå]ng|giltig|'
+        r'security[-_ ]?code|s[aä]kerhetskod|mm\s*/\s*[yå]{2}|one-time-code|'
+        + _NETWORK_SECRET_KEY_RE.pattern, re.I)
     # A key, "=", then anything without whitespace. Keep it this flat: spelling out the `&key=value`
     # repetition gave the engine several ways to split every field, and a body that then failed to
     # match (a space in the last value) backtracked exponentially with the GIL held — the
@@ -385,6 +392,7 @@ class WebAccess(Integration):
         # Per snapshot index: owning iframe CDP target id, or None for the main page.
         self._browse_snapshot_frame_ids: list = []
         self._browse_snapshot_labels: list[str] = []  # parallel labels for human-readable describe
+        self._browse_cross_origin_frame_hosts: list[str] = []  # of the last snapshot, for browse_network
         self._browse_frame_sessions: dict = {}  # iframe target id -> attached devtools session id
         self._blank_frame_target_ids = frozenset()
         self._oopif_settle_giveups = frozenset()
@@ -1307,12 +1315,20 @@ class WebAccess(Integration):
                 rx = re.compile(re.escape(url_filter), re.I)
             entries = [(i, e) for i, e in entries if rx.search(e['url'])]
         total = len(self._network_log)
+        # The capture listens on the page's own target: what a cross-origin iframe (a payment
+        # provider's card form) sends goes through that frame's target and is never in the log.
+        blind = ''
+        if hosts := self._browse_cross_origin_frame_hosts:
+            trace(f"browse_network: {len(hosts)} cross-origin frame host(s) outside the capture")
+            blind = ("\nNOT CAPTURED: requests sent from inside the page's cross-origin iframes ("
+                     + ", ".join(hosts[:6]) + (", …" if len(hosts) > 6 else "")
+                     + ") — a request missing here is no sign that such a frame sent nothing.")
         if not entries:
             info(f"browse_network: nothing captured{' matching ' + url_filter if url_filter else ''} "
                  f"({total} entries in the session)")
             return (f"No XHR/fetch/document traffic captured"
                     + (f" matching {url_filter!r} ({total} entries total)" if url_filter else '')
-                    + " since browse_open.")
+                    + " since browse_open." + blind)
         shown = entries[-self._NETWORK_REPORT_DEFAULT:]
         lines = [self._format_network_entry(i, e) for i, e in shown]
         out = "\n".join(lines)
@@ -1321,7 +1337,7 @@ class WebAccess(Integration):
         info(f"browse_network: {len(shown)} of {len(entries)} matching entries ({total} captured)")
         head = (f"{NETWORK_LOG_HEADER}{len(shown)} of {len(entries)} matching entries ({total} captured this "
                 f"session), oldest first; `>` = request body, `<` = response body (excerpted):\n")
-        return head + out
+        return head + out + blind
 
     def browse_network(self, url_filter: str = '') -> str:
         """Recent XHR/fetch/document responses of the browse session (all tabs), optionally
@@ -3858,10 +3874,13 @@ class WebAccess(Integration):
         if not result or not isinstance(result, dict):
             self._browse_snapshot_frame_ids = []
             self._browse_snapshot_labels = []
+            self._browse_cross_origin_frame_hosts = []
             return SnapshotFormat.NO_ELEMENTS
 
         records = result.get('records', []) or []
         cross_origin_srcs = result.get('crossOriginFrames', []) or []
+        self._browse_cross_origin_frame_hosts = sorted(
+            {urlparse(self._normalize_url(s)).netloc for s in cross_origin_srcs if s} - {''})
         context = result.get('context')
         frame_ids: list = [None] * len(records)
 
@@ -4064,6 +4083,14 @@ class WebAccess(Integration):
                  .replace('\r', '\\r')
         )
 
+    @classmethod
+    def _fill_log_value(cls, meta: dict, value: str) -> str:
+        """What the log shows of a value typed into a field: the value, or its length alone
+        for a password field and for one that names itself as a card or credential field."""
+        if meta.get('type') == 'password' or cls._FILL_SECRET_FIELD_RE.search(meta.get('hint') or ''):
+            return f"{cls._NETWORK_SECRET_MASK} ({len(value)} chars, a card or credential field)"
+        return repr(value)
+
     def _snapshot_frame_id(self, idx: int):
         """Owning iframe target id for a snapshot index, or None for the main page."""
         if 0 <= idx < len(self._browse_snapshot_frame_ids):
@@ -4104,6 +4131,8 @@ class WebAccess(Integration):
                         role: (el.getAttribute('role') || '').toLowerCase(),
                         contenteditable: el.getAttribute('contenteditable'),
                         checked: el.checked === undefined ? null : !!el.checked,
+                        hint: ['name', 'id', 'autocomplete', 'placeholder', 'aria-label']
+                            .map(a => el.getAttribute(a) || '').join(' '),
                     }};
                 }})();
                 """,
@@ -4118,6 +4147,9 @@ class WebAccess(Integration):
         type_ = meta.get('type', '')
         role = meta.get('role', '')
         contenteditable = meta.get('contenteditable')
+        if value is not None:
+            info(f"browse_act: fill [{idx}] = {self._fill_log_value(meta, value)}"
+                 + (" + press Enter" if press_enter else ""))
 
         is_text_field = (value is not None and tag != 'select'
                          and not (tag == 'input' and type_ in ('checkbox', 'radio'))
@@ -4503,6 +4535,7 @@ class WebAccess(Integration):
         self._dialog_notes = []
         self._browse_snapshot_frame_ids = []
         self._browse_snapshot_labels = []
+        self._browse_cross_origin_frame_hosts = []
         self._browse_frame_sessions = {}
         self._blank_frame_target_ids = frozenset()
         self._oopif_settle_giveups = frozenset()
@@ -4546,16 +4579,44 @@ class WebAccess(Integration):
             return None
         return probe if isinstance(probe, dict) and 'sig' in probe else None
 
-    async def _async_action_mark(self) -> dict:
+    async def _async_frame_sig(self, frame_id) -> Optional[str]:
+        """The text signature of a cross-origin iframe target, None when it cannot be asked."""
+        try:
+            probe = await self._async_eval_in_frame_target(frame_id, self._PAGE_PROBE_JS)
+        except Exception as e:
+            trace(f"frame probe failed ({self._describe_error(e)})")
+            return None
+        return probe.get('sig') if isinstance(probe, dict) else None
+
+    async def _async_action_mark(self, frame_id=None) -> dict:
         """The page as it is right before a click/key press: its text signature (None when
         the page cannot be asked), for _async_snapshot_after_action to tell a reaction from
-        silence, and the moment, so the requests the action sends can be told from older ones."""
+        silence, and the moment, so the requests the action sends can be told from older ones.
+        For an action on an element inside a cross-origin iframe (`frame_id`) the frame's own
+        signature too: the main document's text does not move when only the frame reacts."""
         mark = {'sig': None, 'net_ts': time.time()}
         if self._tab is not None:
             probe = await self._async_page_probe(self._tab)
             if probe:
                 mark['sig'] = probe['sig']
+        if frame_id is not None:
+            mark['frame_id'] = frame_id
+            mark['frame_sig'] = await self._async_frame_sig(frame_id)
         return mark
+
+    async def _async_frame_reacted(self, mark: dict, what: str) -> bool:
+        """True when the action was on an element inside an iframe and that frame's text is
+        no longer what it was (or can no longer be read: it navigated or closed) — the main
+        document standing still then says nothing."""
+        if 'frame_id' not in mark:
+            return False
+        before = mark.get('frame_sig')
+        now = await self._async_frame_sig(mark['frame_id']) if before is not None else None
+        if before is not None and now == before:
+            return False
+        info(f"{what}: the page around the iframe is unchanged, the iframe "
+             f"{'changed' if now is not None else 'cannot be compared'} — no unchanged-page note")
+        return True
 
     async def _async_wait_for_page_change(self, mark: dict) -> tuple[str, Optional[dict]]:
         """After a click/Enter: wait up to _ACTION_CHANGE_TIMEOUT for the page to start
@@ -4628,7 +4689,7 @@ class WebAccess(Integration):
         if before is None or self._tab is None or not verdict:
             return snapshot
         probe = await self._async_page_probe(self._tab)
-        if probe is None or probe['sig'] != before:
+        if probe is None or probe['sig'] != before or await self._async_frame_reacted(mark, what):
             return snapshot
         info(f"{what}: page unchanged by the action — "
              f"waiting {self._ACTION_UNCHANGED_RETRY_S}s and re-reading")
@@ -4639,7 +4700,7 @@ class WebAccess(Integration):
             await self._async_wait_for_settle(self._tab, probe['sig'])
         snapshot = await self._async_take_snapshot()
         probe = await self._async_page_probe(self._tab) if self._tab is not None else None
-        if probe is None or probe['sig'] != before:
+        if probe is None or probe['sig'] != before or await self._async_frame_reacted(mark, what):
             return snapshot
         note(f"{what}: page unchanged after the action")
         head = (f"NOTE: the page looks exactly as it did before {what} — the action had no visible "
@@ -4718,13 +4779,11 @@ class WebAccess(Integration):
         for n, (op_spec, idx, value, press_enter) in enumerate(ops):
             if value is None:
                 info(f"browse_act: click [{idx}]")
-            else:
-                info(f"browse_act: fill [{idx}] = {value!r}"
-                     + (" + press Enter" if press_enter else ""))
 
             # Only a click or Enter can make the page move on — a fill just edits a
             # field, and the value it leaves shows in the snapshot anyway.
-            mark = await self._async_action_mark() if (value is None or press_enter) else None
+            mark = (await self._async_action_mark(self._snapshot_frame_id(idx))
+                    if (value is None or press_enter) else None)
             err = await self._async_execute_action(idx, value, press_enter)
             if err:
                 note(f"browse_act failed at [{idx}]: {err}")
@@ -4821,7 +4880,7 @@ class WebAccess(Integration):
                         + await self._async_take_snapshot())
 
         info(f"browse_key: {key_name}" + (f" on [{idx}]" if idx is not None else " on focused element"))
-        mark = await self._async_action_mark()
+        mark = await self._async_action_mark(frame_id)
         try:
             await self._async_dispatch_key(key_name, frame_id)
         except Exception as e:
@@ -4915,11 +4974,19 @@ class WebAccess(Integration):
                     elapsed = time.time() - started
                     info(f"browse_wait: matched {m.group(0)[:80]!r} after {elapsed:.1f}s "
                          f"({polls} polls) on {url}")
+                    already = ''
+                    if polls == 1:
+                        # Nothing was waited for: a word the page showed all along (a bare
+                        # "klart" in a breadcrumb) must not read as the handoff finishing.
+                        note(f"browse_wait: /{pattern}/ matched on the first look — already on the page")
+                        already = (" It was already there on the first look, before any waiting, so the "
+                                   "match says nothing about what happened since. To wait for a step to "
+                                   "finish, wait for a URL or wording that only the finished step shows.")
                     await self._async_wait_for_page_ready(tab)
                     await self._async_wait_for_settle(tab)
                     snapshot = await self._async_take_snapshot()
                     return (self._take_dialog_notes()
-                            + f"MATCHED {m.group(0)[:80]!r} after {elapsed:.1f}s.\n\n" + snapshot)
+                            + f"MATCHED {m.group(0)[:80]!r} after {elapsed:.1f}s.{already}\n\n" + snapshot)
             if time.time() >= deadline:
                 break
             await asyncio.sleep(self._WAIT_POLL_S)
@@ -5339,6 +5406,8 @@ class WebAccess(Integration):
 
     _BROWSE_EVAL_MAX_CHARS = 8000
 
+    _EVAL_QUOTED_RE = re.compile(r'''^(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')$''', re.S)
+
     async def _async_browse_eval(self, js: str) -> str:
         if not self._browse_session_url:
             return "ERROR: no browse session. Call browse_open(url) first."
@@ -5360,12 +5429,23 @@ class WebAccess(Integration):
         # construction-time SyntaxError from runtime errors is what keeps a
         # non-idempotent body (e.g. a POST) from executing twice. A runtime throw is
         # returned as a tagged value instead of breaking the call.
+        # A body that is one string literal and nothing else evaluates to its own text — the
+        # 2026-11 checkout, where the source came wrapped in quotes twice and the echo read as
+        # a broken tool. Nobody asks the page for a literal: run what the quotes hold.
+        quoted = bool(self._EVAL_QUOTED_RE.match(body))
+        quoted_note = ''
+        if quoted:
+            note("browse_eval: the source is one quoted string — running what is inside the quotes")
+            quoted_note = ("NOTE: the source arrived wrapped in quotes, which on its own only hands the "
+                           "text back — what is inside the quotes was run instead. Pass the source bare.\n")
         body_json = json.dumps(body)
         wrapped = (
             "(async function(){"
             " const AsyncFn = Object.getPrototypeOf(async function(){}).constructor;"
-            f" const __body = {body_json};"
-            " let __fn;"
+            f" let __body = {body_json};"
+            + (" try { __body = String(await new AsyncFn('return (' + __body + ');')()); } catch (e) {}"
+               if quoted else "")
+            + " let __fn;"
             " try { __fn = new AsyncFn('return (' + __body + ');'); }"
             " catch (e) {"
             "   try { __fn = new AsyncFn(__body); }"
@@ -5388,7 +5468,7 @@ class WebAccess(Integration):
             trace(f"browse_eval evaluate failed: {self._describe_error(e)}")
             return f"ERROR: eval failed: {self._describe_error(e)}"
 
-        dialog_notes = self._take_dialog_notes()
+        dialog_notes = self._take_dialog_notes() + quoted_note
         if isinstance(result, dict) and '__floxy_eval_error' in result:
             err = result['__floxy_eval_error']
             note(f"browse_eval threw in page: {err}")

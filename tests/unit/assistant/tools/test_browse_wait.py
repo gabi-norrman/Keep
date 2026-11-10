@@ -185,3 +185,21 @@ class TestWaitLoop:
             assert asyncio.run(make_wa()._async_browse_wait("", 5)).startswith('ERROR')
             assert asyncio.run(make_wa(_browse_pdf_text='pdf text')._async_browse_wait("x", 5)).startswith('ERROR')
         assert probe.await_count == 0
+
+
+@pytest.mark.unit
+class TestMatchOnTheFirstLook:
+    """A word the page showed before the wait began (the 2026-11 checkout: a bare "klart"
+    in the breadcrumb) is no sign that the awaited step finished — the reply must say so."""
+
+    def test_a_match_already_on_the_page_is_reported_as_one(self):
+        result = wait(make_wa(), "klart|tack", probes=[page(text='Hem > Kassa > Klart')])
+        head = result.split('\n\n')[0]
+        assert head.startswith('MATCHED')
+        assert 'already' in head
+
+    def test_a_match_that_appeared_while_waiting_carries_no_such_caveat(self):
+        result = wait(make_wa(), "Tack för din", probes=[page(), page(text='Tack för din beställning')])
+        head = result.split('\n\n')[0]
+        assert head.startswith('MATCHED')
+        assert 'already' not in head

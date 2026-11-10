@@ -1167,6 +1167,28 @@ class TestBrowseEval:
         with patch.object(WebAccess, '_evaluate', side_effect=fake_eval):
             assert wa.browse_eval("return 'hello'") == "hello"
 
+    @pytest.mark.parametrize("source", [
+        '"document.title"',
+        "'(function(){ return document.querySelector(\\'h1\\').innerText; })()'",
+    ])
+    def test_source_wrapped_in_quotes_runs_what_the_quotes_hold_and_says_so(self, source):
+        # The 2026-11 checkout: quoted source evaluated to its own text, twice, and the
+        # echo was taken for a broken tool.
+        wa = self._make_wa()
+        with patch.object(WebAccess, '_evaluate', new=AsyncMock(return_value="Kassa")):
+            out = wa.browse_eval(source)
+        assert out.startswith('NOTE') and out.endswith('Kassa')
+
+    @pytest.mark.parametrize("source", [
+        "'a' + 'b'",
+        'document.querySelector("h1").innerText',
+        '"use strict"; return 1',
+    ])
+    def test_source_that_merely_starts_and_ends_with_a_quote_is_run_as_written(self, source):
+        wa = self._make_wa()
+        with patch.object(WebAccess, '_evaluate', new=AsyncMock(return_value="x")):
+            assert wa.browse_eval(source) == "x"
+
     def test_dict_returned_as_json(self):
         wa = self._make_wa()
         async def fake_eval(_tab, _expr):
@@ -1726,3 +1748,30 @@ class TestBoilerplateGuard:
         result = WebAccess.extract_text_with_links(html, "https://example.com")
         assert "Subscribe to our newsletter" not in result
         assert "article text" in result
+
+
+@pytest.mark.unit
+class TestFillLogValue:
+    """The log line of a fill: the vault masks only what it holds, and a card's expiry and
+    security code are too short for it — a field that names itself as one keeps its value out."""
+
+    @pytest.mark.parametrize("meta", [
+        {'type': 'password', 'hint': 'login'},
+        {'type': 'text', 'hint': 'cardnumber  cc-number Card number '},
+        {'type': 'tel', 'hint': 'exp-date  cc-exp MM / YY '},
+        {'type': 'tel', 'hint': 'cvc  cc-csc CVC Security code'},
+        {'type': 'text', 'hint': 'otp  one-time-code  '},
+    ])
+    def test_a_card_or_credential_field_logs_the_length_alone(self, meta):
+        shown = WebAccess._fill_log_value(meta, '0429')
+        assert '0429' not in shown
+        assert '4 chars' in shown
+
+    @pytest.mark.parametrize("meta", [
+        {'type': 'text', 'hint': 'shipping_first_name  given-name Förnamn '},
+        {'type': 'search', 'hint': 'q   Sök produkter '},
+        {'type': 'email', 'hint': 'billing_email  email  '},
+        {},
+    ])
+    def test_an_ordinary_field_logs_what_was_typed(self, meta):
+        assert 'Marcus' in WebAccess._fill_log_value(meta, 'Marcus')

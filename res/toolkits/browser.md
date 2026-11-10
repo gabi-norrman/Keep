@@ -73,7 +73,8 @@ itself times out after 10 s.
 first: time, tab, method, status, URL, MIME, an excerpt of the request body (`>`) and of JSON/text response bodies
 (`<`). `url_filter` is an optional URL regex — a path (`addresses/v1`), not a word (`cart`). Read-only, no
 snapshot. This is how you learn what a page that "just keeps waiting" is told by its backend — a poll answering
-`pending`, `complete`, `failed` or a 4xx settles what a screenshot cannot.
+`pending`, `complete`, `failed` or a 4xx settles what a screenshot cannot. It never
+lists what a cross-origin iframe sends.
 
 `browse_click_at(x: int, y: int)` — last resort: one REAL mouse click at viewport coordinates (CSS pixels, as
 `getBoundingClientRect()` reports) for something no snapshot lists. Get the iframe's rect with `browse_eval`, add the
