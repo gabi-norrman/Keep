@@ -459,6 +459,16 @@ class TestWhatTheSidebarCallsAChat:
         name, reason = sidebar(tmp_path, [CHARLOTTE, frances]).sidebar_name("iMessage;-;+46701740606")
         assert name == "" and reason
 
+    @pytest.mark.parametrize("child_source", ["AAA", "ZZZ"])
+    def test_a_childs_name_for_the_owners_contact_is_not_a_second_name(self, tmp_path, child_source):
+        """The child's list is the smaller source, sorting before the owner's or after it."""
+        own = [CHARLOTTE, ("Alice", "Ek", [], ["alice@example.com"]), ("Bob", "Jones", [], ["bob@example.com"])]
+        child = [("Mamma", None, [("070-174 06 06", None)], []), ("Farfar", None, [("070-174 06 09", None)], [])]
+        address_book(tmp_path, child, source=child_source)
+        c = sidebar(tmp_path, own)
+        assert c.sidebar_name("iMessage;-;+46701740606") == ("Charlotte Lindqvist", "")
+        assert c.sidebar_name("iMessage;-;+46701740609") == ("Farfar", "")
+
     def test_a_person_named_like_a_group_is_not_found_by_that_name(self, tmp_path):
         group = GroupChat("iMessage;+;chat-x", "Charlotte Lindqvist", ["Marcus"])
         name, reason = sidebar(tmp_path, [CHARLOTTE], [group]).sidebar_name("iMessage;-;+46701740606")

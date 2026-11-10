@@ -93,14 +93,22 @@ class Contacts:
             cards.setdefault(card, (full, set()))[1].update(cls._handle_keys(handle))
 
     @staticmethod
-    def _names_by_handle(cards: dict) -> dict[str, str]:
+    def _names_by_handle(cards: dict, sources: list[Path]) -> dict[str, str]:
         """Handle key → the full name of the card it is on; "" for a handle on cards with
-        different names (a landline two people share), which names nobody for certain."""
-        names: dict[str, set[str]] = {}
-        for full, keys in cards.values():
+        different names (a landline two people share), which names nobody for certain. Only
+        the cards of the first of `sources` that has the handle count: what another person's
+        list calls a contact of the owner's is not a second name."""
+        rank = {source: index for index, source in enumerate(sources)}
+        names: dict[str, tuple[int, set[str]]] = {}
+        for (source, _), (full, keys) in cards.items():
             for key in keys:
-                names.setdefault(key, set()).add(full)
-        return {key: next(iter(fulls)) if len(fulls) == 1 else "" for key, fulls in names.items()}
+                best, fulls = names.get(key, (rank[source], set()))
+                if rank[source] < best:
+                    best, fulls = rank[source], set()
+                if rank[source] == best:
+                    fulls.add(full)
+                names[key] = (best, fulls)
+        return {key: next(iter(fulls)) if len(fulls) == 1 else "" for key, (_, fulls) in names.items()}
 
     @staticmethod
     def _count_people(cards: dict) -> dict[str, int]:
@@ -458,7 +466,7 @@ class Contacts:
             self._name_to_handle = reverse
             self._handle_reasons = reasons
             self._handle_to_full_name = handle_to_full
-            self._card_names = self._names_by_handle(cards)
+            self._card_names = self._names_by_handle(cards, source_dbs)
             self._people_named = self._count_people(cards)
             self._contact_cache_time = time.time()
             fine(f"iMessage: refreshed contact cache ({len(cache)} entries, {len(reverse)} reverse)")
