@@ -2197,6 +2197,14 @@ class TestCmdConfigRequest:
             commands_instance._run_config_request("owner_name")
         assert fake.calls == [("Setting owner_name", "This replaces the current value.")]
 
+    def test_a_taken_list_slot_names_the_entry_it_replaces(self, commands_instance):
+        fake = _secret_notifier("Bob +46701740606")
+        with patch("assistant.commands.Commands.notifier", return_value=fake), \
+             patch.object(ConfigStore, "replaced_entry", return_value="alice@example.com"), \
+             patch.object(ConfigStore, "set_value"):
+            commands_instance._run_config_request("imessage_chat.guests[0]")
+        assert "alice@example.com" in fake.calls[0][1]
+
     @pytest.mark.parametrize("key", ["imessage_chat.owners[1]", "imessage_chat.guests[0]", "imessage_chat.bots[0]"])
     def test_the_prompt_for_a_list_entry_says_what_the_entry_grants(self, commands_instance, key):
         """A model that asks for owners[1] while calling it "adding her as a guest" must be

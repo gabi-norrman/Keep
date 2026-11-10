@@ -598,7 +598,7 @@ class ChatHub(SingletonMixin):
             info(f"Secret [{token[:8]}] rejected ({reason}), asking again ({attempt + 1}/{self.SECRET_ATTEMPTS})")
             # Same token, new details: a transport with that prompt still open updates it in
             # place, so the chat keeps one prompt per request and nothing lands below it.
-            details = f"{entry['details']}\n⚠ {reason} — try again ({attempt + 1}/{self.SECRET_ATTEMPTS})".strip()
+            details = f"{entry['details']}\n⚠ {reason} — try again (attempt {attempt + 1} of {self.SECRET_ATTEMPTS})".strip()
             if not self._show_secret_prompts(entry, details):
                 info(f"Secret [{token[:8]}] could not be asked again anywhere, answering 'unavailable'")
                 self._finish_secret(entry, DECISION_UNAVAILABLE, "⚠ Could not ask again")

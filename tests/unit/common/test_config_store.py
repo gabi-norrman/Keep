@@ -465,6 +465,20 @@ class TestScalarLists:
         with pytest.raises(ConfigStoreError, match=r"has 2 item\(s\) — \[2\] adds the next one"):
             ConfigStore.set_value("enabled_integrations[5]", "X")
 
+    def test_a_taken_index_of_any_other_list_is_replaced(self, files):
+        key = "local_outposts.exclude_mics"
+        ConfigStore.set_value(f"{key}[0]", "Acme Headset")
+        ConfigStore.set_value(f"{key}[1]", "Desk Mic")
+        assert ConfigStore.replaced_entry(f"{key}[0]") == "Acme Headset"
+        assert ConfigStore.replaced_entry(f"{key}[2]") == ""
+        assert ConfigStore.replaced_entry("pager.password") == ""
+        ConfigStore.set_value(f"{key}[0]", "Acme Headset 2")
+        mics = lambda: yaml.safe_load(files.read_text())["local_outposts"]["exclude_mics"]
+        assert mics() == ["Acme Headset 2", "Desk Mic"]
+        # a value the list already holds is never written a second time
+        ConfigStore.set_value(f"{key}[0]", "Desk Mic")
+        assert mics() == ["Acme Headset 2", "Desk Mic"]
+
     def test_the_list_itself_and_section_list_items_are_still_refused(self):
         with pytest.raises(ConfigStoreError, match=r"is a list of values — add one as enabled_integrations\[0\]"):
             ConfigStore.check_key("enabled_integrations")

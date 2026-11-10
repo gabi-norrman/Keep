@@ -1602,7 +1602,9 @@ class Commands:
 
     def _run_config_request(self, key: str, source=None, conversation=None) -> str:
         outcome: dict = {}
-        replaces = ConfigStore.is_set(key)
+        entry = ConfigStore.replaced_entry(key)
+        replaces = f"This replaces the current entry: {entry}" if entry else (
+            "This replaces the current value." if ConfigStore.is_set(key) else "")
 
         def accept(value: str) -> str:
             try:
@@ -1615,7 +1617,7 @@ class Commands:
 
         # What a key the user alone may type grants stands in the prompt in plain words: the
         # model's own account of what is being asked for is not what the user decides on.
-        details = " ".join(part for part in (ConfigStore.grants(key), "This replaces the current value." if replaces else "")
+        details = " ".join(part for part in (ConfigStore.grants(key), replaces)
                            if part)
         decision = notifier().request_secret(title=f"Setting {key}", details=details, accept=accept,
                                              source=source, conversation=conversation)

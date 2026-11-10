@@ -662,7 +662,7 @@ class TestSecrets:
         assert self._closes(transport) == []
         again = self._prompts(transport)[1]
         assert again[2] == first_token and again[3] == "Amex (card)"
-        assert again[4] == "Reply with the number\n⚠ card number must be 13-19 digits — try again (2/3)"
+        assert again[4] == "Reply with the number\n⚠ card number must be 13-19 digits — try again (attempt 2 of 3)"
         assert hub.claim_secret(transport, 111, "4111 1111 1111 1111") is True
         t.join(timeout=2)
         assert result["d"] == "accepted"

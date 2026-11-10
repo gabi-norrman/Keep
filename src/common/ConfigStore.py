@@ -284,20 +284,25 @@ def set_value(key: str, raw: str) -> str:
     def mutate(data):
         node = _parent_node(data, key)
         if isinstance(leaf, int):
-            # An item of a list of plain values: the index equal to the length appends. A taken
-            # index is never overwritten — the LLM reads one listing and enables several items
-            # from it, each with the slot number that was free when the listing was printed.
+            # An item of a list of plain values: the index equal to the length appends, a taken
+            # one is replaced. Only enabled_integrations never overwrites: the LLM reads one
+            # listing and enables several items from it, each with the slot number that was free
+            # when the listing was printed, and a replaced name is an integration switched off.
             parent = ConfigSchema.join_key(ConfigSchema.split_key(key)[:-1])
             if leaf > len(node):
                 raise ConfigStoreError(f"{parent} has {len(node)} item(s) — [{len(node)}] adds the next one")
             if value in node:
                 outcome["existed"] = True
                 return
-            if leaf < len(node):
+            if leaf == len(node):
+                outcome["existed"] = False
+                node.append(value)
+                return
+            if parent == ENABLED_INTEGRATIONS_KEY:
                 raise ConfigStoreError(f"{parent}[{leaf}] already holds another value — [{len(node)}] adds "
-                                       f"the next one" + (", or use enable_integration" if parent == ENABLED_INTEGRATIONS_KEY else ""))
-            outcome["existed"] = False
-            node.append(value)
+                                       f"the next one, or use enable_integration")
+            outcome["existed"] = True
+            node[leaf] = value
             return
         outcome["existed"] = leaf in node
         node[leaf] = value
@@ -432,7 +437,16 @@ def _current_value(key: str) -> Any:
         node = node[part]
     return node
 
-
+def replaced_entry(key: str) -> str:
+    """The entry a write to *key* takes the place of, when *key* is a taken index of a list of
+    plain values — "" for every other key (whose value may be a secret and is never shown)."""
+    parts = ConfigSchema.split_key(key.strip())
+    if not isinstance(parts[-1], int) or not ConfigSchema.is_scalar_list(ConfigSchema.join_key(parts[:-1])):
+        return ""
+    try:
+        return str(_current_value(key.strip()))
+    except (KeyError, ValueError):
+        return ""
 
 
 def is_set(key: str) -> bool:

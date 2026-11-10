@@ -238,10 +238,12 @@ imessage_chat:
                                            # for another user of this Mac). Typed by the user: config_request.
   host_token: YOUR_SATELLITE_TOKEN_HERE    # only with a satellite: imessage_satellite.token of its config.yaml.
                                            # A secret — config_request("imessage_chat.host_token").
-  # One entry per person and handle: a phone number with + and the country code, or the email the
-  # person's iMessage uses, with the name the assistant should call them in front: "Marcus +46701740605",
-  # "Charlotte charlotte@example.com". Somebody who writes from a phone number and an email has two
-  # entries with the same name. A number without the leading + matches nobody.
+  # owners, guests and bots have one entry per person and handle: a phone number with + and the country
+  # code, or the email the person's iMessage uses. The name the assistant should call them may stand in
+  # front — "Marcus +46701740605", "Charlotte charlotte@example.com" — and is optional: a bare handle
+  # is served just the same and needs no re-entry. Somebody who writes from a phone number and an email
+  # has two entries with the same name. A number without the leading + matches nobody. config_request on an index that is taken replaces that entry (the prompt
+  # shows the user which one); the index after the last adds one. Removing an entry is a hand edit.
   owners: []                               # full rights, as in the console: commands run, approvals are asked in
                                            # the owner's other chats. Only over iMessage itself — the same number
                                            # writing by SMS is treated as a guest, since an SMS sender can be forged.
