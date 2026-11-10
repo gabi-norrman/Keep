@@ -4172,7 +4172,10 @@ class WebAccess(Integration):
             pass
 
         async def click() -> Optional[str]:
-            if frame_id is None and await self._async_trusted_click(find):
+            if frame_id is None:
+                if await self._async_trusted_click(find):
+                    return None
+            elif await self._async_trusted_frame_click(frame_id, ev, find):
                 return None
             try:
                 clicked = await ev(
@@ -5077,8 +5080,9 @@ class WebAccess(Integration):
     # The point a real mouse click on the element lands on: the centre of its box when
     # that lies in the viewport and nothing else is drawn over it (a cookie veil, a modal),
     # else the reason it is not clickable and, when something covers it, what that is.
-    # Only main-document elements: a frame's rect is in the frame's own coordinates,
-    # not the viewport's the click is dispatched in.
+    # Evaluated in the document that holds the element: on the main page the point is in the
+    # viewport the click is dispatched in, in a cross-origin iframe target it is in the frame's
+    # own viewport and _async_trusted_frame_click adds where the frame stands on the page.
     _CLICK_POINT_JS = """
 (function(e) {
     const describe = function(n) {
@@ -5130,6 +5134,132 @@ class WebAccess(Integration):
             return False
         trace(f"trusted click at ({point['x']:g}, {point['y']:g})")
         return True
+
+    # Armed in an iframe before the pointer is moved to where the element should be: the
+    # frame's next mousemove says whether a real pointer at that point is on the element.
+    _FRAME_HOVER_ARM_JS = """
+(function(e) {
+    window.__floxyHover = null;
+    if (!e) return false;
+    document.addEventListener('mousemove', function(ev) {
+        const path = ev.composedPath ? ev.composedPath() : [ev.target];
+        const t = path[0];
+        window.__floxyHover = {trusted: ev.isTrusted,
+                               on: path.includes(e) || e.contains(t) || !!(t && t.contains && t.contains(e))};
+    }, {capture: true, once: true});
+    return true;
+})"""
+    _FRAME_HOVER_READ_JS = ("(function(){ const h = window.__floxyHover; "
+                            "if (h) delete window.__floxyHover; return h || null; })()")
+    _FRAME_HOVER_WAIT = 0.5
+    _FRAME_HOVER_STEP = 0.05
+    _FRAME_NESTING_MAX = 5
+    _FRAME_POSITION_READS = 6
+    _FRAME_POSITION_STEP = 0.1
+
+    async def _async_trusted_frame_click(self, frame_id, ev, find: str) -> bool:
+        """The real mouse click for an element inside a cross-origin iframe target: a payment
+        form's Pay button ignores a JS click (the 2026-11 Worldline form nested in Dintero's
+        frame, where the order was created and never paid). The point is the element's centre
+        in its frame plus where that frame stands in the page's viewport, through every frame
+        it is nested in. Nothing is pressed on arithmetic alone: the pointer is moved there
+        first and the frame itself must report that it is on the element. False means the
+        caller should fall back to the JS click; the reason is in the log."""
+        # The scroll into view that precedes a click travels up the frame chain process by
+        # process: read the position until two readings agree, or the frame is caught mid-scroll.
+        seen = None
+        for reading in range(self._FRAME_POSITION_READS):
+            try:
+                point = await ev(f"({self._CLICK_POINT_JS})({find});")
+            except Exception as e:
+                trace(f"trusted frame click: click point lookup failed ({self._describe_error(e)}) — JS click")
+                return False
+            if not isinstance(point, dict) or 'reason' in point:
+                why = point.get('reason') if isinstance(point, dict) else f"unexpected result {point!r}"
+                trace(f"trusted frame click: {why} — JS click")
+                return False
+            origin = await self._async_frame_origin(frame_id)
+            if origin is None:
+                trace(f"trusted frame click: no position for iframe target {str(frame_id)[:8]}… — JS click")
+                return False
+            x, y = origin[0] + point['x'], origin[1] + point['y']
+            if (x, y) == seen:
+                break
+            seen = (x, y)
+            await asyncio.sleep(self._FRAME_POSITION_STEP)
+        else:
+            trace(f"trusted frame click: the iframe is still moving after {self._FRAME_POSITION_READS} "
+                  f"readings — JS click")
+            return False
+        try:
+            await ev(f"({self._FRAME_HOVER_ARM_JS})({find});")
+            await self._async_dispatch_mouse('mouseMoved', x, y)
+            hover = None
+            deadline = time.monotonic() + self._FRAME_HOVER_WAIT
+            while hover is None:
+                hover = await ev(self._FRAME_HOVER_READ_JS)
+                if hover is not None or time.monotonic() >= deadline:
+                    break
+                # a move sent while the browser's picture of the frames was still catching
+                # up with a scroll went elsewhere: send it again
+                await asyncio.sleep(self._FRAME_HOVER_STEP)
+                await self._async_dispatch_mouse('mouseMoved', x, y)
+        except Exception as e:
+            trace(f"trusted frame click: hover check at ({x:g}, {y:g}) failed "
+                  f"({self._describe_error(e)}) — JS click")
+            return False
+        if not isinstance(hover, dict) or not hover.get('on'):
+            note(f"trusted frame click: the pointer at ({x:g}, {y:g}) is "
+                 f"{'on another element of' if isinstance(hover, dict) else 'not seen by'} the iframe "
+                 f"(frame at {origin[0]:g}, {origin[1]:g}) — nothing pressed, JS click")
+            return False
+        try:
+            await self._async_dispatch_click_at(x, y)
+        except Exception as e:
+            trace(f"trusted frame click at ({x:g}, {y:g}) failed ({self._describe_error(e)}) — JS click")
+            return False
+        info(f"trusted click at ({x:g}, {y:g}) inside the iframe at ({origin[0]:g}, {origin[1]:g})")
+        return True
+
+    async def _async_frame_origin(self, frame_id) -> Optional[tuple[float, float]]:
+        """Where the viewport of a cross-origin iframe target begins in the page's viewport,
+        CSS pixels: the content box of the <iframe> element that owns it, as the document
+        holding that element reports it, summed up through the frames it is nested in.
+        None when the chain cannot be followed to the page."""
+        x = y = 0.0
+        current = str(frame_id)
+        parents = None
+        for _ in range(self._FRAME_NESTING_MAX):
+            box = await self._async_frame_owner_box(None, current)
+            if box:
+                return x + box[0], y + box[1]
+            if parents is None:
+                parents = [str(ti.target_id) for ti in await self._async_list_frame_targets()]
+            for parent in parents:
+                box = await self._async_frame_owner_box(parent, current) if parent != current else None
+                if box:
+                    fine(f"frame origin: {current[:8]}… sits at ({box[0]:g}, {box[1]:g}) in iframe {parent[:8]}…")
+                    x, y, current = x + box[0], y + box[1], parent
+                    break
+            else:
+                return None
+        return None
+
+    async def _async_frame_owner_box(self, parent_target, frame_id: str) -> Optional[tuple[float, float]]:
+        """The top-left of the content box of the <iframe> element owning `frame_id`, asked
+        of the page (`parent_target` None) or of another iframe target; None when the
+        element is not in that document (the usual answer for all but one) or has no box."""
+        async def send(command):
+            if parent_target is None:
+                return await self._cdp_wait_for(self._tab.send(command), self._EVAL_TIMEOUT)
+            return await self._send_on_session(command, await self._async_attach_frame_session(parent_target))
+        try:
+            owner = await send(cdp.dom.get_frame_owner(frame_id=cdp.page.FrameId(frame_id)))
+            model = await send(cdp.dom.get_box_model(backend_node_id=owner[0]))
+            quad = list(model.content)
+            return min(quad[0::2]), min(quad[1::2])
+        except Exception:
+            return None
 
     async def _async_click_point(self, find: str):
         """The click-point verdict of _CLICK_POINT_JS for `find`, or None when the
@@ -5191,11 +5321,14 @@ class WebAccess(Integration):
         it reaches fields inside cross-origin iframes as well."""
         left = cdp.input_.MouseButton.LEFT
         for type_, button in (('mouseMoved', None), ('mousePressed', left), ('mouseReleased', left)):
-            kwargs = dict(type_=type_, x=x, y=y)
-            if button is not None:
-                kwargs.update(button=button, click_count=1)
-            await self._cdp_wait_for(
-                self._tab.send(cdp.input_.dispatch_mouse_event(**kwargs)), self._EVAL_TIMEOUT)
+            await self._async_dispatch_mouse(type_, x, y, button)
+
+    async def _async_dispatch_mouse(self, type_: str, x: float, y: float, button=None) -> None:
+        kwargs = dict(type_=type_, x=x, y=y)
+        if button is not None:
+            kwargs.update(button=button, click_count=1)
+        await self._cdp_wait_for(
+            self._tab.send(cdp.input_.dispatch_mouse_event(**kwargs)), self._EVAL_TIMEOUT)
 
     def browse_click_at(self, spec: str) -> str:
         """Real mouse click at viewport coordinates — the fallback for elements no

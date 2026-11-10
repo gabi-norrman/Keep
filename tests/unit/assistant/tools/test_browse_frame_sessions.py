@@ -271,14 +271,14 @@ class TestExecuteActionFrameRouting:
         wa = make_wa()
         wa._tab = SimpleNamespace()
         wa._browse_snapshot_frame_ids = [None, 'ft9']
-        frame_eval = AsyncMock(side_effect=[self.META, None, True])  # meta, scroll, click
+        # meta, scroll, click point (no box), JS click
+        frame_eval = AsyncMock(side_effect=[self.META, None, {'reason': 'no box'}, True])
         with patch.object(WebAccess, '_async_eval_in_frame_target', new=frame_eval), \
                 patch.object(WebAccess, '_evaluate', new=AsyncMock()) as main_eval, \
-                patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()) as mouse:
+                patch.object(WebAccess, '_async_dispatch_mouse', new=AsyncMock()) as mouse:
             assert run(wa._async_execute_action(1, None)) is None
         assert all(call.args[0] == 'ft9' for call in frame_eval.await_args_list)
         main_eval.assert_not_awaited()
-        # a frame's box is in the frame's coordinates, so no mouse click is attempted there
         mouse.assert_not_awaited()
 
     def test_main_page_element_evaluates_on_tab(self):
@@ -432,6 +432,122 @@ class TestExecuteActionFrameRouting:
         wa._browse_snapshot_frame_ids = [None]
         with patch.object(WebAccess, '_evaluate', new=AsyncMock(return_value=None)):
             assert run(wa._async_execute_action(0, None)) == 'element no longer in DOM'
+
+
+
+@pytest.mark.unit
+class TestTrustedFrameClick:
+    """A button inside a cross-origin iframe gets a real mouse click (the 2026-11 card form
+    whose Pay button ignored the JS click): the element's centre in its frame plus where the
+    frame stands on the page, and nothing pressed until the frame itself reports the pointer
+    on the element."""
+
+    @pytest.fixture(autouse=True)
+    def fast(self, monkeypatch):
+        monkeypatch.setattr(WebAccess, '_FRAME_POSITION_STEP', 0)
+        monkeypatch.setattr(WebAccess, '_FRAME_HOVER_STEP', 0)
+        monkeypatch.setattr(WebAccess, '_FRAME_HOVER_WAIT', 0.01)
+
+    def click(self, origins, hover, points=None):
+        """Run the click with the frame standing at each of `origins` in turn (the last one
+        repeating), the element at each of `points` in its frame, and the frame answering the
+        hover check with `hover`. Returns (clicked, the mouse events sent)."""
+        wa = make_wa()
+        origins, points = list(origins), list(points or [{'x': 40.0, 'y': 12.0}])
+        events = []
+
+        async def ev(js):
+            if js == WebAccess._FRAME_HOVER_READ_JS:
+                return hover
+            if WebAccess._FRAME_HOVER_ARM_JS in js:
+                return True
+            return points.pop(0) if len(points) > 1 else points[0]
+
+        async def origin(self, frame_id):
+            return origins.pop(0) if len(origins) > 1 else origins[0]
+
+        async def mouse(self, type_, x, y, button=None):
+            events.append((type_, x, y))
+
+        with patch.object(WebAccess, '_async_frame_origin', new=origin), \
+                patch.object(WebAccess, '_async_dispatch_mouse', new=mouse):
+            return run(wa._async_trusted_frame_click('ft9', ev, 'FIND')), events
+
+    def test_the_click_lands_at_the_frames_position_plus_the_elements_point_in_it(self):
+        clicked, events = self.click([(226.0, 274.5)], {'trusted': True, 'on': True})
+        assert clicked
+        assert [e[0] for e in events][-2:] == ['mousePressed', 'mouseReleased']
+        assert {e[1:] for e in events} == {(266.0, 286.5)}
+
+    def test_a_pointer_the_frame_sees_on_another_element_presses_nothing(self):
+        clicked, events = self.click([(226.0, 274.5)], {'trusted': True, 'on': False})
+        assert not clicked
+        assert {e[0] for e in events} == {'mouseMoved'}
+
+    def test_a_pointer_the_frame_never_sees_presses_nothing(self):
+        # an overlay on the page above the frame, or a position that is simply wrong
+        clicked, events = self.click([(226.0, 274.5)], None)
+        assert not clicked
+        assert {e[0] for e in events} == {'mouseMoved'}
+
+    def test_a_frame_still_scrolling_into_view_is_clicked_where_it_comes_to_rest(self):
+        clicked, events = self.click([(226.0, 900.0), (226.0, 500.0), (226.0, 397.5)],
+                                     {'trusted': True, 'on': True})
+        assert clicked
+        assert {e[1:] for e in events} == {(266.0, 409.5)}
+
+    def test_a_frame_that_never_comes_to_rest_is_left_to_the_js_click(self):
+        moving = [(226.0, float(y)) for y in range(900, 900 - 10 * WebAccess._FRAME_POSITION_READS, -10)]
+        clicked, events = self.click(moving, {'trusted': True, 'on': True})
+        assert not clicked and events == []
+
+    @pytest.mark.parametrize("point, origin", [
+        ({'reason': 'covered', 'hit': 'div.modal'}, (226.0, 274.5)),   # hidden inside its own frame
+        ({'x': 40.0, 'y': 12.0}, None),                                 # the frame cannot be placed
+    ])
+    def test_an_element_or_frame_that_cannot_be_placed_sends_no_mouse_event(self, point, origin):
+        clicked, events = self.click([origin], {'trusted': True, 'on': True}, points=[point])
+        assert not clicked and events == []
+
+
+@pytest.mark.unit
+class TestFrameOrigin:
+    """Where an iframe target's viewport begins on the page: the content box of the <iframe>
+    element owning it, asked of whichever document holds that element, summed through the
+    frames it is nested in."""
+
+    def origin(self, boxes, targets=('outer', 'inner', 'sibling')):
+        """`boxes` maps (document asked, frame owned) to the owner's top-left; the page is None."""
+        wa = make_wa()
+        asked = []
+
+        async def owner_box(self, parent, frame_id):
+            asked.append((parent, frame_id))
+            return boxes.get((parent, frame_id))
+
+        listed = AsyncMock(return_value=[SimpleNamespace(target_id=t) for t in targets])
+        with patch.object(WebAccess, '_async_frame_owner_box', new=owner_box), \
+                patch.object(WebAccess, '_async_list_frame_targets', new=listed):
+            return run(wa._async_frame_origin('inner')), asked, listed
+
+    def test_a_frame_of_the_page_itself_needs_no_other_frame(self):
+        origin, _, listed = self.origin({(None, 'inner'): (163.0, 161.5)})
+        assert origin == (163.0, 161.5)
+        listed.assert_not_awaited()
+
+    def test_a_nested_frame_adds_the_position_of_every_frame_around_it(self):
+        origin, asked, _ = self.origin({('outer', 'inner'): (63.0, 113.0), (None, 'outer'): (163.0, 161.5)})
+        assert origin == (226.0, 274.5)
+        assert ('inner', 'inner') not in asked, "a frame is never asked for its own owner"
+
+    def test_a_frame_no_document_owns_has_no_position(self):
+        origin, _, _ = self.origin({})
+        assert origin is None
+
+    def test_a_chain_that_never_reaches_the_page_gives_up(self):
+        # two frames each claiming to hold the other: no position rather than a loop
+        origin, _, _ = self.origin({('outer', 'inner'): (1.0, 1.0), ('inner', 'outer'): (1.0, 1.0)})
+        assert origin is None
 
 
 @pytest.mark.unit
