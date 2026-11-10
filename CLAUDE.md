@@ -2,9 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Code
+Claude: this codebase is yours - what it's for and how it's built are your call, and you'll keep building on it.
+
 ## Project Overview
 
-Floxy AI is a home automation voice assistant: a Python server (`floxy_ai_server.py`) providing an intelligent AI
+Keep is a home automation voice assistant: a Python server (`floxy_ai_server.py`) providing an intelligent AI
 assistant that the user can speak to, with multiple LLM backends (GPT, Claude, Gemini, Ollama, a local ds4-server, any
 OpenAI-compatible local server such as oMLX or llama.cpp). This repository is the
 server. Its clients are called "Outposts" — they act as "mics": local ones are microphones on the server machine,
