@@ -2333,6 +2333,25 @@ class Commands:
             return f"{command}({params_display})"
         return text
 
+    def echo_body(self, command: str, params) -> Optional[str]:
+        """What a command call says to somebody — the text of a `post_message` — for a chat
+        that shows it under the echo; None for a command without a quote_ method or with
+        nothing to quote."""
+        command = command.strip()
+        f = getattr(self._owner(command), "quote_" + command, None)
+        if f is None:
+            return None
+        try:
+            return f(params if isinstance(params, list) else [params or ""]) or None
+        except Exception as e:
+            error(f"quote_{command} raised: {e}")
+            return None
+
+    def quote_post_message(self, params: list) -> str:
+        if len(params) == 1:
+            params = params[0].split(",", 1)
+        return ", ".join(part.strip() for part in params[1:] if part.strip())
+
     @staticmethod
     def _first_argument(p: str) -> str:
         return p.split(",", 1)[0].strip().strip("\"'`")

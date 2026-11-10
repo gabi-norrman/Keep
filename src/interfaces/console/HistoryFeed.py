@@ -9,7 +9,9 @@ header saying who (and through which channel).
 A row is drawn the way its stream showed it, whether it is backfilled or lands live: an
 assistant row is its prose plus one "Searching for …" notice per command it called
 (`StoredReplyReader` — the stored reply keeps the calls with their whole arguments, for the
-LLM), and the command result, clock note and opening-brief rows, which no stream ever
+LLM) with, dim under the notice, what the call said to somebody else — the text of a
+`post_message`, which the stream never showed and the feed adds to the live notice it
+adopts —, and the command result, clock note and opening-brief rows, which no stream ever
 showed, are left out. So is the prose of a row that is nothing but the bare NO an
 autonomous check or a reaction answers when it has nothing to say (`ChatSession.is_no_reply`,
 the rule the chats suppress it by): the verdict is for the log, never for a bubble, while
@@ -46,7 +48,7 @@ from typing import Optional
 
 from assistant.AssistantEvents import AssistantObserver
 from assistant.ChannelProfile import SOURCE_CONSOLE, SOURCE_VOICE
-from assistant.commands.StoredReplyReader import StoredReply, StoredReplyReader
+from assistant.commands.StoredReplyReader import Echo, StoredReply, StoredReplyReader
 from assistant.tools.MessageFormatter import MessageFormatter
 from common.logging import info, trace
 from interfaces.chat import FallbackNotice
@@ -219,16 +221,18 @@ class HistoryFeed(AssistantObserver):
             trace(f"HistoryFeed: no live bubble matches the row's prose ({len(stored)} chars), drawing it")
         self._draw(StoredReply(prose, before, after), entry["timestamp"])
 
-    def _adopt_echo(self, echo: str, since: float) -> bool:
-        wanted = normalize(command_line(echo))
-        if not self._adopt(since, lambda shown: shown == wanted, kinds=(KIND_NOTICE,)):
+    def _adopt_echo(self, echo: Echo, since: float) -> bool:
+        wanted = normalize(command_line(echo.text))
+        live = self._adopt(since, lambda shown: shown == wanted, kinds=(KIND_NOTICE,))
+        if live is None:
             return False
-        trace(f"HistoryFeed: the stream already showed the command notice {echo!r}")
+        trace(f"HistoryFeed: the stream already showed the command notice {echo.text!r}")
+        self._pane.set_quote(live, echo.body)
         return True
 
-    def _adopt(self, since: float, matches, kinds=(KIND_ASSISTANT, KIND_NOTICE)) -> bool:
+    def _adopt(self, since: float, matches, kinds=(KIND_ASSISTANT, KIND_NOTICE)):
         """Claim the first live entry since `since` whose shown text `matches`, so that no
-        other history row takes it for its own."""
+        other history row takes it for its own. The entry, or None."""
         for live in self._pane.entries:
             if live.kind not in kinds or live.history:
                 continue
@@ -237,8 +241,8 @@ class HistoryFeed(AssistantObserver):
             shown = normalize(FallbackNotice.strip(live.body.text))
             if shown and matches(shown):
                 self._adopted.add(id(live))
-                return True
-        return False
+                return live
+        return None
 
     def _read(self, entry: dict) -> StoredReply:
         if SHOW_COMMAND_ROUNDS:
@@ -258,12 +262,15 @@ class HistoryFeed(AssistantObserver):
             trace("HistoryFeed: assistant row dropped, the stream already showed all of it")
             return
         for echo in reply.before:
-            self._pane.insert(KIND_NOTICE, command_line(echo), timestamp)
+            self._notice(echo, timestamp)
         if reply.prose:
             self._pane.insert(KIND_ASSISTANT, repair_markdown(reply.prose), timestamp,
                               header=MessageFormatter.format_assistant_header(None))
         for echo in reply.after:
-            self._pane.insert(KIND_NOTICE, command_line(echo), timestamp)
+            self._notice(echo, timestamp)
+
+    def _notice(self, echo: Echo, timestamp: float):
+        self._pane.set_quote(self._pane.insert(KIND_NOTICE, command_line(echo.text), timestamp), echo.body)
 
     def _insert(self, entry: dict) -> bool:
         """Draw a history row nothing live has shown — every row of a backfill. True when the

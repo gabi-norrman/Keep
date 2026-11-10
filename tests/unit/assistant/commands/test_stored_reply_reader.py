@@ -20,13 +20,13 @@ def test_a_block_quoted_argument_is_taken_out_whole(reader):
     reply = reader.read('save_watch("ferry-strike", """Strike (day 2), "no boats"\nuntil further notice.""", '
                         '"2026-10-07", "6h")\n\nOn the watch list.')
     assert reply.prose == "On the watch list."
-    assert len(reply.before) == 1 and "ferry-strike" in reply.before[0] and "no boats" not in reply.before[0]
+    assert len(reply.before) == 1 and "ferry-strike" in reply.before[0].text and "no boats" not in reply.before[0].text
 
 
 def test_echoes_keep_their_place_around_the_prose(reader):
     reply = reader.read('google("ferry strike")\nBack on Friday.\n\nremember(Marcus follows the ferry strike)')
     assert reply.prose == "Back on Friday."
-    assert len(reply.before) == 1 and "ferry strike" in reply.before[0]
+    assert len(reply.before) == 1 and "ferry strike" in reply.before[0].text
     assert len(reply.after) == 1
 
 
@@ -35,6 +35,18 @@ def test_echoes_keep_their_place_around_the_prose(reader):
 def test_the_wrapping_of_a_call_goes_with_it(reader, wrapped):
     reply = reader.read(f"Looking.\n{wrapped}\nDone.")
     assert reply.prose == "Looking.\n\nDone." and len(reply.after) == 1
+
+
+def test_a_post_message_keeps_what_it_said_beside_its_echo(reader):
+    """The stream showed only where it went; the text, commas and all, is what was sent."""
+    reply = reader.read('post_message("Charlotte", """The sofa comes Friday, carried in and assembled.""")\n\nSent.')
+    assert len(reply.before) == 1 and "Charlotte" in reply.before[0].text
+    assert reply.before[0].body == "The sofa comes Friday, carried in and assembled."
+    assert "sofa" not in reply.prose
+
+
+def test_a_command_that_says_nothing_to_anybody_has_no_body(reader):
+    assert reader.read('google("ferry strike")').before[0].body == ""
 
 
 def test_code_tags_in_the_prose_after_a_call_survive(reader):
@@ -89,13 +101,13 @@ class TestTheInvokeFormat:
     def test_a_block_with_one_invoke_reads_like_a_keep_call(self, invoke_reader):
         reply = self.guarded(invoke_reader, f"On it.\n{self.block(('turn_on', 'Kitchen lamp'))}\nDone.")
         assert reply.prose == "On it.\n\nDone." and reply.before == []
-        assert len(reply.after) == 1 and "Kitchen lamp" in reply.after[0]
+        assert len(reply.after) == 1 and "Kitchen lamp" in reply.after[0].text
 
     def test_a_block_with_two_invokes_gives_two_echoes_and_no_xml(self, invoke_reader):
         text = f"On it.\n{self.block(('turn_on', 'Kitchen lamp'), ('turn_off', 'Hall lamp'))}\nDone."
         reply = self.guarded(invoke_reader, text)
         assert reply.prose == "On it.\n\nDone."
-        assert len(reply.after) == 2 and "Kitchen lamp" in reply.after[0] and "Hall lamp" in reply.after[1]
+        assert len(reply.after) == 2 and "Kitchen lamp" in reply.after[0].text and "Hall lamp" in reply.after[1].text
 
     def test_a_block_of_short_invokes_does_not_hang_the_reader(self, invoke_reader):
         text = ('<function_calls><invoke name="turn_on"></invoke><invoke name="turn_off"></invoke>'

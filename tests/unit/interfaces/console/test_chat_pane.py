@@ -543,6 +543,16 @@ class TestTranscript:
         pane.set_detail(entry, None)
         assert draw(pane, screen)[0] == BULLET + "Reading x"
 
+    def test_command_echo_quote_is_drawn_under_the_echo_and_its_detail(self, pane, screen):
+        entry = pane.add_notice(" • <i>Posting to Charlotte</i>")
+        pane.set_detail(entry, "done after 1s")
+        pane.set_quote(entry, "The sofa comes <b>Friday</b>.\nCarried in.")
+        rows = draw(pane, screen)
+        assert rows[0] == BULLET + "Posting to Charlotte (done after 1s)"
+        assert [row.strip() for row in rows[1:3]] == ["The sofa comes Friday.", "Carried in."]
+        pane.set_quote(entry, None)
+        assert draw(pane, screen)[1].strip() == ""
+
     def test_system_row_detail_trails_the_body_dim(self, pane, screen):
         entry = pane.insert(KIND_SYSTEM, "Incoming voice request: hi", 1000.0, header="System (VoiceToVoice)")
         pane.set_detail(entry, "rejected: lost the vote")

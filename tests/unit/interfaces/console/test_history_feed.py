@@ -49,7 +49,7 @@ def shown(pane):
 
 def stream_echoes(pane, call):
     """The notice the console's stream shows as it runs `call`."""
-    return pane.add_notice(command_line(StoredReplyReader().read(call).before[0]))
+    return pane.add_notice(command_line(StoredReplyReader().read(call).before[0].text))
 
 
 def kinds(pane):
@@ -278,6 +278,19 @@ class TestAdoption:
              entry("assistant", 'google("Mac Studio M5 news")\n<code>open_url(https://example.com/a)</code>', now + 1))
         feed.turn_finished()
         assert pane.entries == echoes
+
+    def test_a_post_message_the_stream_showed_gets_its_text_under_the_notice(self, history, pane, feed):
+        call = 'post_message("Charlotte", """The sofa comes Friday.""")'
+        feed.turn_started()
+        echo = stream_echoes(pane, call)
+        land(history, entry("assistant", call, time.time()))
+        feed.turn_finished()
+        assert pane.entries == [echo] and echo.quote == "The sofa comes Friday."
+
+    def test_another_channels_post_message_shows_what_it_said(self, history, pane, feed):
+        land(history, entry("assistant", 'post_message("Charlotte", """The sofa comes Friday.""")\n\nSent.', time.time()))
+        assert kinds(pane) == [KIND_NOTICE, KIND_ASSISTANT]
+        assert pane.entries[0].quote == "The sofa comes Friday." and "sofa" not in pane.entries[0].body.text
 
     def test_another_channels_command_round_shows_its_notices(self, history, pane, feed):
         """No stream drew it here, so the row is all the console has: a notice per command."""

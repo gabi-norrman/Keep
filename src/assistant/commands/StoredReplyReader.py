@@ -4,11 +4,13 @@ The history keeps a reply as the model wrote it — command calls and all, a `sa
 with its whole text among them — because that is what the LLM must see on its next turn.
 A user watching the stream saw something else: the prose with the calls taken out, and
 one echo per call ("Searching for …", `Commands.echo_text`). The reader rebuilds that
-view from the stored text, with the parser the stream itself uses, so a chat redrawn from
+view from the stored text — and keeps, beside the echo, what a call said to somebody else
+(`Commands.echo_body`, the text of a `post_message`), which no stream showed — with the parser the stream itself uses, so a chat redrawn from
 the history reads like the one that was watched live.
 """
 import re
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from common.logging import trace
 
@@ -21,12 +23,18 @@ WRAP_CLOSES = re.compile(r"^\s*(`+|</code>)")
 BLANK_RUN = re.compile(r"\n{3,}")
 
 
+class Echo(NamedTuple):
+    """One command call as a chat shows it."""
+    text: str           # "Posting to Charlotte"
+    body: str = ""      # what the call said there, when it said something
+
+
 @dataclass
 class StoredReply:
     """A stored reply as its stream showed it."""
     prose: str          # the reply without its command calls
-    before: list[str]   # the echoes of the commands called before the prose began
-    after: list[str]    # … and of those called once it had
+    before: list[Echo]  # the echoes of the commands called before the prose began
+    after: list[Echo]   # … and of those called once it had
 
 
 class StoredReplyReader:
@@ -57,7 +65,8 @@ class StoredReplyReader:
             for name, params in calls:
                 echo = self._commands.echo_text(name, params)
                 if echo:
-                    (after if prose.strip() else before).append(echo)
+                    body = self._commands.echo_body(name, params) or ""
+                    (after if prose.strip() else before).append(Echo(echo, body))
                 else:
                     trace(f"StoredReplyReader: {name} has no echo, nothing to show for it")
         prose = BLANK_RUN.sub("\n\n", prose + remaining).strip()

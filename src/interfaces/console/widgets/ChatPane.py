@@ -93,6 +93,7 @@ class Entry:
     token: Optional[str] = None       # approval and secret prompts: the hub's token
     header: Optional[str] = None      # dim line above the body (who, when) for history entries
     detail: Optional[str] = None      # command echoes: the dim "(done after 4s, …)" note after the body
+    quote: Optional[str] = None       # command echoes: what the command said to somebody else, under the body
     history: bool = False             # a `HistoryFeed` backfill row, not something this console produced live
     debug: bool = False               # a diagnostic row (a cache-break report): drawn only with show_debug on
     picture: Optional[Picture] = None  # media: the photo itself (or a video's poster frame), when it decoded
@@ -381,6 +382,10 @@ class ChatPane:
     def set_detail(self, entry: Entry, detail: Optional[str]):
         """Annotate a command echo with how it ended; the body itself stays as it was."""
         entry.detail = detail if detail and detail.strip() else None
+
+    def set_quote(self, entry: Entry, quote: Optional[str]):
+        """Put what a command said to somebody else (a `post_message`) under its echo."""
+        entry.quote = quote if quote and quote.strip() else None
 
     def set_working(self, progress: Optional[Progress]):
         self._working = progress
@@ -682,7 +687,7 @@ class ChatPane:
         visible = entry.body.visible_text()
         if not self.show_debug and entry.kind == KIND_ASSISTANT:
             visible = self._without_fallback_notice(entry.body.text, visible)
-        key = (visible, width, image_rows, entry.final, entry.detail, self.redactor.vault.version)
+        key = (visible, width, image_rows, entry.final, entry.detail, entry.quote, self.redactor.vault.version)
         cached = entry._layout
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -728,6 +733,9 @@ class ChatPane:
         if entry.kind != KIND_DIFF:
             text = self.BLANK_RUN.sub("\n\n", text)
         prefix, blocks = self._entry_blocks(entry, text)
+        if entry.quote:
+            quoted = parse_html(normalize(self.redactor.mask(entry.quote)).strip())
+            blocks.append([replace(span, quote=True) for span in quoted])
         lines: List[Line] = []
         if entry.header:
             # A user turn's prompt marks the words, so the header is plain above it; the
