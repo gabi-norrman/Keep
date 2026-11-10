@@ -516,6 +516,48 @@ class TestWhatAChatConsumerReads:
         message = read(chat)[0][0]
         assert (message.chat_guid, message.is_group, message.in_chat) == ("", False, False)
 
+    def test_a_row_names_the_handles_of_its_chats_other_participants_in_either_direction(self, chat):
+        chat.message(1, "Hi", chat=1, sender=1).message(2, "Hi back", chat=1)
+        chat.message(3, "Hi all", chat=2, sender=2).message(4, "Hi, both", chat=3)
+        received, sent, in_group, to_group = read(chat)[0]
+        assert received.participants == sent.participants == ["+46701740605"]
+        assert in_group.participants == to_group.participants == ["+46701740605", "+46701740606"]
+
+    def test_a_send_later_row_names_its_participants_too(self, chat):
+        chat.message(1, "Later", chat=1, schedule_type=2)
+        assert read(chat)[0][0].participants == ["+46701740605"]
+
+    def test_a_row_in_no_chat_has_no_participants(self, chat):
+        chat.message(1, "orphan", sender=1)
+        assert read(chat)[0][0].participants == []
+
+
+@pytest.mark.unit
+class TestOwnAddresses:
+    """What the account itself is addressed as: chat.last_addressed_handle and chat.account_login
+    (`E:<email>` / `P:<phone>`) — a contract with chat.db, read on the satellite's Mac 2026-11-10."""
+
+    def test_the_addresses_of_every_chat_are_one_sorted_list_without_repeats(self, tmp_path):
+        db = ChatDb(tmp_path / "chat.db")
+        db.chat(1, "any;-;+46701740605", last_addressed_handle="Keep@Example.com", account_login="E:keep@example.com")
+        db.chat(2, "any;-;+46701740606", last_addressed_handle="+46 70-174 06 07", account_login="P:+46701740607")
+        db.chat(3, "any;+;chat3", style=GROUP, last_addressed_handle="keep@example.com", account_login=None)
+        assert MessagesDatabase(db.path).own_addresses() == ["+46701740607", "keep@example.com"]
+
+    def test_a_chat_that_names_no_address_adds_none(self, tmp_path):
+        db = ChatDb(tmp_path / "chat.db")
+        db.chat(1, "any;-;+46701740605", last_addressed_handle="", account_login="E:")
+        db.chat(2, "any;-;+46701740606")
+        assert MessagesDatabase(db.path).own_addresses() == []
+
+    def test_a_chat_table_without_the_columns_has_no_address_and_fails_nothing(self, tmp_path):
+        db = ChatDb(tmp_path / "chat.db", address_columns=False)
+        db.chat(1, "any;-;+46701740605")
+        assert MessagesDatabase(db.path).own_addresses() == []
+
+    def test_a_database_that_is_not_there_has_no_address_and_fails_nothing(self, tmp_path):
+        assert MessagesDatabase(tmp_path / "missing.db").own_addresses() == []
+
 
 @pytest.mark.unit
 class TestGroupChats:

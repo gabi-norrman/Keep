@@ -64,6 +64,10 @@ class TestTheCalls:
         assert opened.ok and opened.contacts == 4, "two numbers, each with its 9-digit suffix"
         assert host.health().contacts == 4
 
+    def test_health_names_the_accounts_own_addresses(self, host, chat):
+        chat.execute("UPDATE chat SET last_addressed_handle = 'keep@example.com', account_login = 'E:keep@example.com'")
+        assert host.health().addresses == ["keep@example.com"]
+
     def test_a_poll_names_the_people_from_the_address_book(self, host):
         batch = host.poll(0, None, 500)
         assert batch.error == "" and batch.exhausted and batch.cursor == 4

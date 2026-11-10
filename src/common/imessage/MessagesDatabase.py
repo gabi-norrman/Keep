@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
-from common.imessage.Handles import phone_suffix
+from common.imessage.Handles import looks_like_handle, phone_suffix, prefer_handle
 from common.imessage.MessagesHost import (Attachment, GroupChat, Message, NO_ACCESS, NO_DATABASE,
                                           SCHEDULE_COMPLETED, SCHEDULE_FAILED)
 from common.logging import info, trace, fine
@@ -180,6 +180,7 @@ class MessagesDatabase:
         a file — on disk or still to arrive — is read and left out."""
         messages: list[Message] = []
         cursor, scanned = after_rowid, 0
+        participants: dict[int, list[str]] = {}     # chat_id → its handles, read once per chat
         with self._connect() as conn:
             rows = conn.execute(f"""
                 SELECT m.ROWID, m.text, m.attributedBody, m.date, m.is_from_me,
@@ -210,6 +211,10 @@ class MessagesDatabase:
                                   in_chat=chat_id is not None, guid=guid or "", chat_guid=chat_guid or "",
                                   is_group=chat_style == GROUP_CHAT_STYLE, service=service or "",
                                   tapback=associated_type or 0)
+                if chat_id is not None:
+                    if chat_id not in participants:
+                        participants[chat_id] = self._participants(conn, chat_id)
+                    message.participants = participants[chat_id]
                 if not message.send_later:
                     message.text = _body(text, attributed_body)
                     message.attachments, message.pending_attachments = self._attachments(conn, rowid)
@@ -284,6 +289,33 @@ class MessagesDatabase:
             fine(f"iMessage: the bubble {guid} a message refers to is not in its chat in chat.db")
             return False, None
         return bool(row[0]), _body(row[1], row[2])
+
+    @staticmethod
+    def _participants(conn, chat_id: int) -> list[str]:
+        """The handles of a chat's other participants as chat.db has them, sorted."""
+        rows = conn.execute("""SELECT DISTINCT h.id FROM chat_handle_join chj
+                               JOIN handle h ON chj.handle_id = h.ROWID
+                               WHERE chj.chat_id = ?""", (chat_id,)).fetchall()
+        return sorted(r[0] for r in rows if r[0])
+
+    def own_addresses(self) -> list[str]:
+        """The account's own addresses, sorted: what its chats were last addressed from
+        (`chat.last_addressed_handle`) and the logins they belong to (`chat.account_login`,
+        `E:<email>` or `P:<phone>`). Never raises: a chat table that cannot be read, or one
+        without the columns, has none — said in the log."""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute("SELECT DISTINCT last_addressed_handle, account_login FROM chat").fetchall()
+        except sqlite3.Error as e:
+            info(f"iMessage: the account's own addresses could not be read from chat.db ({e})")
+            return []
+        found = set()
+        for addressed, login in rows:
+            for raw in (addressed, login[2:] if login and login[1:2] == ":" else None):
+                address = prefer_handle((raw or "").strip())
+                if address and looks_like_handle(address):
+                    found.add(address)
+        return sorted(found)
 
     @staticmethod
     def _recipients(conn, message_rowid: int, name: Namer) -> list[str]:

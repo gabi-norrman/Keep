@@ -47,7 +47,8 @@ class LocalMessagesHost(MessagesHost):
             self.database.probe_schema()
             self.contacts.refresh()
             info(f"iMessage host: schema and contacts re-read ({len(self.contacts)} contact entries)")
-        return HostHealth(True, contacts=len(self.contacts), typing=self.typing_indicator.blocked())
+        return HostHealth(True, contacts=len(self.contacts), typing=self.typing_indicator.blocked(),
+                          addresses=self.database.own_addresses())
 
     def cursor_at(self, horizon_ts: Optional[float]) -> Count:
         try:

@@ -67,6 +67,10 @@ class HostHealth:
     # The gate (one of TYPING_GATES) that kept the typing dots from showing when they were last
     # asked for and still does; "" when they can show, or when nobody has asked this host for dots.
     typing: str = ""
+    # The account's own addresses — the emails and phones its chats are addressed from — lowercase
+    # emails and E.164 phones, sorted. What tells another account's reader which of its chats this
+    # account is in. Empty for an unhealthy host, and for one a version behind.
+    addresses: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -114,6 +118,10 @@ class Message:
     # Files chat.db lists for the row that are not on the host's disk (yet): Messages writes the row
     # before a large attachment has finished downloading. Left at 0 by a host one version behind.
     pending_attachments: int = 0
+    # The phones and emails of the chat's other participants as chat.db has them, sorted — the
+    # buddy of a 1:1 chat, the members of a group. Filled by `poll` alone; empty for a row no
+    # chat holds, and for a host a version behind.
+    participants: list[str] = field(default_factory=list)
 
 
 @dataclass

@@ -14,11 +14,13 @@ def apple(unix_ts: float) -> int:
 
 
 class ChatDb:
-    """Writes a chat.db; `send_later_columns=False` gives the schema of a Mac before macOS 15."""
+    """Writes a chat.db; `send_later_columns=False` gives the schema of a Mac before macOS 15,
+    `address_columns=False` a chat table that does not say what the account's own address is."""
 
-    def __init__(self, path, send_later_columns: bool = True):
+    def __init__(self, path, send_later_columns: bool = True, address_columns: bool = True):
         self.path = str(path)
         schedule = ", schedule_type INTEGER DEFAULT 0, schedule_state INTEGER DEFAULT 0" if send_later_columns else ""
+        addresses = ", last_addressed_handle TEXT, account_login TEXT" if address_columns else ""
         self._run(f"""
             CREATE TABLE message (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, guid TEXT, text TEXT, attributedBody BLOB, date INTEGER,
                                   is_from_me INTEGER DEFAULT 0, handle_id INTEGER DEFAULT 0,
@@ -26,7 +28,7 @@ class ChatDb:
                                   thread_originator_guid TEXT, associated_message_guid TEXT,
                                   associated_message_type INTEGER DEFAULT 0{schedule});
             CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT, service TEXT);
-            CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, guid TEXT, style INTEGER, display_name TEXT);
+            CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, guid TEXT, style INTEGER, display_name TEXT{addresses});
             CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
             CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
             CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, filename TEXT, mime_type TEXT);
@@ -48,8 +50,11 @@ class ChatDb:
     def handle(self, rowid: int, handle_id, service: str = "iMessage"):
         return self.execute("INSERT INTO handle VALUES (?, ?, ?)", (rowid, handle_id, service))
 
-    def chat(self, rowid: int, guid: str, members=(), name=None, style: int = DIRECT):
-        self.execute("INSERT INTO chat VALUES (?, ?, ?, ?)", (rowid, guid, style, name))
+    def chat(self, rowid: int, guid: str, members=(), name=None, style: int = DIRECT, **columns):
+        """`columns` sets any other column: `last_addressed_handle`, `account_login`."""
+        values = {"ROWID": rowid, "guid": guid, "style": style, "display_name": name, **columns}
+        self.execute(f"INSERT INTO chat ({', '.join(values)}) VALUES ({', '.join('?' * len(values))})",
+                     tuple(values.values()))
         for member in members:
             self.execute("INSERT INTO chat_handle_join VALUES (?, ?)", (rowid, member))
         return self

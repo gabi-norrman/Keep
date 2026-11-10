@@ -9,7 +9,7 @@ from assistant.integration.SmsCodeReader import SmsCodeReader
 from assistant.integration.Integration import HealthWarning, Integration
 from common.ConfigManager import config
 from common.imessage import Hosts
-from common.imessage.Handles import is_group_guid
+from common.imessage.Handles import is_group_guid, prefer_handle
 from common.imessage.MessagesHost import (Attachment, GroupChat, HostHealth, Message, MessageBatch, MessagesHost,
                                           NO_ACCESS, NO_DATABASE, Recipient, SCHEDULE_COMPLETED, SCHEDULE_FAILED,
                                           UNREACHABLE)
@@ -19,6 +19,12 @@ from assistant.tools.MediaAnalyzer import media_analyzer, media_kind, KIND_VIDEO
 
 
 CONFIG_SECTION = "imessage"     # holds `host` and `host_token`: whose Messages this integration reads (common/imessage/Hosts)
+# The assistant's own Messages account, when the iMessage chat (interfaces/imessage) runs on one:
+# a chat that account is in is the chat interface's to read, never this feed's as well.
+CHAT_SECTION = "imessage_chat"
+CHAT_ENABLED_KEY = "interfaces.imessage.enabled"
+CHAT_ADDRESSES_REFRESH = 600    # seconds between two reads of that account's addresses
+CHAT_ADDRESSES_RETRY = 60       # ... while none has been read yet
 POLL_INTERVAL = 5
 FETCH_BATCH_SIZE = 500   # chat.db rows read per fetch; a shorter batch means the catch-up is over
 APPLE_2FA_PATTERN = re.compile(r"Apple Account Code is:\s*(\d{6})")
@@ -52,7 +58,9 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
     up when `imessage.host` names another or the database ends before it (`cursor_lost`). It
     screens incoming texts for prompt injection, has media described, forwards the detected
     Apple/Ring 2FA codes to their integrations, follows send-later messages until they send
-    and echoes its own sends into the history."""
+    and echoes its own sends into the history. A chat the assistant's own Messages account
+    is in (the iMessage chat interface, when it runs) is left out of the feed: the same
+    bubbles reach the history from that side."""
     sensitive = True
 
     poll_interval = POLL_INTERVAL
@@ -84,6 +92,12 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
         # attachment id → its description, for the batch being read: a batch read again because
         # the host went away over a later file costs no second vision call for the earlier ones
         self._described: dict[int, str] = {}
+        # the assistant's own account as last read — see _assistant_addresses
+        self._chat_host: Optional[MessagesHost] = None
+        self._chat_account = ""
+        self._chat_addresses: frozenset[str] = frozenset()
+        self._chat_addresses_due = 0.0
+        self._chat_addresses_problem = ""
 
     def _on_reset(self):
         from assistant.integration.FeedRunner import Feeds
@@ -248,6 +262,55 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
             self._pending_entries.extend(reported)
             raise
 
+    def _assistant_addresses(self) -> frozenset[str]:
+        """The addresses of the assistant's own Messages account while the iMessage chat runs
+        on one, as its host reports them (`HostHealth.addresses`) — read again every
+        CHAT_ADDRESSES_REFRESH seconds. A host that does not answer keeps the last ones read:
+        the chats the assistant is in are the same while its Mac sleeps. Empty — nothing is
+        left out of the feed — while the chat interface is off, while it is given this very
+        account (it then refuses to run) and until a host has named an address."""
+        if not config.get(CHAT_ENABLED_KEY, False) or Hosts.same_account(CONFIG_SECTION, CHAT_SECTION):
+            if self._chat_addresses:
+                info("iMessage: the iMessage chat no longer runs on an account of its own — "
+                     "every chat is the feed's again")
+            self._chat_host, self._chat_addresses, self._chat_addresses_due = None, frozenset(), 0.0
+            return self._chat_addresses
+        account = Hosts.account(CHAT_SECTION)
+        if self._chat_host is None or account != self._chat_account:
+            self._chat_host, self._chat_account, self._chat_addresses_due = Hosts.build(CHAT_SECTION), account, 0.0
+        now = time.monotonic()
+        if now < self._chat_addresses_due:
+            return self._chat_addresses
+        health = self._chat_host.health()
+        found = frozenset(a for a in map(prefer_handle, health.addresses) if a)
+        if found:
+            problem = ""
+            if found != self._chat_addresses:
+                info(f"iMessage: the assistant's own Messages account answers to {len(found)} address(es) — "
+                     "the chats it is in are left to the iMessage chat")
+            self._chat_addresses = found
+        elif health.ok:
+            problem = "its host names no address of the account (a satellite a version behind, or an account without chats)"
+        else:
+            problem = f"its host does not answer ({health.reason})"
+        if problem and problem != self._chat_addresses_problem:
+            kept = (f"the {len(self._chat_addresses)} read before are kept" if self._chat_addresses
+                    else "until it does, a message in a chat with the assistant is in the feed as well")
+            info(f"iMessage: the addresses of the assistant's own Messages account could not be read: {problem} — {kept}")
+        self._chat_addresses_problem = problem
+        self._chat_addresses_due = now + (CHAT_ADDRESSES_REFRESH if self._chat_addresses else CHAT_ADDRESSES_RETRY)
+        return self._chat_addresses
+
+    @staticmethod
+    def _with_assistant(message: Message, addresses: frozenset[str]) -> bool:
+        """Whether the message is in a chat the assistant's own account is in: the 1:1 chat with
+        it, or a group it is a member of. The sender counts too, for a host a version behind
+        that names no participants."""
+        if not addresses:
+            return False
+        handles = {prefer_handle(h) for h in (message.handle, *message.participants) if h}
+        return not addresses.isdisjoint(handles)
+
     def _entries_of(self, batch: MessageBatch, backfill: bool) -> list[FeedEntry]:
         """The history entries of one polled batch; moves `_last_seen_rowid` past it. Raises
         `FeedSourceAway` — nothing moved, the batch is read again — when the host went away over
@@ -257,8 +320,17 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
         # older code in the same batch can never be submitted ahead of a newer one
         apple_code: Optional[Tuple[float, str]] = None
         ring_code: Optional[Tuple[float, str]] = None
+        assistant = self._assistant_addresses()
+        left_to_chat: list[int] = []
         for message in batch.messages:
             rowid, unix_ts, text = message.rowid, message.timestamp, message.text
+
+            # The iMessage chat reads the same bubble on the assistant's account, as a turn or as
+            # its context: here it would be in the history a second time. Before the Send Later
+            # tracking, so a scheduled message to the assistant is not announced either.
+            if self._with_assistant(message, assistant):
+                left_to_chat.append(rowid)
+                continue
 
             if message.send_later:
                 self._note_send_later(message, backfill)
@@ -327,6 +399,9 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
                 trace(content)
             entries.append(FeedEntry(unix_ts, content))
 
+        if left_to_chat:
+            fine(f"iMessage: {len(left_to_chat)} message(s) of chats the assistant's own account is in left to "
+                 f"the iMessage chat (rowids={left_to_chat})")
         self._described.clear()     # the batch went through: nothing of it is read again
         if batch.cursor < self._last_seen_rowid:
             # an answer without a cursor, or with an older one: following it would read history again
