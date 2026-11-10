@@ -19,7 +19,7 @@ from assistant.llm.AbstractLLM import LLMRefusalError
 from assistant.llm.CachedLLM import CachedLLM
 from assistant.prompt.MessageHistory import MessageHistory
 from common.Language import language_code
-from common.logging import info, trace, error, fine
+from common.logging import info, note, trace, error, fine
 from common.TTFTMonitor import TTFTMonitor
 
 if TYPE_CHECKING:
@@ -110,6 +110,7 @@ class DialogManager:
 
         self.llm_response = ""
         self.llm_response_raw = ""
+        self.stub_dropped = ""
         self.time_to_first_token = 0
         self.time_to_user_reply = 0
         self.messages = []
@@ -461,12 +462,21 @@ class DialogManager:
     def _stream_with_retry_and_fallback(self, messages: list, t: float, time_shown: bool,
                                         raw_snapshot: str) -> Generator[str, None, None]:
         refused_ai = None
+        stub_retried = False
         attempt = 0
         while True:
             try:
                 response = self.ai.create_streaming_completion(messages, thinking=self.thinking,
                                                                follow_up=self.follow_up)
                 yield from self.process_llm_stream(response, t, time_shown)
+                if (self.stub_dropped and not stub_retried and not self.llm_response.strip()
+                        and not self.command_processor.commands_dispatched):
+                    note(f"The round was a stub and nothing else ({self.stub_dropped!r}), no command, no reply "
+                         f"— asking {self.ai.name()} for the round again, once")
+                    stub_retried = True
+                    self.llm_response_raw = raw_snapshot
+                    self.command_processor.reset_parse_state()
+                    continue
                 if refused_ai is not None:
                     yield from self._surface_fallback_notice(refused_ai)
                 return
@@ -545,6 +555,31 @@ class DialogManager:
         info(f"Reply cut after {ran} commands — {how}, the turn kept as those calls "
              f"({before} → {len(self.llm_response_raw)} chars received)")
 
+    # A filler token Opus writes where a command belonged, or beside one ("_url_placeholder",
+    # "_open placeholder removed", "dummy" — four rounds between 2026-10-20 and 2026-11-09). The
+    # first line of a reply is held back while it could still be one, and dropped when it is.
+    STUB_LINE = re.compile(r"_[\w ]*placeholder[\w ]*|dummy")
+    STUB_HOLD_LIMIT = 40
+
+    def _could_become_stub(self, text: str) -> bool:
+        text = text.strip()
+        return len(text) <= self.STUB_HOLD_LIMIT and (
+            "dummy".startswith(text) or re.fullmatch(r"_[\w ]*", text) is not None)
+
+    def _without_stub(self, held: str, complete: bool) -> str | None:
+        """The held start of the reply as it may be shown: None while its first line could
+        still turn out a stub, the text without that line when it did, else the text."""
+        line, newline, rest = held.partition("\n")
+        if not newline and not complete and self._could_become_stub(line):
+            return None
+        stub = line.strip()
+        if not self.STUB_LINE.fullmatch(stub):
+            return held
+        note(f"Dropped a stub line the model wrote in place of its reply: {stub!r}")
+        self.stub_dropped = stub
+        self.llm_response_raw = self.llm_response_raw.replace(stub, "", 1).lstrip()
+        return rest.lstrip()
+
     def process_llm_stream(self, response, t: float, time_shown: bool) -> Generator[str, None, None]:
         # Emotion tags ([laughing], [sighing], ...) are synthesis directives, not display
         # text, so strip them before publishing to /stream_text or they render literally in
@@ -552,6 +587,8 @@ class DialogManager:
         stream_text_buffer = ""
         reply_time_shown = False
         in_span = False   # inside a backtick span of the model's (strip_backticks)
+        held = "" if not self.llm_response else None   # the reply's start, while it may be a stub
+        self.stub_dropped = ""
 
         def publish_stream_text(chunk: str, flush: bool = False):
             nonlocal stream_text_buffer
@@ -601,14 +638,18 @@ class DialogManager:
             # Thinking chunks arrive while the processor swallows the block and yields no
             # text — surfacing them here keeps them live for the requesting interface.
             yield from self.drain_events()
+            if processed_chunk is not None and not self.llm_response and not held:
+                processed_chunk = processed_chunk.lstrip()  # strip whitespace at the beginning of response
+            if held is not None and processed_chunk:
+                held += processed_chunk
+                processed_chunk = self._without_stub(held, complete=False)
+                if processed_chunk is not None:
+                    held = None
             if processed_chunk is not None:
-                reply_not_started = not self.llm_response or len(self.llm_response) <= 0
-                if reply_not_started:
-                    processed_chunk = processed_chunk.lstrip()  # strip whitespace at the beginning of response
                 # First user-facing reply token — anything emitted after the optional
                 # <thinking> block (stripped by the command processor). Measured from the
                 # first token, so this row shows the thinking duration.
-                if reply_not_started and processed_chunk and not reply_time_shown:
+                if not self.llm_response and processed_chunk and not reply_time_shown:
                     reply_time_shown = True
                     self.reply_token_got_at = time.time()
                     self.time_to_user_reply = round(self.reply_token_got_at - self.first_token_got_at, 2)
@@ -630,6 +671,8 @@ class DialogManager:
         # chunks); a cut it raises there would otherwise leave the calls that never ran in the turn.
         if not cut_in_stream and getattr(self.command_processor, "reply_cut", False):
             self._keep_the_cut_turn("at the end of the stream")
+        if held:
+            flushed = self._without_stub(held + (flushed or ""), complete=True)
         if flushed:
             self.llm_response += flushed
             observers().on_tokens(flushed)

@@ -1523,3 +1523,81 @@ def test_a_reply_that_writes_its_own_results_block_is_cut_there_and_the_stream_c
     assert "<function_results" not in dm.llm_response_raw
     assert "".join(c for c in output if isinstance(c, str)).strip() == "On it."
     processor.kill()
+
+
+# ===========================================================================
+# Stub lines the model writes where a command belonged (_without_stub)
+# ===========================================================================
+
+def _reply(output):
+    return "".join(c for c in output if isinstance(c, str))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stub_chunks", [
+    ["_url", "_placeholder"],
+    ["_extract_placeholder"],
+    ["_open", " placeholder", " removed"],
+    ["dum", "my"],
+])
+def test_a_round_that_is_only_a_stub_is_asked_again_and_the_stub_never_shown(monkeypatch, stub_chunks):
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    dm.ai = DroppingAI([stub_chunks, ["Page two says 500 km."]])
+    _patch_stream_time(monkeypatch, [100.0, 100.1, 100.2, 100.3])
+
+    output = list(dm.stream_llm_response())
+
+    assert _reply(output) == "Page two says 500 km."
+    assert dm.ai.calls == 2
+    assert dm.messages[-1] == {"role": "assistant", "content": "Page two says 500 km."}
+
+
+@pytest.mark.unit
+def test_a_stub_round_is_asked_again_only_once(monkeypatch):
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    dm.ai = DroppingAI([["_url_placeholder"], ["_url_placeholder"]])
+    _patch_stream_time(monkeypatch, [100.0, 100.1, 100.2, 100.3])
+
+    output = list(dm.stream_llm_response())
+
+    assert _reply(output) == ""
+    assert dm.ai.calls == 2
+
+
+@pytest.mark.unit
+def test_a_stub_line_above_a_command_is_dropped_and_the_round_stands(monkeypatch):
+    class DispatchingProcessor(FakeCommandProcessor):
+        def process(self, content, dialog_manager):
+            if "turn_on(kitchen)" in content:
+                self.commands_dispatched += 1
+                return ""
+            return content
+
+    dm, _ = make_dialog_manager(monkeypatch, [], command_processor=DispatchingProcessor())
+    dm.ai = DroppingAI([["_open placeholder", " removed\n\n", "turn_on(kitchen)"]])
+    _patch_stream_time(monkeypatch, [100.0, 100.1])
+
+    output = list(dm.stream_llm_response())
+
+    assert _reply(output) == ""
+    assert dm.ai.calls == 1
+    assert dm.llm_response_raw == "turn_on(kitchen)"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("chunks", [
+    ["_Charlotte_", " is home."],
+    ["_", "placeholder", " is the word the form shows."],
+    ["dummy", " load is what the charger reports."],
+    ["Done."],
+    ["_ok"],
+])
+def test_a_reply_that_only_starts_like_a_stub_arrives_whole(monkeypatch, chunks):
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    dm.ai = DroppingAI([chunks])
+    _patch_stream_time(monkeypatch, [100.0, 100.1])
+
+    output = list(dm.stream_llm_response())
+
+    assert _reply(output) == "".join(chunks)
+    assert dm.ai.calls == 1
