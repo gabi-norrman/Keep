@@ -20,11 +20,13 @@ once per chat — never on every rewrite.
 All of the Mac sits behind `Accessibility`; the clock, the sleep and the timer are arguments,
 so the tests run the keep-alive and the timeout without waiting."""
 import atexit
+import json
 import re
 import threading
 import time
 import unicodedata
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from common.imessage.Accessibility import Accessibility
@@ -141,11 +143,16 @@ class TypingIndicator:
     the window is still the chat's, and ends dots nobody turned off after `TIMEOUT_SECONDS`.
     Windows that cannot be reached when they should close (the screen was locked meanwhile) are
     closed once they can. `blocked()` is the gate that keeps every chat's dots away, for the
-    host's health. A window this object did not open is never written to and never closed."""
+    host's health. A window this object did not open is never written to and never closed —
+    except the one a process before this one opened and could not close (the screen locked,
+    then a restart): with `record`, the names of the windows opened and not seen closed are
+    kept in that file, and a window found under such a name, its field holding nothing but
+    what is written here, is cleared and closed before the chat's window is opened anew."""
 
     def __init__(self, ax: Optional[Accessibility] = None, clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep,
-                 timer: Callable[[float, Callable[[], None]], Any] = _daemon_timer):
+                 timer: Callable[[float, Callable[[], None]], Any] = _daemon_timer,
+                 record: Optional[Path] = None):
         self._ax = ax if ax is not None else Accessibility()
         self._clock = clock
         self._sleep = sleep
@@ -158,6 +165,8 @@ class TypingIndicator:
         self._retry_after: dict[str, float] = {}
         self._longer: dict[str, set[str]] = {}      # a name → the longer chat names a press showed its row to be
         self._exit_hooked = False
+        self._record = record
+        self._unclosed: set[str] = self._read_record()      # names of windows opened and not seen closed
 
     # --- the calls ------------------------------------------------------------------------
 
@@ -375,7 +384,8 @@ class TypingIndicator:
     def _open(self, chat: str, name: str, look: _Look, now: float) -> TypingResult:
         """Find the chat's row, open its window, check it, write the field."""
         others = [w for w in look.windows if not self._ax.same(w, look.main) and not self._is_mine(w)]
-        if any(same_name(self._ax.attribute(w, TITLE), name) for w in others):
+        named = [w for w in others if same_name(self._ax.attribute(w, TITLE), name)]
+        if named and not self._reclaim(chat, name, named):
             return self._gave_up(chat, f"'{name}' is already open in a window of its own that Keep did not open — "
                                        f"it is never typed into; close it for dots")
         try:
@@ -400,6 +410,7 @@ class TypingIndicator:
             if field is None:
                 raise _NotAsExpected("it has no compose field")
             window = self._windows[chat] = _Window(name, opened, field, now)
+            self._remember(name, True)
             if not self._exit_hooked:
                 self._exit_hooked = True
                 atexit.register(self.shutdown)
@@ -450,6 +461,25 @@ class TypingIndicator:
         self._longer.setdefault(_plain(name), set()).add(title)
         return self._gave_up(chat, f"the row that could be '{name}' is the chat '{title}' — its window was closed "
                                    f"again, nothing was typed, and that row is not taken for '{name}' again")
+
+    def _reclaim(self, chat: str, name: str, windows: list) -> bool:
+        """Close the windows titled with the chat's name that an earlier look or process of
+        Keep left behind; False when one of them is not provably that — the name is not on
+        the record, or its field holds something not written here."""
+        if _plain(name) not in self._unclosed:
+            return False
+        for window in windows:
+            field = self._find(window, COMPOSE_FIELD)
+            if field is None or (self._ax.attribute(field, VALUE) or "") not in ("", *VALUES):
+                trace(f"Typing dots [{chat}]: a window '{name}' was left behind by Keep, but its field holds "
+                      f"something else by now — left alone")
+                return False
+            if not (self._ax.set_attribute(field, VALUE, "") and self._press_close(window)):
+                return False
+        info(f"Typing dots [{chat}]: {len(windows)} window(s) '{name}' left behind by an earlier run of Keep "
+             f"cleared and closed")
+        self._remember(name, False)
+        return True
 
     def _close_what_the_press_opened(self, name: str, look: _Look):
         """The wait for the chat's window was cut short: one more look, and a new window
@@ -557,7 +587,9 @@ class TypingIndicator:
             return
         cleared = not window.written or self._ax.set_attribute(window.field, VALUE, "")
         closed = self._press_close(window.element)
-        if not (cleared and closed):
+        if cleared and closed:
+            self._remember(window.name, False)
+        else:
             error(f"Typing dots [{chat}]: the window '{window.name}' could not be "
                   f"{'cleared' if not cleared else 'closed'} — it may be left on the Mac's screen"
                   f"{' with a draft' if not cleared else ''}")
@@ -565,6 +597,33 @@ class TypingIndicator:
     def _press_close(self, window) -> bool:
         button = self._ax.attribute(window, CLOSE_BUTTON)
         return button is not None and self._ax.perform(button, PRESS)
+
+    # --- the record of what was opened ------------------------------------------------------
+
+    def _read_record(self) -> set[str]:
+        if self._record is None or not self._record.exists():
+            return set()
+        try:
+            names = {str(name) for name in json.loads(self._record.read_text())}
+        except (OSError, ValueError, TypeError) as e:
+            info(f"Typing dots: the record of opened windows could not be read ({type(e).__name__}: {e}) — "
+                 f"a window an earlier run left open stays until it is closed by hand")
+            return set()
+        if names:
+            info(f"Typing dots: {len(names)} window(s) of an earlier run may still be open — each is closed when "
+                 f"its chat next shows dots")
+        return names
+
+    def _remember(self, name: str, opened: bool):
+        before = set(self._unclosed)
+        (self._unclosed.add if opened else self._unclosed.discard)(_plain(name))
+        if self._record is None or self._unclosed == before:
+            return
+        try:
+            self._record.parent.mkdir(parents=True, exist_ok=True)
+            self._record.write_text(json.dumps(sorted(self._unclosed)))
+        except OSError as e:
+            error(f"Typing dots: the record of opened windows could not be written ({type(e).__name__}: {e})")
 
     # --- saying why, once -------------------------------------------------------------------
 

@@ -219,6 +219,15 @@ def isolated_imessage_chat_state(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="session")
+def isolated_imessage_typing_record(tmp_path_factory):
+    """No unit test reads or writes the install's cache/imessage_typing_windows.json — the names
+    of the dots windows a real host left open: a host built without an indicator of its own
+    keeps that record in a scratch file."""
+    from common.imessage import LocalMessagesHost
+    LocalMessagesHost.TYPING_RECORD = tmp_path_factory.mktemp("imessage_typing") / "imessage_typing_windows.json"
+
+
+@pytest.fixture(autouse=True, scope="session")
 def isolated_launch_agent(tmp_path_factory):
     """No unit test writes or removes the watchdog's plist in ~/Library/LaunchAgents — launchd
     loads whatever lies there at the next login, whoever wrote it: a `Watchdog.sync` that names

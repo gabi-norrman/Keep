@@ -12,7 +12,7 @@ from common.imessage.MessagesHost import (TYPING_BUSY, TYPING_FAILED, TYPING_NO_
                                           TYPING_NO_ROW, TYPING_NO_WINDOW, TYPING_NOT_ON_CONSOLE, TYPING_SCREEN_LOCKED,
                                           TYPING_UNAVAILABLE)
 from common.imessage.TypingIndicator import (KEEPALIVE_SECONDS, MAX_NODES, MAX_WINDOWS, RETRY_SECONDS, TIMEOUT_SECONDS,
-                                             WINDOW_WAIT, TypingIndicator, names_row, same_name)
+                                             VALUE, WINDOW_WAIT, TypingIndicator, names_row, same_name)
 
 from .ax_fakes import Clock, FakeMessages, Node, Timers
 
@@ -516,3 +516,54 @@ class TestNeverLeavingAMess:
             for _ in range(5):
                 dots.on("iMessage;+;chat-chess", "Chess Club")
             assert said.call_count == 1
+
+
+@pytest.mark.unit
+class TestAWindowLeftBehindByAnEarlierProcess:
+    """The screen locks mid-reply and the process is restarted before it unlocks: the window
+    it opened is still there, and the process that finds it never opened it."""
+
+    @staticmethod
+    def restarted(dots, record) -> TypingIndicator:
+        return TypingIndicator(dots.mac, dots.clock, dots.clock.sleep, Timers(dots.clock), record=record)
+
+    def left_behind(self, dots, tmp_path) -> TypingIndicator:
+        record = tmp_path / "windows.json"
+        self.restarted(dots, record).on(FAMILY, FAMILY_NAME)
+        return self.restarted(dots, record)
+
+    def test_it_is_cleared_and_closed_and_the_dots_show_in_a_new_one(self, dots, tmp_path):
+        after = self.left_behind(dots, tmp_path)
+        stale = dots.mac.window(FAMILY_NAME)
+        assert after.on(FAMILY, FAMILY_NAME).showing
+        assert stale.dead and dots.mac.closed == [FAMILY_NAME]
+        assert len(dots.mac.windows) == 2 and dots.mac.draft(FAMILY_NAME) != ""
+        assert after.off(FAMILY).showing is False and dots.nothing_left()
+
+    def test_one_somebody_typed_into_since_is_left_alone(self, dots, tmp_path):
+        after = self.left_behind(dots, tmp_path)
+        dots.mac.field_of(FAMILY_NAME).attributes[VALUE] = "On my way"
+        assert not after.on(FAMILY, FAMILY_NAME).showing
+        assert dots.mac.closed == [] and dots.mac.draft(FAMILY_NAME) == "On my way"
+
+    def test_a_window_closed_properly_is_not_on_the_record(self, dots, tmp_path):
+        record = tmp_path / "windows.json"
+        before = self.restarted(dots, record)
+        before.on(FAMILY, FAMILY_NAME)
+        before.off(FAMILY)
+        theirs = dots.mac.chat_window(FAMILY_NAME)
+        assert not self.restarted(dots, record).on(FAMILY, FAMILY_NAME).showing
+        assert dots.mac.windows == [dots.mac.main, theirs] and dots.mac.closed == [FAMILY_NAME]
+
+    def test_only_the_chat_left_behind_is_reclaimed(self, dots, tmp_path):
+        after = self.left_behind(dots, tmp_path)
+        theirs = dots.mac.chat_window(CHARLOTTE_NAME)
+        assert not after.on(CHARLOTTE, CHARLOTTE_NAME).showing
+        assert theirs in dots.mac.windows and dots.mac.closed == []
+
+    def test_a_record_that_cannot_be_read_costs_only_the_reclaim(self, dots, tmp_path):
+        record = tmp_path / "windows.json"
+        self.restarted(dots, record).on(FAMILY, FAMILY_NAME)
+        record.write_text("{not json")
+        assert not self.restarted(dots, record).on(FAMILY, FAMILY_NAME).showing
+        assert dots.mac.closed == []

@@ -8,6 +8,10 @@ from common.imessage.MessagesHost import (AttachmentData, Count, GroupList, Host
 from common.imessage.MessagesSender import MessagesSender
 from common.imessage.TypingIndicator import TypingIndicator
 from common.logging import info
+from common.Paths import CACHE_DIR
+
+# The names of the dots windows opened here and not seen closed — what a restart finds left behind.
+TYPING_RECORD = CACHE_DIR / "imessage_typing_windows.json"
 
 
 class LocalMessagesHost(MessagesHost):
@@ -23,7 +27,8 @@ class LocalMessagesHost(MessagesHost):
         self.database = database if database is not None else MessagesDatabase()
         self.contacts = contacts if contacts is not None else Contacts(self.database)
         self.sender = sender if sender is not None else MessagesSender()
-        self.typing_indicator = typing_indicator if typing_indicator is not None else TypingIndicator()
+        self.typing_indicator = (typing_indicator if typing_indicator is not None
+                                 else TypingIndicator(record=TYPING_RECORD))
         self._unnamed: dict[str, str] = {}      # chat → why it has no sidebar name, as last logged
 
     @staticmethod
