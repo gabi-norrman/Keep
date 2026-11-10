@@ -7,7 +7,7 @@ from common.logging import info, trace
 from integrations.whatsapp.WhatsAppMessages import SERVER_GROUP, jid_parts
 
 NOTE_SOURCE = "WhatsApp"
-INTEGRATION = "WhatsApp"
+INTEGRATION = "WhatsApp Feed"
 LINK_STEPS = ("Open WhatsApp on the phone: Settings (or the ⋮ menu) > Linked devices > Link a device > "
               "\"Link with phone number instead\", and type the code there. It is valid for a few minutes.")
 

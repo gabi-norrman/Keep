@@ -1984,6 +1984,7 @@ class TestCmdListIntegrations:
     def test_enable_integration_unknown_name(self, commands_instance):
         monitor = Mock()
         monitor.get_all_statuses.return_value = [{"name": "Ring"}]
+        monitor.find.return_value = None
         with patch.object(Commands, "_integration_monitor", return_value=monitor), \
              patch("assistant.commands.Commands.ConfigStore.enable_integration") as enable:
             text = commands_instance._run_enable_integration("Rong")
@@ -2389,7 +2390,7 @@ class TestCmdConfigSet:
     def test_a_telegram_key_points_at_the_bot_restart(self, commands_instance):
         with patch.object(ConfigStore, "set_value", return_value="telegram_bot.link_previews saved"):
             reply = commands_instance._run_config_set("telegram_bot.link_previews", "true")
-        assert reply == ('telegram_bot.link_previews saved. Run restart_integration("Telegram") for the bot to pick it up '
+        assert reply == ('telegram_bot.link_previews saved. Run restart_integration("Telegram Chat") for the bot to pick it up '
                          '— no server restart.')
 
     def test_a_telegram_chat_id_needs_no_restart(self, commands_instance):

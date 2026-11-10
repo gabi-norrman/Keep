@@ -555,6 +555,14 @@ class TestRenameKeys:
                         .replace("telegram-monitor", "Telegram Feed"))
         assert ConfigManager.get_instance().get("telegram_bot.bot_token") == "1:abc"
 
+    def test_a_name_that_only_gained_a_word_is_renamed_once(self, files):
+        files.write_text("enabled_integrations: [iMessage, Photos]\n")
+        ConfigManager.get_instance().reload()
+        assert ConfigStore.rename_keys({}, {"iMessage": "iMessage Feed"}) == ["enabled_integrations: iMessage → iMessage Feed"]
+        ConfigManager.get_instance().reload()
+        assert ConfigManager.get_instance().enabled_integrations() == ["iMessage Feed", "Photos"]
+        assert ConfigStore.rename_keys({}, {"iMessage": "iMessage Feed"}) == []
+
     def test_nothing_to_rename_leaves_the_file_untouched(self, files, tmp_path):
         before = files.read_text()
         assert ConfigStore.rename_keys(self.RENAMES, {"Telegram Monitor": "Telegram Feed"}) == []

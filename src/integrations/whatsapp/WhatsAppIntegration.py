@@ -135,9 +135,11 @@ class WhatsAppIntegration(Integration, Feed):
         Feeds.get_instance().stop(self.feed_name)
         self._stop_client()
 
+    former_names = ("WhatsApp",)
+
     @property
     def name(self) -> str:
-        return "WhatsApp"
+        return "WhatsApp Feed"
 
     @property
     def config_keys(self) -> List[str]:

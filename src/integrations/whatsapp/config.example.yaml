@@ -1,4 +1,4 @@
-# The WhatsApp integration: the server linked to the owner's own WhatsApp account as a companion
+# The WhatsApp Feed integration: the server linked to the owner's own WhatsApp account as a companion
 # device (like WhatsApp Web), feeding their chats into the history and sending messages as them.
 # No keys: enable it, then link the account with whatsapp_login(phone) from any chat (the code
 # goes into the phone under Linked devices) or in the console's WhatsApp tab. The phone must open

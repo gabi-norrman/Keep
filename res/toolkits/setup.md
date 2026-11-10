@@ -35,8 +35,8 @@ speak, voice requests are answered as text.
 
 `restart_integration(name: str)` — rebuilds an integration with the current config and reports its state.
 
-The Telegram bot the user chats through is listed as "Telegram" — not configured until `telegram_bot.bot_token` is set:
-`config_request("telegram_bot.bot_token")`, then `restart_integration("Telegram")`; the bot starts at once, no server
+The Telegram bot the user chats through is listed as "Telegram Chat" — not configured until `telegram_bot.bot_token` is set:
+`config_request("telegram_bot.bot_token")`, then `restart_integration("Telegram Chat")`; the bot starts at once, no server
 restart. Its switch is `interfaces.telegram.enabled` (`config_set`), not `enable_integration`. With
 `telegram_bot.allowed_chat_ids` empty anyone may talk to the bot but nobody is its owner, so you cannot reach the user
 there on your own. When the user presses Start in the bot their chat id reaches you as a turn of its own:
@@ -60,7 +60,7 @@ bot. Ask for the phone number with country code in the chat (not a secret), then
 app, opens the masked prompt for it, then for the two-step verification password when the account has one, and starts
 the feed. An expired code or a cancelled prompt comes back as text; run it again for a new code.
 
-WhatsApp (the user's own account, read into the history and written to) has no keys: enable it; its link —
+WhatsApp Feed (the user's own account, read into the history and written to) has no keys: enable it; its link —
 `whatsapp_login(phone: str)`, a code the user types into the phone, from any chat — is in the whatsapp toolkit, and
 `dropbox_login()` (as google_login) in the dropbox toolkit.
 

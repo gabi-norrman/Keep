@@ -114,7 +114,7 @@ class TestASatelliteThatCannotBeUsed:
         integration.host.health_answer = HostHealth(False, REFUSED, "the satellite refused the token")
         said = str(failure(integration))
         assert 'config_request("imessage.host_token")' in said and "imessage_satellite.token" in said
-        assert 'restart_integration("iMessage")' in said
+        assert 'restart_integration("iMessage Feed")' in said
 
     def test_an_address_or_token_that_cannot_work_names_both_keys(self, integration):
         integration.host.health_answer = HostHealth(False, NOT_CONFIGURED, "no token is set")

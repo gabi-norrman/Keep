@@ -11,7 +11,10 @@ CONFIG_KEY_RENAMES = {
     "telegram_monitor": "telegram_feed",
     "feeds.telegram_monitor": "feeds.telegram_feed",
 }
-INTEGRATION_RENAMES = {"Telegram Monitor": "Telegram Feed"}
+# 2026-11-10: "iMessage" became "iMessage Feed" and "WhatsApp" "WhatsApp Feed" (and the bot,
+# which is in no list, "Telegram Chat"), so the names read the same everywhere: a Chat is the
+# assistant's account, a Feed the owner's.
+INTEGRATION_RENAMES = {"Telegram Monitor": "Telegram Feed", "iMessage": "iMessage Feed", "WhatsApp": "WhatsApp Feed"}
 # The Telethon session: without the move the feed would ask for a new login (code + 2FA).
 FILE_RENAMES = {
     "telegram_monitor.session": "telegram_feed.session",

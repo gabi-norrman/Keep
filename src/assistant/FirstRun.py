@@ -117,7 +117,7 @@ you keep running and the Telegram chat stays up.
 the console in a terminal (starting the server first when it is not running). Ask them to continue there, we want the 
 user to learn the console UI. The server also starts at login from now on (a login item); mention it in a few words. 
 
-5. Back in terminal UI: iMessage, the feed only (no sending yet): enable_integration("iMessage") — it needs no
+5. Back in terminal UI: iMessage, the feed only (no sending yet): enable_integration("iMessage Feed") — it needs no
 keys. Move the user back to terminal for this - password input is better in terminal. Messages.app on this Mac
 must be signed in with the user's own Apple ID. WAIT with Photos - we need iCloud logged in before photos.
 
@@ -288,7 +288,7 @@ AUTOSTART_NOTE = (" The server now also starts by itself when the user logs in o
 CURATION_RETRY_SECONDS = 600  # how long an all-failed first curation waits before it is run again
 CURATION_STEP_SECONDS = 160.0   # what one curation chunk normally takes: the bar's estimate until one has finished
 PHOTOS_INTEGRATION = "Photos"
-IMESSAGE_INTEGRATION = "iMessage"
+IMESSAGE_INTEGRATION = "iMessage Feed"
 PHOTOS_FEED = PHOTO_HISTORY_SOURCE
 IMESSAGE_FEED = "iMessage"
 HISTORY_SOURCE = "first_run"     # the `source` of the system rows the pipeline leaves

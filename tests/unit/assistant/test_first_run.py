@@ -164,7 +164,7 @@ class _Feeds:
 def env(tmp_path, monkeypatch):
     """A pipeline with a tmp state file, fakes for everything it reaches out to, and knobs to
     turn: `enabled`, `feeds`, `feed_rows` (the feeds table), `backfill_months`."""
-    knobs = SimpleNamespace(enabled=["Photos", "iMessage"], feeds=_Feeds(), feed_rows={}, backfill_months=1,
+    knobs = SimpleNamespace(enabled=["Photos", "iMessage Feed"], feeds=_Feeds(), feed_rows={}, backfill_months=1,
                             history=Mock(), path=tmp_path / "first_run.json")
     monkeypatch.setattr(FirstRun, "config", SimpleNamespace(
         enabled_integrations=lambda: list(knobs.enabled),
@@ -231,7 +231,7 @@ class TestCurationProgress:
 
 class TestSetup:
     def test_waits_for_photos(self, env):
-        env.enabled = ["iMessage", "iCloud"]
+        env.enabled = ["iMessage Feed", "iCloud"]
         state = env.state_at(Stage.SETUP)
         assert env.pipeline.tick(state) is False
         assert State.load(env.path).stage == Stage.SETUP

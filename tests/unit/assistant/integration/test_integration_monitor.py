@@ -602,6 +602,22 @@ class TestRegisterClass:
         mock_config.register(SonosIntegration())
         assert mock_config.folder_named("music") == "sonos", "the integration named so comes before the folder"
 
+    def test_a_renamed_integration_still_answers_to_its_former_name(self, mock_config):
+        """A procedure written before the rename says restart_integration("Telegram"); the name
+        another integration has now is that integration's, whatever it was once."""
+        class ChatIntegration(FakeIntegration):
+            former_names = ("Telegram",)
+
+            def __init__(self):
+                super().__init__("Telegram Chat")
+
+        mock_config.register(ChatIntegration())
+        mock_config.register(FakeIntegration("Telegram Feed"))
+        assert mock_config.find("telegram").name == "Telegram Chat"
+        assert mock_config.find("Telegram Feed").name == "Telegram Feed"
+        mock_config.register(FakeIntegration("Telegram"))
+        assert mock_config.find("Telegram").name == "Telegram", "a current name comes before a former one"
+
     def test_a_near_miss_names_the_integration_meant(self, mock_config):
         class MusicIntegration(FakeIntegration):
             def __init__(self):

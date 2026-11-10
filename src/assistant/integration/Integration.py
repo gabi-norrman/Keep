@@ -47,6 +47,9 @@ class Integration(SingletonMixin, ABC):
     # are Web Access, which needs no credentials and the assistant leans on constantly, and
     # ElevenLabs TTS, the engine voice speaks through unless another one is enabled.
     enabled_by_default: bool = False
+    # The names it was listed under before a rename: `IntegrationMonitor.find` still answers to
+    # them, so a procedure or a memory written with the old name keeps working.
+    former_names: tuple[str, ...] = ()
     # Its data is private (messages, mail, calendar, photos, cameras): the console's Catalog
     # tab tags it so, and the status of IntegrationMonitor carries the flag.
     sensitive: bool = False

@@ -1,4 +1,4 @@
-# The iMessage integration reads a Messages.app database and sends through that Messages.app, as the
+# The iMessage Feed integration reads a Messages.app database and sends through that Messages.app, as the
 # account signed in there (its horizon is feeds.imessage below). By default that is Messages on this
 # Mac, under the user the server runs as: nothing to ask the user for, both keys below stay as they are.
 # Two things must be true before it is enabled, so check them with the user first:
@@ -26,7 +26,7 @@
 # screen: show_full_disk_access_setting() and restart_server() act on this Mac and do not help.
 # list_integrations shows a satellite that does not answer, refuses the token or could not update
 # itself; one that sleeps or restarts is waited for, and the messages it received meanwhile arrive when
-# it is back. After changing either key: restart_integration("iMessage").
+# it is back. After changing either key: restart_integration("iMessage Feed").
 # An Apple ID of the assistant's own, which people text and add to groups, is not this section but
 # imessage_chat (the "iMessage Chat" interface); the two never share an account.
 imessage:

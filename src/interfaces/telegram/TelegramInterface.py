@@ -1,9 +1,9 @@
 """The Telegram interface: the bot people chat with, registered as a transport on the
 process-wide ChatHub (which is the Notifier: 2FA prompts, autonomous findings, photos,
 approval gate). Enabled when `interfaces.telegram.enabled` is true; without a
-`telegram_bot.bot_token` it still starts, as a "Telegram" integration the monitor lists as not
+`telegram_bot.bot_token` it still starts, as a "Telegram Chat" integration the monitor lists as not
 configured, so the assistant can store the token (config_request) and bring the bot up with
-`restart_integration("Telegram")` — no server restart."""
+`restart_integration("Telegram Chat")` — no server restart."""
 from common.logging import info
 from interfaces.Interface import Interface
 
@@ -27,7 +27,7 @@ class TelegramInterface(Interface):
         self.hub.attach(assistant)
         set_notifier(self.hub)
         # By class, so the monitor can rebuild it: `_start_transport` runs now and on every
-        # restart_integration("Telegram"). A chat interface, not a context feed — it lives
+        # restart_integration("Telegram Chat"). A chat interface, not a context feed — it lives
         # outside the integrations/ walk.
         IntegrationMonitor.get_instance().register_class(TelegramTransport, start=self._start_transport)
         info("Telegram interface started.")
@@ -38,7 +38,7 @@ class TelegramInterface(Interface):
         self.transport = transport
         if not transport.is_configured:
             info("Telegram bot has no telegram_bot.bot_token yet — listed as not configured, "
-                 "restart_integration(\"Telegram\") starts it once one is stored.")
+                 "restart_integration(\"Telegram Chat\") starts it once one is stored.")
             return
         self.hub.register(transport)
         transport.start(self.hub)

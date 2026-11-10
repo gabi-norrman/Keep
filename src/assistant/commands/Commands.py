@@ -1633,7 +1633,7 @@ class Commands:
         return messages.get(decision, f"config_request ended with '{decision}' — nothing was saved.")
 
     RESTART_HINT = "Restart the integration that uses it (restart_integration) for the change to take effect."
-    TELEGRAM_RESTART_HINT = 'Run restart_integration("Telegram") for the bot to pick it up — no server restart.'
+    TELEGRAM_RESTART_HINT = 'Run restart_integration("Telegram Chat") for the bot to pick it up — no server restart.'
     # The chat-id lists are read live by the bot (TelegramTransport._live_chat_ids). The FTUE
     # assistant once restarted the bot from the Telegram chat that had just sent its chat id,
     # which killed that very conversation and left its spinner stuck.
@@ -1822,7 +1822,8 @@ class Commands:
         for known in self._known_integration_names():
             if integration_key(known) == wanted:
                 return known
-        return None
+        found = self._integration_monitor().find(name)
+        return found.name if found else None
 
     def _describe_restart(self, status: dict, restartable: bool) -> str:
         if not restartable:

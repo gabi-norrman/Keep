@@ -62,7 +62,7 @@ class TestCmdWhatsappLogin:
         placeholder.state = IntegrationState.DISABLED
         with patch.object(Commands, "_integration_monitor", return_value=_monitor(placeholder)):
             assert commands_instance._owner("whatsapp_login")._run_whatsapp_login("+46701740605") == \
-                'WhatsApp is disabled — enable_integration("WhatsApp") first.'
+                'WhatsApp is disabled — enable_integration("WhatsApp Feed") first.'
         with patch.object(Commands, "_integration_monitor", return_value=_monitor(None)):
             assert "not available" in commands_instance._owner("whatsapp_login")._run_whatsapp_login("+46701740605")
 

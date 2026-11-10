@@ -3,7 +3,7 @@ name: telegram
 summary: "send a Telegram message from the user's own account to a contact or a group"
 commands: [send_telegram]
 ---
-Two Telegram integrations: the bot ("Telegram") is the chat people talk to you through; the Telegram Feed is the
+Two Telegram integrations: the bot ("Telegram Chat") is the chat people talk to you through; the Telegram Feed is the
 user's own account, read into the history and the one this command sends from. A reply comes back through the feed
 as a message to the user, not to you.
 

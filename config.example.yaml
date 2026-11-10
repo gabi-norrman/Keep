@@ -134,9 +134,9 @@ chat:
 # Looking for the user's own Telegram messages ("read my Telegram")?
 # That is the "Telegram Feed" integration, section telegram_feed — not this one.
 # This section is the Telegram bot users chat with Keep through. It is an interface
-# (interfaces.telegram, on by default) that list_integrations shows as "Telegram": without a
+# (interfaces.telegram, on by default) that list_integrations shows as "Telegram Chat": without a
 # bot_token it is listed as not configured. Setup is bot_token via config_request, then
-# restart_integration("Telegram") — no server restart. Its switch is interfaces.telegram.enabled,
+# restart_integration("Telegram Chat") — no server restart. Its switch is interfaces.telegram.enabled,
 # not enabled_integrations. The bot reads the chat-id lists live: a change to them is in force
 # at the next message, no restart — only bot_token and link_previews need restart_integration.
 telegram_bot:
@@ -149,16 +149,16 @@ telegram_bot:
   # needs, and the proactive pushes by default, go to the positive ids. An empty list serves no group at all.
   allowed_chat_ids: []  # empty = anyone may talk to the bot; /start in the bot shows a chat id. Read live, no restart.
   notify_chat_ids: []  # who gets the proactive pushes (autonomous findings, system notes, photos it sends unasked); empty = every allowed chat. A photo someone asked for goes back to their chat. Read live, no restart.
-  link_previews: false  # true = Telegram renders preview cards for URLs in the bot's replies; needs restart_integration("Telegram")
+  link_previews: false  # true = Telegram renders preview cards for URLs in the bot's replies; needs restart_integration("Telegram Chat")
 
-# Looking for the user's own iMessages ("read my messages", send_imessage)? That is the "iMessage"
+# Looking for the user's own iMessages ("read my messages", send_imessage)? That is the "iMessage Feed"
 # integration, section imessage — not this one.
 # This section is Keep as a contact of its own on iMessage: an Apple ID that belongs to the assistant,
 # which the family texts like a friend and adds to group chats. It is an interface
 # (interfaces.imessage, off by default) that list_integrations shows as "iMessage Chat".
 # What it takes, in this order — ask the user for each step; most of it is done at a Mac, not in a chat:
 # 1. An Apple ID for the assistant, never the user's own: a message sent to the user's own account is
-#    the user's, read by the iMessage integration. The user creates it (appleid.apple.com; Apple asks
+#    the user's, read by the iMessage Feed integration. The user creates it (appleid.apple.com; Apple asks
 #    for a phone number for its two-factor sign-in). An Apple ID with only an email address is enough
 #    for iMessage: people text that address, and whoever writes by SMS (a phone without iMessage)
 #    cannot reach it.
@@ -172,7 +172,7 @@ telegram_bot:
 #      (http://<that Mac's name>.local:8898), over plain HTTP, so only on a network the user trusts. A
 #      Mac without a display is expected to work, typing dots included, but that has not been tried yet.
 #    - The server's own macOS user, on a Mac that is the assistant's alone: host stays local and there is
-#      no satellite. The user's own Messages is then elsewhere, so the iMessage integration is off or
+#      no satellite. The user's own Messages is then elsewhere, so the iMessage Feed integration is off or
 #      reads another Mac through a satellite of its own.
 #    config_help("imessage_satellite") has the satellite's install: one command in Terminal at that Mac,
 #    which ends by printing the two values for host and host_token below.
@@ -180,7 +180,7 @@ telegram_bot:
 #    Mac's own screen: Full Disk Access for Terminal (to read the messages), Automation — macOS asks to
 #    let Terminal control Messages at the first reply — and, for the typing dots only, Accessibility for
 #    Terminal (below). With a satellite, show_full_disk_access_setting() and restart_server() act on the
-#    wrong Mac and do not help; with host: local they are the way, as for the iMessage integration.
+#    wrong Mac and do not help; with host: local they are the way, as for the iMessage Feed integration.
 # 4. host and host_token, typed by the user: config_request("imessage_chat.host") and
 #    config_request("imessage_chat.host_token"). config_set refuses both; never state, guess or repeat
 #    either value. With host: local there is nothing to type.
@@ -193,7 +193,7 @@ telegram_bot:
 #    startup. From then on restart_integration("iMessage Chat") is enough after a change of host or
 #    host_token; the lists, daily_limit and typing_dots are read live. list_integrations shows what is
 #    missing or wrong, with the fix.
-# The account must be the chat's alone: while the iMessage integration is enabled and imessage.host
+# The account must be the chat's alone: while the iMessage Feed integration is enabled and imessage.host
 # names the same account as imessage_chat.host, the chat does not start and list_integrations says so.
 # Who may do what: an owner has every right the owner has in the console — commands run. What needs an
 # approval or a typed secret is never shown in iMessage: it is asked in the console or the Telegram bot
@@ -419,7 +419,7 @@ role: server
 #    Messages. Accessibility for Terminal only for the typing dots of the iMessage chat (section
 #    imessage_chat).
 # 5. On the server the user types the two values: config_request for host and for host_token of the
-#    section the account is for — never state or repeat them — then restart_integration("iMessage") or
+#    section the account is for — never state or repeat them — then restart_integration("iMessage Feed") or
 #    restart_integration("iMessage Chat"). list_integrations shows whether the satellite answers.
 # From then on the satellite updates itself to the release line and version of the server that calls
 # it, starts at that user's login and, since its installer writes watchdog: true, is started again by

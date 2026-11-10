@@ -227,7 +227,7 @@ class TelegramTransport(Integration, ChatTransport):
                            "deleted right away; the AI never sees it.")
 
     # Registered with the IntegrationMonitor by class (TelegramInterface.start), so
-    # `restart_integration("Telegram")` rebuilds it with the token config_request just stored:
+    # `restart_integration("Telegram Chat")` rebuilds it with the token config_request just stored:
     # `_on_reset` takes the old bot off the hub and stops its loop, the new instance reads the
     # config again. The one switch is the interface flag, not `enabled_integrations`.
     def __init__(self):
@@ -238,7 +238,7 @@ class TelegramTransport(Integration, ChatTransport):
         # The chat-id lists are read from config at every use (`_allowed_chat_ids`), so a
         # config_set of one applies to the next message and the bot is never restarted from
         # the very chat that wrote it. Only the token and the link previews are baked into the
-        # bot at build time and still need restart_integration("Telegram").
+        # bot at build time and still need restart_integration("Telegram Chat").
         self._seen_chat_ids: dict[str, list[int]] = {}
         self._link_previews: bool = bool(config.get('telegram_bot.link_previews', False))
         self._hub = None
@@ -281,9 +281,11 @@ class TelegramTransport(Integration, ChatTransport):
         a disabled placeholder."""
         return bool(config_manager.get('interfaces.telegram.enabled', True))
 
+    former_names = ("Telegram",)
+
     @property
     def name(self) -> str:
-        return "Telegram"
+        return "Telegram Chat"
 
     @property
     def config_keys(self) -> List[str]:

@@ -69,7 +69,7 @@ TYPING_DOTS_KEY = f"{SECTION}.typing_dots"
 TYPING_OFF_WAIT = 2.0
 # The other consumer of a host — the integration that reads the owner's Messages — by its config
 # name and section: the two must never be given the same account.
-OWNER_FEED, OWNER_FEED_SECTION = "iMessage", "imessage"
+OWNER_FEED, OWNER_FEED_SECTION = "iMessage Feed", "imessage"
 
 POLL_SECONDS = 2.0
 POLL_LIMIT = 200                # rows a poll reads; more waiting is read at once

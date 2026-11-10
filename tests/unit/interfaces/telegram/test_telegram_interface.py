@@ -69,7 +69,7 @@ def test_start_with_a_token_registers_the_transport_the_notifier_and_the_monitor
         assert notifier() is hub
         start.assert_called_once_with(hub)
         status = IntegrationMonitor.get_instance().get_all_statuses()
-        assert [(s["name"], s["restartable"]) for s in status] == [("Telegram", True)]
+        assert [(s["name"], s["restartable"]) for s in status] == [("Telegram Chat", True)]
 
         with patch(f"{TRANSPORT}.TelegramTransport.stop") as stop:
             interface.stop()

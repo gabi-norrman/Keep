@@ -212,8 +212,9 @@ class IntegrationMonitor:
 
     def find(self, name: str) -> Optional[Integration]:
         """The registered integration called *name*, or — none of that name — the one of the
-        folder called so (`music` for "Sonos & Spotify"; the folder is what a report names);
-        None otherwise. Case does not matter."""
+        folder called so (`music` for "Sonos & Spotify"; the folder is what a report names), or
+        the one that used to be called so (`Integration.former_names`); None otherwise. Case
+        does not matter."""
         wanted = name.strip().lower()
         integrations = self._snapshot()
         for integration in integrations:
@@ -222,6 +223,10 @@ class IntegrationMonitor:
         for integration in integrations:
             if folder_of(self._class_of(integration)) == wanted:
                 trace(f"IntegrationMonitor: '{name}' is the folder of {integration.name}")
+                return integration
+        for integration in integrations:
+            if wanted in (former.lower() for former in self._class_of(integration).former_names):
+                info(f"IntegrationMonitor: '{name}' is the former name of {integration.name}")
                 return integration
         return None
 

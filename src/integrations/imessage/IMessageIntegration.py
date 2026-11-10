@@ -89,9 +89,11 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
         from assistant.integration.FeedRunner import Feeds
         Feeds.get_instance().stop(self.feed_name)
 
+    former_names = ("iMessage",)
+
     @property
     def name(self) -> str:
-        return "iMessage"
+        return "iMessage Feed"
 
     @property
     def config_keys(self) -> List[str]:
