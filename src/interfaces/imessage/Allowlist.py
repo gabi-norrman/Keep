@@ -69,6 +69,7 @@ class Allowlist:
         self._seen: Optional[tuple] = None
         self._people: dict[str, Person] = {}
         self.problems: list[str] = []       # the entries that name nobody, in words for the owner
+        self._unlisted: set[str] = set()    # the handles already logged as on no list
 
     @staticmethod
     def _raw(key: str) -> list:
@@ -100,6 +101,7 @@ class Allowlist:
                     continue
                 people[handle] = Person(handle, name or (known.name if known else ""), owner, bot)
         self._people, self.problems = people, problems
+        self._unlisted.clear()
         owners = sum(1 for p in people.values() if p.owner)
         bots = sum(1 for p in people.values() if p.bot)
         summary = f"{owners} owner(s), {len(people) - owners - bots} guest(s), {bots} other assistant(s)"
@@ -120,7 +122,8 @@ class Allowlist:
     def find(self, handle: Optional[str]) -> Optional[Person]:
         self.refresh()
         person = self._people.get(normalize(handle))
-        if person is None:
+        if person is None and handle not in self._unlisted and len(self._unlisted) < 1000:
+            self._unlisted.add(handle)      # said once per handle: a group's members are looked up at every poll
             trace(f"iMessage chat: {handle} is on no list")
         return person
 
