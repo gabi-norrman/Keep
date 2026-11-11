@@ -1,0 +1,144 @@
+import json
+
+import pytest
+
+from integrations.heos import HeosClient as module
+from integrations.heos.HeosClient import HeosClient, HeosError, message_fields
+
+
+def line(command, result="success", message="", **extra) -> bytes:
+    return (json.dumps({"heos": {"command": command, "result": result, "message": message}, **extra}) + "\r\n").encode()
+
+
+class FakeSocket:
+    """A CLI connection: each sendall queues the next scripted reply (bytes), or raises it when it is an exception."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.sent = []
+        self.buffer = b""
+        self.closed = False
+
+    def sendall(self, data):
+        self.sent.append(data.decode())
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        self.buffer += reply
+
+    def recv(self, n):
+        chunk, self.buffer = self.buffer[:n], self.buffer[n:]
+        return chunk
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def sockets(monkeypatch):
+    """The sockets create_connection hands out, in order, and the addresses it was asked for."""
+    made, addresses = [], []
+
+    def create_connection(address, timeout=None):
+        addresses.append(address[0])
+        sock = made.pop(0)
+        if isinstance(sock, Exception):
+            raise sock
+        return sock
+    monkeypatch.setattr(module.socket, "create_connection", create_connection)
+    return made, addresses
+
+
+def test_the_answer_after_the_under_process_placeholder_is_the_one_returned(sockets):
+    made, _ = sockets
+    made.append(FakeSocket([line("player/get_players", message="command under process")
+                            + line("player/get_players", payload=[{"name": "Kitchen", "pid": 1}])]))
+    answer = HeosClient("192.0.2.10").command("player/get_players")
+    assert answer["payload"] == [{"name": "Kitchen", "pid": 1}]
+
+
+def test_a_line_about_another_command_is_skipped(sockets):
+    made, _ = sockets
+    made.append(FakeSocket([line("event/player_state_changed", message="pid=1&state=play")
+                            + line("player/get_play_state", message="pid=1&state=pause")]))
+    answer = HeosClient("192.0.2.10").command("player/get_play_state", pid=1)
+    assert message_fields(answer)["state"] == "pause"
+
+
+def test_the_command_line_carries_its_parameters(sockets):
+    made, _ = sockets
+    sock = FakeSocket([line("player/volume_up")])
+    made.append(sock)
+    HeosClient("192.0.2.10").command("player/volume_up", pid=7, step=3)
+    assert sock.sent[0].startswith("heos://player/volume_up?") and "pid=7" in sock.sent[0] and "step=3" in sock.sent[0]
+
+
+def test_a_refusal_raises_with_its_reason(sockets):
+    made, _ = sockets
+    made.append(FakeSocket([line("browse/play_preset", result="fail", message="eid=2&text=ID Not Valid")]))
+    with pytest.raises(HeosError, match="ID Not Valid"):
+        HeosClient("192.0.2.10").command("browse/play_preset", pid=1, preset=9)
+
+
+def test_a_broken_connection_is_reopened_once_and_the_command_sent_again(sockets):
+    made, _ = sockets
+    first = FakeSocket([line("player/get_players", payload=[]), BrokenPipeError("gone")])
+    second = FakeSocket([line("player/get_players", payload=[{"name": "Den", "pid": 2}])])
+    made.extend([first, second])
+    client = HeosClient("192.0.2.10")
+    client.command("player/get_players")
+    answer = client.command("player/get_players")
+    assert answer["payload"][0]["name"] == "Den"
+    assert first.closed and len(second.sent) == 1
+
+
+def test_a_second_failure_in_a_row_raises(sockets):
+    made, _ = sockets
+    made.extend([FakeSocket([BrokenPipeError("gone")]), FakeSocket([ConnectionResetError("reset")])])
+    with pytest.raises(HeosError):
+        HeosClient("192.0.2.10").command("player/get_players")
+
+
+def test_no_host_and_no_ssdp_answer_raises(monkeypatch, sockets):
+    monkeypatch.setattr(module, "discover", lambda timeout=3.0: [])
+    with pytest.raises(HeosError, match="heos.host"):
+        HeosClient("").command("player/get_players")
+
+
+def test_a_discovered_host_that_cannot_be_reached_is_forgotten(monkeypatch, sockets):
+    made, addresses = sockets
+    found = iter([["192.0.2.20"], ["192.0.2.21"]])
+    monkeypatch.setattr(module, "discover", lambda timeout=3.0: next(found))
+    made.extend([OSError("refused"), FakeSocket([line("player/get_players", payload=[])])])
+    client = HeosClient("")
+    with pytest.raises(HeosError):
+        client.command("player/get_players")
+    client.command("player/get_players")
+    assert addresses[-1] == "192.0.2.21"
+
+
+def test_a_configured_host_is_kept_when_it_cannot_be_reached(monkeypatch, sockets):
+    made, addresses = sockets
+    monkeypatch.setattr(module, "discover", lambda timeout=3.0: pytest.fail("a configured host is never discovered"))
+    made.extend([OSError("refused"), FakeSocket([line("player/get_players", payload=[])])])
+    client = HeosClient("192.0.2.10")
+    with pytest.raises(HeosError):
+        client.command("player/get_players")
+    client.command("player/get_players")
+    assert set(addresses) == {"192.0.2.10"}
+
+
+def test_message_fields_reads_the_query_of_the_message():
+    fields = message_fields({"heos": {"message": "pid=5&state=play&level="}})
+    assert fields == {"pid": "5", "state": "play", "level": ""}
+
+
+def test_discover_answers_nothing_when_multicast_is_denied(monkeypatch):
+    class DeniedSocket:
+        def __init__(self, *a): pass
+        def setsockopt(self, *a): pass
+        def settimeout(self, *a): pass
+        def sendto(self, *a): raise OSError(65, "No route to host")
+        def close(self): pass
+    monkeypatch.setattr(module.socket, "socket", DeniedSocket)
+    assert module.discover() == []

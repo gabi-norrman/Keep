@@ -8,7 +8,7 @@
 
 # Every integration is off until it is listed here (Web Access and ElevenLabs TTS are on regardless).
 # Use the names list_integrations shows: Arlo, Aseko Pool, CalDAV, Google, Google Docs, iCloud, IMAP Mail, iMessage, Indigo,
-# Microsoft 365, Philips Hue, Photos, Plejd, Reminders, Ring, Self Improvement, Sonos & Spotify, Telegram Feed, Tesla, X, YR Weather.
+# HEOS, Microsoft 365, Philips Hue, Photos, Plejd, Reminders, Ring, Self Improvement, Sonos & Spotify, Telegram Feed, Tesla, X, YR Weather.
 # The TTS engines voice speaks through are integrations too — ElevenLabs TTS (on by default), Gemini TTS,
 # Chirp 3 HD, Cartesia Sonic TTS, Fish Audio TTS, Grok TTS, Supertonic TTS: a request speaks through the
 # first enabled and configured one, Swedish preferring Gemini TTS, so a Swedish install enables Gemini TTS
@@ -487,6 +487,8 @@ telemetry:
 #   room_mapping:
 #     "Kitchen Front": Kitchen
 #     "Kitchen Back": ""
+
+# >> heos: src/integrations/heos/config.example.yaml
 
 # The location stamped on requests from the Android app, which sends none of its own. Optional.
 # clients:
