@@ -45,17 +45,17 @@ class TestCondense:
         llm = _llm(replies)
         new_bank, outcome = MemoryCondenser(llm, word_limit=100).condense(BANK, cut=10)
         systems = [c.kwargs['system_message'] for c in llm.think.call_args_list]
-        assert len(set(systems)) == 1 and BANK in systems[0] and "At least 10 words must go" in systems[0]
+        assert len(set(systems)) == 1 and BANK in systems[0] and "About 10 words should go" in systems[0]
         messages = [c.kwargs['user_message'] for c in llm.think.call_args_list]
-        assert "Section 1 of 5" in messages[0] and "removed 0 words, you need to remove 10 more" in messages[0]
+        assert "Section 1 of 5" in messages[0] and "0 words are removed and about 10 are still to go" in messages[0]
         assert "4 more sections to go" in messages[0]
-        assert "removed 3 words, you need to remove 7 more" in messages[3] and sections[3] in messages[3]
+        assert "3 words are removed and about 7 are still to go" in messages[3] and sections[3] in messages[3]
         assert "0 more sections to go" in messages[4]
         # the share: the remaining cut in proportion to the section's size among those still to come
         sizes = [word_count(s) for s in sections]
-        assert f"about {round(10 * sizes[0] / sum(sizes))} words" in messages[0]
-        assert f"about {round(7 * sizes[3] / (sizes[3] + sizes[4]))} words" in messages[3]
-        assert "about 7 words" in messages[4]       # the last section hears the whole remainder
+        assert f"roughly {round(10 * sizes[0] / sum(sizes))} words" in messages[0]
+        assert f"roughly {round(7 * sizes[3] / (sizes[3] + sizes[4]))} words" in messages[3]
+        assert "roughly 7 words" in messages[4]       # the last section hears the whole remainder
         assert "* coffee\n" in new_bank and "hates tea" not in new_bank and new_bank.endswith("* two floors\n")
         assert outcome["to"] == word_count(BANK) - 3 and outcome['from'] == word_count(BANK)
         assert outcome['sections'] == 5
@@ -63,7 +63,7 @@ class TestCondense:
     def test_the_remaining_ask_never_goes_negative(self):
         llm = _llm(["<section># Only</section>"])
         MemoryCondenser(llm, word_limit=100).condense("# Only\nten words here to be cut right away now ok", cut=3)
-        assert "remove 3 more" in llm.think.call_args.kwargs['user_message']
+        assert "about 3 are still to go" in llm.think.call_args.kwargs['user_message']
 
     @pytest.mark.parametrize("reply", ["no tags at all", "<section>   </section>", "<section>\n</section>"])
     def test_a_reply_without_a_section_keeps_the_section(self, reply):

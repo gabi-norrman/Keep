@@ -19,8 +19,8 @@ You are condensing the long-term memory bank of a home automation AI system serv
 of the AI in every conversation, and has a size limit of {WORD_LIMIT} words. It is OVER the limit: it is {WORDS}
 words. Today is {TODAY}.
 
-Your one job is to make it shorter! At least {CUT} words must go, so that the bank ends up no longer than {TARGET}
-words. What to cut and how is your call.
+Your one job is to make it shorter! About {CUT} words should go, so that the bank ends up around {TARGET} words.
+What to cut and how is your call.
  * condense the same facts into fewer words
  * merge repeated points
  * shorten a story to its core
@@ -33,13 +33,18 @@ You have now seen the entire memory bank. We go over it one section at a time: y
 condensed. Keep the heading line as it is. A section can shrink to its heading alone when nothing in it is worth
 its place.
 
+The words are counted for you: every section comes with what has been removed so far and what is still to go. So
+never count or tally words yourself. The numbers are a rough guide to how hard to cut, not a target to hit -
+landing well over or under on a section is fine, the following sections even it out. Decide what goes by reading
+the section once, then write it.
+
 ## Output format
 The condensed section (markdown, heading included) between <section> and </section>. Nothing else.
 """
 
-SECTION_MESSAGE = """Section {N} of {TOTAL} ({WORDS} words). You have currently removed {REMOVED} words, you need to \
-remove {REMAINING} more! {LEFT} more sections to go after this one. This section's fair share of what is left is \
-about {SHARE} words.
+SECTION_MESSAGE = """Section {N} of {TOTAL} ({WORDS} words). So far {REMOVED} words are removed and about {REMAINING} are \
+still to go. {LEFT} more sections to go after this one. This section's fair share of what is left is roughly \
+{SHARE} words.
 
 <section>
 {SECTION}
@@ -100,7 +105,10 @@ class MemoryCondenser:
                     .replace("{REMAINING}", str(remaining)).replace("{SHARE}", str(share)) \
                     .replace("{LEFT}", str(len(sections) - index)).replace("{SECTION}", section)
                 unprocessed -= size
-                response = self.llm.think(system_message=system, user_message=message, thinking=Thinking.FULL)
+                # An ordinary request, not Thinking.FULL: a section is a short rewrite, and the
+                # chat output cap bounds a call whose thinking runs away (prod 2026-11-11: Fable
+                # 5.2 spent all 64k tokens of the FULL cap tallying words and wrote nothing).
+                response = self.llm.think(system_message=system, user_message=message, thinking=Thinking.NORMAL)
                 condensed = self._section(response)
                 heading = section.splitlines()[0][:60]
                 if getattr(self.llm, 'last_stop_reason', None) == 'max_tokens':
