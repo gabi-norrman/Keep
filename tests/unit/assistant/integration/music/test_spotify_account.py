@@ -382,3 +382,15 @@ class TestDroppedConnection:
             assert account.refresh_library() is False
 
         assert account._not_before <= time.time()
+
+
+def test_the_app_token_is_never_written_to_the_working_directory(tmp_path, monkeypatch):
+    """spotipy's default cache is a `.cache` file in the working directory — the checkout's root, which no
+    ignore rule covers, so a token would be one `git add -A` from a public commit."""
+    monkeypatch.chdir(tmp_path)
+    account = make_account()
+    account.config.get.side_effect = lambda key, default=None: {"api_keys.spotify.client_id": "app-id",
+                                                                "api_keys.spotify.client_secret": "app-secret"}.get(key)
+    credentials = account.app_client().client_credentials_manager
+    credentials.cache_handler.save_token_to_cache({"access_token": "t0ken", "expires_at": time.time() + 3600})
+    assert list(tmp_path.iterdir()) == []

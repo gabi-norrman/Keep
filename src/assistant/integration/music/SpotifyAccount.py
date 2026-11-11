@@ -28,6 +28,7 @@ from typing import Callable, Dict, List, Optional
 import requests
 import urllib3
 from spotipy import Spotify
+from spotipy.cache_handler import MemoryCacheHandler
 from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import SpotifyClientCredentials
 
@@ -110,14 +111,16 @@ class SpotifyAccount(SingletonMixin):
 
     def app_client(self) -> Spotify:
         """The app's own client (client credentials): search, track and artist lookups. Raises
-        ValueError without a client id and secret."""
+        ValueError without a client id and secret. The app token is kept in memory: spotipy's
+        default writes it to a `.cache` file in the working directory — the checkout's root, where
+        nothing ignores it."""
         if self._app_client is None:
             client_id, client_secret = self.client_settings()
             if not client_id or not client_secret:
                 raise ValueError("Spotify credentials not found in config.yaml. Add api_keys.spotify.client_id "
                                  "and api_keys.spotify.client_secret")
             self._app_client = Spotify(client_credentials_manager=SpotifyClientCredentials(
-                client_id=client_id, client_secret=client_secret))
+                client_id=client_id, client_secret=client_secret, cache_handler=MemoryCacheHandler()))
             info("Spotify client initialized")
         return self._app_client
 
