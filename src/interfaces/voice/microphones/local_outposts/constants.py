@@ -491,7 +491,7 @@ SCRIBE_KEYTERMS = [
     "kitchen table lamp", "wardrobe lights", "office table lamp",
     "shopping list", "camera feeds", "smooth jazz", "smooth beats",
     "volume up", "volume down", "next song", "pause the music",
-    "pool temperature", "good night",
+    "pool temperature", "good night", "dim",
 ]
 
 # Scribe reports the detected language as ISO-639-3 ('eng', 'swe'), but the outpost routes
