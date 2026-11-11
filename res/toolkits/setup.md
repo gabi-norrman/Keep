@@ -88,14 +88,14 @@ with `volvo_login_code(pasted: str)`. A sign-in unused for a week lapses — run
 `volvo.vcc_api_key`, `volvo.oauth.client_id`, `client_secret` and `volvo.vehicles` set and the integration enabled.
 The link survives a `restart_integration("Volvo")`; only a changed `client_id` needs a new one.
 
-`spotify_login()` — signs the household's Spotify account in for the Sonos & Spotify integration, from any chat, so
-the newest 10 playlists of the user's library are listed in MUSIC with "S-" ids for play_music (Spotify-made playlists
-such as Discover Weekly are hidden from apps; a Sonos favorite reaches those). Like google_login: a link, a
-http://127.0.0.1:8888/callback?... page that does not load, its whole address pasted back with
-`spotify_login_code(pasted: str)`; a bare, expired or reused code comes back as text, run spotify_login again.
-The token survives restarts; sign in again only when the consent was revoked (a system note says so once, the "S-" ids
-disappear). Needs `api_keys.spotify.client_id` and `client_secret` set (`config_help("api_keys")`: the app on
-developer.spotify.com must have http://127.0.0.1:8888/callback as redirect URI) and the integration enabled.
+`spotify_login()` — signs the household's Spotify account in for the speaker systems, from any chat: the newest 10
+playlists of the user's library get "S-" ids in MUSIC (Spotify-made ones like Discover Weekly are hidden from apps; a
+favorite in the speakers' app reaches those), and with HEOS on it may start music (Premium; an older sign-in is asked
+for once more). Like google_login: a link, a http://127.0.0.1:8888/callback?... page that does not load, its whole
+address pasted back with `spotify_login_code(pasted: str)`; a bare, expired or reused code comes back as text, run
+spotify_login again. Sign in again only when the consent was revoked (a system note says so, the "S-" ids
+disappear). Needs `api_keys.spotify.client_id` and `client_secret` (`config_help("api_keys")`: the app needs
+http://127.0.0.1:8888/callback as redirect URI) and a speaker system enabled.
 
 `hue_pair(bridge: str = "")` — pairs Keep with the Philips Hue bridge, from any chat. The bridge hands out its key only
 just after its round link button was pressed: ask the user to press it, then run `hue_pair` within 30 seconds. It

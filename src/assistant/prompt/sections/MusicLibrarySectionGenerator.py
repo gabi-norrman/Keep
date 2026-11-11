@@ -18,7 +18,7 @@ class MusicLibrarySectionGenerator(PromptSectionGenerator):
     listener), so a fresh sign-in's playlists reach the LLM with the next request rather than a
     minute later. It runs only while a MusicSystem integration is on, so a house without speakers
     never looks for one."""
-    key = "sonos"
+    key = "music"
     needs = music.MusicSystem
     CHECK_INTERVAL = 60
     FIRST_DATA_WAIT = 60
@@ -96,7 +96,7 @@ class MusicLibrarySectionGenerator(PromptSectionGenerator):
             if text:
                 parts.append(text)
         parts.append(self._spotify_playlists())
-        # A blank line between the parts, as the section always had between the Sonos lists and Spotify's.
+        # A blank line between the parts: each system's lists, then Spotify's.
         res = "\n\n".join(part.strip() for part in parts if part.strip())
         fine(f"Music library: {len(res.splitlines())} lines")
         return res.strip()

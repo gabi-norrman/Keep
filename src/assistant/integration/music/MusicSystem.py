@@ -1,10 +1,11 @@
-"""The music contract: what the assistant asks of a speaker system — Sonos today, HEOS next — and the `Speakers` composite the music commands and prompt sections run against.
+"""The music contract: what the assistant asks of a speaker system — Sonos, HEOS — and the `Speakers` composite the music commands and prompt sections run against.
 
 A system is always an Integration too (name, config keys, health). It names its zones as the LLM
 sees them (after its own room mapping) and acts on one by that name. What plays is an id: a
 Spotify one any system plays through the shared `SpotifyAccount` (a search hit's `AA`…, a library
 playlist's `S-n`), or one of the system's own lists, under prefixes it declares in `ID_PREFIXES`
-(Sonos: `F-` favorites, `P-` playlists) so that two systems' lists never answer to the same id.
+(Sonos: `F-` favorites, `P-` playlists; HEOS: `H-` favorites, `Q-` a room's quick selects) so that
+two systems' lists never answer to the same id.
 
 `Speakers` gathers the zones of every ready system per call and resolves a room to its system;
 two systems with a zone of the same name is a configuration error the LLM hears about, never a

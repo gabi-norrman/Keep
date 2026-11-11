@@ -169,7 +169,7 @@ class PromptManager:
     # these, by key.
     SECTION_ORDER = ("memory", "memory_recent", "procedures", "watchlist", "integrations", "trial", "vault", "voices", "weather",
                      "homeclaw",
-                     "precipitation", "home", "web", "calendar", "sonos", "music_zones", "car_info", "pool", "heat_pump", "phones")
+                     "precipitation", "home", "web", "calendar", "music", "music_zones", "car_info", "pool", "heat_pump", "phones")
     # The placeholder the data sections of the integrations fill, each under its own heading.
     DATA_BLOCK = "{INTEGRATION_DATA}"
 
@@ -192,7 +192,7 @@ class PromptManager:
         }
         gated: dict[str, type] = {'home': HomeSectionGenerator, 'calendar': CalendarSectionGenerator,
                                   'car_info': CarSectionGenerator, 'voices': VoicesSectionGenerator,
-                                  'sonos': MusicLibrarySectionGenerator, 'music_zones': MusicZonesSectionGenerator}
+                                  'music': MusicLibrarySectionGenerator, 'music_zones': MusicZonesSectionGenerator}
         for cls in generator_classes:
             if not cls.key:
                 error(f"Section generator {cls.__module__}.{cls.__name__} declares no key, left out")
