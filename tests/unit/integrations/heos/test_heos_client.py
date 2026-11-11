@@ -142,3 +142,20 @@ def test_discover_answers_nothing_when_multicast_is_denied(monkeypatch):
         def close(self): pass
     monkeypatch.setattr(module.socket, "socket", DeniedSocket)
     assert module.discover() == []
+
+
+def test_a_search_nobody_answered_is_not_repeated_at_once(monkeypatch, sockets):
+    """Speakers that are away: the commands that follow fail without a search each, until the wait is over."""
+    made, addresses = sockets
+    searches = []
+    answers = [[], ["192.0.2.20"]]
+    monkeypatch.setattr(module, "discover", lambda timeout=3.0: searches.append(1) or answers.pop(0))
+    client = HeosClient("")
+    for _ in range(3):
+        with pytest.raises(HeosError, match="heos.host"):
+            client.command("player/get_players")
+    assert len(searches) == 1
+    client._search_again_at -= module.SEARCH_AGAIN_SECONDS
+    made.append(FakeSocket([line("player/get_players", payload=[])]))
+    client.command("player/get_players")
+    assert len(searches) == 2 and addresses == ["192.0.2.20"]

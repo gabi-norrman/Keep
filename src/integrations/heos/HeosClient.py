@@ -8,7 +8,8 @@ answer) is skipped. Any one device answers for the whole system — players, gro
 One connection is kept and shared behind a lock: a call that finds it broken reconnects once and
 sends again. With no host configured the client finds one by SSDP (`discover()`); macOS denies
 multicast to a process without the Local Network permission, which the terminal Keep starts in
-has once granted."""
+has once granted. A search nobody answered is not repeated for `SEARCH_AGAIN_SECONDS`: the
+commands in between fail at once, so speakers that are away cost no search per command."""
 import json
 import socket
 import threading
@@ -21,6 +22,7 @@ from common.logging import info, trace
 PORT = 1255
 SSDP_TARGET = "urn:schemas-denon-com:device:ACT-Denon:1"
 TIMEOUT = 5.0
+SEARCH_AGAIN_SECONDS = 60
 UNDER_PROCESS = "command under process"
 
 
@@ -71,6 +73,7 @@ class HeosClient:
         self._sock: Optional[socket.socket] = None
         self._buffer = b""
         self._lock = threading.Lock()
+        self._search_again_at = 0.0   # monotonic; set by a search nobody answered
 
     def close(self):
         with self._lock:
@@ -87,9 +90,15 @@ class HeosClient:
 
     def _connect(self):
         if not self.host:
+            nobody = "no HEOS device answered on the network (set heos.host to one speaker's address)"
+            wait = self._search_again_at - time.monotonic()
+            if wait > 0:
+                trace(f"HEOS: no device answered the last search, the next one is in {wait:.0f} s")
+                raise HeosError(nobody)
             found = discover()
             if not found:
-                raise HeosError("no HEOS device answered on the network (set heos.host to one speaker's address)")
+                self._search_again_at = time.monotonic() + SEARCH_AGAIN_SECONDS
+                raise HeosError(nobody)
             self.host = found[0]
         try:
             self._sock = socket.create_connection((self.host, PORT), timeout=TIMEOUT)
