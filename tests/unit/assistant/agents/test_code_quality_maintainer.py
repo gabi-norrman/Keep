@@ -28,6 +28,15 @@ def self_improvement_enabled():
 
 
 @pytest.fixture(autouse=True)
+def on_a_branch_installs_follow():
+    """The suite runs on whatever branch its checkout is on — a developer's feature branch too,
+    which the update paths would take for a branch of the install's own and leave alone
+    (tests/unit/assistant/agents/test_own_branch.py is about that)."""
+    with patch.object(CodeQualityMaintainer, "own_branch", return_value=None):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def claude_installed():
     with patch("assistant.agents.CodeQualityMaintainer.claude_path", return_value=CLAUDE_PATH):
         yield
@@ -272,6 +281,55 @@ class TestNightlyUpdate:
         self.head.return_value = ""
         maintainer._nightly_update()
         self.restart.assert_not_called()
+
+    def _trial(self, **night):
+        from assistant.agents.PullRequestTrial import PullRequestTrial, Trial, Overnight
+        trial = Trial(number=204, title="Tesla: close the trunk once", head_ref="feat/trunk",
+                      since="14:02", return_branch="master")
+        return patch.multiple(PullRequestTrial, current=Mock(return_value=trial),
+                              overnight=Mock(return_value=Overnight(**night)))
+
+    def test_a_trial_that_took_new_code_in_restarts_on_its_own_branch(self, maintainer):
+        with self._trial():
+            assert maintainer._nightly_update() is True
+        self.pull.assert_not_called()   # the checkout never leaves the trial branch
+        self.sync.assert_called_once_with()
+        assert self.restart.call_args.kwargs == {"fallback_branch": "master"}, \
+            "start.sh goes back to the normal branch if the merged code does not boot"
+        (_, text), kwargs = self.note.call_args
+        assert "PR #204" in text and kwargs == {"push": False}
+
+    def test_a_trial_with_nothing_new_does_not_restart(self, maintainer):
+        self.head.return_value = BOOT
+        with self._trial():
+            assert maintainer._nightly_update() is False
+        self.pull.assert_not_called()
+        self.restart.assert_not_called()
+        self.sync.assert_not_called()
+
+    def test_a_trial_that_could_not_take_the_night_in_keeps_running_and_says_why(self, maintainer):
+        with self._trial(failure="Git fetch failed: no route to host"):
+            assert maintainer._nightly_update() is False
+        self.pull.assert_not_called()
+        self.restart.assert_not_called()
+        assert "no route to host" in self.note.call_args[0][1]
+
+    def test_a_trial_that_is_over_returns_to_the_normal_branch_and_the_user_is_told_why(self, maintainer):
+        with self._trial(ended="PR #204 is merged and part of master now"):
+            assert maintainer._nightly_update() is True
+        self.pull.assert_called_once_with("master")
+        self.restart.assert_called_once()
+        assert "fallback_branch" not in self.restart.call_args.kwargs
+        (_, text), kwargs = self.note.call_args
+        assert "part of master now" in text and kwargs == {"push": True}
+
+    def test_a_trial_that_ends_on_the_commit_it_stood_on_still_restarts(self, maintainer):
+        """The process reads its branch once, at boot: without a restart it would go on
+        believing it runs a trial."""
+        self.head.return_value = BOOT
+        with self._trial(ended="PR #204 is merged and part of master now"):
+            assert maintainer._nightly_update() is True
+        self.restart.assert_called_once()
 
     def test_switched_off_it_touches_nothing(self, maintainer):
         self.config["nightly_update"] = False

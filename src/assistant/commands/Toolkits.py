@@ -248,7 +248,7 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
                          "question, fix or build an integration as a PR, report an issue to the developers; see "
                          "where your LLM costs went; read your own log, restart the server",
             ("self_analysis", "cost_analysis", "improve_integration", "report_issue", "try_pull_request", "pr_feedback",
-             "server_logs", "restart_server")),
+             "server_logs", "restart_server", "leave_own_branch")),
     # `requires` reads the key as a truth value, so a non-empty list of directories offers the toolkit.
     Toolkit("local_integrations", "work on this install's own integration folders outside the checkout: fix or "
                                   "build one, or set up and push their git repository — no PR, in place",

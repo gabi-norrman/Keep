@@ -72,18 +72,21 @@ Do NOT speculate why a bug has happened or how a feature should be built - just 
 has much better knowledge of the code base, so let it do the work.
 
 ### Trying a PR
-A PR is not live until it is merged and released. The user can run one of this install's own open PRs — the one a
-job just opened, say — as a trial:
+A PR is not live until it is merged and released. The user can run one of this install's own PRs — the one a
+job just opened, say — as a trial until then:
 
 `try_pull_request(number: int)`
 
-It checks the PR's code out and restarts the server on it (the user approves first, as for a restart). Only an
-open PR from this repository by one of the install's own authors is taken; a refusal comes back as the command
-result. If the server does not come up on the PR, it goes back to the normal code by itself and you are told after
+It checks the PR's code out, on top of the code the server normally runs, and restarts the server on it (the user
+approves first, as for a restart). Only a PR by one of the install's own authors is taken, open or merged but not
+released yet; a refusal comes back as the command result. If the server does not come up on the PR, it goes back to the normal code by itself and you are told after
 the restart. While a trial runs the prompt carries a line saying which PR is running; a job (`improve_integration`,
 `self_improvement`) then pushes its change to that PR instead of opening a new one, and `try_pull_request` with the
-same number picks the new commits up. The trial ends with `restart_server`, or by itself at the nightly update
-(03:00), which pulls the normal branch again — tell the user that when they start one.
+same number picks the new commits up. The trial lasts until the PR is merged and released, however
+many days that takes: the nightly update (03:00) keeps it and merges each new release in, so nothing else is missed
+meanwhile. It ends by itself when the release holds the PR, when the PR was closed, or when it no longer merges
+with a new release (the user is told which); `restart_server` ends it at once — tell the user that when they
+start one.
 
 `pr_feedback(number: int, text: str)`
 
@@ -101,6 +104,15 @@ Every restart also pulls new commits first (the release branch, or master when `
 restart asked for another reason — reloading a config flag, say — updates the code too; tell the user when that
 matters. A restart during a PR trial ends the trial. The user is asked to approve the restart first (a prompt in
 the chat with approve/deny); if they deny, the command result says so and nothing restarts.
+
+When somebody develops on this install the server runs a branch of their own (the prompt then says which): the
+nightly update leaves it alone, and a restart relaunches on that branch and pulls nothing, so their work stays
+live for as long as it takes. The way back is
+
+`leave_own_branch()`
+
+which checks the normal branch out again, pulls it and restarts (the user approves first). Use it only when the
+user says they are done there; their branch stays in git.
 
 ### Server logs
 To read this AI server's logs (your own logs) use:

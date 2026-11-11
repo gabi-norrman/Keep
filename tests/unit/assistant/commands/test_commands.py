@@ -2539,6 +2539,31 @@ class TestRestartServerNote:
         note.assert_not_called()
 
 
+class TestLeaveOwnBranch:
+    def _run(self, commands_instance, own):
+        with patch.object(commands_instance, 'fire_and_forget', side_effect=lambda fn, p: fn(p)), \
+             patch("assistant.commands.Commands.CodeQualityMaintainer") as cqm, \
+             patch("assistant.commands.Commands.system_note") as note:
+            cqm.own_branch.return_value = own
+            cqm.target_branch.return_value = "release"
+            cqm.pull_and_restart.return_value = "Update initiated. Server is restarting..."
+            return commands_instance.cmd_leave_own_branch(""), cqm, note
+
+    def test_it_restarts_onto_the_normal_branch_and_notes_which_branch_was_left(self, commands_instance):
+        _, cqm, note = self._run(commands_instance, "feat/garage-door")
+        cqm.pull_and_restart.assert_called_once_with(resumes_conversation=True, leave_own_branch=True)
+        assert "feat/garage-door" in note.call_args.args[1]
+
+    def test_on_a_normal_branch_nothing_restarts_and_the_answer_says_so(self, commands_instance):
+        result, cqm, note = self._run(commands_instance, None)
+        cqm.pull_and_restart.assert_not_called()
+        note.assert_not_called()
+        assert "release" in result
+
+    def test_the_user_approves_it_first(self, commands_instance):
+        assert commands_instance.is_sensitive("leave_own_branch")
+
+
 class TestWithAiFooter:
     @staticmethod
     def _footer(value):

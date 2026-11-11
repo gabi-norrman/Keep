@@ -753,7 +753,8 @@ class CodeQualityMaintainer:
     def trial_skip_reason() -> Optional[str]:
         """Why no nightly code-quality run happens while a PR is tried, //nightly included: the
         checkout holds the PR's code, so the run would analyse that and branch its PRs off it.
-        The nightly update is not held back — it is what ends the trial."""
+        The nightly update is not held back — it keeps the trial current, and ends it once the
+        PR is released (`PullRequestTrial.overnight`)."""
         from assistant.agents.PullRequestTrial import PullRequestTrial
         trial = PullRequestTrial.current()
         if trial is None:
@@ -859,6 +860,9 @@ class CodeQualityMaintainer:
         names, pull it, and restart when the code is no longer what this process booted on —
         commits pulled now or made locally since the start. No new commit, no restart. True when
         the restart is under way, so the caller leaves the night to the new process.
+        A PR trial is kept instead (`_trial_night`): the branch is merged into the trial's, and
+        the checkout returns to it only once the trial is over. A branch of the install's own
+        (`own_branch`) is left alone altogether.
         `nightly_update: false` turns it off; it is read at each fire."""
         from assistant.SystemNote import system_note
         if not ConfigManager().get(NIGHTLY_UPDATE_KEY, True):
@@ -875,7 +879,19 @@ class CodeQualityMaintainer:
             return False
         try:
             target = self.target_branch()
+            own = self.own_branch()
+            if own:
+                info(f"CodeQualityMaintainer: the server runs {own}, a branch of this install's own — no nightly "
+                     f"update, it stays there until somebody leaves it.")
+                return False
             info(f"CodeQualityMaintainer: nightly update — the target is {target}.")
+            from assistant.agents.PullRequestTrial import PullRequestTrial
+            trial, trial_over = PullRequestTrial.current(), ""
+            if trial is not None:
+                night = PullRequestTrial.overnight(trial)
+                if not night.ended:
+                    return self._trial_night(trial, night.failure)
+                trial_over = f"The trial of PR #{trial.number} is over: {night.ended}. "
             update = self._updater().update(target, self._boot_commit)
             if update.pull_failure:
                 system_note("server", "Nightly update failed, the server keeps running the old code: "
@@ -885,16 +901,50 @@ class CodeQualityMaintainer:
                 system_note("server", f"Nightly update pulled {update.change} on {target} but the server keeps "
                                       f"running the old code: {update.sync_failure}", push=False)
                 return False
-            if not update.restart:
+            # A trial that ends on the commit its branch already stood on still restarts: the
+            # process believes it is on a trial for as long as it runs.
+            if not update.restart and not (trial_over and update.head):
                 return False
             span = f"{self._boot_commit[:8]} → {update.head[:8]}"
-            note(f"CodeQualityMaintainer: nightly update — {update.change} on {target} ({span}), restarting.")
-            # History only: the startup announcement of the new process is what the chats get.
-            system_note("server", f"Nightly update: {update.change} on {target}, the server is restarting.", push=False)
+            note(f"CodeQualityMaintainer: nightly update — {trial_over}{update.change} on {target} ({span}), restarting.")
+            # History only: the startup announcement of the new process is what the chats get —
+            # but the end of a trial is news the user asked for, so that one is pushed.
+            system_note("server", f"{trial_over}Nightly update: {update.change} on {target}, the server is restarting.",
+                        push=bool(trial_over))
             self.restart(f"nightly update {span}")
             return True
         finally:
             _nightly_lock.release()
+
+    def _trial_night(self, trial, failure: str) -> bool:
+        """The nightly update while a PR trial lasts: `PullRequestTrial.overnight` has merged the
+        night's code into the trial branch (or says in *failure* why not), and the server
+        restarts on it when HEAD moved — with the normal branch as start.sh's fallback, like the
+        restart that began the trial. True when the restart is under way."""
+        from assistant.SystemNote import system_note
+        target = trial.return_branch
+        if failure:
+            system_note("server", f"Nightly update failed, the trial of PR #{trial.number} keeps running the old "
+                                  f"code: {failure}", push=False)
+            return False
+        head = self._head_commit()
+        if not head or head == self._boot_commit:
+            info(f"CodeQualityMaintainer: nightly update — the trial of PR #{trial.number} is at "
+                 f"{head[:8] or 'an unreadable HEAD'}, not restarting.")
+            return False
+        failure, installed = self._sync_requirements()
+        if failure:
+            system_note("server", f"Nightly update merged {target} into the trial of PR #{trial.number} but the "
+                                  f"server keeps running the old code: {failure}", push=False)
+            return False
+        span = f"{self._boot_commit[:8]} → {head[:8]}"
+        detail = f", {installed}" if installed else ""
+        note(f"CodeQualityMaintainer: nightly update — PR #{trial.number} stays on trial with the newest {target} "
+             f"({span}){detail}, restarting.")
+        system_note("server", f"Nightly update: PR #{trial.number} is still on trial, now with the newest {target}"
+                              f"{detail}; the server is restarting.", push=False)
+        self.restart(f"nightly update of the PR #{trial.number} trial {span}", fallback_branch=target)
+        return True
 
     @staticmethod
     def _updater() -> Updater:
@@ -1894,6 +1944,25 @@ class CodeQualityMaintainer:
         return DEVELOPER_BRANCH if developer else RELEASE_BRANCH
 
     @staticmethod
+    def own_branch() -> Optional[str]:
+        """The branch of this install's own the server runs, None on a line an install follows
+        (release, master) and on a PR trial. Somebody checked it out to work on the code here,
+        so nothing moves the checkout off it by itself: the nightly update skips the night and
+        a restart relaunches in place. It is the branch the process booted on, and only while
+        it is still checked out — a Claude Code job's work branch, which the tree is on for
+        the length of a run, never counts."""
+        from common import Version
+        booted = Version.branch()
+        if not booted or booted in (RELEASE_BRANCH, DEVELOPER_BRANCH) or booted.startswith("trial/"):
+            return None
+        checked_out = CodeQualityMaintainer._current_branch()
+        if checked_out != booted:
+            info(f"CodeQualityMaintainer: booted on {booted} but the checkout is on {checked_out}, "
+                 f"not treated as a branch of the install's own")
+            return None
+        return booted
+
+    @staticmethod
     def _pull_current() -> None:
         """Bring the current branch up to date before a Claude Code run (`Updater.pull_current`).
         A failure is logged and the run goes on with the code it has."""
@@ -1906,10 +1975,23 @@ class CodeQualityMaintainer:
         return Updater.sync()
 
     @staticmethod
-    def pull_and_restart(resumes_conversation: bool = False) -> str:
+    def pull_and_restart(resumes_conversation: bool = False, leave_own_branch: bool = False) -> str:
         """Pull the target branch, sync the venv and restart. *resumes_conversation* is the
         `restart_server` command's: the restart was asked for in a chat, and the new process
-        picks that conversation up (`restart`)."""
+        picks that conversation up (`restart`). On a branch of the install's own (`own_branch`)
+        nothing is pulled and the server restarts where it is, unless *leave_own_branch* says
+        the work there is done."""
+        own = None if leave_own_branch else CodeQualityMaintainer.own_branch()
+        if own:
+            failure, installed = CodeQualityMaintainer._sync_requirements()
+            if failure:
+                return f"The server was not restarted: {failure}"
+            target = CodeQualityMaintainer.target_branch()
+            info(f"CodeQualityMaintainer: restarting on {own}, the install's own branch — {target} is not pulled")
+            CodeQualityMaintainer.restart(f"restart on {own}, nothing pulled", resumes_conversation=resumes_conversation)
+            detail = f" ({installed})" if installed else ""
+            return (f"Restart initiated on {own}, this install's own branch{detail}: nothing was pulled and "
+                    f"{target} was not checked out. Server is restarting...")
         update = CodeQualityMaintainer._updater().refresh(CodeQualityMaintainer.target_branch())
         if update.pull_failure:
             return update.pull_failure

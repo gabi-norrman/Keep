@@ -141,6 +141,23 @@ class Updater:
             return f"Git pull failed: {result.stderr}", ""
         return "", _pull_summary(result.stdout or "")
 
+    def tip(self, target: str) -> tuple[str, str]:
+        """The newest commit of *target* an install may run, fetched without moving the checkout
+        — the release only when its tag verifies (`SignedRelease`). Returns (failure, commit)."""
+        if target == RELEASE_BRANCH:
+            failure, commit, _ = SignedRelease.fetch()
+            return failure, commit
+        fetch = self._run(["git", "fetch", "origin", target], "git fetch", GIT_TIMEOUT)
+        if fetch.returncode != 0:
+            error(f"Updater: git fetch {target} failed: {fetch.stderr}")
+            return f"Git fetch failed: {(fetch.stderr or '').strip()}", ""
+        commit = (self._run(["git", "rev-parse", f"origin/{target}^{{commit}}"], "git rev-parse",
+                            GIT_TIMEOUT).stdout or "").strip()
+        if not commit:
+            error(f"Updater: origin/{target} cannot be resolved after the fetch")
+            return f"origin/{target} cannot be resolved.", ""
+        return "", commit
+
     def pull_current(self) -> None:
         """Bring the branch the checkout is on up to date, without switching: `release` only to
         its newest signed release, any other branch by a plain pull. A failure is logged and the

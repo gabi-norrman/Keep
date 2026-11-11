@@ -1,13 +1,19 @@
-"""PullRequestTrial: the branch is the state, the vetting is the auto-merge's trust, and a
-trial's restart hands start.sh the branch to fall back to."""
+"""PullRequestTrial: the branch is the state, the vetting is the auto-merge's trust, a
+trial's restart hands start.sh the branch to fall back to, and the nightly update keeps a
+trial — with the night's release merged in — until the PR is released."""
 import json
+from types import SimpleNamespace
 from unittest.mock import Mock, patch, call
 
 import pytest
 
 from assistant.agents import PullRequestTrial as module
 from assistant.agents.PullRequestTrial import PullRequestTrial, TrialRefused, parse_number, trial_number, GIT_TIMEOUT
+from assistant.agents.PullRequestTrial import Trial
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
+from common.Updater import Updater
+
+from ...git_sandbox import empty_repo, git as sandbox_git, spawn
 
 
 TODAY = module.datetime.now().strftime("%Y-%m-%d")
@@ -82,6 +88,16 @@ class TestTheBranchIsTheState:
                 patch.object(CodeQualityMaintainer, "target_branch", return_value="release"):
             assert PullRequestTrial.current().since == "2020-01-01 23:50"
 
+    def test_a_trial_began_when_the_pr_was_checked_out_not_at_last_nights_merge(self, github, git):
+        """The branch's reflog as git prints it, newest first: the nightly merges are entries too."""
+        git.return_value = Mock(returncode=0, stderr="", stdout=(
+            f"{TODAY} 03:00:07 +0100 merge 5d2c1a9: Merge made by the 'ort' strategy.\n"
+            "2020-01-01 23:50:00 +0100 branch: Created from FETCH_HEAD\n"
+            "2019-12-24 09:00:00 +0100 branch: Created from FETCH_HEAD\n"))
+        with patch.object(module.Version, "branch", return_value="trial/pr-204"), \
+                patch.object(CodeQualityMaintainer, "target_branch", return_value="release"):
+            assert PullRequestTrial.current().since == "2020-01-01 23:50"
+
     def test_github_down_still_knows_the_number(self, github, git):
         github.return_value = Mock(returncode=1, stdout="", stderr="gh: could not resolve host")
         with patch.object(module.Version, "branch", return_value="trial/pr-204"), \
@@ -130,8 +146,25 @@ class TestVetting:
     def test_an_open_pr_of_this_repository_by_an_own_author_passes(self, github, trusted, git):
         assert PullRequestTrial.vet(204)["title"] == "Tesla: close the trunk once"
 
+    def test_a_merged_pr_the_install_does_not_have_yet_passes(self, github, trusted, git):
+        """The days between the merge and the release: the PR is closed to GitHub, and its
+        code is still nowhere the install's branch reaches."""
+        github.answer(_pr(state="MERGED", mergeCommit={"oid": "d" * 40}))
+        git.side_effect = lambda cmd, label, timeout: Mock(
+            returncode=1 if cmd[1] == "merge-base" else 0, stderr="",
+            stdout="abcdef12\n" if cmd[1] == "rev-parse" else "")
+        assert PullRequestTrial.vet(204)["number"] == 204
+
+    def test_a_merged_pr_the_install_already_runs_is_refused(self, github, trusted, git):
+        github.answer(_pr(state="MERGED", mergeCommit={"oid": "d" * 40}))
+        git.side_effect = lambda cmd, label, timeout: Mock(
+            returncode=0, stderr="", stdout="abcdef12\n" if cmd[1] == "rev-parse" else "")
+        with patch.object(CodeQualityMaintainer, "target_branch", return_value="release"), \
+                pytest.raises(TrialRefused) as refused:
+            PullRequestTrial.vet(204)
+        assert "release" in str(refused.value)
+
     @pytest.mark.parametrize("pr, words", [
-        (_pr(state="MERGED"), "merged"),
         (_pr(state="CLOSED"), "closed"),
         (_pr(isCrossRepository=True), "fork"),
         (_pr(author={"login": "stranger"}), "stranger"),
@@ -169,7 +202,7 @@ class TestVetting:
 
     def test_the_vetting_reads_github_fresh_not_the_cache(self, github, trusted, git):
         PullRequestTrial._pr(204)
-        github.answer(_pr(state="MERGED"))
+        github.answer(_pr(state="CLOSED"))
         with pytest.raises(TrialRefused):
             PullRequestTrial.vet(204)
 
@@ -201,6 +234,32 @@ class TestStart:
         assert self.restart.call_args.kwargs == {"fallback_branch": "release", "resumes_conversation": True}, \
             "the user asked for the trial in a chat and hears there whether its server came up"
         assert "PR #204" in result and "abcdef12" in result and "release" in result
+
+    def test_the_branch_the_install_follows_is_merged_into_the_checked_out_pr(self):
+        PullRequestTrial.start(204)
+        calls = self._git_calls()
+        merge = next(c for c in calls if "merge" in c and "--abort" not in c)
+        assert merge[-1] == "abcdef12", "the commit `release` resolves to on this machine"
+        assert calls.index(merge) > calls.index(["git", "checkout", "-B", "trial/pr-204", "FETCH_HEAD"])
+
+    def test_a_pr_that_does_not_merge_with_the_release_is_not_tried(self):
+        self.git.side_effect = lambda cmd, label, timeout: Mock(
+            returncode=1 if "merge" in cmd and "--abort" not in cmd else 0, stderr="",
+            stdout={"rev-parse": "release\n" if "--abbrev-ref" in cmd else "abcdef12\n"}.get(cmd[1], ""))
+        result = PullRequestTrial.start(204)
+        calls = self._git_calls()
+        assert ["git", "merge", "--abort"] in calls and calls[-1] == ["git", "checkout", "release"]
+        assert "not tried" in result and "release" in result
+        self.sync.assert_not_called()
+        self.restart.assert_not_called()
+
+    def test_a_second_try_that_fails_puts_the_running_trial_back_where_it_stood(self):
+        self.sync.return_value = ("pip exited 1", "")
+        self.git.side_effect = lambda cmd, label, timeout: Mock(
+            returncode=0, stderr="",
+            stdout={"rev-parse": "trial/pr-204\n" if "--abbrev-ref" in cmd else "abcdef12\n"}.get(cmd[1], ""))
+        PullRequestTrial.start(204)
+        assert self._git_calls()[-1] == ["git", "checkout", "-B", "trial/pr-204", "abcdef12"]
 
     def test_a_refusal_fetches_nothing(self, github):
         github.answer(_pr(state="CLOSED"))
@@ -236,6 +295,123 @@ class TestStart:
     def test_installed_packages_are_named(self):
         self.sync.return_value = ("", "installed 1 package: pkg-a (missing)")
         assert "pkg-a" in PullRequestTrial.start(204)
+
+
+class TestOvernight:
+    """The nightly update of a running trial, on a throwaway repository: `release` and the
+    trial branch part at one commit, the PR changed b.txt, and each test says what the
+    release did since. GitHub answers with `self.pr` (an exception is raised), read fresh."""
+
+    @pytest.fixture(autouse=True)
+    def install(self, tmp_path):
+        self.repo = repo = empty_repo(tmp_path / "install")
+        self.pr = _pr()
+        self._commit("release", {"a.txt": "one\n", "b.txt": "one\n"}, new=False)
+        sandbox_git(repo, "branch", "-m", "master", "release")
+        self.pr_head = self._commit("trial/pr-204", {"b.txt": "the PR's\n"})
+        self.trial = Trial(number=204, title="Tesla: close the trunk once", head_ref="feat/trunk",
+                           since="14:02", return_branch="release")
+        run = lambda cmd, label, timeout: spawn([cmd[0], "-C", str(repo), *cmd[1:]], timeout=timeout)
+        with patch.object(CodeQualityMaintainer, "_run_subprocess", side_effect=run), \
+                patch.object(PullRequestTrial, "_pr", SimpleNamespace(__wrapped__=self._read_pr)), \
+                patch.object(Updater, "tip", side_effect=lambda target: self.tip) as tip:
+            self.tip_asked = tip
+            self.tip = ("", self._head("release"))
+            yield
+
+    def _read_pr(self, number: int) -> dict:
+        if isinstance(self.pr, Exception):
+            raise self.pr
+        return self.pr
+
+    def _commit(self, branch: str, files: dict, new: bool = True) -> str:
+        if new:
+            sandbox_git(self.repo, "checkout", "-q", "-b", branch)
+        for name, text in files.items():
+            (self.repo / name).write_text(text)
+        sandbox_git(self.repo, "add", "-A")
+        sandbox_git(self.repo, "commit", "-q", "-m", f"change on {branch}")
+        return self._head("HEAD")
+
+    def _release(self, files: dict) -> str:
+        """A release made since the trial began, fetched and verified: what `Updater.tip` hands over."""
+        sandbox_git(self.repo, "checkout", "-q", "release")
+        commit = self._commit("release", files, new=False)
+        sandbox_git(self.repo, "checkout", "-q", "trial/pr-204")
+        self.tip = ("", commit)
+        return commit
+
+    def _head(self, ref: str) -> str:
+        return sandbox_git(self.repo, "rev-parse", ref)
+
+    def _holds(self, commit: str) -> bool:
+        return spawn(["git", "-C", str(self.repo), "merge-base", "--is-ancestor", commit, "HEAD"]).returncode == 0
+
+    def _on_trial_and_clean(self) -> bool:
+        return sandbox_git(self.repo, "rev-parse", "--abbrev-ref", "HEAD") == "trial/pr-204" \
+            and not sandbox_git(self.repo, "status", "--porcelain")
+
+    def test_a_new_release_is_merged_in_and_the_trial_lasts(self):
+        released = self._release({"a.txt": "two\n"})
+        night = PullRequestTrial.overnight(self.trial)
+        assert night == module.Overnight()
+        assert self._holds(released) and self._holds(self.pr_head) and self._on_trial_and_clean()
+        assert (self.repo / "a.txt").read_text() == "two\n" and (self.repo / "b.txt").read_text() == "the PR's\n"
+
+    def test_a_night_without_a_release_moves_nothing(self):
+        assert PullRequestTrial.overnight(self.trial) == module.Overnight()
+        assert self._head("HEAD") == self.pr_head, "an unmoved HEAD is what tells the caller not to restart"
+
+    def test_a_merged_pr_stays_on_trial_until_the_release_holds_it(self):
+        self.pr = _pr(state="MERGED", mergeCommit={"oid": "d" * 40})
+        released = self._release({"a.txt": "two\n"})
+        night = PullRequestTrial.overnight(self.trial)
+        assert not night.ended and not night.failure
+        assert self._holds(released) and self._holds(self.pr_head)
+
+    def test_a_merged_pr_the_release_holds_ends_the_trial(self):
+        """Squash-merged: the release holds the merge commit, never the PR's own."""
+        released = self._release({"b.txt": "the PR's\n"})
+        self.pr = _pr(state="MERGED", mergeCommit={"oid": released})
+        night = PullRequestTrial.overnight(self.trial)
+        assert "release" in night.ended and "merged" in night.ended
+        assert self._head("HEAD") == self.pr_head, "the way back to release is the caller's normal update"
+
+    def test_a_release_the_pr_conflicts_with_ends_the_trial_and_leaves_no_merge_behind(self):
+        self._release({"b.txt": "the release's\n"})
+        night = PullRequestTrial.overnight(self.trial)
+        assert "release" in night.ended and not night.failure
+        assert self._head("HEAD") == self.pr_head and self._on_trial_and_clean()
+
+    def test_a_closed_pr_ends_the_trial_without_a_fetch(self):
+        self.pr = _pr(state="CLOSED")
+        assert "closed" in PullRequestTrial.overnight(self.trial).ended
+        self.tip_asked.assert_not_called()
+
+    def test_github_out_of_reach_keeps_the_trial_as_it_is(self):
+        self.pr = RuntimeError("gh: could not resolve host")
+        self._release({"a.txt": "two\n"})
+        night = PullRequestTrial.overnight(self.trial)
+        assert not night.ended and "could not resolve host" in night.failure
+        assert self._head("HEAD") == self.pr_head
+
+    def test_a_release_that_does_not_verify_keeps_the_trial_as_it_is(self):
+        self._release({"a.txt": "two\n"})
+        self.tip = ("The newest release carries no tag signed by a key in release_signers", "")
+        night = PullRequestTrial.overnight(self.trial)
+        assert not night.ended and "no tag signed" in night.failure
+        assert self._head("HEAD") == self.pr_head
+
+    def test_uncommitted_work_in_the_way_of_the_merge_is_a_failure_not_the_end(self):
+        self._release({"a.txt": "two\n"})
+        (self.repo / "a.txt").write_text("somebody's edit\n")
+        night = PullRequestTrial.overnight(self.trial)
+        assert night.failure and not night.ended
+        assert (self.repo / "a.txt").read_text() == "somebody's edit\n"
+
+    def test_a_checkout_moved_off_the_trial_branch_is_the_end_of_the_trial(self):
+        sandbox_git(self.repo, "checkout", "-q", "release")
+        assert "release" in PullRequestTrial.overnight(self.trial).ended
 
 
 class TestFeedback:

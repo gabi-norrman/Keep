@@ -602,11 +602,12 @@ class DebugCommands:
     def cmd_RESTART(self, args: str) -> str:
         """Pull the target branch and restart the server, exactly as the restart_server command does; the fallback when the LLM is unusable."""
         from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
-        target = CodeQualityMaintainer.target_branch()
+        target, own = CodeQualityMaintainer.target_branch(), CodeQualityMaintainer.own_branch()
         threading.Timer(STOP_DELAY_SECONDS, _pull_and_restart).start()
-        info(f"//restart: pulling {target} and restarting in {STOP_DELAY_SECONDS:g}s")
-        return (f"Pulling {target} and restarting the server in {STOP_DELAY_SECONDS:g}s. "
-                f"The outcome lands in the log and as a system note.")
+        doing = f"Restarting the server on {own}, this install's own branch, without a pull," if own \
+            else f"Pulling {target} and restarting the server"
+        info(f"//restart: {doing} in {STOP_DELAY_SECONDS:g}s")
+        return f"{doing} in {STOP_DELAY_SECONDS:g}s. The outcome lands in the log and as a system note."
 
     # --- //wipe ---------------------------------------------------------------------------
 

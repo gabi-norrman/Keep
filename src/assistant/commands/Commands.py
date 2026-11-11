@@ -117,7 +117,7 @@ class Commands:
     notifier's approval gate before running, GUARDED_COMMANDS only while the root config key
     `approve_guarded_commands` is true.
     """
-    SENSITIVE_COMMANDS = frozenset({"send_email", "restart_server", "try_pull_request",
+    SENSITIVE_COMMANDS = frozenset({"send_email", "restart_server", "try_pull_request", "leave_own_branch",
                                     "report_issue", "pr_feedback", "improve_local_integration"})
     # The browser actions that can submit a form or run a script on a site. Off by default
     # because a card per click would make a multi-step browsing task unusable and the
@@ -129,10 +129,16 @@ class Commands:
     APPROVAL_NOTES = {
         "restart_server": "Pulls the latest code from git (the release branch, or master when "
                           "developer_release is true; a PR trial ends here) and relaunches the server. "
+                          "On a branch of your own it relaunches there and pulls nothing. "
                           "The console goes blank for a moment and reconnects by itself.",
         "try_pull_request": "Fetches the pull request's code, checks it out and relaunches the server on it "
-                            "as a trial. restart_server (or the nightly update at 03:00) goes back to the "
-                            "normal code. The console goes blank for a moment and reconnects by itself.",
+                            "as a trial that lasts until the pull request is released; restart_server goes "
+                            "back to the normal code before that. The console goes blank for a moment and "
+                            "reconnects by itself.",
+        "leave_own_branch": "Takes the server off the branch of your own it runs: checks the normal branch out "
+                            "again, pulls it and relaunches the server. Your branch stays in git; uncommitted "
+                            "changes can keep the checkout from switching. The console goes blank for a moment "
+                            "and reconnects by itself.",
     }
     # Commands whose handler accepts multiple positional arguments. The dispatcher
     # splats the parsed parameter list (`f(*params)`); the handler decides how to
@@ -1423,6 +1429,26 @@ class Commands:
             text += f"\n\nReport:\n{report}"
         return text
 
+    def cmd_leave_own_branch(self, parameter_string: str):
+        """`leave_own_branch()`: the server runs a branch of the install's own and the user is
+        done there — check the normal branch out again, pull it and restart. On a normal
+        branch it answers that there is nothing to leave and restarts nothing."""
+        own = CodeQualityMaintainer.own_branch()
+        if not own:
+            info("leave_own_branch: the server runs no branch of the install's own, nothing to do")
+            return (f"The server already runs {CodeQualityMaintainer.target_branch()}, not a branch of this "
+                    f"install's own. Nothing was restarted.")
+
+        def _run(_params):
+            try:
+                result = CodeQualityMaintainer.pull_and_restart(resumes_conversation=True, leave_own_branch=True)
+                info(f"Leave own branch ({own}) result: {result}")
+                system_note("server", f"Server restart, leaving the branch {own}: {result}")
+            except Exception as e:
+                error(f"Leaving the own branch {own} failed: {e}")
+
+        self.fire_and_forget(_run, parameter_string)
+
     def cmd_restart_server(self, parameter_string: str):
         def _run(_params):
             try:
@@ -2596,6 +2622,7 @@ class Commands:
             else f"Working on the local {name} integration"
     def describe_report_issue(self, p):           return "Reporting an issue to the developers"
     def describe_restart_server(self, p):         return "Restarting server"
+    def describe_leave_own_branch(self, p):       return "Leaving your branch and restarting server"
     def describe_try_pull_request(self, p):       return f"Trying PR #{p.strip().lstrip('#').strip() or '?'}"
     def describe_pr_feedback(self, p):            return f"Posting feedback on PR #{self._first_argument(p).lstrip('#') or '?'}"
     def describe_execute(self, p):                return f"Running action {p.strip()}"
