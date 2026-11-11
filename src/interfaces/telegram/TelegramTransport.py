@@ -910,7 +910,7 @@ class TelegramTransport(Integration, ChatTransport):
         chat_id = await self._admit(update)
         if chat_id is None:
             return
-        info(f"Telegram [{chat_id}]: voice message received")
+        info(f"Telegram [{chat_id}]: voice message received ({getattr(update.message.voice, 'duration', '?')} s)")
         self._track_message_text(chat_id, update.message.message_id, "[voice message]")
         try:
             file = await context.bot.get_file(update.message.voice.file_id)

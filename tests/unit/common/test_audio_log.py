@@ -3,7 +3,7 @@ import time
 import wave
 
 from common import audio_log
-from common.audio_log import cleanup_audio_folder, read_wav_metadata, save_pcm_wav
+from common.audio_log import cleanup_audio_folder, read_wav_metadata, save_audio_file, save_pcm_wav
 
 
 def _pcm(n_samples: int) -> bytes:
@@ -214,3 +214,16 @@ def test_cleanup_tolerates_file_deleted_by_another_pass(tmp_path, monkeypatch):
 
     assert not old.exists()
     assert errors == []
+
+
+def test_an_encoded_clip_is_written_as_it_arrived_and_a_second_one_never_replaces_it(tmp_path):
+    folder = tmp_path / "voice_notes"
+    first = save_audio_file(str(folder), "turn on the lights", b"OggS-one", "ogg")
+    second = save_audio_file(str(folder), "turn on the lights", b"OggS-two", "ogg")
+
+    assert first != second and {os.path.dirname(first), os.path.dirname(second)} == {str(folder)}
+    assert first.endswith(".ogg") and second.endswith(".ogg")
+    with open(first, "rb") as f:
+        assert f.read() == b"OggS-one"
+    with open(second, "rb") as f:
+        assert f.read() == b"OggS-two"

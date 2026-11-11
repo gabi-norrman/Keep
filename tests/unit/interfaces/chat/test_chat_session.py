@@ -589,7 +589,7 @@ class TestIntake:
             _, query = self._submit_and_wait(session, hub, transport,
                                              msg(kind=KIND_VOICE, text="",
                                                  attachments=[Attachment(b'\x00\x01\x02', "audio/ogg", "voice")]))
-        stt.assert_called_once_with(b'\x00\x01\x02')
+        stt.assert_called_once_with(b'\x00\x01\x02', "audio/ogg")
         assert query == "[Voice message, transcribed via STT] Hello world"
 
     def test_message_arriving_during_transcription_supersedes_the_voice_note(self, session, hub, transport):
@@ -599,7 +599,7 @@ class TestIntake:
         hub.assistant = assistant
         entered, release = threading.Event(), threading.Event()
 
-        def slow_stt(data):
+        def slow_stt(data, mime_type):
             entered.set()
             release.wait(3)
             return "hi"

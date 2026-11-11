@@ -1,8 +1,9 @@
 """Shared helpers for persisting raw audio samples to the logs folder.
 
 Both the Android upload endpoint and the local mic outposts drop debuggable
-WAV files into `log/audio/`, named after the spoken query. This module owns the
-WAV-writing and folder-size-cap logic so the two paths stay in sync.
+WAV files into `log/audio/`, named after the spoken query, and the chats keep the
+voice notes they were sent in `log/audio/voice_notes/`. This module owns the
+file-writing and folder-size-cap logic so the paths stay in sync.
 """
 
 import json
@@ -94,16 +95,8 @@ def save_pcm_wav(audio_dir: str, name: str, pcm_bytes: bytes,
     when given, is stored as JSON inside the file (see METADATA_CHUNK_ID /
     read_wav_metadata). Returns the path written.
     """
-    os.makedirs(audio_dir, exist_ok=True)
-
-    base_name = re.sub(r'[^a-zA-Z0-9]', '_', name)[:100]
     with _save_lock:
-        filepath = os.path.join(audio_dir, f"{base_name}.wav")
-        counter = 1
-        while os.path.exists(filepath):
-            filepath = os.path.join(audio_dir, f"{base_name}_{counter}.wav")
-            counter += 1
-
+        filepath = _free_path(audio_dir, name, "wav")
         with wave.open(filepath, 'wb') as wf:
             wf.setnchannels(channels)
             wf.setsampwidth(bit_depth // 8)
@@ -114,6 +107,31 @@ def save_pcm_wav(audio_dir: str, name: str, pcm_bytes: bytes,
 
     if _cleanup_due(audio_dir):
         cleanup_audio_folder(audio_dir, max_size_gb)
+    return filepath
+
+
+def save_audio_file(audio_dir: str, name: str, data: bytes, extension: str, max_size_gb: float = 1) -> str:
+    """Write an encoded clip (a chat voice note as it arrived, say) under `name` (sanitized)
+    with the same collision suffix and size cap as save_pcm_wav. Returns the path written."""
+    with _save_lock:
+        filepath = _free_path(audio_dir, name, extension)
+        with open(filepath, "wb") as f:
+            f.write(data)
+
+    if _cleanup_due(audio_dir):
+        cleanup_audio_folder(audio_dir, max_size_gb)
+    return filepath
+
+
+def _free_path(audio_dir: str, name: str, extension: str) -> str:
+    """A path in `audio_dir` no file has yet; the caller holds _save_lock until it is written."""
+    os.makedirs(audio_dir, exist_ok=True)
+    base_name = re.sub(r'[^a-zA-Z0-9]', '_', name)[:100]
+    filepath = os.path.join(audio_dir, f"{base_name}.{extension}")
+    counter = 1
+    while os.path.exists(filepath):
+        filepath = os.path.join(audio_dir, f"{base_name}_{counter}.{extension}")
+        counter += 1
     return filepath
 
 

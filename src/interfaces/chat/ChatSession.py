@@ -404,7 +404,7 @@ class ChatSession:
 
         if msg.kind == KIND_VOICE:
             att = msg.attachments[0] if msg.attachments else None
-            transcript = MediaIntake.transcribe_voice(att.data) if att else ""
+            transcript = MediaIntake.transcribe_voice(att.data, att.mime_type) if att else ""
             if not transcript:
                 self._transport.send_text(self._conversation, "Sorry, I couldn't transcribe the voice message.")
                 return None

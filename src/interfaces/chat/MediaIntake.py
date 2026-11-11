@@ -4,8 +4,11 @@ document (a file sent as an attachment) is read the way a mail attachment is —
 `PdfExtractor`, a text file decoded — or, when it cannot be, named with the reason, so the
 assistant can say so instead of leaving the message unanswered."""
 import codecs
+from datetime import datetime
 
-from common.logging import info, trace
+from common.audio_log import save_audio_file
+from common.logging import error, info, trace
+from common.Paths import LOG_DIR
 from interfaces.chat.ChatTypes import Attachment
 
 # A document's text is capped where a mail attachment's PDF text is.
@@ -14,21 +17,40 @@ TEXT_EXTENSIONS = {"txt", "md", "markdown", "csv", "tsv", "json", "yaml", "yml",
                    "toml", "cfg", "conf", "tex", "srt", "vtt", "ics", "eml"}
 # MIME types a sender's client puts on a file it did not recognise; the content decides then.
 GENERIC_MIME_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
+# A subfolder: the clips directly in log/audio are the mics', and the voice discovery reads those.
+VOICE_NOTE_DIR = LOG_DIR / "audio" / "voice_notes"
+VOICE_NOTE_EXTENSIONS = {"audio/ogg": "ogg", "audio/opus": "ogg", "audio/mpeg": "mp3", "audio/mp4": "m4a",
+                         "audio/x-m4a": "m4a", "audio/aac": "aac", "audio/wav": "wav", "audio/x-wav": "wav",
+                         "audio/x-caf": "caf", "audio/amr": "amr", "audio/webm": "webm"}
+NO_TRANSCRIPT_NAME = "no_transcript"
 
 
 class UnreadableDocument(Exception):
     """The file has no text to give: why, in a few words."""
 
 
-def transcribe_voice(data: bytes) -> str:
-    """Speech-to-text for a voice note; "" when nothing came out."""
+def transcribe_voice(data: bytes, mime_type: str = "audio/ogg") -> str:
+    """Speech-to-text for a voice note; "" when nothing came out. The note is kept in the audio
+    log as it arrived, named after what was heard — the failed ones are why it is kept."""
     from interfaces.telegram.GoogleCloudSTT import GoogleCloudSTT
     transcript = GoogleCloudSTT.get_instance().transcribe(data) or ""
+    saved = _log_voice_note(data, mime_type, transcript)
     if transcript:
-        trace(f"Voice note transcribed ({len(data)} bytes): {transcript!r}")
+        trace(f"Voice note transcribed ({len(data)} bytes, {saved}): {transcript!r}")
     else:
-        info(f"Voice note ({len(data)} bytes) produced no transcript.")
+        info(f"Voice note ({len(data)} bytes) produced no transcript, the audio is in {saved}.")
     return transcript
+
+
+def _log_voice_note(data: bytes, mime_type: str, transcript: str) -> str:
+    """Where the note was written, or the reason it was not — a full disk costs no transcript."""
+    extension = VOICE_NOTE_EXTENSIONS.get((mime_type or "").split(";")[0].strip().lower(), "ogg")
+    name = f"{datetime.now():%Y-%m-%d_%H-%M-%S}_{transcript or NO_TRANSCRIPT_NAME}"
+    try:
+        return save_audio_file(str(VOICE_NOTE_DIR), name, data, extension)
+    except OSError as e:
+        error(f"Voice note could not be saved to {VOICE_NOTE_DIR}: {e}")
+        return "not saved"
 
 
 def describe_video(data: bytes, mime_type: str, context: str) -> str:

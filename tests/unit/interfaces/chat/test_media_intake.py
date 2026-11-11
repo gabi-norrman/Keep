@@ -1,4 +1,5 @@
-"""MediaIntake.document_text: what the assistant reads for a file a chat user sent — the PDF
+"""MediaIntake.transcribe_voice: a voice note is kept in the audio log whatever the STT made of it.
+MediaIntake.document_text: what the assistant reads for a file a chat user sent — the PDF
 extractor the mail attachments use, a text file decoded, and the reasons a file gives no text."""
 from unittest.mock import patch
 
@@ -101,3 +102,37 @@ def test_describe_size_picks_the_unit():
     assert describe_size(900) == "900 bytes"
     assert describe_size(3 * 1024) == "3 KB"
     assert describe_size(int(1.5 * 1024 * 1024)) == "1.5 MB"
+
+
+@pytest.mark.unit
+class TestVoiceNoteLog:
+    STT = "interfaces.telegram.GoogleCloudSTT.GoogleCloudSTT.get_instance"
+
+    @pytest.fixture
+    def folder(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(MediaIntake, "VOICE_NOTE_DIR", tmp_path / "audio" / "voice_notes")
+        return MediaIntake.VOICE_NOTE_DIR
+
+    def transcribe(self, heard: str, data: bytes, mime_type: str = "audio/ogg") -> str:
+        with patch(self.STT) as stt:
+            stt.return_value.transcribe.return_value = heard
+            return MediaIntake.transcribe_voice(data, mime_type)
+
+    def test_a_note_the_stt_heard_nothing_in_is_kept_for_the_diagnosis(self, folder):
+        assert self.transcribe("", b"OggS-silence") == ""
+        [saved] = folder.iterdir()
+        assert saved.read_bytes() == b"OggS-silence" and saved.suffix == ".ogg"
+
+    def test_a_transcribed_note_is_named_after_what_was_heard(self, folder):
+        assert self.transcribe("Dim the office lamp", b"OggS-speech") == "Dim the office lamp"
+        [saved] = folder.iterdir()
+        assert "Dim_the_office_lamp" in saved.name and saved.read_bytes() == b"OggS-speech"
+
+    def test_the_file_type_follows_what_the_platform_said_it_sent(self, folder):
+        self.transcribe("hello", b"ftypM4A", "audio/mp4")
+        [saved] = folder.iterdir()
+        assert saved.suffix == ".m4a"
+
+    def test_a_note_that_cannot_be_saved_is_still_transcribed(self, folder):
+        with patch.object(MediaIntake, "save_audio_file", side_effect=OSError("disk full")):
+            assert self.transcribe("hello", b"OggS") == "hello"
