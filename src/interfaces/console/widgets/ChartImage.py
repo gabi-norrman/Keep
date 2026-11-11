@@ -208,8 +208,11 @@ def _mask(width: int, height: int, paint: Callable[[ImageDraw.ImageDraw, int], A
 
 
 def _paint(canvas: np.ndarray, color: Color, alpha: np.ndarray):
-    a = alpha[..., None]
-    canvas[:] = canvas * (1 - a) + _rgb(color) * a
+    # A plane at a time: broadcasting the alpha over the three channels is several times slower.
+    alpha = alpha.astype(np.float32, copy=False)
+    for channel, level in enumerate(_rgb(color)):
+        plane = canvas[..., channel]
+        plane += (level - plane) * alpha
 
 
 def _rules(canvas: np.ndarray, rules: Sequence[Rule], zero_y: float, plot_h: float):

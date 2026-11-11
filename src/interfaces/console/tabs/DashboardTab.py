@@ -51,9 +51,10 @@ class DashboardTab(TabView):
     """Tab charting GPU, CPU, temperature, memory, TTFT, prompt-cache hits and API cost over
     time, with a row of status tiles underneath: integration health, last-request timing,
     resource meters and prompt sections. Everything sits in flat tiles — a title strip over a
-    tinted body — on a three-column grid (four for the status row). Long-term memory, CPU
-    temperature and the per-day cache hit are filled line charts with a smooth rolling
-    average (`_draw_area_chart`); the rest are columns.
+    tinted body — on a three-column grid (four for the status row). GPU usage, GPU
+    memory, CPU usage, long-term memory, CPU temperature and the per-day cache hit are filled
+    line charts, most with a smooth rolling average (`_draw_area_chart`); the per-request
+    charts and the cost are columns.
 
     On a terminal that shows pictures a chart's plot is a picture (`ChartImage`, one
     `ChartPicture` per chart, redrawn in place as its data moves); the title strip, the axis
@@ -418,14 +419,21 @@ class DashboardTab(TabView):
             count, detail = "", "paused"
         return FeedRow(symbol, SHORT_NAMES.get(name, name), fg, bg, progress, count, detail)
 
+    USAGE_AVERAGE_SAMPLES = 10  # ten seconds of the one-second readings
+
     def _draw_charts_row(self, screen: TUIScreen, columns: List[Tuple[int, int]], y: int, chart_h: int):
+        """GPU usage, GPU memory and CPU usage as filled lines over the whole history, the
+        newest reading at the right edge; the two usage charts, which jump from one reading
+        to the next, carry a ten-second rolling average."""
         (gpu_x, gpu_w), (mem_x, mem_w), (cpu_x, cpu_w) = columns
-        self._draw_bar_chart(screen, gpu_x, y, gpu_w, chart_h, self.device_history, Theme.COLOR_GREEN,
-                             "GPU Usage", f"{self.device_util}%")
-        self._draw_bar_chart(screen, mem_x, y, mem_w, chart_h, self.memory_history, Theme.COLOR_BLUE,
-                             "GPU Memory", self._format_bytes(self.in_use_memory))
-        self._draw_bar_chart(screen, cpu_x, y, cpu_w, chart_h, self.cpu_history, Theme.COLOR_YELLOW,
-                             "CPU Usage", f"{self.console.system_cpu_percent:.0f}%")
+        usage = dict(slots=self.HISTORY_SIZE, window=self.USAGE_AVERAGE_SAMPLES,
+                     window_label=f"{self.USAGE_AVERAGE_SAMPLES}s avg")
+        self._draw_area_chart(screen, gpu_x, y, gpu_w, chart_h, self.device_history, Theme.COLOR_GREEN,
+                              "GPU Usage", f"{self.device_util}%", **usage)
+        self._draw_area_chart(screen, mem_x, y, mem_w, chart_h, self.memory_history, Theme.COLOR_BLUE,
+                              "GPU Memory", self._format_bytes(self.in_use_memory), slots=self.HISTORY_SIZE)
+        self._draw_area_chart(screen, cpu_x, y, cpu_w, chart_h, self.cpu_history, Theme.COLOR_YELLOW,
+                              "CPU Usage", f"{self.console.system_cpu_percent:.0f}%", **usage)
 
     LTM_MIN_MAX_KB = 10.0
 
