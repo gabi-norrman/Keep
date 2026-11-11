@@ -284,5 +284,5 @@ def test_voice_preloads_every_toolkit_that_carries_weather_or_music_data():
     """The forecast and the Sonos state left the prompt for their toolkits; voice gets them
     only because its channel preloads those toolkits, so dropping one from the list would
     silently take "will it rain" and "turn off the music" away from the spoken channel."""
-    carriers = {Toolkits.CARRIED_SECTIONS[key] for key in ("weather", "precipitation", "sonos", "music_zones")}
+    carriers = {Toolkits.CARRIED_SECTIONS[key] for key in ("weather", "precipitation", "music", "music_zones")}
     assert carriers <= set(VOICE_TO_VOICE.preload_toolkits)

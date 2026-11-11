@@ -1,0 +1,14 @@
+# HEOS (Denon, Marantz): the speakers on the local network, enable with `enabled_integrations: [HEOS]`. Spotify plays
+# on them over Spotify Connect: it needs api_keys.spotify (the same app as Sonos & Spotify), Spotify Premium and a
+# spotify_login() — with HEOS on, the sign-in asks for the playback permissions too, so an earlier sign-in is asked
+# for once more. A speaker plays Spotify only while the account lists it among its Connect devices: one another
+# account used last is out of reach until it is picked once in the Spotify app with this account. The HEOS favorites
+# are in the MUSIC data as H-0, H-1, … (the first 10, in the HEOS app's order), and each speaker's own Quick Select
+# buttons as Q-1, Q-2, … under its room (named as in the HEOS app — rename them there to tell them apart). All keys are optional.
+heos:
+  host: ""                      # one speaker's address; found on the network when blank (needs the terminal's Local Network access)
+  # HEOS player name -> the room name the LLM sees; a blank value hides the player.
+  room_mapping: {}
+  #   "Kitchen 1": Kitchen
+  # HEOS player name -> its Spotify Connect device name, where the two differ (they usually do not).
+  spotify_devices: {}

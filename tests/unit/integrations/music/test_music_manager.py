@@ -1,18 +1,23 @@
-import http.client
 import time
 
 import pytest
-import requests
-import urllib3
 from unittest.mock import PropertyMock, Mock, patch
 import threading
 
-from integrations.music.MusicIntegration import MusicManager, MusicIntegration, SpotifyPlaylist
-from integrations.music.SpotifyAuth import NotSignedIn, TokenUnavailable
-from spotipy.exceptions import SpotifyException
+from assistant.integration.music.SpotifyAccount import SIGN_IN_REVOKED, SpotifyAccount
+from integrations.music.MusicIntegration import MusicManager, MusicIntegration
+from tests.unit.assistant.integration.music.spotify_fakes import install, make_account
 
 
 ROOM_MAPPING = {"Kitchen Front": "Kitchen", "Kitchen Back": ""}
+
+
+@pytest.fixture(autouse=True)
+def spotify():
+    """The shared Spotify account the integration reaches through `self.spotify`: a fake with two playlists."""
+    account = install(make_account())
+    yield account
+    SpotifyAccount.reset_instance()
 
 
 def make_music_manager(room_mapping=ROOM_MAPPING):
@@ -20,43 +25,17 @@ def make_music_manager(room_mapping=ROOM_MAPPING):
     mm = MusicManager.__new__(MusicManager)
     mm.config = Mock()
     mm.config.get.side_effect = lambda key, default=None: room_mapping if key == 'sonos.room_mapping' else default
-    mm._spotify_client = None
     mm._sonos_zones_cache = {}
     mm._sonos_zones_cache_time = None
     mm._playlists_cache = ["Chill Vibes", "Workout Mix", "Jazz Evening"]
     mm._favorites_cache = ["Liked Songs", "Daily Mix 1", "Discover Weekly"]
-    mm._spotify_playlists_cache = [SpotifyPlaylist("Discover Weekly", "spotify:playlist:dw1", "Spotify"),
-                                   SpotifyPlaylist("Road Trip", "spotify:playlist:rt2", "")]
-    mm._spotify_playlists_total = 2
-    mm._spotify_library_error = ""
-    mm._sign_in_again_noted = False
-    mm._spotify_library_not_before = 0.0
-    mm._spotify_auth = Mock()
-    mm._spotify_auth.signed_in.return_value = True
-    mm._spotify_auth.needs_sign_in_again.return_value = False
-    mm._user_client = None
-    mm._user_client_token = ""
     mm._cache_lock = threading.Lock()
-    mm._spotify_search_cache = {}
-    mm._next_cache_id = 0
     mm._refresh_timer = None
     mm._stopped = threading.Event()
     return mm
 
 
 class TestMusicManager:
-    def test_generate_short_id_sequence(self):
-        mm = make_music_manager()
-        assert mm._generate_short_id() == "AA"
-        assert mm._generate_short_id() == "AB"
-        assert mm._generate_short_id() == "AC"
-
-    def test_generate_short_id_wraps_at_676(self):
-        mm = make_music_manager()
-        mm._next_cache_id = 675  # ZZ
-        assert mm._generate_short_id() == "ZZ"
-        assert mm._generate_short_id() == "AA"  # wrap
-
     def test_playlist_uri_resolution(self):
         mm = make_music_manager()
         assert mm._uri_to_playlist_name("P-0") == "Chill Vibes"
@@ -91,61 +70,6 @@ class TestMusicManager:
         mm = make_music_manager()
         assert mm.normalize_name("Living Room") == "Living Room"
 
-    def test_search_spotify_formats_results(self):
-        mm = make_music_manager()
-        mock_spotify = Mock()
-        mm._get_spotify_client = Mock(return_value=mock_spotify)
-
-        mock_spotify.search.return_value = {
-            'tracks': {
-                'items': [
-                    {
-                        'name': 'Song A',
-                        'artists': [{'name': 'Artist 1'}],
-                        'popularity': 85,
-                        'uri': 'spotify:track:abc123'
-                    }
-                ]
-            },
-            'artists': {
-                'items': [
-                    {
-                        'name': 'Artist 1',
-                        'genres': ['pop', 'rock'],
-                        'popularity': 90,
-                        'uri': 'spotify:artist:def456'
-                    }
-                ]
-            }
-        }
-
-        result = mm.search_spotify("test query")
-        assert "Song A" in result
-        assert "Artist 1" in result
-        assert "85" in result
-        assert "TRACKS:" in result
-        assert "ARTISTS:" in result
-        # Verify short IDs were generated
-        assert len(mm._spotify_search_cache) == 2
-
-    def test_search_spotify_lists_results_without_popularity(self):
-        """A Development Mode app (created since February 2026) gets no popularity field at all."""
-        mm = make_music_manager()
-        mock_spotify = Mock()
-        mm._get_spotify_client = Mock(return_value=mock_spotify)
-        mock_spotify.search.return_value = {
-            'tracks': {'items': [{'name': 'Song A', 'artists': [{'name': 'Artist 1'}], 'uri': 'spotify:track:abc123'}]},
-            'artists': {'items': [{'name': 'Artist 1', 'genres': [], 'uri': 'spotify:artist:def456'}]},
-        }
-
-        result = mm.search_spotify("test query")
-
-        assert not result.startswith("Error")
-        assert "Song A - Artist 1 ID: " in result
-        assert "Artist 1 - N/A ID: " in result
-        assert "popularity" not in result
-        assert set(mm._spotify_search_cache.values()) == {'spotify:track:abc123', 'spotify:artist:def456'}
-
     def test_get_playlists_returns_copy(self):
         mm = make_music_manager()
         playlists = mm.get_playlists()
@@ -167,12 +91,12 @@ class TestMusicManager:
 
 
 class TestCheckHealth:
-    def test_healthy_when_zones_and_spotify_ok(self):
+    def test_healthy_when_zones_and_spotify_ok(self, spotify):
         mm = make_music_manager()
         mock_zone = Mock()
         mm._sonos_zones_cache = {"Living Room": mock_zone}
         mm._sonos_zones_cache_time = time.time()
-        mm._spotify_client = Mock()
+        spotify._app_client = Mock()
         assert mm.check_health() is True
 
     def test_unhealthy_when_no_zones(self):
@@ -180,23 +104,22 @@ class TestCheckHealth:
         mm._discover_sonos_zones = Mock(return_value={})
         assert mm.check_health() is False
 
-    def test_unhealthy_when_spotify_fails(self):
+    def test_unhealthy_without_a_spotify_client(self, spotify):
         mm = make_music_manager()
         mock_zone = Mock()
         mm._sonos_zones_cache = {"Living Room": mock_zone}
         mm._sonos_zones_cache_time = time.time()
-        mm._spotify_client = None
-        mm.config.get.side_effect = ValueError("no creds")
         assert mm.check_health() is False
 
-    def test_a_revoked_spotify_sign_in_fails_the_check_naming_the_cure(self):
+    def test_a_revoked_spotify_sign_in_fails_the_check_naming_the_cure(self, spotify):
         mm = make_music_manager()
         mm._sonos_zones_cache = {"Living Room": Mock()}
         mm._sonos_zones_cache_time = time.time()
-        mm._spotify_client = Mock()
-        mm._spotify_auth.needs_sign_in_again.return_value = True
-        with pytest.raises(RuntimeError, match="spotify_login"):
+        spotify._app_client = Mock()
+        spotify._auth.needs_sign_in_again.return_value = True
+        with pytest.raises(RuntimeError, match="spotify_login") as raised:
             mm.check_health()
+        assert str(raised.value) == SIGN_IN_REVOKED
 
 
 class TestSonosZonesCacheExpiry:
@@ -288,9 +211,9 @@ class TestZoneProblem:
 
 
 class TestPlayInZoneRouting:
-    def test_short_id_resolves_from_cache(self):
+    def test_short_id_resolves_from_cache(self, spotify):
         mm = make_music_manager()
-        mm._spotify_search_cache = {"AA": "spotify:artist:abc123"}
+        spotify._search_ids = {"AA": "spotify:artist:abc123"}
         mock_zone = Mock()
         mock_coordinator = Mock()
         mm._get_zone = Mock(return_value=mock_zone)
@@ -302,7 +225,6 @@ class TestPlayInZoneRouting:
 
     def test_unknown_short_id_returns_false(self):
         mm = make_music_manager()
-        mm._spotify_search_cache = {}
         mock_zone = Mock()
         mm._get_zone = Mock(return_value=mock_zone)
         mm._get_coordinator = Mock(return_value=Mock())
@@ -326,7 +248,8 @@ class TestPlayInZoneRouting:
     def _track_radio_manager(self, top_tracks):
         from spotipy.exceptions import SpotifyException
         mm = make_music_manager()
-        mm._spotify_search_cache = {"AA": "spotify:track:seed01"}
+        account = SpotifyAccount.get_instance()
+        account._search_ids = {"AA": "spotify:track:seed01"}
         coordinator = Mock()
         mm._get_zone = Mock(return_value=Mock())
         mm._get_coordinator = Mock(return_value=coordinator)
@@ -336,7 +259,7 @@ class TestPlayInZoneRouting:
             spotify.artist_top_tracks.side_effect = SpotifyException(top_tracks, -1, "forbidden")
         else:
             spotify.artist_top_tracks.return_value = {'tracks': [{'id': t} for t in top_tracks]}
-        mm._get_spotify_client = Mock(return_value=spotify)
+        account._app_client = spotify
         return mm, coordinator
 
     def queued_track_ids(self, coordinator):
@@ -520,20 +443,6 @@ class TestZoneStateParsingIsSerialised:
 class TestSpotifyUserPlaylists:
     """The signed-in user's playlist library: S- ids, the fetch, and playback by URI through the Sonos Spotify service."""
 
-    def test_s_ids_resolve_to_the_cached_playlists_in_order(self):
-        mm = make_music_manager()
-        assert mm._uri_to_spotify_playlist("S-0").uri == "spotify:playlist:dw1"
-        assert mm._uri_to_spotify_playlist("S-1").name == "Road Trip"
-        assert mm._uri_to_spotify_playlist("S-2") is None
-        assert mm._uri_to_spotify_playlist("P-0") is None
-        assert mm._uri_to_spotify_playlist("S-x") is None
-
-    def test_get_spotify_playlists_returns_a_copy(self):
-        mm = make_music_manager()
-        playlists = mm.get_spotify_playlists()
-        playlists.clear()
-        assert len(mm.get_spotify_playlists()) == 2
-
     @patch('integrations.music.MusicIntegration.ShareLinkPlugin')
     def test_an_s_id_is_started_by_its_spotify_uri_through_the_sonos_spotify_service(self, share_cls):
         mm = make_music_manager()
@@ -550,12 +459,12 @@ class TestSpotifyUserPlaylists:
         assert coordinator.play_mode == 'SHUFFLE'
 
     @patch('integrations.music.MusicIntegration.ShareLinkPlugin')
-    def test_a_playlist_found_by_search_plays_the_same_way(self, share_cls):
+    def test_a_playlist_found_by_search_plays_the_same_way(self, share_cls, spotify):
         mm = make_music_manager()
         coordinator = Mock()
         mm._get_zone = Mock(return_value=Mock())
         mm._get_coordinator = Mock(return_value=coordinator)
-        mm._spotify_search_cache["AB"] = "spotify:playlist:pub9"
+        spotify._search_ids["AB"] = "spotify:playlist:pub9"
 
         assert mm.play_in_zone("AB", "Kitchen") is True
 
@@ -596,66 +505,9 @@ class TestSpotifyUserPlaylists:
         share_cls.return_value.add_share_link_to_queue.assert_called_once_with("https://open.spotify.com/playlist/37i9dQZF1E3")
         coordinator.play_from_queue.assert_called_once_with(0)
 
-    def test_the_fetch_takes_the_first_page_of_the_library_in_spotifys_order_skips_hidden_items_and_keeps_the_size(self):
+    def test_a_refresh_that_raises_still_schedules_the_next_tick_and_the_sonos_lists(self, spotify):
         mm = make_music_manager()
-        client = Mock()
-        mm._get_user_client = Mock(return_value=client)
-        client.current_user_playlists.return_value = {
-            'items': [{'name': 'Road Trip', 'uri': 'spotify:playlist:rt2', 'owner': {}},
-                      None,
-                      {'name': 'Shared Dinner', 'uri': 'spotify:playlist:sd3', 'owner': {'display_name': 'Alice'}}],
-            'next': 'https://api.spotify.com/v1/me/playlists?offset=20', 'total': 57}
-
-        playlists, total = mm._fetch_spotify_playlists()
-
-        assert [(p.name, p.uri, p.owner) for p in playlists] == [
-            ("Road Trip", "spotify:playlist:rt2", ""),
-            ("Shared Dinner", "spotify:playlist:sd3", "Alice")]
-        assert total == 57
-        client.current_user_playlists.assert_called_once_with(limit=MusicManager.PLAYLISTS_IN_PROMPT)
-        client.next.assert_not_called()
-        assert mm.spotify_library_error() == ""
-
-    def test_without_a_signed_in_user_the_library_is_empty_and_spotify_is_not_asked(self):
-        mm = make_music_manager()
-        mm._spotify_auth.signed_in.return_value = False
-        mm._get_user_client = Mock()
-
-        mm._refresh_spotify_playlists()
-
-        assert mm.get_spotify_playlists() == []
-        mm._get_user_client.assert_not_called()
-
-    def test_a_transient_failure_keeps_the_library_and_says_why(self):
-        mm = make_music_manager()
-        for failure in (TokenUnavailable("token endpoint could not be reached"), Exception("timed out")):
-            mm._get_user_client = Mock(side_effect=failure)
-            assert mm._refresh_spotify_playlists() is False
-            assert len(mm.get_spotify_playlists()) == 2 and mm.spotify_playlists_total() == 2
-            assert str(failure) in mm.spotify_library_error()
-
-    @patch("integrations.music.MusicIntegration.system_note")
-    def test_a_sign_in_the_user_must_renew_empties_the_library_and_is_noted_once(self, note):
-        mm = make_music_manager()
-        mm._get_user_client = Mock(side_effect=NotSignedIn("sign in again"))
-        mm._spotify_auth.needs_sign_in_again.return_value = True
-
-        assert mm._refresh_spotify_playlists() is True
-        mm._refresh_spotify_playlists()
-
-        assert mm.get_spotify_playlists() == [] and mm.spotify_playlists_total() == 0
-        assert note.call_count == 1 and "spotify_login" in note.call_args.args[1]
-
-    @patch("integrations.music.MusicIntegration.system_note")
-    def test_a_token_that_was_never_there_is_not_a_revoked_one_and_gets_no_note(self, note):
-        mm = make_music_manager()
-        mm._get_user_client = Mock(side_effect=NotSignedIn("not signed in"))
-        mm._refresh_spotify_playlists()
-        note.assert_not_called()
-
-    def test_a_refresh_that_raises_still_schedules_the_next_tick_and_the_sonos_lists(self):
-        mm = make_music_manager()
-        mm._spotify_auth.signed_in.side_effect = AttributeError("'str' object has no attribute 'get'")
+        spotify._auth.signed_in.side_effect = AttributeError("'str' object has no attribute 'get'")
         mm._discover_sonos_zones = Mock(return_value={"Kitchen": Mock()})
         mm._fetch_playlists_from_sonos = Mock(return_value=["Fresh"])
         mm._fetch_favorites_from_sonos = Mock(return_value=[])
@@ -664,9 +516,9 @@ class TestSpotifyUserPlaylists:
         schedule.assert_called_once_with(mm.REFRESH_INTERVAL_SECONDS)
         assert mm.get_playlists() == ["Fresh"]
 
-    def test_the_sonos_lists_are_cut_to_the_prompt_cap_in_the_apps_order_so_the_ids_match(self):
+    def test_the_sonos_lists_are_cut_to_the_prompt_cap_in_the_apps_order_so_the_ids_match(self, spotify):
         mm = make_music_manager()
-        mm._spotify_auth.signed_in.return_value = False
+        spotify._auth.signed_in.return_value = False
         mm._discover_sonos_zones = Mock(return_value={"Kitchen": Mock()})
         cap = MusicManager.PLAYLISTS_IN_PROMPT
         mm._fetch_playlists_from_sonos = Mock(return_value=[f"Playlist {n}" for n in range(cap + 5)])
@@ -679,77 +531,13 @@ class TestSpotifyUserPlaylists:
         assert mm._uri_to_playlist_name(f"P-{cap - 1}") == f"Playlist {cap - 1}"
         assert mm._uri_to_playlist_name(f"P-{cap}") is None
 
-    def test_the_user_client_follows_the_access_token(self):
+    def test_the_refresh_reloads_the_shared_spotify_library_too(self, spotify):
         mm = make_music_manager()
-        mm._spotify_auth.token.return_value = "tok-1"
-        first = mm._get_user_client()
-        assert mm._get_user_client() is first
-        mm._spotify_auth.token.return_value = "tok-2"
-        assert mm._get_user_client() is not first
+        spotify.refresh_library = Mock(return_value=True)
+        mm._discover_sonos_zones = Mock(return_value={})
+        mm._refresh_playlists_and_favorites()
+        spotify.refresh_library.assert_called_once_with()
 
-    def test_a_finished_sign_in_reloads_the_library_at_once(self):
-        mm = make_music_manager()
-        mm._spotify_auth.finish.return_value = ""
-        mm._user_client = Mock()
-        mm._fetch_spotify_playlists = Mock(return_value=([SpotifyPlaylist("New", "spotify:playlist:n1")], 1))
-
-        assert mm.login_finish("http://127.0.0.1:8888/callback?code=AQ&state=st") == ""
-
-        assert [p.name for p in mm.get_spotify_playlists()] == ["New"]
-        assert mm.spotify_playlists_total() == 1
-        assert mm._user_client is None
-
-    def test_a_reloaded_library_wakes_the_listeners_but_a_failed_reload_does_not(self):
-        mm = make_music_manager()
-        mm._spotify_auth.finish.return_value = ""
-        woken, broken = [], Mock(side_effect=RuntimeError("listener broke"))
-        listener = lambda: woken.append(len(mm.get_spotify_playlists()))
-        MusicManager.add_library_listener(broken)
-        MusicManager.add_library_listener(listener)
-        MusicManager.add_library_listener(listener)   # registered once however often it is added
-        try:
-            mm._fetch_spotify_playlists = Mock(return_value=([SpotifyPlaylist("New", "spotify:playlist:n1")], 1))
-            assert mm.login_finish("http://127.0.0.1:8888/callback?code=AQ&state=st") == ""
-            assert woken == [1], "woken after the cache holds the new list, and once, despite the listener before it raising"
-
-            mm._fetch_spotify_playlists = Mock(return_value=None)
-            mm._refresh_spotify_playlists()
-            assert woken == [1]
-
-            MusicManager.remove_library_listener(listener)
-            mm._fetch_spotify_playlists = Mock(return_value=([], 0))
-            mm._refresh_spotify_playlists()
-            assert woken == [1]
-        finally:
-            MusicManager.remove_library_listener(listener)
-            MusicManager.remove_library_listener(broken)
-        assert MusicManager._library_listeners == []
-
-    def test_a_failed_sign_in_comes_back_as_the_reason_and_touches_nothing(self):
-        mm = make_music_manager()
-        mm._spotify_auth.finish.return_value = "the code expired"
-        mm._fetch_spotify_playlists = Mock()
-
-        assert mm.login_finish("AQold") == "the code expired"
-        mm._fetch_spotify_playlists.assert_not_called()
-        assert len(mm.get_spotify_playlists()) == 2
-
-    def test_search_lists_public_playlists_with_their_owner_and_skips_null_items(self):
-        mm = make_music_manager()
-        mock_spotify = Mock()
-        mm._get_spotify_client = Mock(return_value=mock_spotify)
-        mock_spotify.search.return_value = {
-            'tracks': {'items': []},
-            'artists': {'items': []},
-            'playlists': {'items': [None, {'name': 'Summer Hits', 'uri': 'spotify:playlist:sh1', 'owner': {'display_name': 'Alice'}}]},
-        }
-
-        result = mm.search_spotify("summer")
-
-        assert "PLAYLISTS:" in result
-        assert "Summer Hits - by Alice ID: AA" in result
-        assert mm._spotify_search_cache["AA"] == "spotify:playlist:sh1"
-        assert mock_spotify.search.call_args.kwargs['type'] == 'track,artist,playlist'
 
 
 class TestZonesStatusWithAnUnreachableZone:
@@ -800,88 +588,77 @@ class TestZonesStatusWithAnUnreachableZone:
             mm._get_coordinator(self._zone(group=False))
 
 
-LIBRARY_PAGE = {'items': [{'name': 'Road Trip', 'uri': 'spotify:playlist:rt2', 'owner': {}}], 'total': 1}
+class TestAsAMusicSystem:
+    """Sonos as one MusicSystem: its zones under the names the LLM uses, its own lists with F-/P-
+    ids, and every action's outcome as "" or the line the LLM reads."""
 
+    @staticmethod
+    def _with_zones(zones, room_mapping=ROOM_MAPPING):
+        mm = make_music_manager(room_mapping=room_mapping)
+        mm._sonos_zones_cache = dict(zones)
+        mm._sonos_zones_cache_time = time.time()
+        return mm
 
-class TestSpotifyLibraryDroppedConnection:
-    def _manager_on_clients(self, *clients):
-        """A manager whose successive Spotify(...) constructions hand out `clients` in turn."""
+    @staticmethod
+    def _zone(coordinator=None):
+        zone = Mock()
+        zone.group = Mock(coordinator=coordinator or Mock(), members=[Mock(volume=20)])
+        return zone
+
+    def test_the_zones_carry_the_mapped_names_and_a_blank_mapping_hides_one(self):
+        mm = self._with_zones({"Kitchen Front": Mock(), "Kitchen Back": Mock(), "Bedroom": Mock()})
+        assert sorted(mm.zones()) == ["Bedroom", "Kitchen"]
+
+    def test_the_library_numbers_the_favorites_and_the_playlists_each_from_zero(self):
+        lines = make_music_manager().library_text().splitlines()
+        assert lines[0].endswith("(ID: F-0)") and "Liked Songs" in lines[0]
+        assert lines[2].endswith("(ID: F-2)") and "Discover Weekly" in lines[2]
+        assert lines[3].endswith("(ID: P-0)") and "Chill Vibes" in lines[3]
+        assert len(lines) == 6
+
+    def test_its_own_lists_are_its_ids_and_spotifys_are_not(self):
         mm = make_music_manager()
-        mm._spotify_auth.token.return_value = "tok-1"
-        spotify_cls = patch("integrations.music.MusicIntegration.Spotify", side_effect=list(clients))
-        return mm, spotify_cls
+        assert mm.owns_id("F-1") and mm.owns_id("P-0")
+        assert not mm.owns_id("S-0") and not mm.owns_id("AA")
 
-    @pytest.mark.parametrize("dropped", [
-        http.client.RemoteDisconnected("Remote end closed connection without response"),
-        requests.exceptions.ConnectionError("('Connection aborted.', RemoteDisconnected(...))"),
-        urllib3.exceptions.ProtocolError("Connection aborted."),
-        ConnectionResetError(54, "Connection reset by peer"),
-    ])
-    def test_a_dropped_connection_is_retried_once_on_a_fresh_client(self, dropped):
-        stale, fresh = Mock(), Mock()
-        stale.current_user_playlists.side_effect = dropped
-        fresh.current_user_playlists.return_value = LIBRARY_PAGE
-        mm, spotify_cls = self._manager_on_clients(stale, fresh)
+    @pytest.mark.parametrize("verb, args", [("play", ()), ("pause", ()), ("next_track", ()), ("adjust_volume", (4,))])
+    def test_a_done_action_answers_nothing(self, verb, args):
+        mm = self._with_zones({"Bedroom": self._zone()}, room_mapping={})
+        assert getattr(mm, verb)("Bedroom", *args) == ""
 
-        with spotify_cls as built:
-            playlists, total = mm._fetch_spotify_playlists()
+    @pytest.mark.parametrize("verb, args", [("play", ()), ("pause", ()), ("next_track", ()), ("adjust_volume", (4,))])
+    def test_an_unknown_zone_answers_with_the_zones_there_are(self, verb, args):
+        mm = self._with_zones({"Bedroom": self._zone()}, room_mapping={})
+        problem = getattr(mm, verb)("Garage", *args)
+        assert "Garage" in problem and "Bedroom" in problem
 
-        assert [p.uri for p in playlists] == ["spotify:playlist:rt2"] and total == 1
-        assert built.call_count == 2
-        assert mm._user_client is fresh
-        assert mm.spotify_library_error() == ""
+    @pytest.mark.parametrize("verb, sonos_call", [("play", "play"), ("pause", "pause"), ("next_track", "next")])
+    def test_a_speaker_that_refuses_is_the_answer_not_a_raise(self, verb, sonos_call):
+        coordinator = Mock()
+        getattr(coordinator, sonos_call).side_effect = ConnectionError("speaker offline")
+        mm = self._with_zones({"Bedroom": self._zone(coordinator)}, room_mapping={})
+        problem = getattr(mm, verb)("Bedroom")
+        assert "Bedroom" in problem and "speaker offline" in problem
 
-    def test_a_connection_that_drops_twice_keeps_the_cached_library_and_is_not_tried_a_third_time(self):
-        stale, fresh = Mock(), Mock()
-        stale.current_user_playlists.side_effect = http.client.RemoteDisconnected("closed")
-        fresh.current_user_playlists.side_effect = http.client.RemoteDisconnected("closed")
-        mm, spotify_cls = self._manager_on_clients(stale, fresh)
+    def test_a_zone_the_topology_no_longer_lists_is_the_answer_not_a_raise(self):
+        offline = Mock()
+        offline.group = None
+        mm = self._with_zones({"Bedroom": offline}, room_mapping={})
+        assert "Bedroom" in mm.pause("Bedroom")
 
-        with spotify_cls as built:
-            assert mm._refresh_spotify_playlists() is False
+    def test_a_volume_the_speaker_refuses_is_the_answer(self):
+        zone = Mock()
+        member = Mock()
+        type(member).volume = PropertyMock(side_effect=ConnectionError("speaker offline"))
+        zone.group = Mock(members=[member])
+        mm = self._with_zones({"Bedroom": zone}, room_mapping={})
+        assert "speaker offline" in mm.adjust_volume("Bedroom", 4)
 
-        assert built.call_count == 2
-        assert fresh.current_user_playlists.call_count == 1
-        assert len(mm.get_spotify_playlists()) == 2
-        assert "RemoteDisconnected" in mm.spotify_library_error()
-
-    @pytest.mark.parametrize("status", [400, 401, 403, 404, 429])
-    def test_a_4xx_answer_is_not_retried(self, status):
-        client = Mock()
-        client.current_user_playlists.side_effect = SpotifyException(status, -1, "refused", headers={})
-        mm, spotify_cls = self._manager_on_clients(client, Mock())
-
-        with spotify_cls as built:
-            assert mm._fetch_spotify_playlists() is None
-
-        assert built.call_count == 1 and client.current_user_playlists.call_count == 1
-        assert str(status) in mm.spotify_library_error()
-
-    def test_a_429_holds_the_fetches_back_for_its_retry_after(self):
-        limited, later = Mock(), Mock()
-        limited.current_user_playlists.side_effect = SpotifyException(429, -1, "rate limited",
-                                                                      headers={"Retry-After": "120"})
-        later.current_user_playlists.return_value = LIBRARY_PAGE
-        mm, spotify_cls = self._manager_on_clients(limited)
-        mm._user_client, mm._user_client_token = None, ""
-
-        with spotify_cls, patch("integrations.music.MusicIntegration.time.time", return_value=1000.0):
-            assert mm._fetch_spotify_playlists() is None
-        mm._user_client = later
-        with patch("integrations.music.MusicIntegration.time.time", return_value=1119.0):
-            assert mm._fetch_spotify_playlists() is None
-        later.current_user_playlists.assert_not_called()
-        with patch("integrations.music.MusicIntegration.time.time", return_value=1121.0):
-            playlists, _ = mm._fetch_spotify_playlists()
-
-        assert [p.uri for p in playlists] == ["spotify:playlist:rt2"]
-
-    def test_a_429_without_a_retry_after_does_not_hold_the_next_fetch_back(self):
-        limited = Mock()
-        limited.current_user_playlists.side_effect = SpotifyException(429, -1, "rate limited", headers={})
-        mm, spotify_cls = self._manager_on_clients(limited)
-
-        with spotify_cls:
-            assert mm._fetch_spotify_playlists() is None
-
-        assert mm._spotify_library_not_before <= time.time()
+    def test_play_id_answers_nothing_when_it_started_and_names_the_id_when_not(self):
+        mm = make_music_manager()
+        mm.play_in_zone = Mock(return_value=True)
+        assert mm.play_id("Kitchen", "F-1") == ""
+        mm.play_in_zone.assert_called_once_with("F-1", "Kitchen")
+        mm.play_in_zone = Mock(return_value=False)
+        problem = mm.play_id("Kitchen", "F-1")
+        assert "F-1" in problem and "Kitchen" in problem

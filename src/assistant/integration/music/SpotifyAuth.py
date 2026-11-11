@@ -14,6 +14,10 @@ the account marked as needing a new sign-in and every call says so until `finish
 again — and `TokenUnavailable` for a transient one (the token endpoint unreachable or failing),
 which a caller rides out with what it has.
 
+The scopes asked for are the caller's (`scopes`, read at each flow): the playlist library's, and
+the playback ones while a speaker system plays Spotify over Connect. A token on file that lacks a
+scope asked for now is "sign in again", so growing the set costs one new sign-in and nothing else.
+
 The client (`api_keys.spotify.client_id` / `client_secret`) is read at call time, so a key set
 through config_request works without a rebuild. spotipy's own fallback for a missing token —
 opening a browser or reading the code from stdin — is cut off: a server has neither."""
@@ -35,7 +39,7 @@ TOKEN_PATH = CACHE_DIR / "oauth" / "spotify.json"
 # The loopback address registered with the Spotify app: nothing serves it, the browser lands
 # on it and the user copies the address back.
 REDIRECT_URI = "http://127.0.0.1:8888/callback"
-SCOPES = ("playlist-read-private", "playlist-read-collaborative")
+PLAYLIST_SCOPES = ("playlist-read-private", "playlist-read-collaborative")
 TIMEOUT = 30
 NOT_SIGNED_IN_HINT = "not signed in — spotify_login()"
 SIGN_IN_AGAIN_HINT = "sign in again — spotify_login()"
@@ -58,10 +62,13 @@ class _PasteOnlyOAuth(SpotifyOAuth):
 
 
 class SpotifyAuth:
-    """The user token of the one Spotify account. `client` returns the current (client_id, client_secret)."""
+    """The user token of the one Spotify account. `client` returns the current (client_id,
+    client_secret), `scopes` the scopes the token must carry now."""
 
-    def __init__(self, client: Callable[[], tuple[str, str]], path: Path = TOKEN_PATH):
+    def __init__(self, client: Callable[[], tuple[str, str]], path: Path = TOKEN_PATH,
+                 scopes: Callable[[], tuple[str, ...]] = lambda: PLAYLIST_SCOPES):
         self._client = client
+        self._scopes = scopes
         self.path = path
         self._state: Optional[str] = None
         self.refresh_error = ""
@@ -74,7 +81,7 @@ class SpotifyAuth:
             raise RuntimeError("api_keys.spotify.client_id and api_keys.spotify.client_secret are not set")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         return _PasteOnlyOAuth(client_id=client_id, client_secret=client_secret, redirect_uri=REDIRECT_URI,
-                               scope=" ".join(SCOPES), cache_handler=CacheFileHandler(cache_path=str(self.path)),
+                               scope=" ".join(self._scopes()), cache_handler=CacheFileHandler(cache_path=str(self.path)),
                                open_browser=False, requests_timeout=TIMEOUT)
 
     def _on_file(self) -> Optional[dict]:
@@ -129,7 +136,7 @@ class SpotifyAuth:
         with self._lock:
             self._state = secrets.token_urlsafe(16)
             url = oauth.get_authorize_url(state=self._state)
-        info(f"Spotify: sign-in started for {', '.join(SCOPES)}")
+        info(f"Spotify: sign-in started for {', '.join(self._scopes())}")
         return SignIn(url, self._state, REDIRECT_URI)
 
     def pending(self) -> bool:

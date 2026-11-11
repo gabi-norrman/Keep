@@ -8,7 +8,7 @@
 
 # Every integration is off until it is listed here (Web Access and ElevenLabs TTS are on regardless).
 # Use the names list_integrations shows: Arlo, Aseko Pool, CalDAV, Google, Google Docs, iCloud, IMAP Mail, iMessage, Indigo,
-# Microsoft 365, Philips Hue, Photos, Plejd, Reminders, Ring, Self Improvement, Sonos & Spotify, Telegram Feed, Tesla, X, YR Weather.
+# HEOS, Microsoft 365, Philips Hue, Photos, Plejd, Reminders, Ring, Self Improvement, Sonos & Spotify, Telegram Feed, Tesla, X, YR Weather.
 # The TTS engines voice speaks through are integrations too — ElevenLabs TTS (on by default), Gemini TTS,
 # Chirp 3 HD, Cartesia Sonic TTS, Fish Audio TTS, Grok TTS, Supertonic TTS: a request speaks through the
 # first enabled and configured one, Swedish preferring Gemini TTS, so a Swedish install enables Gemini TTS
@@ -40,13 +40,14 @@ api_keys:
   google_maps: YOUR_GOOGLE_MAPS_API_KEY_HERE
   cartesia: YOUR_CARTESIA_API_KEY_HERE
   fish_audio: YOUR_FISH_AUDIO_API_KEY_HERE  # https://fish.audio -> API keys
-  # Sonos & Spotify: an app of your own at https://developer.spotify.com/dashboard (Web API). Its client id and
-  # secret are all search and playback need. To start the playlists of your own Spotify library (own and followed)
+  # Spotify, for the speaker systems (Sonos & Spotify, HEOS): an app of your own at https://developer.spotify.com/dashboard
+  # (Web API). Its client id and secret are all search and Sonos playback need; HEOS starts Spotify through the account
+  # itself, so it needs the sign-in below and Spotify Premium. To start the playlists of your own Spotify library (own and followed)
   # by name, add the redirect URI http://127.0.0.1:8888/callback to the app and sign the account in once from any
   # chat with spotify_login() (the assistant hands you a link; paste the whole address the browser lands on back as
   # spotify_login_code("...")). The token lands in cache/oauth/spotify.json and survives restarts. The newest 10
   # playlists are in the prompt. Spotify-made playlists (Discover Weekly, Release Radar, Daily Mix) are not: since
-  # November 2024 Spotify leaves them out for an app in development mode — add one as a Sonos favorite instead.
+  # November 2024 Spotify leaves them out for an app in development mode — add one as a favorite in the speakers' app.
   spotify:
     client_id: YOUR_SPOTIFY_CLIENT_ID_HERE
     client_secret: YOUR_SPOTIFY_CLIENT_SECRET_HERE
@@ -487,6 +488,8 @@ telemetry:
 #   room_mapping:
 #     "Kitchen Front": Kitchen
 #     "Kitchen Back": ""
+
+# >> heos: src/integrations/heos/config.example.yaml
 
 # The location stamped on requests from the Android app, which sends none of its own. Optional.
 # clients:

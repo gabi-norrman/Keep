@@ -40,6 +40,7 @@ import yaml
 from assistant.integration.CameraProvider import CameraProvider
 from assistant.integration.HomeAutomation import HomeAutomation
 from assistant.integration.VehicleProvider import VehicleProvider
+from assistant.integration.music.MusicSystem import MusicSystem
 from assistant.integration.calendar.CalendarSource import CalendarSource
 from assistant.integration.mail.MailSource import MailSource
 from common.ConfigManager import config
@@ -213,6 +214,10 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
     Toolkit("cars", "the cars: defrost, climate, trunk, navigation",
             ("car_max_defrost", "car_climate_on", "car_climate_off", "car_open_trunk", "car_navigate"),
             needs=VehicleProvider),
+    Toolkit("music", "play, pause, skip, volume, search Spotify, start a playlist (the user's own Spotify library or a "
+                     "speaker system's) or favorite in a room; what plays where, and the favorites and playlists",
+            ("play", "pause", "next", "volume_up", "volume_down", "search_music", "play_music"),
+            sections=("music", "music_zones"), needs=MusicSystem),
     Toolkit("web", "read a web page or google something; anything that needs current information",
             ("open_url", "google"), sections=("web",)),
     Toolkit("browser", "drive a real browser when a page needs clicking, typing or a date picker before it "
@@ -280,7 +285,7 @@ _BY_NAME = {t.name: t for t in TOOLKITS}
 CARRIED_SECTIONS: dict[str, str] = {key: t.name for t in TOOLKITS for key in t.sections}
 # The heading a carried section is sent under; the prompt's own heading for it, once.
 SECTION_HEADINGS = {"home": "HOME AUTOMATION DATA", "web": "WEB BROWSER", "weather": "WEATHER FORECAST",
-                    "precipitation": "SHORT TERM PRECIPITATION", "sonos": "MUSIC", "music_zones": "SONOS ZONES",
+                    "precipitation": "SHORT TERM PRECIPITATION", "music": "MUSIC", "music_zones": "MUSIC ZONES",
                     "voices": "VOICES"}
 
 

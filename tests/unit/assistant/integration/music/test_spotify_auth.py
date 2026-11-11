@@ -10,8 +10,8 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 import requests
 
-from integrations.music.SpotifyAuth import (REDIRECT_URI, SCOPES, NotSignedIn, SpotifyAuth, TokenUnavailable,
-                                            _PasteOnlyOAuth)
+from assistant.integration.music.SpotifyAuth import (REDIRECT_URI, PLAYLIST_SCOPES as SCOPES, NotSignedIn, SpotifyAuth,
+                                                     TokenUnavailable, _PasteOnlyOAuth)
 
 CLIENT = ("cid-1234", "csecret")
 
@@ -59,8 +59,10 @@ def token_path(tmp_path):
     return tmp_path / "oauth" / "spotify.json"
 
 
-def auth(token_path, client=CLIENT) -> SpotifyAuth:
-    return SpotifyAuth(lambda: client, token_path)
+def auth(token_path, client=CLIENT, scopes=None) -> SpotifyAuth:
+    if scopes is None:
+        return SpotifyAuth(lambda: client, token_path)
+    return SpotifyAuth(lambda: client, token_path, scopes=lambda: scopes)
 
 
 def token_file(path, access="access-1", refresh="refresh-1", expires_in=3600, scope=" ".join(SCOPES)):
@@ -196,6 +198,14 @@ class TestToken:
         token_file(token_path, scope="playlist-read-private")
         with pytest.raises(NotSignedIn, match="scopes"):
             auth(token_path).token()
+
+    def test_scopes_grown_since_the_sign_in_ask_for_a_new_one_and_the_url_asks_for_them(self, token_path, spotify):
+        grown = SCOPES + ("user-modify-playback-state",)
+        token_file(token_path)
+        with pytest.raises(NotSignedIn, match="scopes"):
+            auth(token_path, scopes=grown).token()
+        params = query(auth(token_path, scopes=grown).begin().url)
+        assert "user-modify-playback-state" in params["scope"].split()
 
     def test_without_a_file_there_is_no_token(self, token_path, spotify):
         with pytest.raises(NotSignedIn, match="spotify_login"):
