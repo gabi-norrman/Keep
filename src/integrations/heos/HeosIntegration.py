@@ -30,11 +30,14 @@ class HeosIntegration(Integration, MusicSystem):
     `HeosEvents` follows the change events on a connection of its own, started with the first
     refresh: while it listens, each leader's status is cached and refetched when an event says it
     changed (`pushes_changes()`, so the zones section stops polling), and a change of the players or
-    groups drops the cached lists; while it does not, the status is asked for live as before."""
+    groups drops the cached lists; while it does not, the status is asked for live as before. A
+    cached line is trusted for `STATUS_MAX_AGE` seconds only, so the zones section's occasional look
+    of its own asks HEOS again and an event that never arrived does not leave a stale line."""
 
     ID_PREFIXES = ("H-", "Q-")
     FAVORITES_IN_PROMPT = 10
     PLAYERS_MAX_AGE = 60
+    STATUS_MAX_AGE = 30   # under the zones section's own look (60 s), so that look is a real one
     FAVORITES_SID = 1028
     REFRESH_INTERVAL_SECONDS = LIBRARY_REFRESH_SECONDS
     VOLUME_STEP_MAX = 10   # the CLI's own limit for volume_up / volume_down
@@ -52,6 +55,7 @@ class HeosIntegration(Integration, MusicSystem):
         self._stopped = threading.Event()
         self._events: Optional[HeosEvents] = None
         self._status: Dict[object, str] = {}   # leader pid -> its status line, kept while the events flow
+        self._status_at: Dict[object, float] = {}   # leader pid -> when that line was read (monotonic)
         SpotifyAccount.want_playback()
         self._schedule_refresh(0.1)
 
@@ -150,17 +154,32 @@ class HeosIntegration(Integration, MusicSystem):
         return lines
 
     def _status_of(self, pid) -> str:
-        """The leader's status: the cached line while the events keep it current, else asked for now."""
+        """The leader's status: the cached line while the events keep it current and it is no older
+        than STATUS_MAX_AGE, else asked for now."""
         if self.pushes_changes():
             with self._lock:
                 cached = self._status.get(pid)
-            if cached is not None:
+                age = time.monotonic() - self._status_at.get(pid, 0.0)
+            if cached is not None and age < self.STATUS_MAX_AGE:
                 return cached
+            if cached is not None:
+                trace(f"HEOS: the status of player {pid} is {age:.0f} s old, asked for again")
         status = self._now_playing(pid)
         if self.pushes_changes():
-            with self._lock:
-                self._status[pid] = status
+            self._remember_status(pid, status)
         return status
+
+    def _remember_status(self, pid, status: str) -> Optional[str]:
+        """Caches the line as read now; returns the one it replaces."""
+        with self._lock:
+            before = self._status.get(pid)
+            self._status[pid], self._status_at[pid] = status, time.monotonic()
+        return before
+
+    def _forget_status(self):
+        with self._lock:
+            self._status.clear()
+            self._status_at.clear()
 
     def pushes_changes(self) -> bool:
         return self._events is not None and self._events.connected
@@ -176,8 +195,7 @@ class HeosIntegration(Integration, MusicSystem):
 
     def _on_events_connected(self, up: bool):
         """A stream that comes or goes leaves no cached status behind: its lines are only as good as the events."""
-        with self._lock:
-            self._status.clear()
+        self._forget_status()
         zones_changed(self.name)
 
     def _on_event(self, name: str, fields: dict):
@@ -188,8 +206,7 @@ class HeosIntegration(Integration, MusicSystem):
                 trace(f"HEOS: {name} without a usable pid ({fields}), ignored")
                 return
             status = self._now_playing(pid)
-            with self._lock:
-                before, self._status[pid] = self._status.get(pid), status
+            before = self._remember_status(pid, status)
             if status == before:
                 # HEOS sends most changes twice, and a pause a now-playing event too: nothing new to show.
                 trace(f"HEOS: {name} for player {pid}, status unchanged ({status})")
@@ -199,7 +216,7 @@ class HeosIntegration(Integration, MusicSystem):
         elif name in ("players_changed", "groups_changed"):
             with self._lock:
                 self._players_at = 0.0
-                self._status.clear()
+            self._forget_status()
             info(f"HEOS: {name.replace('_', ' ')} — the rooms and groups are read again")
             zones_changed(self.name)
         else:

@@ -397,3 +397,23 @@ def test_an_event_that_leaves_the_status_as_it_was_tells_nobody():
     finally:
         music.remove_zone_listener(listener)
     assert len(heard) == 1
+
+
+def test_a_cached_status_past_its_age_is_asked_for_again():
+    """The zones section's own look, long after the last event, must reach HEOS: a missed event heals there."""
+    client = FakeClient()
+    heos = listening(make(client))
+    heos.zone_status()
+    client.paused.add(2)   # no event tells of it
+    heos._status_at = {pid: at - heos.STATUS_MAX_AGE - 1 for pid, at in heos._status_at.items()}
+    lines = heos.zone_status()
+    assert "Den (Blue Sky by Alice - Paused)" in lines
+
+
+def test_an_unreachable_player_is_not_remembered_as_such_past_the_age():
+    client = FakeClient(unreachable={1})
+    heos = listening(make(client))
+    assert heos.zone_status()[0] == "Kitchen (unreachable)"
+    client.unreachable.clear()
+    heos._status_at = {pid: at - heos.STATUS_MAX_AGE - 1 for pid, at in heos._status_at.items()}
+    assert heos.zone_status()[0] == "Kitchen (Paused)"
