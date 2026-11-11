@@ -359,6 +359,19 @@ class TestAcceptTranscription:
         routes.accept_transcription(_req({"query": "hello there", "confidence": "0.9", "mic": "kitchen"}), ctx)
         assert ctx.note is None
 
+    def test_an_unrecognised_voice_is_said_so_in_the_turn_note(self, routes, deps):
+        deps.speaker_identifier().get_last_identified_user.return_value = None
+        ctx = RequestContext(note="in a group")
+        routes.accept_transcription(_req({"query": "who am I", "confidence": "0.9", "mic": "kitchen"}), ctx)
+        assert ctx.user is None
+        assert ctx.note.startswith("in a group\n") and "not be identified" in ctx.note
+
+    def test_without_a_speaker_identifier_nothing_is_said_about_the_voice(self, routes, deps):
+        deps.speaker_identifier = lambda: None
+        ctx = RequestContext()
+        routes.accept_transcription(_req({"query": "who am I", "confidence": "0.9", "mic": "kitchen"}), ctx)
+        assert ctx.note is None
+
     def test_explicit_user_is_kept(self, routes, deps):
         deps.speaker_identifier().get_last_identified_user.return_value = "Marcus"
         ctx = RequestContext(user="Anna")

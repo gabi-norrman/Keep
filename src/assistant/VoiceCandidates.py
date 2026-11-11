@@ -58,6 +58,13 @@ def unnamed_speaker_note(candidate_id: str) -> str:
             f"under VOICES. Ask who they are; once they say their name, name the voice with it (name_voice).")
 
 
+def unrecognised_speaker_note() -> str:
+    """The turn note the voice route adds when no enrolled or open voice matched: without it the
+    turn is only labelled "User", and the LLM takes the speaker for whoever spoke the turns before
+    (a guest asking "who am I?" was told the owner's name, 2026-11-08)."""
+    return "The speaker's voice could not be identified."
+
+
 def transcript_of(filename: str) -> str:
     """The spoken text a `log/audio` clip is named after: `what_s_for_dinner__3.wav` -> `what s for dinner`."""
     text = re.sub(r"_\d+\.wav$|\.wav$", "", filename).replace("_", " ")
