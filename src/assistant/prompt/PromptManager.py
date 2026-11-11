@@ -21,6 +21,8 @@ from .sections.HomeSectionGenerator import HomeSectionGenerator
 from .sections.WebSectionGenerator import WebSectionGenerator
 from .sections.CalendarSectionGenerator import CalendarSectionGenerator
 from .sections.CarSectionGenerator import CarSectionGenerator
+from .sections.MusicLibrarySectionGenerator import MusicLibrarySectionGenerator
+from .sections.MusicZonesSectionGenerator import MusicZonesSectionGenerator
 from assistant import Destinations
 from assistant.ChannelProfile import WINDOW_TEXT
 from .MessageHistory import MessageHistory, THINKING_TAG_INSTRUCTION
@@ -189,7 +191,8 @@ class PromptManager:
             'web': WebSectionGenerator(self),
         }
         gated: dict[str, type] = {'home': HomeSectionGenerator, 'calendar': CalendarSectionGenerator,
-                                  'car_info': CarSectionGenerator, 'voices': VoicesSectionGenerator}
+                                  'car_info': CarSectionGenerator, 'voices': VoicesSectionGenerator,
+                                  'sonos': MusicLibrarySectionGenerator, 'music_zones': MusicZonesSectionGenerator}
         for cls in generator_classes:
             if not cls.key:
                 error(f"Section generator {cls.__module__}.{cls.__name__} declares no key, left out")

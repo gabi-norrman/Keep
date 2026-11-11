@@ -538,10 +538,6 @@ class TestSpotifyUserPlaylists:
         mm._refresh_playlists_and_favorites()
         spotify.refresh_library.assert_called_once_with()
 
-    def test_the_spotify_delegates_answer_from_the_shared_account(self, spotify):
-        mm = make_music_manager()
-        assert [p.name for p in mm.get_spotify_playlists()] == ["Discover Weekly", "Road Trip"]
-        assert mm.spotify_playlists_total() == 2
 
 
 class TestZonesStatusWithAnUnreachableZone:
@@ -590,3 +586,79 @@ class TestZonesStatusWithAnUnreachableZone:
         mm = make_music_manager()
         with pytest.raises(ConnectionError):
             mm._get_coordinator(self._zone(group=False))
+
+
+class TestAsAMusicSystem:
+    """Sonos as one MusicSystem: its zones under the names the LLM uses, its own lists with F-/P-
+    ids, and every action's outcome as "" or the line the LLM reads."""
+
+    @staticmethod
+    def _with_zones(zones, room_mapping=ROOM_MAPPING):
+        mm = make_music_manager(room_mapping=room_mapping)
+        mm._sonos_zones_cache = dict(zones)
+        mm._sonos_zones_cache_time = time.time()
+        return mm
+
+    @staticmethod
+    def _zone(coordinator=None):
+        zone = Mock()
+        zone.group = Mock(coordinator=coordinator or Mock(), members=[Mock(volume=20)])
+        return zone
+
+    def test_the_zones_carry_the_mapped_names_and_a_blank_mapping_hides_one(self):
+        mm = self._with_zones({"Kitchen Front": Mock(), "Kitchen Back": Mock(), "Bedroom": Mock()})
+        assert sorted(mm.zones()) == ["Bedroom", "Kitchen"]
+
+    def test_the_library_numbers_the_favorites_and_the_playlists_each_from_zero(self):
+        lines = make_music_manager().library_text().splitlines()
+        assert lines[0].endswith("(ID: F-0)") and "Liked Songs" in lines[0]
+        assert lines[2].endswith("(ID: F-2)") and "Discover Weekly" in lines[2]
+        assert lines[3].endswith("(ID: P-0)") and "Chill Vibes" in lines[3]
+        assert len(lines) == 6
+
+    def test_its_own_lists_are_its_ids_and_spotifys_are_not(self):
+        mm = make_music_manager()
+        assert mm.owns_id("F-1") and mm.owns_id("P-0")
+        assert not mm.owns_id("S-0") and not mm.owns_id("AA")
+
+    @pytest.mark.parametrize("verb, args", [("play", ()), ("pause", ()), ("next_track", ()), ("adjust_volume", (4,))])
+    def test_a_done_action_answers_nothing(self, verb, args):
+        mm = self._with_zones({"Bedroom": self._zone()}, room_mapping={})
+        assert getattr(mm, verb)("Bedroom", *args) == ""
+
+    @pytest.mark.parametrize("verb, args", [("play", ()), ("pause", ()), ("next_track", ()), ("adjust_volume", (4,))])
+    def test_an_unknown_zone_answers_with_the_zones_there_are(self, verb, args):
+        mm = self._with_zones({"Bedroom": self._zone()}, room_mapping={})
+        problem = getattr(mm, verb)("Garage", *args)
+        assert "Garage" in problem and "Bedroom" in problem
+
+    @pytest.mark.parametrize("verb, sonos_call", [("play", "play"), ("pause", "pause"), ("next_track", "next")])
+    def test_a_speaker_that_refuses_is_the_answer_not_a_raise(self, verb, sonos_call):
+        coordinator = Mock()
+        getattr(coordinator, sonos_call).side_effect = ConnectionError("speaker offline")
+        mm = self._with_zones({"Bedroom": self._zone(coordinator)}, room_mapping={})
+        problem = getattr(mm, verb)("Bedroom")
+        assert "Bedroom" in problem and "speaker offline" in problem
+
+    def test_a_zone_the_topology_no_longer_lists_is_the_answer_not_a_raise(self):
+        offline = Mock()
+        offline.group = None
+        mm = self._with_zones({"Bedroom": offline}, room_mapping={})
+        assert "Bedroom" in mm.pause("Bedroom")
+
+    def test_a_volume_the_speaker_refuses_is_the_answer(self):
+        zone = Mock()
+        member = Mock()
+        type(member).volume = PropertyMock(side_effect=ConnectionError("speaker offline"))
+        zone.group = Mock(members=[member])
+        mm = self._with_zones({"Bedroom": zone}, room_mapping={})
+        assert "speaker offline" in mm.adjust_volume("Bedroom", 4)
+
+    def test_play_id_answers_nothing_when_it_started_and_names_the_id_when_not(self):
+        mm = make_music_manager()
+        mm.play_in_zone = Mock(return_value=True)
+        assert mm.play_id("Kitchen", "F-1") == ""
+        mm.play_in_zone.assert_called_once_with("F-1", "Kitchen")
+        mm.play_in_zone = Mock(return_value=False)
+        problem = mm.play_id("Kitchen", "F-1")
+        assert "F-1" in problem and "Kitchen" in problem

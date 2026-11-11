@@ -1,9 +1,3 @@
----
-name: music
-summary: "play, pause, skip, volume, search Spotify, start a playlist (Sonos or the user's own Spotify library) or favorite on a Sonos zone; what plays where, and the favorites and playlists"
-commands: [play, pause, next, volume_up, volume_down, search_music, play_music]
-sections: [sonos, music_zones]
----
 You can control the Sonos sound system in the house. The MUSIC data sent with this reference lists the favorites,
 Sonos playlists and the user's own Spotify playlists (ids `F-0`, `P-0`, `S-0`, …), curated by the user, and the
 SONOS ZONES under it the zones music can play in with what each plays now. A request that names no zone/room means

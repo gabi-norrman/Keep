@@ -1,7 +1,7 @@
 """The sections that override _start_monitoring each run their own poll loop. Those loops wait
 on _wait (not time.sleep) so Assistant.stop() ends them at once; stop() joins with a 5 s
 timeout, so a loop that slid back to time.sleep would leak its thread silently — iCloud's
-sits in a 60 s wait, Sonos's in a 30 min one. The per-section tests stub _wait and cannot
+and the music library's both sit in a 60 s wait. The per-section tests stub _wait and cannot
 catch that; this one runs the real threads and times stop()."""
 import time
 from unittest.mock import Mock
@@ -21,10 +21,10 @@ def memory(tmp_path, monkeypatch):
 
 
 def sonos(tmp_path, monkeypatch):
-    from integrations.music import SonosFavoritesSectionGenerator as module
-    loaded = Mock(get_playlists=Mock(return_value=["p"]), get_favorites=Mock(return_value=[]))
-    monkeypatch.setattr(module.MusicManager, "peek_instance", lambda: loaded)
-    return module.SonosFavoritesSectionGenerator(None)
+    from assistant.integration.music import MusicSystem as music
+    from assistant.prompt.sections.MusicLibrarySectionGenerator import MusicLibrarySectionGenerator
+    monkeypatch.setattr(music, "active", lambda: [Mock(has_library=Mock(return_value=True))])
+    return MusicLibrarySectionGenerator(None)
 
 
 def cars(tmp_path, monkeypatch):

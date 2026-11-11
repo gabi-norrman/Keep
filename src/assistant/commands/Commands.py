@@ -31,6 +31,8 @@ from assistant.Telemetry import Telemetry
 from .CommandEcho import describe_completion
 from assistant.integration import CameraProvider as cameras
 from assistant.integration import VehicleProvider as vehicles
+from assistant.integration.music import MusicSystem as music
+from assistant.integration.music.SpotifyAccount import SpotifyAccount
 from common.FloxyDatabase import FloxyDatabase
 from common.vault.Vault import Vault, VaultError, DuplicateSecret, KINDS
 from common.vault.Redactor import redact_for_storage
@@ -145,6 +147,7 @@ class Commands:
         "load_watch", "save_watch", "delete_watch", "open_url",
         "load_procedure", "save_procedure", "delete_procedure", "post_message", "name_voice",
         "create_event", "delete_event", "move_event", "load_calendar", "fetch_camera_images", "car_navigate",
+        "play_music",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
@@ -153,7 +156,8 @@ class Commands:
     # silent. Any other command ending a silent request gets one more round to reply
     # (RequestProcessor._reply_owed). restart_server reports through a system note;
     # false_positive is the wake-word misfire, which must never be answered aloud.
-    SELF_EVIDENT_COMMANDS = frozenset({"turn_on", "turn_off", "stop", "dim", "restart_server", "false_positive"})
+    SELF_EVIDENT_COMMANDS = frozenset({"turn_on", "turn_off", "stop", "dim", "restart_server", "false_positive",
+                                       "play", "pause", "next", "volume_up", "volume_down", "play_music"})
     AI_MESSAGE_SUFFIX = "[Sent with the help of AI 🤖]"
     # The footer is on unless config.yaml says ai_message_footer: false — read at each send. Only the
     # chat channels (iMessage, WhatsApp, Telegram) add it; send_email never does, by design.
@@ -929,6 +933,136 @@ class Commands:
         if not destination:
             return "car_navigate failed: expected 'vehicle_id, destination' parameters"
         self.background_command(lambda v, d: self._run_car_action(v, "navigate_to", d), (vehicle_id, destination))
+
+    # --- Music: every MusicSystem's zones, resolved per call through the speakers ---
+
+    VOLUME_STEP = 4
+
+    def _music_action(self, command: str, room: str, action, house: Optional[music.Speakers] = None) -> Optional[str]:
+        """Resolve the room to its system and zone and run one action there: None when it is
+        done (the action is its own answer), else the command's error for the LLM — no system
+        ready, a room that is no zone, the system's own failure."""
+        house = house or music.speakers()
+        if not house.systems:
+            return f"{command} failed: {music.no_system_hint()}"
+        try:
+            system, zone = house.resolve(room)
+        except music.MusicError as e:
+            info(f"Music: {command} — {e}")
+            return f"{command} failed: {e}"
+        info(f"Music: {command} in {zone} through {system.name}")
+        problem = action(system, zone)
+        if problem:
+            info(f"Music: {command} in {zone} failed — {problem}")
+            return f"{command} failed: {problem}"
+        return None
+
+    def cmd_play(self, parameter_string: str):
+        return self._music_action("play", parameter_string, lambda system, zone: system.play(zone))
+
+    def cmd_pause(self, parameter_string: str):
+        return self._music_action("pause", parameter_string, lambda system, zone: system.pause(zone))
+
+    def cmd_next(self, parameter_string: str):
+        return self._music_action("next", parameter_string, lambda system, zone: system.next_track(zone))
+
+    def cmd_volume_up(self, parameter_string: str):
+        return self._music_action("volume_up", parameter_string,
+                                  lambda system, zone: system.adjust_volume(zone, self.VOLUME_STEP))
+
+    def cmd_volume_down(self, parameter_string: str):
+        return self._music_action("volume_down", parameter_string,
+                                  lambda system, zone: system.adjust_volume(zone, -self.VOLUME_STEP))
+
+    def cmd_play_music(self, *args: str):
+        if len(args) < 2:
+            return "play_music failed: expected 'zone, id' parameters"
+        room, music_id = args[0].strip(), args[1].strip()
+        house = music.speakers()
+
+        def play(system, zone):
+            owner = house.owner_of_id(music_id)
+            if owner is not None and owner is not system:
+                return f"{music_id} is from the {owner.name} lists, and {zone} is a {system.name} zone"
+            return system.play_id(zone, music_id)
+        return self._music_action("play_music", room, play, house)
+
+    def cmd_search_music(self, parameter_string: str):
+        self.background_command(SpotifyAccount.get_instance().search, parameter_string)
+
+    # --- the household's Spotify sign-in: the URL out, the address the browser lands on back in ---
+
+    SPOTIFY_NOTE_SOURCE = "Spotify"
+
+    def cmd_spotify_login(self, parameter_string: str):
+        """Starts the flow: the sign-in URL and what to do with it come back as the command's
+        result, which the LLM relays; when no chat asked (voice), a system note puts the link
+        in the chats too, since a link cannot be heard."""
+        self.background_command(self._run_spotify_login, (self.asked_from_chat(),), lane=self.CONFIG_LANE)
+
+    def cmd_spotify_login_code(self, parameter_string: str):
+        """Finishes the flow with the whole address the browser landed on; the outcome is the
+        command's result, and a note to the chats only when no chat asked."""
+        pasted = parameter_string.strip().strip("\"'`").strip()
+        if not pasted:
+            return 'spotify_login_code failed: paste the address the browser landed on, e.g. spotify_login_code("http://127.0.0.1:8888/callback?code=...&state=...")'
+        self.background_command(self._run_spotify_login_code, (pasted, self.asked_from_chat()), lane=self.CONFIG_LANE)
+
+    @staticmethod
+    def _spotify_unavailable(command: str) -> str:
+        """Why the Spotify sign-in cannot run now, "" when it can: it serves the speaker systems,
+        so one must be on."""
+        if music.active():
+            return ""
+        hint = music.no_system_hint()
+        info(f"{command}: no speaker system ready — {hint}")
+        return hint
+
+    def _run_spotify_login(self, from_chat: bool = False) -> str:
+        if problem := self._spotify_unavailable("spotify_login"):
+            return problem
+        try:
+            sign_in = SpotifyAccount.get_instance().login_begin()
+        except Exception as e:   # no client id or secret
+            info(f"spotify_login: {e}")
+            return f"spotify_login failed: {e}"
+        text = (f"Spotify sign-in: {sign_in.instructions} into the chat as "
+                f'spotify_login_code("<the pasted address>") (quote it). The link is valid for about ten minutes.')
+        if from_chat:
+            trace("spotify_login: a chat asked, the reply carries the link — no note pushed")
+        else:
+            system_note(self.SPOTIFY_NOTE_SOURCE, text)
+        return text
+
+    def _run_spotify_login_code(self, pasted: str, from_chat: bool = False) -> str:
+        if problem := self._spotify_unavailable("spotify_login_code"):
+            return problem
+        account = SpotifyAccount.get_instance()
+        try:
+            failure = account.login_finish(pasted)
+        except Exception as e:
+            failure = f"{type(e).__name__}: {e}"
+        if failure:
+            info(f"spotify_login_code: not signed in — {failure}")
+            return f"Spotify sign-in did not complete: {failure}"
+        user = account.user_name()
+        text = "Spotify: signed in" + (f" as {user}" if user else "") + ". "
+        problem = account.library_error()
+        if problem:
+            info(f"spotify_login_code: signed in, but the playlist library did not load — {problem}")
+            text += (f"The playlist library could not be loaded yet ({problem}); it is tried again every "
+                     f"{music.LIBRARY_REFRESH_SECONDS // 60} minutes, and the S- ids appear in "
+                     "MUSIC once it has.")
+        else:
+            listed, total = len(account.playlists()), account.playlists_total()
+            text += (f"{listed} of the account's {total} playlists appear in MUSIC (ids S-0, "
+                     "S-1, …) within a minute — read them from the section before naming one — and can be "
+                     "started with play_music.")
+        if from_chat:
+            trace("spotify_login_code: a chat asked, the reply says it — no note pushed")
+        else:
+            system_note(self.SPOTIFY_NOTE_SOURCE, text)
+        return text
 
     def cmd_self_analysis(self, parameter_string: str):
         return self._deliver_analysis("self_analysis", "Self-analysis",
@@ -2430,6 +2564,19 @@ class Commands:
     def describe_send_email(self, p):
         recipient = p.split(",", 1)[0].strip() if p else ""
         return f"Sending email to {recipient}" if recipient else "Sending email"
+    def describe_spotify_login(self, p):          return "Signing the Spotify account in"
+    def describe_spotify_login_code(self, p):     return "Finishing the Spotify sign-in"
+    def describe_search_music(self, p):           return f"Searching music for {p.strip()}"
+    def describe_play(self, p):                   return f"Playing in {p.strip()}" if p.strip() else "Playing"
+    def describe_pause(self, p):                  return f"Pausing in {p.strip()}" if p.strip() else "Pausing"
+    def describe_next(self, p):                   return f"Skipping to next track in {p.strip()}" if p.strip() else "Skipping to next track"
+    def describe_volume_up(self, p):              return f"Turning up the volume in {p.strip()}" if p.strip() else "Turning up the volume"
+    def describe_volume_down(self, p):            return f"Turning down the volume in {p.strip()}" if p.strip() else "Turning down the volume"
+
+    def describe_play_music(self, p):
+        room = p.split(",", 1)[0].strip()
+        return f"Playing music in {room}" if room else "Playing music"
+
     def describe_fetch_camera_images(self, p):    return "Fetching camera images"
     def describe_car_max_defrost(self, p):        return f"Turning on max defrost in {self._car_label(p)}"
     def describe_car_climate_on(self, p):         return f"Turning on the climate in {self._car_label(p)}"

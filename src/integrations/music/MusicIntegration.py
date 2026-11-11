@@ -13,7 +13,7 @@ from soco.zonegroupstate import ZoneGroupState
 from common.logging import trace, info, error
 from common.ConfigManager import ConfigManager
 from assistant.integration.Integration import Integration
-from assistant.integration.OAuthPaste import SignIn
+from assistant.integration.music.MusicSystem import LIBRARY_REFRESH_SECONDS, MusicSystem
 from assistant.integration.music.SpotifyAccount import SIGN_IN_REVOKED, SpotifyAccount, SpotifyPlaylist
 from assistant.integration.music.SpotifyAuth import TOKEN_PATH
 
@@ -45,7 +45,7 @@ def _serialise_zone_state_parsing():
 _serialise_zone_state_parsing()
 
 
-class MusicIntegration(Integration):
+class MusicIntegration(Integration, MusicSystem):
     """Spotify music on the Sonos speakers: search, play, skip and volume.
 
     Plays Spotify music, playlists and favorites in the Sonos zones, with pause, skip and
@@ -63,9 +63,10 @@ class MusicIntegration(Integration):
     them."""
 
     PLAYLISTS_IN_PROMPT = 10
+    ID_PREFIXES = ("F-", "P-")
 
     CACHE_EXPIRY_SECONDS = 30 * 60
-    REFRESH_INTERVAL_SECONDS = 30 * 60
+    REFRESH_INTERVAL_SECONDS = LIBRARY_REFRESH_SECONDS
 
     def __init__(self):
         Integration.__init__(self)
@@ -209,33 +210,6 @@ class MusicIntegration(Integration):
             error(f"Invalid favorite URI format: {uri}")
             return None
 
-    # --- the shared Spotify account, as the music commands and sections reach it ------------
-
-    def spotify_signed_in(self) -> bool:
-        return self.spotify.signed_in()
-
-    def login_begin(self) -> SignIn:
-        """Starts the sign-in of the user's Spotify account; raises RuntimeError without a client id."""
-        return self.spotify.login_begin()
-
-    def login_finish(self, pasted: str) -> str:
-        return self.spotify.login_finish(pasted)
-
-    def spotify_library_error(self) -> str:
-        return self.spotify.library_error()
-
-    def spotify_playlists_total(self) -> int:
-        return self.spotify.playlists_total()
-
-    def spotify_user_name(self) -> str:
-        return self.spotify.user_name()
-
-    def get_spotify_playlists(self) -> List[SpotifyPlaylist]:
-        return self.spotify.playlists()
-
-    def search_spotify(self, query: str, limit: int = 4) -> str:
-        return self.spotify.search(query, limit)
-
     def _discover_sonos_zones(self) -> Dict[str, soco.SoCo]:
         current_time = time.time()
 
@@ -296,6 +270,31 @@ class MusicIntegration(Integration):
         if group is None:
             raise ConnectionError("the zone is not in the Sonos topology (speaker offline?)")
         return group.coordinator
+
+    # --- MusicSystem -----------------------------------------------------------------------
+
+    def zones(self) -> List[str]:
+        names = []
+        for zone_name in self._discover_sonos_zones():
+            name = self.room_mapping.get(zone_name, zone_name)
+            if name:
+                names.append(name)
+        return names
+
+    def zone_status(self) -> List[str]:
+        return [line for line in self.get_all_zones_status().splitlines() if line]
+
+    def library_text(self) -> str:
+        """The Sonos favorites (F-n) and playlists (P-n), each list in the Sonos app's order."""
+        lines = [f"{name} (ID: F-{index})" for index, name in enumerate(self.get_favorites())]
+        lines += [f"{name} (ID: P-{index})" for index, name in enumerate(self.get_playlists())]
+        trace(f"Sonos: {len(lines)} favorites and playlists for the MUSIC section")
+        return "\n".join(lines)
+
+    def play_id(self, zone: str, music_id: str) -> str:
+        if self.play_in_zone(music_id, zone):
+            return ""
+        return f"could not start {music_id} in {zone} (see the server log)"
 
     def get_all_zones_status(self) -> str:
         """One line per zone. A zone that cannot be reached — its speaker offline, its HTTP
@@ -441,55 +440,52 @@ class MusicIntegration(Integration):
             error(f"Error playing uri in {room_name}: {e}")
             return False
 
-    def play(self, room_name: str) -> bool:
+    def play(self, room_name: str) -> str:
         zone = self._get_zone(room_name)
         if not zone:
-            return False
-
-        coordinator = self._get_coordinator(zone)
+            return self.zone_problem(room_name)
 
         try:
+            coordinator = self._get_coordinator(zone)
             coordinator.play()
             info(f"Playing in {room_name}")
-            return True
+            return ""
         except Exception as e:
             error(f"Error playing in {room_name}: {e}")
-            return False
+            return f"could not play in {room_name}: {e}"
 
-    def pause(self, room_name: str) -> bool:
+    def pause(self, room_name: str) -> str:
         zone = self._get_zone(room_name)
         if not zone:
-            return False
-
-        coordinator = self._get_coordinator(zone)
+            return self.zone_problem(room_name)
 
         try:
+            coordinator = self._get_coordinator(zone)
             coordinator.pause()
             info(f"Paused in {room_name}")
-            return True
+            return ""
         except Exception as e:
             error(f"Error pausing in {room_name}: {e}")
-            return False
+            return f"could not pause in {room_name}: {e}"
 
-    def next_track(self, room_name: str) -> bool:
+    def next_track(self, room_name: str) -> str:
         zone = self._get_zone(room_name)
         if not zone:
-            return False
-
-        coordinator = self._get_coordinator(zone)
+            return self.zone_problem(room_name)
 
         try:
+            coordinator = self._get_coordinator(zone)
             coordinator.next()
             info(f"Skipping to next track in {room_name}")
-            return True
+            return ""
         except Exception as e:
             error(f"Error skipping track in {room_name}: {e}")
-            return False
+            return f"could not skip the track in {room_name}: {e}"
 
-    def adjust_volume(self, room_name: str, adjustment: int) -> bool:
+    def adjust_volume(self, room_name: str, adjustment: int) -> str:
         zone = self._get_zone(room_name)
         if not zone:
-            return False
+            return self.zone_problem(room_name)
 
         try:
             for member in zone.group.members:
@@ -497,10 +493,10 @@ class MusicIntegration(Integration):
                 new_volume = max(0, min(100, current_volume + adjustment))
                 member.volume = new_volume
             info(f"Adjusted volume by {adjustment} in {room_name} (group of {len(zone.group.members)})")
-            return True
+            return ""
         except Exception as e:
             error(f"Error adjusting volume in {room_name}: {e}")
-            return False
+            return f"could not change the volume in {room_name}: {e}"
 
     def _fetch_playlists_from_sonos(self, room_name: str) -> List[str]:
         """Internal method to fetch playlists directly from Sonos."""

@@ -40,6 +40,7 @@ import yaml
 from assistant.integration.CameraProvider import CameraProvider
 from assistant.integration.HomeAutomation import HomeAutomation
 from assistant.integration.VehicleProvider import VehicleProvider
+from assistant.integration.music.MusicSystem import MusicSystem
 from assistant.integration.calendar.CalendarSource import CalendarSource
 from assistant.integration.mail.MailSource import MailSource
 from common.ConfigManager import config
@@ -213,6 +214,10 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
     Toolkit("cars", "the cars: defrost, climate, trunk, navigation",
             ("car_max_defrost", "car_climate_on", "car_climate_off", "car_open_trunk", "car_navigate"),
             needs=VehicleProvider),
+    Toolkit("music", "play, pause, skip, volume, search Spotify, start a playlist (Sonos or the user's own Spotify "
+                     "library) or favorite on a Sonos zone; what plays where, and the favorites and playlists",
+            ("play", "pause", "next", "volume_up", "volume_down", "search_music", "play_music"),
+            sections=("sonos", "music_zones"), needs=MusicSystem),
     Toolkit("web", "read a web page or google something; anything that needs current information",
             ("open_url", "google"), sections=("web",)),
     Toolkit("browser", "drive a real browser when a page needs clicking, typing or a date picker before it "
