@@ -12,6 +12,7 @@ and the install's config:
     python tools/heos_live_check/heos_live_check.py play "<room>" <id>  # H-n, S-n, a search id or a spotify: URI
     python tools/heos_live_check/heos_live_check.py pause|resume|next|up|down "<room>"
     python tools/heos_live_check/heos_live_check.py raw system/check_account   # any CLI command, key=value args after it
+    python tools/heos_live_check/heos_live_check.py events --seconds 60        # the change events and the status they leave
 
 A search id lives in this process only, so `search` takes `--play "<room>"` to start a hit at
 once. The Spotify token is the checkout's own (cache/oauth/spotify.json), so a checkout other
@@ -40,6 +41,8 @@ def main() -> int:
     play.add_argument("id")
     for step in ("pause", "resume", "next", "up", "down"):
         sub.add_parser(step).add_argument("room")
+    events = sub.add_parser("events")
+    events.add_argument("--seconds", type=int, default=60)
     raw = sub.add_parser("raw")
     raw.add_argument("command", help="e.g. browse/browse")
     raw.add_argument("params", nargs="*", help="key=value, e.g. sid=1028")
@@ -55,6 +58,17 @@ def main() -> int:
     HeosIntegration._schedule_refresh = lambda self, delay: None   # the check reloads when it needs to
     heos = HeosIntegration()
     account = SpotifyAccount.get_instance()
+
+    if args.step == "events":
+        import time
+        from assistant.integration.music import MusicSystem as music
+        heos.zones()   # connects, so the events know the device
+        music.add_zone_listener(lambda: print("  zones now: " + " | ".join(heos.zone_status())))
+        heos._start_events()
+        print(f"Listening {args.seconds} s — play, pause or skip something in the HEOS or Spotify app.")
+        time.sleep(args.seconds)
+        print("pushes changes:", heos.pushes_changes())
+        return 0 if heos.pushes_changes() else 1
 
     if args.step == "raw":
         import json

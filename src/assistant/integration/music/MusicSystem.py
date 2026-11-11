@@ -12,9 +12,9 @@ two systems with a zone of the same name is a configuration error the LLM hears 
 guess. Every action returns a line for the LLM, "" when the action is its own answer, or raises
 `MusicError` with what the LLM should read."""
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Callable, Optional
 
-from common.logging import info, trace
+from common.logging import error, info, trace
 
 
 # How often a system reloads its own lists and the shared Spotify library.
@@ -49,6 +49,11 @@ class MusicSystem(ABC):
 
     def has_library(self) -> bool:
         return bool(self.library_text())
+
+    def pushes_changes(self) -> bool:
+        """True while the system reports every change of its zones itself (`zones_changed()`), so
+        their status need not be polled. A system that cannot says False, the default."""
+        return False
 
     def refresh_library(self) -> None:
         """Reload the system's own lists now (and the shared Spotify library); a no-op by default."""
@@ -117,6 +122,31 @@ class Speakers:
             except Exception as e:
                 info(f"Music: {system.name} could not report its zones: {e}")
         return "\n".join(lines)
+
+
+# Called (no arguments) whenever a system reports that its zones changed — what plays, a group.
+_zone_listeners: list[Callable[[], None]] = []
+
+
+def add_zone_listener(callback: Callable[[], None]):
+    if callback not in _zone_listeners:
+        _zone_listeners.append(callback)
+
+
+def remove_zone_listener(callback: Callable[[], None]):
+    if callback in _zone_listeners:
+        _zone_listeners.remove(callback)
+
+
+def zones_changed(source: str):
+    """A system's zones changed: everyone following them (the zones section) looks again now."""
+    listeners = list(_zone_listeners)
+    trace(f"Music: {source} reports a zone change" + ("" if listeners else ", nobody listening"))
+    for callback in listeners:
+        try:
+            callback()
+        except Exception as e:
+            error(f"Music: zone listener {callback} failed: {e}")
 
 
 def active() -> list[MusicSystem]:

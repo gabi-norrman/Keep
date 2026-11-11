@@ -200,3 +200,62 @@ class TestLibraryWake:
         started = real_time.monotonic()
         assert section._wait(section.CHECK_INTERVAL) is True
         assert real_time.monotonic() - started < 2
+
+
+class PushingSpeakers(FakeSpeakers):
+    """A system that reports its own zone changes (HEOS while its events flow)."""
+
+    def pushes_changes(self):
+        return True
+
+
+@pytest.mark.unit
+class TestZonesFollowTheChanges:
+    def test_it_polls_while_any_system_cannot_report_its_changes(self):
+        with _systems(PushingSpeakers(["Kitchen"]), FakeSpeakers(["Porch"])):
+            assert MusicZonesSectionGenerator(None)._interval() == MusicZonesSectionGenerator.UPDATE_INTERVAL
+
+    def test_it_only_checks_now_and_then_while_every_system_reports_its_changes(self):
+        with _systems(PushingSpeakers(["Kitchen"])):
+            interval = MusicZonesSectionGenerator(None)._interval()
+        assert interval == MusicZonesSectionGenerator.PUSHED_INTERVAL
+        assert interval > MusicZonesSectionGenerator.UPDATE_INTERVAL
+
+    def test_without_a_system_it_polls(self):
+        with _systems():
+            assert MusicZonesSectionGenerator(None)._interval() == MusicZonesSectionGenerator.UPDATE_INTERVAL
+
+    def test_a_reported_change_ends_the_wait_at_once(self):
+        section = MusicZonesSectionGenerator(None)
+        music.add_zone_listener(section._on_zones_changed)
+        try:
+            done = []
+            waiter = threading.Thread(target=lambda: done.append(section._wait(30)))
+            waiter.start()
+            music.zones_changed("Fake Speakers")
+            waiter.join(timeout=2)
+            assert not waiter.is_alive() and done == [False]
+        finally:
+            music.remove_zone_listener(section._on_zones_changed)
+
+    def test_the_monitoring_listens_while_it_runs_and_not_after(self):
+        section = MusicZonesSectionGenerator(None)
+        listening = []
+
+        def wait(seconds):
+            listening.append(section._on_zones_changed in music._zone_listeners)
+            return True   # stopped
+        section._wait = wait
+        with _systems(FakeSpeakers(["Kitchen"])):
+            section._start_monitoring()
+        assert listening == [True]
+        assert section._on_zones_changed not in music._zone_listeners
+
+    def test_each_wake_brings_a_fresh_look(self):
+        section = MusicZonesSectionGenerator(None)
+        waits = iter([False, False, True])
+        section._wait = lambda seconds: next(waits)
+        section._update_content = Mock()
+        with _systems(FakeSpeakers(["Kitchen"])):
+            section._start_monitoring()
+        assert section._update_content.call_count == 2

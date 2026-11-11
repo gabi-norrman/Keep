@@ -134,3 +134,53 @@ class TestNoSystemHint:
     def test_a_broken_non_music_integration_is_not_a_music_problem(self, monitor):
         _register(monitor, UnavailableIntegration(Weather, KeyError("weather")))
         assert no_system_hint() == STARTING_HINT
+
+
+# --- the zone-change listeners ----------------------------------------------------------------
+
+from assistant.integration.music import MusicSystem as music_module   # noqa: E402
+
+
+@pytest.fixture
+def listeners():
+    saved = list(music_module._zone_listeners)
+    music_module._zone_listeners.clear()
+    yield music_module._zone_listeners
+    music_module._zone_listeners[:] = saved
+
+
+def test_a_reported_zone_change_reaches_every_listener(listeners):
+    first, second = Mock(), Mock()
+    music_module.add_zone_listener(first)
+    music_module.add_zone_listener(second)
+    music_module.zones_changed("Fake Speakers")
+    first.assert_called_once_with()
+    second.assert_called_once_with()
+
+
+def test_a_raising_listener_costs_only_itself(listeners):
+    broken, fine = Mock(side_effect=RuntimeError("bad listener")), Mock()
+    music_module.add_zone_listener(broken)
+    music_module.add_zone_listener(fine)
+    music_module.zones_changed("Fake Speakers")
+    fine.assert_called_once_with()
+
+
+def test_a_removed_listener_is_not_called_again(listeners):
+    callback = Mock()
+    music_module.add_zone_listener(callback)
+    music_module.remove_zone_listener(callback)
+    music_module.zones_changed("Fake Speakers")
+    callback.assert_not_called()
+
+
+def test_a_listener_added_twice_is_called_once(listeners):
+    callback = Mock()
+    music_module.add_zone_listener(callback)
+    music_module.add_zone_listener(callback)
+    music_module.zones_changed("Fake Speakers")
+    callback.assert_called_once_with()
+
+
+def test_a_system_that_says_nothing_about_it_does_not_push_its_changes():
+    assert FakeSpeakers(["Kitchen"]).pushes_changes() is False

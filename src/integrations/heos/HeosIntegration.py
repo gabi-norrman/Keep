@@ -3,11 +3,12 @@ import time
 from typing import Dict, List, Optional
 
 from assistant.integration.Integration import Integration
-from assistant.integration.music.MusicSystem import LIBRARY_REFRESH_SECONDS, MusicSystem
+from assistant.integration.music.MusicSystem import LIBRARY_REFRESH_SECONDS, MusicSystem, zones_changed
 from assistant.integration.music.SpotifyAccount import SpotifyAccount
 from common.ConfigManager import ConfigManager
 from common.logging import error, info, trace
 from integrations.heos.HeosClient import HeosClient, HeosError, message_fields
+from integrations.heos.HeosEvents import HeosEvents
 from integrations.heos.SpotifyConnect import ConnectError, NotListed, SpotifyConnect
 
 
@@ -25,7 +26,11 @@ class HeosIntegration(Integration, MusicSystem):
     Premium, signed in with the playback scopes (`want_playback()`, asked for at construction), and
     must list the player among its Connect devices — a player another account used last is told
     as such. A zone is a player by its HEOS name through `heos.room_mapping`; a grouped player acts
-    on its group's leader (whose `pid` is the group's `gid`), the device Spotify plays a group on."""
+    on its group's leader (whose `pid` is the group's `gid`), the device Spotify plays a group on.
+    `HeosEvents` follows the change events on a connection of its own, started with the first
+    refresh: while it listens, each leader's status is cached and refetched when an event says it
+    changed (`pushes_changes()`, so the zones section stops polling), and a change of the players or
+    groups drops the cached lists; while it does not, the status is asked for live as before."""
 
     ID_PREFIXES = ("H-", "Q-")
     FAVORITES_IN_PROMPT = 10
@@ -45,6 +50,8 @@ class HeosIntegration(Integration, MusicSystem):
         self._lock = threading.Lock()
         self._refresh_timer: Optional[threading.Timer] = None
         self._stopped = threading.Event()
+        self._events: Optional[HeosEvents] = None
+        self._status: Dict[object, str] = {}   # leader pid -> its status line, kept while the events flow
         SpotifyAccount.want_playback()
         self._schedule_refresh(0.1)
 
@@ -71,9 +78,11 @@ class HeosIntegration(Integration, MusicSystem):
         self._stopped.set()
         if self._refresh_timer is not None:
             self._refresh_timer.cancel()
+        if self._events is not None:
+            self._events.stop()
         if self._client is not None:
             self._client.close()
-        info("HEOS dropped: favorites refresh stopped, connection closed")
+        info("HEOS dropped: favorites refresh and change events stopped, connection closed")
 
     # --- the pieces -----------------------------------------------------------------------------
 
@@ -136,9 +145,65 @@ class HeosIntegration(Integration, MusicSystem):
             leader = self._leader(player)
             pid = leader.get("pid")
             if pid not in asked:
-                asked[pid] = self._now_playing(pid)
+                asked[pid] = self._status_of(pid)
             lines.append(f"{room} ({asked[pid]})")
         return lines
+
+    def _status_of(self, pid) -> str:
+        """The leader's status: the cached line while the events keep it current, else asked for now."""
+        if self.pushes_changes():
+            with self._lock:
+                cached = self._status.get(pid)
+            if cached is not None:
+                return cached
+        status = self._now_playing(pid)
+        if self.pushes_changes():
+            with self._lock:
+                self._status[pid] = status
+        return status
+
+    def pushes_changes(self) -> bool:
+        return self._events is not None and self._events.connected
+
+    # --- the change events ----------------------------------------------------------------------
+
+    def _start_events(self):
+        if self._events is not None or self._stopped.is_set():
+            return
+        self._events = HeosEvents(lambda: self._client.host if self._client is not None else "",
+                                  self._on_event, self._on_events_connected)
+        self._events.start()
+
+    def _on_events_connected(self, up: bool):
+        """A stream that comes or goes leaves no cached status behind: its lines are only as good as the events."""
+        with self._lock:
+            self._status.clear()
+        zones_changed(self.name)
+
+    def _on_event(self, name: str, fields: dict):
+        if name in ("player_state_changed", "player_now_playing_changed"):
+            try:
+                pid = int(fields.get("pid", ""))
+            except ValueError:
+                trace(f"HEOS: {name} without a usable pid ({fields}), ignored")
+                return
+            status = self._now_playing(pid)
+            with self._lock:
+                before, self._status[pid] = self._status.get(pid), status
+            if status == before:
+                # HEOS sends most changes twice, and a pause a now-playing event too: nothing new to show.
+                trace(f"HEOS: {name} for player {pid}, status unchanged ({status})")
+                return
+            trace(f"HEOS: {name} for player {pid} — now {status}")
+            zones_changed(self.name)
+        elif name in ("players_changed", "groups_changed"):
+            with self._lock:
+                self._players_at = 0.0
+                self._status.clear()
+            info(f"HEOS: {name.replace('_', ' ')} — the rooms and groups are read again")
+            zones_changed(self.name)
+        else:
+            trace(f"HEOS: event {name} ({fields}) not shown in the prompt, ignored")
 
     def _now_playing(self, pid) -> str:
         try:
@@ -220,6 +285,7 @@ class HeosIntegration(Integration, MusicSystem):
             return
         try:
             self.refresh_library()
+            self._start_events()
         finally:
             self._schedule_refresh(self.REFRESH_INTERVAL_SECONDS)
 

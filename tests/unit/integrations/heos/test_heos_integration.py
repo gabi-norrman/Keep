@@ -16,6 +16,7 @@ class FakeClient:
     def __init__(self, players=PLAYERS, favorites=None, unreachable=(), quickselects=None):
         self.players = players
         self.quickselects = quickselects or {}   # pid -> the slots, or an exception the player answers with
+        self.paused = set()                      # pids paused since: Den (2) plays otherwise
         self.favorites = favorites if favorites is not None else [{"name": "Radio One"}, {"name": "Jazz FM"}]
         self.unreachable = set(unreachable)
         self.sent = []
@@ -27,7 +28,8 @@ class FakeClient:
         if cmd == "player/get_players":
             return {"payload": self.players}
         if cmd == "player/get_play_state":
-            return {"heos": {"message": f"pid={params['pid']}&state={'play' if params['pid'] == 2 else 'stop'}"}}
+            playing = params["pid"] == 2 and params["pid"] not in self.paused
+            return {"heos": {"message": f"pid={params['pid']}&state={'play' if playing else 'stop'}"}}
         if cmd == "player/get_now_playing_media":
             return {"payload": {"song": "Blue Sky", "artist": "Alice"} if params["pid"] == 2 else {}}
         if cmd == "player/get_quickselects":
@@ -256,3 +258,142 @@ def test_a_player_that_refuses_quick_selects_costs_only_itself():
     heos = make(client, spotify=Mock())
     heos.refresh_library()
     assert "Morning" in heos.library_text()
+
+
+# --- the change events ------------------------------------------------------------------------
+
+from assistant.integration.music import MusicSystem as music   # noqa: E402
+from integrations.heos import HeosIntegration as heos_module   # noqa: E402
+
+
+@pytest.fixture
+def zone_listener():
+    calls = Mock()
+    music.add_zone_listener(calls)
+    yield calls
+    music.remove_zone_listener(calls)
+
+
+def listening(heos):
+    heos._events = Mock(connected=True)
+    return heos
+
+
+def test_with_the_events_up_each_leader_is_asked_once_and_then_served_from_the_cache():
+    client = FakeClient()
+    heos = listening(make(client))
+    first = heos.zone_status()
+    asked = {params["pid"] for params in client.sent_commands("player/get_play_state")}
+    assert asked == {1, 2}
+    client.sent.clear()
+    assert heos.zone_status() == first
+    assert not client.sent_commands("player/get_play_state")
+
+
+def test_with_the_events_down_the_status_is_asked_every_time():
+    client = FakeClient()
+    heos = make(client)
+    heos.zone_status()
+    heos.zone_status()
+    assert len(client.sent_commands("player/get_play_state")) == 4
+    assert heos.pushes_changes() is False
+
+
+def test_a_state_change_refetches_only_that_player_and_tells_the_zone_listeners(zone_listener):
+    client = FakeClient()
+    heos = listening(make(client))
+    heos.zone_status()
+    client.sent.clear()
+    client.paused.add(2)
+    heos._on_event("player_state_changed", {"pid": "2", "state": "pause"})
+    assert [p["pid"] for p in client.sent_commands("player/get_play_state")] == [2]
+    zone_listener.assert_called_once_with()
+    client.sent.clear()
+    heos.zone_status()
+    assert not client.sent_commands("player/get_play_state")
+
+
+def test_a_now_playing_change_refetches_that_player(zone_listener):
+    client = FakeClient()
+    heos = listening(make(client))
+    heos._on_event("player_now_playing_changed", {"pid": "1"})
+    assert [p["pid"] for p in client.sent_commands("player/get_now_playing_media")] == [1]
+    zone_listener.assert_called_once_with()
+
+
+@pytest.mark.parametrize("name", ["players_changed", "groups_changed"])
+def test_a_change_of_players_or_groups_makes_the_rooms_read_again(name, zone_listener):
+    client = FakeClient()
+    heos = listening(make(client))
+    heos.zone_status()
+    client.players = [{"name": "Kitchen", "pid": 1}, {"name": "Attic", "pid": 4}]
+    heos._on_event(name, {})
+    assert heos._status == {}
+    assert heos.zones() == ["Kitchen", "Attic"]
+    zone_listener.assert_called_once_with()
+
+
+def test_an_event_without_a_usable_pid_is_ignored(zone_listener):
+    client = FakeClient()
+    heos = listening(make(client))
+    heos._on_event("player_state_changed", {"state": "play"})
+    assert not client.sent
+    zone_listener.assert_not_called()
+
+
+def test_an_event_the_prompt_does_not_show_changes_nothing(zone_listener):
+    client = FakeClient()
+    heos = listening(make(client))
+    heos._on_event("player_volume_changed", {"pid": "1", "level": "30"})
+    assert not client.sent
+    zone_listener.assert_not_called()
+
+
+def test_the_stream_coming_or_going_drops_the_cached_status_and_tells_the_listeners(zone_listener):
+    heos = listening(make())
+    heos.zone_status()
+    assert heos._status
+    heos._on_events_connected(False)
+    assert heos._status == {}
+    zone_listener.assert_called_once_with()
+
+
+def test_the_events_start_once_with_the_refresh():
+    heos = make(spotify=Mock())
+    with patch.object(heos_module, "HeosEvents") as events_class, \
+            patch.object(heos, "refresh_library"), patch.object(heos, "_schedule_refresh"):
+        heos._refresh_tick()
+        heos._refresh_tick()
+    events_class.assert_called_once()
+    events_class.return_value.start.assert_called_once_with()
+
+
+def test_a_dropped_integration_starts_no_events():
+    heos = make(spotify=Mock())
+    heos._on_reset()
+    with patch.object(heos_module, "HeosEvents") as events_class:
+        heos._start_events()
+    events_class.assert_not_called()
+
+
+def test_dropping_the_integration_stops_the_events():
+    heos = make(spotify=Mock())
+    events = heos._events = Mock()
+    heos._on_reset()
+    events.stop.assert_called_once_with()
+
+
+def test_an_event_that_leaves_the_status_as_it_was_tells_nobody():
+    """HEOS repeats most changes: the second report of the same status is no change."""
+    from assistant.integration.music import MusicSystem as music
+    heos = make()
+    heos._events = Mock(connected=True)
+    heard = []
+    listener = lambda: heard.append(1)
+    music.add_zone_listener(listener)
+    try:
+        heos._on_event("player_now_playing_changed", {"pid": "2"})
+        heos._on_event("player_now_playing_changed", {"pid": "2"})
+    finally:
+        music.remove_zone_listener(listener)
+    assert len(heard) == 1
