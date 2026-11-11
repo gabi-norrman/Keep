@@ -147,3 +147,38 @@ def test_stop_ends_the_thread():
         events.stop()
         events._thread.join(timeout=2)
     assert not events._thread.is_alive()
+
+
+class CountedStop:
+    """Stands in for the stop event: records each wait and reports the stop after `waits` of them."""
+
+    def __init__(self, waits):
+        self.left, self.waited = waits, []
+
+    def is_set(self):
+        return self.left <= 0
+
+    def wait(self, seconds):
+        self.waited.append(seconds)
+        self.left -= 1
+        return self.left <= 0
+
+    def set(self):
+        self.left = 0
+
+
+def test_the_backoff_starts_over_after_a_stream_that_listened():
+    """Two refused connections double the wait; a stream that registered and then broke is retried from the start."""
+    events = HeosEvents(lambda: HOST, Mock())
+    events._stop = CountedStop(4)
+    connections = [OSError("refused"), OSError("refused"), FakeSocket([line(REGISTERED)]), OSError("refused")]
+
+    def create_connection(address, timeout=None):
+        made = connections.pop(0)
+        if isinstance(made, Exception):
+            raise made
+        return made
+    with patch.object(module.socket, "create_connection", side_effect=create_connection):
+        events._run()
+    first = module.RETRY_MIN
+    assert events._stop.waited == [first, first * 2, first, first * 2]

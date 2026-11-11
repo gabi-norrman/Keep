@@ -7,7 +7,8 @@ events never share the command connection, whose answers they would interleave w
 
 The connection is idle between changes, so a heart beat goes out after `IDLE_SECONDS` of silence
 and an unanswered one counts as a dead connection. A dead or refused connection is retried after
-`RETRY_MIN` seconds, doubling to `RETRY_MAX`; `connected` is true only while events can arrive, so
+`RETRY_MIN` seconds, doubling to `RETRY_MAX`, and from `RETRY_MIN` again once a stream has
+listened; `connected` is true only while events can arrive, so
 a caller relying on them falls back to asking HEOS itself in between."""
 import json
 import socket
@@ -71,10 +72,11 @@ class HeosEvents:
             else:
                 try:
                     self._listen(host)
-                    delay = RETRY_MIN   # the stream ran: a fresh failure starts the backoff over
                 except (OSError, ConnectionError, ValueError) as e:
                     if self._stop.is_set():
                         break
+                    if self.connected:
+                        delay = RETRY_MIN   # the stream listened: its failure starts the backoff over
                     info(f"HEOS events: the stream from {host} broke ({type(e).__name__}: {e}), retrying in {delay} s")
                 finally:
                     self._set_connected(False)
