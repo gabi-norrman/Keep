@@ -73,7 +73,7 @@ def test_the_spotify_sign_in_is_the_music_folders_wipe_target():
     state, so it must be among the targets discovery gathers, under the token path the sign-in
     writes — not the `.cache` file of spotipy's default handler, which the folder no longer uses."""
     from integrations.music.MusicIntegration import MusicIntegration
-    from integrations.music.SpotifyAuth import TOKEN_PATH
+    from assistant.integration.music.SpotifyAuth import TOKEN_PATH
     with patch("assistant.integration.bootstrap.integration_classes", return_value=[MusicIntegration]):
         paths = [path for path, _ in dc_mod.integration_targets()]
     assert paths == [TOKEN_PATH]

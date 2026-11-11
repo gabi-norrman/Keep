@@ -2,7 +2,8 @@ import threading
 import time as real_time
 from unittest.mock import patch, Mock
 
-from integrations.music.MusicIntegration import SpotifyPlaylist
+from assistant.integration.music.SpotifyAccount import SpotifyAccount, SpotifyPlaylist
+from tests.unit.assistant.integration.music.spotify_fakes import make_account
 
 
 # ===========================================================================
@@ -359,17 +360,16 @@ class TestSonosFavoritesSectionGeneratorMonitoring:
 class TestSonosFavoritesSectionGeneratorWake:
     def test_a_reloaded_library_ends_the_wait_early_and_only_once(self):
         from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
-        from integrations.music.MusicIntegration import MusicManager
         section = SonosFavoritesSectionGenerator(None)
-        MusicManager.add_library_listener(section._on_library_reload)
+        SpotifyAccount.add_library_listener(section._on_library_reload)
         try:
-            reload = MusicManager.__new__(MusicManager)._notify_library_listeners
+            reload = make_account()._notify_library_listeners
             threading.Timer(0.02, reload).start()
             started = real_time.monotonic()
             assert section._wait(section.CHECK_INTERVAL) is False, "woken, not stopped"
             assert real_time.monotonic() - started < 2
         finally:
-            MusicManager.remove_library_listener(section._on_library_reload)
+            SpotifyAccount.remove_library_listener(section._on_library_reload)
 
         started = real_time.monotonic()
         section._wait(0.02)
@@ -383,8 +383,9 @@ class TestSonosFavoritesSectionGeneratorWake:
         assert section._wait(section.CHECK_INTERVAL) is True
         assert real_time.monotonic() - started < 2
 
+    @patch('integrations.music.SonosFavoritesSectionGenerator.SpotifyAccount')
     @patch('integrations.music.SonosFavoritesSectionGenerator.MusicManager')
-    def test_the_section_listens_only_while_it_runs(self, mock_mm_cls):
+    def test_the_section_listens_only_while_it_runs(self, mock_mm_cls, account_cls):
         mock_mm_cls.peek_instance.return_value = None
         from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
         section = SonosFavoritesSectionGenerator(None)
@@ -392,5 +393,5 @@ class TestSonosFavoritesSectionGeneratorWake:
 
         section._start_monitoring()
 
-        mock_mm_cls.add_library_listener.assert_called_once_with(section._on_library_reload)
-        mock_mm_cls.remove_library_listener.assert_called_once_with(section._on_library_reload)
+        account_cls.add_library_listener.assert_called_once_with(section._on_library_reload)
+        account_cls.remove_library_listener.assert_called_once_with(section._on_library_reload)

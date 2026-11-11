@@ -7,7 +7,7 @@ from assistant.commands.Commands import Commands
 from assistant.commands.Toolkits import TOOLKITS
 from integrations.music.MusicCommands import MusicCommands
 from assistant.integration.OAuthPaste import SignIn
-from integrations.music.SpotifyAuth import REDIRECT_URI
+from assistant.integration.music.SpotifyAuth import REDIRECT_URI
 
 
 @pytest.fixture
