@@ -12,6 +12,7 @@ Nothing here knows which platform is on the other side.
 import base64
 import html
 import queue
+import re
 import threading
 import time
 from typing import Optional
@@ -518,15 +519,20 @@ class ChatSession:
         """The reply is the bare NO a reaction or an autonomous check answers when it has
         nothing to say — the rule every chat shares, the console's history feed included.
         Strips wrapping quotes AND trailing punctuation: the LLM is known to reply "No." or
-        "NO!" despite being asked for a bare NO."""
-        return text.strip().strip('"\'.!? ').lower() == "no"
+        "NO!" despite being asked for a bare NO — and the markup it may dress it in (**NO**,
+        <b>NO</b>), which a plain-text chat would send as a bare NO."""
+        return ChatSession._undressed(text) == "no"
+
+    @staticmethod
+    def _undressed(text: str) -> str:
+        return re.sub(r"</?[a-zA-Z][^<>]*>", "", text).strip().strip('"\'.!?*_~` ').lower()
 
     @classmethod
     def _is_no_prefix(cls, text: str) -> bool:
         # A punctuated NO ("No.", "NO!") is also a possible prefix: the reply may still
         # continue ("No. The lights..."), so hold off displaying until more chunks arrive;
         # if the stream ends here it is suppressed without flashing.
-        return text.strip().lower() in cls._NO_REPLY_PREFIXES or cls.is_no_reply(text)
+        return text.strip().lower() in cls._NO_REPLY_PREFIXES or cls._undressed(text) in ("", "n", "no")
 
     # --- the assistant stream -------------------------------------------------------------
 

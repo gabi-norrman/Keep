@@ -583,8 +583,19 @@ class DialogManager:
             return held
         note(f"Dropped a stub line the model wrote in place of its reply: {stub!r}")
         self.stub_dropped = stub
-        self.llm_response_raw = self.llm_response_raw.replace(stub, "", 1).lstrip()
+        self._cut_stub_from_raw(stub)
         return rest.lstrip()
+
+    def _cut_stub_from_raw(self, stub: str):
+        """Cuts the stub from the raw turn where it stood as a line: the last place it ends a
+        line, since the thinking above the reply may name the same word."""
+        raw = self.llm_response_raw
+        line_ends = [m.start() for m in re.finditer(re.escape(stub) + r"(?=[ \t]*(?:\r?\n|\Z))", raw)]
+        at = line_ends[-1] if line_ends else raw.rfind(stub)
+        if at < 0:
+            trace(f"The stub {stub!r} is not in the raw turn as written, nothing cut from it")
+            return
+        self.llm_response_raw = (raw[:at] + raw[at + len(stub):]).lstrip()
 
     def process_llm_stream(self, response, t: float, time_shown: bool) -> Generator[str, None, None]:
         # Emotion tags ([laughing], [sighing], ...) are synthesis directives, not display

@@ -55,9 +55,6 @@ class TestAcrossARestart:
         path.write_text('{"account": "local", "vouched": %s}' % vouched)
         assert ChatState("local", path).vouched() == {}
 
-    @pytest.mark.xfail(strict=True, reason="ChatState checks the type of the cursor, the vouched groups and the names, but "
-                                           "not of 'sent' and 'following': a damaged one raises — from 'following' when the "
-                                           "transport is built, from 'sent' at every send")
     @pytest.mark.parametrize("content", ['{"account": "local", "sent": "many"}',
                                          '{"account": "local", "sent": {"day": "%(today)s", "counts": {"+46701740606": "many"}}}',
                                          '{"account": "local", "following": 5}'],

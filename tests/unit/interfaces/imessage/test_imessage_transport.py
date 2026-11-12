@@ -1030,9 +1030,6 @@ class TestThroughTheChatLayer:
         assert wait_until(lambda: assistant.requests and not hub.session_for(chat.transport, FAMILY).busy)
         assert chat.host.sent() == []
 
-    @pytest.mark.xfail(strict=True, reason="ChatSession.is_no_reply strips quotes and punctuation but no markup: a NO the "
-                                           "model wrote as **NO** or <b>NO</b> is sent, and PlainText makes the bubble a "
-                                           "bare 'NO' in the group")
     @pytest.mark.parametrize("no", ["**NO**", "<b>NO</b>"], ids=["in Markdown", "in a tag"])
     def test_a_no_dressed_in_markup_is_no_bubble_either(self, live, no):
         chat, hub = live

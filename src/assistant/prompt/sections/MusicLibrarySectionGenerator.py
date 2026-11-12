@@ -27,6 +27,7 @@ class MusicLibrarySectionGenerator(PromptSectionGenerator):
         super().__init__(prompt_manager, "MusicLibrary")
         self._wake = threading.Event()   # set by a library reload or stop(): ends the current wait early
         self._on_library_reload = self._wake.set
+        self._unlistable = set()   # the systems whose lists raised at the last check
 
     def stop(self):
         self._stop_event.set()   # before the wake, so the wait it ends reports the stop
@@ -46,7 +47,21 @@ class MusicLibrarySectionGenerator(PromptSectionGenerator):
     def _has_data(self) -> bool:
         if self._spotify().playlists():
             return True
-        return any(system.has_library() for system in music.active())
+        return any(self._has_library(system) for system in music.active())
+
+    def _has_library(self, system) -> bool:
+        """Whether *system* has lists; one that cannot say has none, and is logged when that changes."""
+        try:
+            has = system.has_library()
+        except Exception as e:
+            if system.name not in self._unlistable:
+                self._unlistable.add(system.name)
+                error(f"Music: {system.name} could not list its library: {e} — checked again with the others")
+            return False
+        if system.name in self._unlistable:
+            self._unlistable.discard(system.name)
+            info(f"Music: {system.name} lists its library again")
+        return has
 
     def _start_monitoring(self):
         """Load once the data is in, then follow the cached lists."""

@@ -77,7 +77,8 @@ class ChatState:
     def following(self) -> list[str]:
         """The groups whose latest message was the assistant's own when the state was written."""
         with self._lock:
-            return [g for g in self._data.get("following", []) if isinstance(g, str)]
+            groups = self._data.get("following", [])
+            return [g for g in groups if isinstance(g, str)] if isinstance(groups, list) else []
 
     def save_following(self, groups: list[str]):
         groups = sorted(groups)
@@ -163,18 +164,24 @@ class ChatState:
                 self._write()
             return freed
 
+    def _counts(self, now: Optional[float]) -> dict[str, int]:
+        """Today's send counts as the file has them; anything damaged in it counts as nothing sent."""
+        sent = self._data.get("sent")
+        counts = sent.get("counts") if isinstance(sent, dict) and sent.get("day") == today(now) else None
+        if not isinstance(counts, dict):
+            return {}
+        return {recipient: count for recipient, count in counts.items()
+                if isinstance(count, int) and not isinstance(count, bool)}
+
     def sent_today(self, recipient: str, now: Optional[float] = None) -> int:
         with self._lock:
-            sent = self._data.get("sent", {})
-            return int(sent.get("counts", {}).get(recipient, 0)) if sent.get("day") == today(now) else 0
+            return self._counts(now).get(recipient, 0)
 
     def count_sent(self, recipient: str, now: Optional[float] = None) -> int:
         """One more message to *recipient* today; the count after it."""
         with self._lock:
-            sent = self._data.get("sent", {})
-            if sent.get("day") != today(now):
-                sent = {"day": today(now), "counts": {}}
-            sent["counts"][recipient] = int(sent["counts"].get(recipient, 0)) + 1
-            self._data["sent"] = sent
+            counts = self._counts(now)
+            counts[recipient] = counts.get(recipient, 0) + 1
+            self._data["sent"] = {"day": today(now), "counts": counts}
             self._write()
-            return sent["counts"][recipient]
+            return counts[recipient]
