@@ -96,7 +96,7 @@ class RetryGuard(StubGuard):
         self.notices.append(notice)
 
 
-class StreamingGuard(Guard):
+class StreamingGuard(StubGuard):
     """Exercise the extracted ORIGINAL process_llm_stream path with an offline fake transport."""
     def __init__(self):
         super().__init__("")
