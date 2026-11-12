@@ -1,0 +1,19 @@
+name: Offline Keep placeholder guard
+on:
+  push:
+    branches:
+      - fix/toolkit-placeholder-repeat-20261113
+permissions:
+  contents: read
+jobs:
+  guard-check:
+    if: github.repository == 'gabi-norrman/Keep'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Checkout exact branch commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check exact DialogManager stub methods without dependencies
+        run: python3 -m unittest -v tests/offline/test_placeholder_guard_exact_source.py
