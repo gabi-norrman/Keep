@@ -1,6 +1,7 @@
 If `open_url` returns a page missing the info you need because the site wants interaction first (picking a date,
-choosing guests, clicking "search" / "check availability"), use the interactive browse commands. They drive a real
-browser session across multiple turns. The user cannot see this browser; it is for you only.
+choosing guests, clicking "search"), use the browse commands. They drive a real
+browser session across multiple turns. The user cannot see this browser.
+To buy or book, start with `browse_open`, not `open_url`.
 
 `browse_open(url: str)` — open the URL and return a numbered list of its interactive elements (inputs, selects,
 buttons, links). The snapshot starts with the page URL, title, a `Page:` line with the main heading(s), an
