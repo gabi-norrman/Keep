@@ -475,14 +475,25 @@ class DialogManager:
                 response = self.ai.create_streaming_completion(messages, thinking=self.thinking,
                                                                follow_up=self.follow_up)
                 yield from self.process_llm_stream(response, t, time_shown)
-                if (self.stub_dropped and not stub_retried and not self.llm_response.strip()
-                        and not self.command_processor.commands_dispatched):
-                    note(f"The round was a stub and nothing else ({self.stub_dropped!r}), no command, no reply "
-                         f"— asking {self.ai.name()} for the round again, once")
-                    stub_retried = True
-                    self.llm_response_raw = raw_snapshot
-                    self.command_processor.reset_parse_state()
-                    continue
+                if self.stub_dropped and not self.llm_response.strip():
+                    if not stub_retried and not self.command_processor.commands_dispatched:
+                        note(f"The round was only stub text ({self.stub_dropped!r}), with no command or reply "
+                             f"— retrying {self.ai.name()} once")
+                        stub_retried = True
+                        self.llm_response_raw = raw_snapshot
+                        self.command_processor.reset_parse_state()
+                        continue
+                    # Do not hide a failed round or invoke another paid model after the bounded
+                    # retry. If a command already ran, do not regenerate and risk repeating it.
+                    notice = ("A command was invoked, but I couldn't produce a readable response. "
+                              "Its result has not been verified in this reply."
+                              if self.command_processor.commands_dispatched else
+                              "I couldn't produce a readable response. Please try again.")
+                    self.llm_response += notice
+                    self.llm_response_raw = self.llm_response_raw.rstrip() + "\n" + notice
+                    self._surface_notice(notice)
+                    yield notice
+                
                 if refused_ai is not None:
                     yield from self._surface_fallback_notice(refused_ai)
                 return
@@ -573,18 +584,34 @@ class DialogManager:
             "dummy".startswith(text) or re.fullmatch(r"_[\w ]*", text) is not None)
 
     def _without_stub(self, held: str, complete: bool) -> str | None:
-        """The held start of the reply as it may be shown: None while its first line could
-        still turn out a stub, the text without that line when it did, else the text."""
-        line, newline, rest = held.partition("\n")
-        if not newline and not complete and self._could_become_stub(line):
-            return None
-        stub = line.strip()
-        if not self.STUB_LINE.fullmatch(stub):
-            return held
-        note(f"Dropped a stub line the model wrote in place of its reply: {stub!r}")
-        self.stub_dropped = stub
-        self._cut_stub_from_raw(stub)
-        return rest.lstrip()
+        """Discard every leading stub line before allowing a reply onto any output channel.
+
+        A model can repeat '_toolkit_placeholder' dozens of times, and several lines
+        may arrive in one streaming chunk. Hold all of them until real text appears
+        (or the stream ends); then remove each from both the bubble and raw history.
+        Holding before committing also avoids cutting a stub twice across chunks.
+        """
+        remaining = held
+        dropped: list[str] = []
+        while True:
+            line, newline, rest = remaining.partition("\n")
+            if not newline and not complete and self._could_become_stub(line):
+                return None
+            stub = line.strip()
+            if not self.STUB_LINE.fullmatch(stub):
+                break
+            dropped.append(stub)
+            remaining = rest.lstrip() if newline else ""
+            if not remaining:
+                if not complete:
+                    return None
+                break
+        for stub in dropped:
+            note(f"Dropped a stub line the model wrote in place of its reply: {stub!r}")
+            self._cut_stub_from_raw(stub)
+        if dropped:
+            self.stub_dropped = dropped[-1]
+        return remaining
 
     def _cut_stub_from_raw(self, stub: str):
         """Cuts the stub from the raw turn where it stood as a line: the last place it ends a
