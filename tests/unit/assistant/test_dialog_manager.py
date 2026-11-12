@@ -1560,7 +1560,39 @@ def test_a_stub_round_is_asked_again_only_once(monkeypatch):
 
     output = list(dm.stream_llm_response())
 
-    assert _reply(output) == ""
+    assert "couldn't produce a readable response" in _reply(output)
+    assert "_url_placeholder" not in _reply(output)
+    assert dm.ai.calls == 2
+    assert "_url_placeholder" not in dm.messages[-1]["content"]
+
+
+@pytest.mark.unit
+def test_repeated_toolkit_placeholder_lines_are_never_shown_or_saved(monkeypatch):
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    dm.ai = DroppingAI([[
+        "_toolkit_placeholder\n" * 60, "Source ID: 09dde083-1e8d-4dca-b7bd-ebc2a8d64745."
+    ]])
+    _patch_stream_time(monkeypatch, [100.0, 100.1])
+
+    output = list(dm.stream_llm_response())
+
+    assert _reply(output) == "Source ID: 09dde083-1e8d-4dca-b7bd-ebc2a8d64745."
+    assert "_toolkit_placeholder" not in dm.messages[-1]["content"]
+    assert dm.ai.calls == 1
+
+
+@pytest.mark.unit
+def test_repeated_stub_only_rounds_get_one_retry_and_a_readable_failure(monkeypatch):
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    dm.ai = DroppingAI([["_toolkit_placeholder\n" * 100],
+                        ["_toolkit_placeholder\n" * 100]])
+    _patch_stream_time(monkeypatch, [100.0, 100.1, 100.2, 100.3])
+
+    output = list(dm.stream_llm_response())
+
+    assert "couldn't produce a readable response" in _reply(output)
+    assert "_toolkit_placeholder" not in _reply(output)
+    assert "_toolkit_placeholder" not in dm.messages[-1]["content"]
     assert dm.ai.calls == 2
 
 
