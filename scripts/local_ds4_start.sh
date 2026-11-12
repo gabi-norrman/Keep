@@ -77,6 +77,13 @@ fi
 
 mkdir -p "$KV_DIR"
 
+# macOS unwires an idle process's GPU memory after about a second, and ds4's keepalive kernel
+# runs once a second by default — it loses that race every ~6 s, and a request arriving then
+# waits 2.5–11 s while 209 GB is wired again (measured 2026-11-11 on the M5 Ultra, macOS 27;
+# at 500 ms and at 250 ms: no unwiring in 60 s idle, every request at its normal latency).
+# Redundant once the ds4 build has 250 ms as its default (antirez/ds4#1347).
+export DS4_METAL_QUEUE_KEEPALIVE_MS="${DS4_METAL_QUEUE_KEEPALIVE_MS:-250}"
+
 echo "starting ds4-server: $MODEL, ${VISION:+vision $VISION, }ctx $CTX, disk KV cache $KV_DIR ($KV_MB MB), $HOST:$PORT"
 nohup ./ds4-server \
     --model "$MODEL" \
