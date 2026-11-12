@@ -65,6 +65,7 @@ def _dsml_active_and_a_memory_store():
     prefill tracker's log is unreachable (no anchor, so a request never reads a file or ssh)."""
     CommandFormats.set_active(DsmlFormat)
     Ds4LLM._replay_store = ReplayStore(None)
+    Ds4LLM._checkpointed.clear()
     saved_log, saved_tps = Ds4LLM._prefill.log, Ds4LLM._prefill.tps
     with patch.object(LogSource, 'size', return_value=None), patch.object(Ds4DiskCacheSweeper, 'start_once'):
         yield
@@ -710,6 +711,40 @@ class TestPreHeat:
                 for call in create.call_args_list]
         assert sent == ['hi there', 'newest']
         assert Ds4LLM._pre_heat_in_flight is False and Ds4LLM._pre_heat_pending is None
+
+    def _turn(self, llm, create, messages, chunks):
+        """One real turn; returns the row the history keeps of the reply (the thinking left out)."""
+        create.return_value = iter(chunks)
+        p1, p2 = _config({})
+        with p1, p2:
+            out = "".join(llm.create_streaming_completion(messages))
+        create.reset_mock()
+        create.return_value = iter([_chunk(content="")])
+        return out.split("</thinking>")[-1].strip()
+
+    def test_a_history_exactly_as_a_finished_reply_left_it_is_not_sent_again(self):
+        llm, create = _llm_with_stream([])
+        asked = [{'role': 'system', 'content': 'sys'}, {'role': 'user', 'content': 'hello'}]
+        row = self._turn(llm, create, asked, [_chunk(reasoning="greet"), _chunk(content="\n\nhi there", finish_reason='stop'),
+                                              _chunk(choices=False)])
+        self._pre_heat(llm, asked + [{'role': 'assistant', 'content': row}])
+        create.assert_not_called()
+        assert Ds4LLM._pre_heat_in_flight is False
+
+    def test_a_history_rewritten_after_the_reply_is_prefilled(self):
+        llm, create = _llm_with_stream([])
+        asked = [{'role': 'system', 'content': 'sys'}, {'role': 'user', 'content': 'result: a long list of mail'}]
+        row = self._turn(llm, create, asked, [_chunk(content="Two new mails.", finish_reason='stop'), _chunk(choices=False)])
+        capped = [asked[0], {'role': 'user', 'content': 'result: a long […]'}, {'role': 'assistant', 'content': row}]
+        self._pre_heat(llm, capped)
+        assert create.call_args.kwargs['messages'][:3] == capped
+
+    def test_a_reply_cut_at_the_output_cap_leaves_no_checkpoint_to_rely_on(self):
+        llm, create = _llm_with_stream([])
+        asked = [{'role': 'system', 'content': 'sys'}, {'role': 'user', 'content': 'hello'}]
+        row = self._turn(llm, create, asked, [_chunk(content="hi th", finish_reason='length'), _chunk(choices=False)])
+        self._pre_heat(llm, asked + [{'role': 'assistant', 'content': row}])
+        create.assert_called_once()
 
     def test_a_failed_request_releases_the_guard_and_the_slot(self):
         llm, create = _llm_with_stream([])

@@ -77,6 +77,8 @@ pre-heat is never killed but gated as interactive, like Ollama's. It streams bec
 prefill the server writes a client nothing but the SSE keepalive, and a failed keepalive write is
 the only way it notices a client that went away. One pre-heat at a time: a prompt arriving while
 one runs waits as the pending one, the latest only, and goes out when the running one ends.
+A history exactly as a finished reply left it gets none (`_pre_heat_needed`): the server already
+holds the checkpoint of that reply, and a pre-heat would move the live context off it.
 
 Background work (photo indexing, `background=True`): the server serves one request at a time,
 so an image call goes through the single-slot gate every Ds4LLM shares (`BackgroundSlot`,
@@ -98,8 +100,11 @@ chunk line only at the backend's chunk boundaries — a cold 26k prompt logs its
 in —, so the bar is mostly the time estimate, refined after each reply from the usage (prompt
 tokens minus the cached ones) over the prefill time the `prompt done` line reports.
 """
+import hashlib
+import json
 import re
 import threading
+from collections import deque
 from urllib.parse import urlparse
 
 from .Ds4DiskCacheSweeper import Ds4DiskCacheSweeper
@@ -111,7 +116,7 @@ from assistant.commands.formats import DsmlFormat as dsml
 from assistant.commands.formats.CommandFormats import CommandFormats
 from assistant.commands.formats.KeepFormat import KeepFormat
 from common.ConfigManager import config
-from common.logging import trace, note
+from common.logging import info, trace, note
 
 
 class Ds4LogFormat(LogFormat):
@@ -228,6 +233,8 @@ class Ds4LLM(OpenAICompatibleLLM):
     _discovered_models: dict[str, str] = {}
     _discovery_failed: set[str] = set()
     _replay_store: ReplayStore | None = None
+    _checkpointed: deque[str] = deque(maxlen=8)   # digests of the dialogs a reply left a server checkpoint of
+    _checkpoint_lock = threading.Lock()
 
     def _configure_prefill(self):
         Ds4LLM._configure_log_access(self.base_url)
@@ -294,10 +301,45 @@ class Ds4LLM(OpenAICompatibleLLM):
     def _prepare_messages(self, messages: list[dict]) -> list[dict]:
         return replay(messages, self.replay_store())
 
-    def _remember(self, reply: str, reasoning: str, verbatim: str):
+    def _remember(self, reply: str, reasoning: str, verbatim: str, sent: list[dict]):
         """Give the replay store what the next request needs to send this reply back as the
-        model wrote it: `reply` as Keep's history will hold it, the reasoning, the content."""
+        model wrote it: `reply` as Keep's history will hold it, the reasoning, the content.
+        A reply the model ended itself also leaves the server's checkpoint of the dialog up to
+        it, which `_pre_heat_needed` asks for."""
         self.replay_store().remember_reply(reply, reasoning, verbatim)
+        if self._last_stop_reason != 'stop':
+            trace(f"ds4: the reply ended with '{self._last_stop_reason}' — the server keeps no checkpoint of it")
+            return
+        with self._checkpoint_lock:
+            self._checkpointed.append(self._dialog_digest(sent + [{'role': 'assistant', 'content': verbatim}]))
+
+    # --- the pre-heat -------------------------------------------------------------------------
+
+    @staticmethod
+    def _dialog_digest(messages: list[dict]) -> str:
+        """What ds4 keys a finished reply's checkpoint by: the roles and the texts, the
+        reasoning left out."""
+        visible = [(m.get('role'), m.get('content')) for m in messages]
+        return hashlib.sha1(json.dumps(visible, ensure_ascii=False, default=str).encode('utf-8')).hexdigest()
+
+    def _pre_heat_needed(self, messages: list[dict]) -> bool:
+        """False for the history exactly as a finished reply left it. ds4-server remembers a
+        checkpoint at the end of every reply the model ended, keyed by the visible dialog, and
+        the next turn continues from it prefilling its own message alone. A pre-heat of the same
+        history continues that live checkpoint too, moves it past the stub turn and one
+        sampled token, and the checkpoint is gone before it was ever saved: the next turn fell
+        back to the one before and prefilled the whole last turn (3.6k tokens against 31,
+        `tests/kv_visible_base_repro.py` in the ds4 checkout, 2026-11-12). The pre-heat is for a
+        history that was rewritten since — a capped command result, a section note, a rebuilt
+        prompt."""
+        digest = self._dialog_digest(self._prepare_messages(self._convert_anthropic_content(messages)))
+        with self._checkpoint_lock:
+            held = digest in self._checkpointed
+        if held:
+            info("ds4 pre-heat skipped: the history is as the last reply left it — the server holds its checkpoint")
+        else:
+            trace("ds4 pre-heat: the history is not what a reply left on the server — prefilling it")
+        return not held
 
     # --- the DSML side ----------------------------------------------------------------------
 

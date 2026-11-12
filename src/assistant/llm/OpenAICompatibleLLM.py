@@ -323,6 +323,8 @@ class OpenAICompatibleLLM(ChatGPTLLM):
         otherwise park every later pre-heat and the interactive slot for the life of the process."""
         if self.client is None:
             self.initialize()
+        if not self._pre_heat_needed(messages):
+            return
         client = self.client.with_options(
             timeout=httpx.Timeout(self.PRE_HEAT_READ_TIMEOUT_S, connect=self.CONNECT_TIMEOUT_S))
         if not messages or messages[-1].get('role') != 'user':
@@ -362,6 +364,11 @@ class OpenAICompatibleLLM(ChatGPTLLM):
              f"{prefilled} prefilled in {elapsed:.1f} s")
         if seconds:
             self._prefill.observe_rate(prefilled, seconds)
+
+    def _pre_heat_needed(self, messages: list[dict]) -> bool:
+        """Whether the server has anything to prefill for these messages; the hook of a subclass
+        whose server already holds them (ds4, after a reply)."""
+        return True
 
     # --- the request ---------------------------------------------------------------------------
 
@@ -502,8 +509,9 @@ class OpenAICompatibleLLM(ChatGPTLLM):
         was rendered in its place. Nothing is withheld here."""
         return withheld
 
-    def _remember(self, reply: str, reasoning: str, verbatim: str):
-        """A finished reply, for a subclass that keeps what the model wrote (ds4's replay store)."""
+    def _remember(self, reply: str, reasoning: str, verbatim: str, sent: list[dict]):
+        """A finished reply and the messages it answered as they went out, for a subclass that
+        keeps what the model wrote (ds4's replay store)."""
 
     def create_streaming_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL,
                                     volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:
@@ -525,7 +533,8 @@ class OpenAICompatibleLLM(ChatGPTLLM):
     def _stream(self, messages: list[dict], thinking: Thinking | bool, started: float, token: int | None,
                 report_cache) -> Generator[str, None, None]:
         self._last_stop_reason = None
-        response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=True))
+        kwargs = self._request_kwargs(messages, thinking, stream=True)
+        response = self.client.chat.completions.create(**kwargs)
         in_thinking, reasoning, usage = False, "", None
         reply, content = "", self._content()
         calls: dict[int, _ToolCall] = {}
@@ -574,7 +583,7 @@ class OpenAICompatibleLLM(ChatGPTLLM):
         tail, verbatim = self._closing(reply, content.withheld, rendered)
         if tail:
             yield tail
-        self._remember(reply + tail, reasoning, verbatim)
+        self._remember(reply + tail, reasoning, verbatim, kwargs['messages'])
         prefilled = self._log_usage(usage, started, len(reasoning))
         report_cache(usage)
         if prefilled is not None:
@@ -592,8 +601,9 @@ class OpenAICompatibleLLM(ChatGPTLLM):
         early, late = self._cache_report(messages, self._effort_for(thinking))
         token = self._prefill.begin(on_work=early)
         self._last_stop_reason = None
+        kwargs = self._request_kwargs(messages, thinking, stream=False)
         try:
-            response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=False))
+            response = self.client.chat.completions.create(**kwargs)
         finally:
             self._prefill.end(token)
             self._slot.interactive_end()
@@ -608,7 +618,7 @@ class OpenAICompatibleLLM(ChatGPTLLM):
         content, withheld = self._content().split(message.content or "")
         rendered = self._rendered_calls(calls)
         tail, verbatim = self._closing(content, withheld, rendered)
-        self._remember(content + tail, reasoning, verbatim)
+        self._remember(content + tail, reasoning, verbatim, kwargs['messages'])
         return content + tail
 
     # --- images --------------------------------------------------------------------------------
