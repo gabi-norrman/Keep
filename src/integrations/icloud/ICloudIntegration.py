@@ -340,13 +340,10 @@ class ICloudIntegration(Integration):
     PARK_NOTICE = ("The server will not sign in to iCloud again until you confirm the account works: "
                    "tell the assistant (it runs icloud_unlocked) or press Ctrl-R in the console's iCloud tab. "
                    "A corrected apple_id or password lifts it by itself.")
-    CODE_WAITING_NOTICE = ("iCloud signed in and Apple texted a 6-digit code to the account's trusted phone. "
-                           "The server reads it from Messages on this Mac and submits it by itself — nothing to do "
-                           "unless a minute passes; then the user tells the assistant the code (icloud_login_code).")
-    CODE_NEEDED_NOTICE = ("iCloud signed in and Apple texted a 6-digit code to the account's trusted phone. "
-                          "Nothing on this Mac reads text messages (the iMessage feed is not running), so the user "
-                          "enters it: tell the assistant the code (it runs icloud_login_code) or type it in the "
-                          "console's iCloud tab (Ctrl-E).")
+    # Pushed to the chats as written, so they are worded for the owner; what the assistant does
+    # with a code the user sends is in the toolkit.
+    CODE_WAITING_NOTICE = "Awaiting 2FA code from Apple — it is used automatically when it arrives."
+    CODE_NEEDED_NOTICE = "2FA code from Apple is needed — send it here."
 
     def __init__(
         self,

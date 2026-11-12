@@ -2285,8 +2285,7 @@ class TestReaderGate:
             api.on_needs_2fa()
             api._auto_request_sms("test")
         note.assert_called_once()
-        text = note.call_args.args[1]
-        assert "icloud_login_code" in text and "iCloud tab" in text
+        assert note.call_args.args[1] == api.CODE_NEEDED_NOTICE
 
     def test_no_note_without_an_open_challenge(self):
         api = iCloudAPI(config=VALID_CONFIG)
@@ -2325,16 +2324,14 @@ class TestChallengeNote:
         with patch(NOTE_PATH) as note:
             api._arm_auto_sent_code(1000.0)
         note.assert_called_once()
-        text = note.call_args.args[1]
-        assert "by itself" in text and "icloud_login_code" in text
+        assert note.call_args.args[1] == api.CODE_WAITING_NOTICE
 
     def test_without_a_reader_the_note_asks_the_user_for_the_code(self):
         api = iCloudAPI(config=VALID_CONFIG)
         api._api = _service_with_sms_challenge()
         with patch(LIVE_PATH, return_value=[]), patch(NOTE_PATH) as note:
             api._arm_auto_sent_code(1000.0)
-        text = note.call_args.args[1]
-        assert "iMessage feed is not running" in text and "icloud_login_code" in text and "Ctrl-E" in text
+        assert note.call_args.args[1] == api.CODE_NEEDED_NOTICE
 
     def test_the_login_hint_follows_the_reader(self):
         """The setup commands answer "needs 2FA" with the hint: with a reader live the user has
