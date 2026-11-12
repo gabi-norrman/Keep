@@ -149,18 +149,26 @@ def zones_changed(source: str):
             error(f"Music: zone listener {callback} failed: {e}")
 
 
+_last_active_report: list[str] = []
+
+
 def active() -> list[MusicSystem]:
     """The systems whose config keys are set, in registration order. Resolved per call, so a
     restarted or newly configured integration is what the next command uses."""
     from assistant.integration.IntegrationMonitor import IntegrationMonitor
-    ready = []
+    global _last_active_report
+    ready, skipped = [], []
     for integration in IntegrationMonitor.get_instance().of_type(MusicSystem):
         missing = integration.missing_config_keys()
         if missing:
-            trace(f"Music: {integration.name} is enabled but not configured ({', '.join(missing)}), skipped")
+            skipped.append(f"{integration.name} is enabled but not configured ({', '.join(missing)}), skipped")
             continue
         ready.append(integration)
-    trace(f"Music: {len(ready)} system(s) ready" + (f" ({', '.join(s.name for s in ready)})" if ready else ""))
+    report = [*skipped, f"{len(ready)} system(s) ready" + (f" ({', '.join(s.name for s in ready)})" if ready else "")]
+    if report != _last_active_report:
+        _last_active_report = report
+        for line in report:
+            trace(f"Music: {line}")
     return ready
 
 
