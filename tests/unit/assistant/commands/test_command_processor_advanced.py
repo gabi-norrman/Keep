@@ -1814,6 +1814,17 @@ class TestCommandProcessorSensitiveGate:
         processor.kill()
 
 
+    def test_browse_eval_approval_names_javascript_execution(self, monkeypatch):
+        with self._guarded_approval(True):
+            _, run_calls, approval_calls, _ = self._run_with_decision(
+                "deny", monkeypatch,
+                params=["document.querySelector('form').submit()"], command="browse_eval")
+        assert len(approval_calls) == 1
+        assert approval_calls[0]["title"] == "Running JavaScript on the page"
+        assert approval_calls[0]["details"] == "document.querySelector('form').submit()"
+        assert run_calls == []
+
+
 @pytest.mark.unit
 class TestProfileForDialogManager:
     """Replaces TestIsTextChatSource: the channel profile decides thinking forwarding."""
