@@ -242,8 +242,8 @@ class TestQueue:
 
 class TestRate:
     def test_a_finished_request_refines_the_rate_by_half(self, tracker):
-        tracker.observe_rate(558, 1.0)
-        assert tracker.tps == pytest.approx(0.5 * 1000.0 + 0.5 * 558.0)
+        tracker.observe_rate(3000, 5.0)
+        assert tracker.tps == pytest.approx(0.5 * 1000.0 + 0.5 * 600.0)
 
     def test_the_prefill_seconds_are_the_done_lines_else_the_clock_from_the_workload_line(self, tracker, log_path):
         # Never the time since the send: a request that waited behind another's reply taught
@@ -268,9 +268,10 @@ class TestRate:
         assert tracker.prefill_seconds(token) is None, "no workload line read: nothing to measure from"
         tracker.end(token)
 
-    def test_a_near_full_cache_hit_teaches_nothing(self, tracker):
-        tracker.observe_rate(100, 0.01)
-        tracker.observe_rate(500, 0.0)
+    def test_a_small_prefill_teaches_nothing_because_the_requests_fixed_start_is_most_of_it(self, tracker):
+        tracker.observe_rate(135, 0.6)
+        tracker.observe_rate(362, 1.05)
+        tracker.observe_rate(5000, 0.0)
         assert tracker.tps == 1000.0
 
 

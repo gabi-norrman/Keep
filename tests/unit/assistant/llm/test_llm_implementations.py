@@ -2627,10 +2627,10 @@ class TestOllamaLLM:
     def test_log_metrics_refines_prefill_rate_via_ema(self, tracker):
         token = tracker.begin()
         request = tracker._find(token)
-        request.work, request.anchor = (5000, 558), None   # remaining=558 over 1.0s => 558 t/s
+        request.work, request.anchor = (5000, 2232), None   # remaining=2232 over 4.0s => 558 t/s
         tracker.tps = 350.0
         self._make_llm()._log_metrics({
-            "prompt_eval_count": 5558, "prompt_eval_duration": 1_000_000_000,
+            "prompt_eval_count": 7232, "prompt_eval_duration": 4_000_000_000,
             "eval_count": 5, "eval_duration": 500_000_000,
             "total_duration": 1_500_000_000,
         }, token=token)
@@ -2639,7 +2639,7 @@ class TestOllamaLLM:
     def test_log_metrics_skips_rate_update_on_near_full_cache_hit(self, tracker):
         token = tracker.begin()
         request = tracker._find(token)
-        request.work, request.anchor = (5000, 50), None   # <=100 tokens left: too noisy to learn from
+        request.work, request.anchor = (5000, 50), None   # too few tokens left to learn the rate from
         tracker.tps = 350.0
         self._make_llm()._log_metrics({
             "prompt_eval_count": 5050, "prompt_eval_duration": 1_000_000_000,

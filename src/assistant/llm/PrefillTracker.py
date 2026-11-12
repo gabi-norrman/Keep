@@ -210,6 +210,7 @@ class PrefillTracker:
     """The prefill state of one local backend's requests in flight (see the module docstring)."""
     POLL_INTERVAL_S = 2.0   # log reads between polls: over ssh each is a round trip, and new lines are rare
     MIN_BAR_SECONDS = 2.0   # a prefill estimated shorter is not drawn: the bar would only blink
+    MIN_RATE_TOKENS = 1000  # a prefill shorter teaches the rate nothing (observe_rate)
     _trackers: list["PrefillTracker"] = []
 
     def __init__(self, label: str, log_format: LogFormat | None, seed_tps: float):
@@ -338,9 +339,14 @@ class PrefillTracker:
         return None
 
     def observe_rate(self, tokens: int, seconds: float):
-        """Refine the prefill-rate estimate (EMA) from a finished request. Near-full cache hits
-        are skipped: a handful of tokens over a tiny duration is noise."""
-        if tokens <= 100 or seconds <= 0:
+        """Refine the prefill-rate estimate (EMA) from a finished request. A small prefill is
+        skipped: the server's fixed start of a request (~0.4 s on ds4) is most of its time, so
+        135 tokens read as 225 t/s where 3.5k ran at 990 — and with the cache hitting, the
+        small ones are most requests and held the bar at half when the reply began."""
+        if seconds <= 0:
+            return
+        if tokens < self.MIN_RATE_TOKENS:
+            trace(f"{self.label} prefill rate estimate kept at {self.tps:.1f} t/s: {tokens} tokens are too few to measure it")
             return
         observed = tokens / seconds
         self.tps = 0.5 * self.tps + 0.5 * observed
