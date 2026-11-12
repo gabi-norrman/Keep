@@ -6,6 +6,7 @@ This is deliberately not the full Keep pytest suite or an end-to-end Michelle te
 import ast
 import re
 import textwrap
+import time
 import types
 import unittest
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Generator
 SOURCE = Path("src/assistant/DialogManager.py").read_text(encoding="utf-8")
 TREE = ast.parse(SOURCE)
 ORIGINAL = next(n for n in TREE.body if isinstance(n, ast.ClassDef) and n.name == "DialogManager")
-METHODS = {"_could_become_stub", "_without_stub", "_cut_stub_from_raw", "_stream_with_retry_and_fallback"}
+METHODS = {"_could_become_stub", "_without_stub", "_cut_stub_from_raw", "_stream_with_retry_and_fallback", "process_llm_stream"}
 FIELDS = {"STUB_LINE", "STUB_HOLD_LIMIT"}
 extracted = []
 for node in ORIGINAL.body:
@@ -40,6 +41,14 @@ module_ns = dict(
     LLMRefusalError=LLMRefusalError, APIConnectionError=APIConnectionError,
     GeminiServerError=GeminiServerError,
     httpx=types.SimpleNamespace(TransportError=OSError),
+    time=time,
+    RequestKilledException=RuntimeError,
+    strip_backticks=lambda content, before, in_span: (content, in_span),
+    observers=lambda: types.SimpleNamespace(
+        on_first_token=lambda *_: None,
+        on_reply_started=lambda *_: None,
+        on_tokens=lambda *_: None),
+    TTFTMonitor=types.SimpleNamespace(get_instance=lambda: types.SimpleNamespace(record=lambda *_: None)),
 )
 exec(compile(class_source, "DialogManager.py:stub-extract", "exec"), module_ns)
 Guard = module_ns["Guard"]
@@ -87,6 +96,25 @@ class RetryGuard(StubGuard):
         self.notices.append(notice)
 
 
+class StreamingGuard(Guard):
+    """Exercise the extracted ORIGINAL process_llm_stream path with an offline fake transport."""
+    def __init__(self):
+        super().__init__("")
+        self.llm_response = ""
+        self.is_killed = False
+        self.ai = types.SimpleNamespace(name=lambda: "fake-offline-model", model="offline-model")
+        self.command_processor = types.SimpleNamespace(
+            commands_dispatched=0, reply_cut=False, process=lambda chunk, dm: chunk,
+            flush_buffer=lambda dm: None)
+        self.published = []
+        self.web_request_handler = types.SimpleNamespace(
+            ctx=types.SimpleNamespace(text_only=True),
+            publish_text_event=lambda _id, payload: self.published.append(payload["text"]))
+        self.drain_events = lambda: []
+
+
+
+
 class OriginalCodeTests(unittest.TestCase):
     def test_sixty_repeated_placeholders_then_real_text(self):
         sample = "_toolkit_placeholder\n" * 60 + "Source ID: checkpoint."
@@ -129,6 +157,24 @@ class OriginalCodeTests(unittest.TestCase):
         g = StubGuard(sample)
         self.assertEqual(g._without_stub(sample, complete=True), sample)
         self.assertEqual(g.llm_response_raw, sample)
+
+    def test_real_stream_pipeline_suppresses_leading_stubs_in_ui_and_history(self):
+        g = StreamingGuard()
+        result = "".join(g.process_llm_stream(
+            ["_toolkit_placeholder\\n" * 60, "Source evidence verified."], time.time(), False))
+        self.assertEqual(result, "Source evidence verified.")
+        self.assertEqual("".join(g.published), result)
+        self.assertEqual(g.llm_response, result)
+        self.assertNotIn("_toolkit_placeholder", g.llm_response_raw)
+
+    def test_real_stream_pipeline_repeated_stub_only_turn_is_blank_and_retryable(self):
+        g = StreamingGuard()
+        result = "".join(g.process_llm_stream(["_toolkit_placeholder\\n" * 100], time.time(), False))
+        self.assertEqual(result, "")
+        self.assertEqual(g.published, [])
+        self.assertEqual(g.llm_response, "")
+        self.assertEqual(g.stub_dropped, "_toolkit_placeholder")
+        self.assertNotIn("_toolkit_placeholder", g.llm_response_raw)
 
     def test_retry_is_bounded_and_reports_readable_failure(self):
         g = RetryGuard(["_toolkit_placeholder\n" * 100] * 2)
