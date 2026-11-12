@@ -475,20 +475,19 @@ class DialogManager:
                 response = self.ai.create_streaming_completion(messages, thinking=self.thinking,
                                                                follow_up=self.follow_up)
                 yield from self.process_llm_stream(response, t, time_shown)
-                if self.stub_dropped and not self.llm_response.strip():
-                    if not stub_retried and not self.command_processor.commands_dispatched:
+                if (self.stub_dropped and not self.llm_response.strip()
+                        and not self.command_processor.commands_dispatched):
+                    if not stub_retried:
                         note(f"The round was only stub text ({self.stub_dropped!r}), with no command or reply "
                              f"— retrying {self.ai.name()} once")
                         stub_retried = True
                         self.llm_response_raw = raw_snapshot
                         self.command_processor.reset_parse_state()
                         continue
-                    # Do not hide a failed round or invoke another paid model after the bounded
-                    # retry. If a command already ran, do not regenerate and risk repeating it.
-                    notice = ("A command was invoked, but I couldn't produce a readable response. "
-                              "Its result has not been verified in this reply."
-                              if self.command_processor.commands_dispatched else
-                              "I couldn't produce a readable response. Please try again.")
+                    # Do not hide a second failed round or make a third paid model call.
+                    # A pure command turn remains silent as before; only a no-command
+                    # placeholder-only reply uses this deterministic fallback.
+                    notice = "I couldn't produce a readable response. Please try again."
                     self.llm_response += notice
                     self.llm_response_raw = self.llm_response_raw.rstrip() + "\n" + notice
                     self._surface_notice(notice)
