@@ -657,7 +657,19 @@ class TestPreHeat:
         assert kwargs['max_tokens'] == 1
         assert kwargs['extra_body']['reasoning_effort'] == 'medium'
         assert 'tools' not in kwargs
-        assert [m['role'] for m in kwargs['messages']] == ['system', 'user', 'assistant']
+
+    def test_a_prompt_ending_in_a_reply_is_closed_by_a_user_turn_so_the_reply_renders_as_a_past_turn(self):
+        llm, create = _llm_with_stream([_chunk(content="")])
+        self._pre_heat(llm, SYSTEM_AND_TURN)
+        sent = create.call_args.kwargs['messages']
+        assert [m['role'] for m in sent] == ['system', 'user', 'assistant', 'user']
+        assert sent[:3] == SYSTEM_AND_TURN and not sent[3]['content'].strip()
+
+    def test_a_prompt_ending_in_a_user_turn_goes_out_as_it_is(self):
+        llm, create = _llm_with_stream([_chunk(content="")])
+        messages = SYSTEM_AND_TURN + [{'role': 'user', 'content': 'again'}]
+        self._pre_heat(llm, messages)
+        assert create.call_args.kwargs['messages'] == messages
 
     def test_a_prompt_without_a_user_turn_gets_a_stub_after_the_system_prefix(self):
         llm, create = _llm_with_stream([_chunk(content="")])
@@ -694,7 +706,8 @@ class TestPreHeat:
             return iter([_chunk(content="")])
         create.side_effect = first_request
         self._pre_heat(llm, SYSTEM_AND_TURN)
-        sent = [call.kwargs['messages'][-1]['content'] for call in create.call_args_list]
+        sent = [[m['content'] for m in call.kwargs['messages'] if m['content'].strip()][-1]
+                for call in create.call_args_list]
         assert sent == ['hi there', 'newest']
         assert Ds4LLM._pre_heat_in_flight is False and Ds4LLM._pre_heat_pending is None
 

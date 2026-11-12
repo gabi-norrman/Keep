@@ -66,7 +66,9 @@ sweep that removes the entries unused for `ds4.kv_disk_max_age_hours`.
 
 The third piece is the pre-heat (`pre_heat_cache`, fired by `PromptManager` through the launcher's
 callback whenever the byte prefix of the next request changes — a prompt rebuild, a section note,
-a finished turn): a streamed one-token request carrying the new prefix at the chat tier's effort,
+a finished turn): a streamed one-token request carrying the new prefix at the chat tier's effort
+and closed by a stub user turn (the server writes out the reasoning of a reply nothing follows,
+which the next request, with its query after that reply, never renders),
 so the server prefills it while it is idle and the next user turn finds it as the live context
 and prefills its own tail alone. A user turn arriving meanwhile queues behind it at the server
 (one slot, FIFO) and continues from the checkpoint the pre-heat has built so far — the server

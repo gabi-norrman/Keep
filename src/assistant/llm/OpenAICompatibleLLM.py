@@ -325,9 +325,14 @@ class OpenAICompatibleLLM(ChatGPTLLM):
             self.initialize()
         client = self.client.with_options(
             timeout=httpx.Timeout(self.PRE_HEAT_READ_TIMEOUT_S, connect=self.CONNECT_TIMEOUT_S))
-        if not any(m.get('role') == 'user' for m in messages):
-            # A prompt with no user turn yet: the stub stands after the shared system prefix,
-            # which is what the pre-heat is for; the real query displaces it at the tail.
+        if not messages or messages[-1].get('role') != 'user':
+            # The next request ends in a user turn, and so must this one; the real query
+            # displaces the stub at the tail. With no user turn yet the stub stands after the
+            # shared system prefix. After a reply it makes that reply a past turn: a server
+            # renders its last turn another way while nothing follows it (ds4 writes the
+            # reasoning out, `<think>…</think>`, where a past turn has a bare `</think>`),
+            # and the pre-heat would prefill a reply the next request never sends.
+            trace(f"{self.LABEL} pre-heat: the prompt ends without a user turn — a stub one closes it")
             messages = messages + [{'role': 'user', 'content': ' '}]
         kwargs = self._request_kwargs(messages, Thinking.NORMAL, stream=True)
         kwargs['max_tokens'] = self.PRE_HEAT_MAX_TOKENS
