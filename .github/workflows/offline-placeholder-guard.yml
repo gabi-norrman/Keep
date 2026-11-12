@@ -3,6 +3,10 @@ on:
   push:
     branches:
       - fix/toolkit-placeholder-repeat-20261113
+  pull_request:
+    branches:
+      - master
+    types: [opened, synchronize, reopened]
 permissions:
   contents: read
 jobs:
