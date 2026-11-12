@@ -161,7 +161,7 @@ class OriginalCodeTests(unittest.TestCase):
     def test_real_stream_pipeline_suppresses_leading_stubs_in_ui_and_history(self):
         g = StreamingGuard()
         result = "".join(g.process_llm_stream(
-            ["_toolkit_placeholder\\n" * 60, "Source evidence verified."], time.time(), False))
+            ["_toolkit_placeholder\n" * 60, "Source evidence verified."], time.time(), False))
         self.assertEqual(result, "Source evidence verified.")
         self.assertEqual("".join(g.published), result)
         self.assertEqual(g.llm_response, result)
@@ -169,7 +169,7 @@ class OriginalCodeTests(unittest.TestCase):
 
     def test_real_stream_pipeline_repeated_stub_only_turn_is_blank_and_retryable(self):
         g = StreamingGuard()
-        result = "".join(g.process_llm_stream(["_toolkit_placeholder\\n" * 100], time.time(), False))
+        result = "".join(g.process_llm_stream(["_toolkit_placeholder\n" * 100], time.time(), False))
         self.assertEqual(result, "")
         self.assertEqual(g.published, [])
         self.assertEqual(g.llm_response, "")
