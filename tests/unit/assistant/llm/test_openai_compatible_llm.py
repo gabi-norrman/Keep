@@ -9,7 +9,7 @@ import pytest
 from assistant.llm import create_llm, local_only_class, parse_llm_config, tier_api_key_name
 from assistant.llm.Ds4LLM import Ds4LLM
 from assistant.llm.OpenAICompatibleLLM import OpenAICompatibleLLM
-from assistant.llm.PrefillTracker import LogSource
+from assistant.llm.PrefillTracker import LogSource, PrefillTracker
 from common import ConfigSchema
 
 
@@ -245,6 +245,11 @@ class TestTheRequest:
 class TestPrefillBar:
     """The bar's numbers come off the wire: each `prompt_progress` chunk reaches the tracker,
     the first one is the workload the early cache report is made from."""
+
+    @pytest.fixture(autouse=True)
+    def every_prefill_drawn(self):
+        with patch.object(PrefillTracker, "MIN_BAR_SECONDS", 0.0):
+            yield
 
     def test_progress_chunks_drive_the_bar_while_the_server_prefills(self):
         seen = []

@@ -14,7 +14,8 @@ when the server is on another machine). Whichever the source, the request's stat
 — its workload (cached, remaining), its latest progress (processed, total), its prefill time —
 and so is everything below.
 
-The estimate: 0 until the start line is read (nothing to draw), 100 at once on a full cache hit,
+The estimate: 0 until the start line is read (nothing to draw) and for a prefill the rolling rate
+puts under `MIN_BAR_SECONDS` (a bar there would only blink), 100 at once on a full cache hit,
 the engine's own progress lines when it logs them, and otherwise the time since the workload
 line was read against a rolling prefill rate (`observe_rate` refines it after each reply, from
 the prefill time the log reports — `prefill_seconds`) — capped at 99 until the first token
@@ -208,6 +209,7 @@ class _Request:
 class PrefillTracker:
     """The prefill state of one local backend's requests in flight (see the module docstring)."""
     POLL_INTERVAL_S = 2.0   # log reads between polls: over ssh each is a round trip, and new lines are rare
+    MIN_BAR_SECONDS = 2.0   # a prefill estimated shorter is not drawn: the bar would only blink
     _trackers: list["PrefillTracker"] = []
 
     def __init__(self, label: str, log_format: LogFormat | None, seed_tps: float):
@@ -379,10 +381,12 @@ class PrefillTracker:
         _cached, remaining = work
         if remaining <= 0:
             return 100.0   # a full cache hit: no prefill work
+        eta = remaining / self.tps if self.tps > 0 else 0.0
+        if 0 < eta < self.MIN_BAR_SECONDS:
+            return 0.0   # too short to be worth a bar — plain waiting
         if progress and progress[1] > 0:
             processed, total = progress
             return min(99.0, processed / total * 100.0)
-        eta = remaining / self.tps if self.tps > 0 else 0.0
         if eta <= 0:
             return 99.0
         return min(99.0, (time.monotonic() - head.work_ts) / eta * 100.0)

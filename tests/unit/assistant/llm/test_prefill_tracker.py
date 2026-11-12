@@ -42,6 +42,13 @@ def _ssh_result(returncode=0, stdout='', stderr=''):
     return result
 
 
+@pytest.fixture(autouse=True)
+def every_prefill_drawn():
+    """The tests below are about the bar's numbers, on workloads short against the seed rate."""
+    with patch.object(PrefillTracker, "MIN_BAR_SECONDS", 0.0):
+        yield
+
+
 @pytest.fixture
 def log_path(tmp_path):
     return tmp_path / "toy.log"
@@ -77,6 +84,16 @@ class TestEstimate:
         token = tracker.begin()
         _append(log_path, "work 100 0\n")
         assert tracker.progress() == 100.0
+        tracker.end(token)
+
+    @pytest.mark.parametrize("remaining, drawn", [(500, False), (5000, True)])   # at 1000 t/s: 0.5 s, 5 s
+    def test_only_a_prefill_long_enough_to_see_is_drawn(self, tracker, log_path, remaining, drawn):
+        token = tracker.begin()
+        _append(log_path, f"work 0 {remaining}\n")
+        tracker.work(token, force=True)
+        tracker._find(token).work_ts = time.monotonic() - 0.3
+        with patch.object(PrefillTracker, "MIN_BAR_SECONDS", 2.0):
+            assert (tracker.progress() > 0.0) == drawn
         tracker.end(token)
 
     def test_the_clock_against_the_rate_estimates_the_rest(self, tracker, log_path):
