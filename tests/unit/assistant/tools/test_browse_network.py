@@ -226,6 +226,20 @@ class TestCapture:
             run(wa._on_network_finished(finished_event('r'), conn))
         assert entry(wa, 'r')['body'] is None
 
+    def test_answered_document_is_not_in_flight_while_an_answered_xhr_still_is(self):
+        # A cross-origin iframe's document: the response arrives on the tab, LoadingFinished never does.
+        wa = bare_wa()
+        conn = connection()
+        wa._on_network_request(request_event('frame', 'https://pay.example/button',
+                                             kind=cdp.network.ResourceType.DOCUMENT), conn)
+        wa._on_network_request(request_event('xhr', 'https://shop.example/api/cart'), conn)
+        assert {e['rid'] for e in wa._network_in_flight()} == {'frame', 'xhr'}
+
+        wa._on_network_response(response_event('frame', mime='text/html'), conn)
+        wa._on_network_response(response_event('xhr'), conn)
+
+        assert [e['rid'] for e in wa._network_in_flight()] == ['xhr']
+
     def test_redirect_closes_the_previous_hop_and_continues_under_the_same_id(self):
         wa = bare_wa()
         conn = connection()

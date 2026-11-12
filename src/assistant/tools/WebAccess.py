@@ -1152,10 +1152,15 @@ class WebAccess(Integration):
 
     def _network_in_flight(self) -> list:
         """Captured requests still unanswered — XHR/fetch/document, not EventSource (a
-        stream never finishes) and not those older than _PAGE_NET_STALE_S."""
+        stream never finishes) and not those older than _PAGE_NET_STALE_S. A document counts
+        as answered from its response on: a cross-origin iframe's LoadingFinished goes to the
+        frame's own target, never to this tab (prod 2026-11-12: a PayPal button frame held
+        the idle wait at its cap on five steps of one checkout), and the DOM stages before
+        this one already wait for the page's own document."""
         horizon = time.time() - self._PAGE_NET_STALE_S
         return [e for e in getattr(self, '_network_requests', {}).values()
-                if not e['done'] and e['type'] != 'EventSource' and e['ts'] >= horizon]
+                if not e['done'] and e['type'] != 'EventSource' and e['ts'] >= horizon
+                and not (e['type'] == 'Document' and e['status'] is not None)]
 
     def _network_failures_since(self, since: Optional[float]) -> list[tuple[int, dict]]:
         """The captured requests sent at or after `since` that the server refused (4xx/5xx)
